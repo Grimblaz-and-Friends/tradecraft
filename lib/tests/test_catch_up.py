@@ -110,11 +110,14 @@ class PublicGit:
             behind = git(self.root, "rev-list", "--count", f"{right}..{left}")
             status = "identical" if left == right else "ahead" if common == left else "behind" if common == right else "diverged"
             files = []
-            for line in git(self.root, "diff", "--name-status", "-M", common, right).splitlines():
-                fields = line.split("\t")
-                item = {"filename": fields[-1], "status": "renamed" if fields[0].startswith("R") else {"A": "added", "D": "removed"}.get(fields[0], "modified")}
-                if fields[0].startswith("R"):
-                    item["previous_filename"] = fields[1]
+            for line in git(self.root, "diff", "--raw", "-M", common, right).splitlines():
+                identity, *fields = line.split("\t")
+                old_mode, new_mode, _old, _new, letter = identity.lstrip(":").split()
+                item = {"filename": fields[-1], "status": "renamed" if letter.startswith("R") else {"A": "added", "D": "removed"}.get(letter, "modified")}
+                if item["status"] == "modified" and old_mode != new_mode:
+                    item["status"] = "changed"  # GitHub's status for a mode change
+                if letter.startswith("R"):
+                    item["previous_filename"] = fields[0]
                 files.append(item)
             return {"status": status, "ahead_by": len(revisions), "behind_by": int(behind),
                     "merge_base_commit": {"sha": common}, "commits": [{"sha": sha} for sha in revisions],
@@ -1036,6 +1039,12 @@ def _c7_change(implementation, case):
         (implementation / target).parent.mkdir(parents=True, exist_ok=True)
         git(implementation, "mv", source, target)
         git(implementation, "commit", "-m", "fixture rename")
+    elif case in {"mode", "mode-field"}:
+        if case == "mode-field":
+            (implementation / "version.json").write_bytes(version_document("1.3.0").encode())
+            git(implementation, "add", "--", "version.json")
+        git(implementation, "update-index", "--chmod=+x", "version.json")
+        git(implementation, "commit", "-m", "fixture mode change")
     else:
         (implementation / "lib/tests/unit.py").write_bytes(b"changed unit\n")
         commit(implementation, "lib/tests/delivery.py", "changed delivery\n")
@@ -1045,6 +1054,8 @@ def _c7_change(implementation, case):
     ("plain", ["lib/a.py"]), ("field-only", []), ("other-member", ["version.json"]),
     ("removal", ["lib/a.py"]), ("rename-into", ["lib/x.md"]), ("rename-out", ["lib/b.py"]),
     ("cross-rule-exclude", ["lib/tests/delivery.py"]), ("declared-rename", ["version.json"]),
+    # A mode change is never an ordinary modification, alone or beside a field-only edit.
+    ("mode", ["version.json"]), ("mode-field", ["version.json"]),
 ])
 def test_C7_report_and_local_counts_agree(registered, case, expected):
     root, implementation, branch, remote, transport, state = registered
@@ -1071,3 +1082,5 @@ def test_C7_report_and_local_counts_agree(registered, case, expected):
     assert report["declared_field_only"] is local["declared_field_only"] is (case == "field-only")
     if case.startswith("rename") or case == "declared-rename":
         assert any(item["status"] == "renamed" for item in state.files)
+    if case.startswith("mode"):
+        assert [item["status"] for item in state.files if item["filename"] == "version.json"] == ["changed"]

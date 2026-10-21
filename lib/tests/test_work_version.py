@@ -531,12 +531,11 @@ def test_C2_prescribed_merge_version_governs_coexisting_instruction(stage, presc
     assert prompt.startswith("Merge obligation:") and "target 2.11.0" in instruction
     if prescribed:
         assert 'to "2.11.0" in this merge' in prompt
-        assert "merge obligation's prescribed version value 2.11.0 governs the merge" in instruction
-        assert ("if this turn's later work changes whether the final diff owes a version, "
-                "the final-diff rule here governs what you return") in instruction
-        assert "do not downgrade" not in instruction and "retain a valid value" not in instruction
-    else:
-        assert "retain a valid value already at least that target and do not downgrade it" in instruction
+        assert ("merge obligation's prescribed version value 2.11.0 governs the merge commit; "
+                "the final-diff rules here govern what you return") in instruction
+    # Both final-diff branches stay in force whether or not a merge value is prescribed.
+    assert "retain a valid value already at least that target and do not downgrade it" in instruction
+    assert "If the final PR diff owes no version, keep the field at the base's value 2.10.0" in instruction
 
 
 @pytest.mark.parametrize("step", ["rerun", "floor-identity", "work-policy"])
@@ -939,3 +938,60 @@ def test_C9_unread_field_only_evidence_refuses_readiness_and_proof(stage, tmp_pa
     assert "Recollect version evidence" in report["detail"]
     assert "owed version is met" not in json.dumps(report)
     assert not transport.effects
+
+
+def test_C11_prescribed_not_owed_instruction_still_names_the_target_and_when_to_set_it():
+    # The merge was derived as owing nothing, so it prescribes the base's value; a shipped
+    # path added later in the turn must still be told to set the target.
+    state, transport = fixture_state(version="2.10.0", base_version="2.10.0")
+    adjustment = {**SPEC, "value": "2.10.0", "owed": False,
+                  "reason": "not owed: field set back to the base's 2.10.0 (the change carried 2.9.9)"}
+    obligation = work.MergeObligation(HEAD, REPO, "main", BASE, (), adjustment)
+    instruction = work._compose_version_instruction(state, transport, RULES, "fixture", obligation)
+    assert ("prescribed version value 2.10.0 governs the merge commit (not owed: field set back to "
+            "the base's 2.10.0 (the change carried 2.9.9))") in instruction
+    assert "target 2.11.0" in instruction
+    assert ("If the final PR diff touches a path matched by these use-rule groups, including removals "
+            "and both names of a rename, set that field to the target; retain a valid value already "
+            "at least that target and do not downgrade it.") in instruction
+    assert "If the final PR diff owes no version, keep the field at the base's value 2.10.0" in instruction
+
+
+ROW3_RULES = {**RULES, "rules": [{"include": ["runtime/**"], "exclude": []}]}
+
+
+def test_C9_head_holding_the_base_tip_value_passes_without_reading_the_merge_base():
+    # The declared file matches no rule here, so only row 3 reads it.
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.9.9")
+    transport.merge_base_version = b"not a version document"
+    report = assess(state, transport, ROW3_RULES)
+    assert (report["status"], report["owed"], report["unowed"]) == ("not-required", False, False)
+    assert "holds the base's value" in report["message"]
+    assert "merge_base" not in report
+    assert not any(call[1] == f"repos/{REPO}/contents/package.json?ref={'b' * 40}" for call in transport.calls)
+    assert not any("/compare/" in call[1] for call in transport.calls)
+
+
+def test_C9_moved_head_over_an_unreadable_merge_base_value_is_refused_as_moved():
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0")
+    transport.merge_base_version = b"not a version document"
+    report = assess(state, transport, ROW3_RULES)
+    assert (report["status"], report["owed"], report["unowed"]) == ("blocked", False, True)
+    assert report["merge_base"] == {"sha": "b" * 40, "value": None}
+    assert "merge base's value cannot be read to show it was kept; restore 2.9.9." in report["message"]
+    assert work._version_needs_builder(report)
+    state.version_obligation = report
+    refusal = work._version_obligation_refusal(state, "ready-reviewers")
+    assert refusal.reason == "version-obligation-blocked"
+    assert "Return this repair to the builder with run build" in refusal.detail
+
+
+def test_C11_field_only_declared_edit_composes_no_matching_paths_and_keeps_the_base_value():
+    # The Steward's case: only a field-only edit of the declared file plus an unmatched path.
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0", lane="connected")
+    work.validate_marker_claims(state)
+    instruction = work._compose_version_instruction(state, transport, RULES, "synthetic policy")
+    prompt = work._stage_prompt(state, work.Decision("build", True, "resume", "fixture"),
+                                floor_command="python check.py", version_instruction=instruction).decode()
+    assert "Current matching paths: []." in prompt
+    assert "keep the field at the base's value 2.9.9" in prompt

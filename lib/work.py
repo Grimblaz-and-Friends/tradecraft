@@ -3768,14 +3768,6 @@ def _assess_version(state: WorkState, rules: dict, source: str,
             raise WorkError(f"base version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
         unowed = state.pr is not None and not report["owed"] and not composition
         if unowed:
-            # Row 3: a change owing no version must not move the base's value.
-            try:
-                _, common, _ = _version_merge_base(transport, state.pr, evidence)
-                content = _version_blob(transport, base["repository"], common, spec)
-                report["merge_base"] = {"sha": common,
-                                        "value": version_policy.document(content, spec)[spec["field"]]}
-            except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
-                raise WorkError(f"merge-base version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
             report["target"] = report["base"]["value"]
         head_problem = None
         if not composition:
@@ -3791,6 +3783,20 @@ def _assess_version(state: WorkState, rules: dict, source: str,
                     report["head"]["value"] = version_policy.document(content, spec)[spec["field"]]
                 except (UnicodeError, ValueError) as exc:
                     head_problem = str(exc)
+        if unowed and head_problem is None and report["head"]["value"] != report["base"]["value"]:
+            # Row 3: only a head that differs from the base tip needs the merge base, to show
+            # it kept a value it never touched. A merge-base value that cannot be read as a
+            # version cannot show that, so the head counts as moved.
+            try:
+                _, common, _ = _version_merge_base(transport, state.pr, evidence)
+                content = _version_blob(transport, base["repository"], common, spec)
+            except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+                raise WorkError(f"merge-base version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
+            try:
+                kept = version_policy.document(content, spec)[spec["field"]]
+            except (UnicodeError, ValueError):
+                kept = None
+            report["merge_base"] = {"sha": common, "value": kept}
         confirmed = _dict(transport.get(base_endpoint), base_endpoint)
         if _dict(confirmed.get("object"), base_endpoint).get("sha") != base["sha"]:
             raise WorkError("version base tip moved during collection")
@@ -3806,10 +3812,13 @@ def _assess_version(state: WorkState, rules: dict, source: str,
                 builder_repair=True)
         if unowed:
             head, held = report["head"]["value"], report["base"]["value"]
-            if head != report["merge_base"]["value"] and head != held:
+            kept = (report.get("merge_base") or {}).get("value")
+            if head != held and head != kept:
+                unread = (", and the merge base's value cannot be read to show it was kept"
+                          if kept is None else "")
                 report.update(status="blocked", met=False, unowed=True, message=(
                     f"{spec['path']} field {spec['field']}: no version is owed; head {head} "
-                    f"moves the base's value {held}; restore {held}."))
+                    f"moves the base's value {held}{unread}; restore {held}."))
             else:
                 report.update(status="not-required", unowed=False, message=(
                     "no version is owed; the declared field holds the base's value" if head == held else
@@ -3899,18 +3908,18 @@ def _compose_version_instruction(state: WorkState, transport: GitHubREST | None,
     groups = [{"include": rule["include"], "exclude": rule["exclude"]} for rule in rules["rules"]]
     prescribed = obligation.version_adjustment if obligation is not None else None
     reason = f" ({prescribed['reason']})" if prescribed is not None and prescribed.get("reason") else ""
-    action = (f"the merge obligation's prescribed version value {prescribed['value']} "
-              f"governs the merge{reason}; if this turn's later work changes whether the final diff "
-              "owes a version, the final-diff rule here governs what you return. "
-              if prescribed is not None else
-              "set that field to the target; retain a valid value already "
-              "at least that target and do not downgrade it. ")
+    # A prescription settles only the merge commit; later work in the turn can change what
+    # the final diff owes, so both final-diff branches below always stay in force.
+    prescription = (f"The merge obligation's prescribed version value {prescribed['value']} governs "
+                    f"the merge commit{reason}; the final-diff rules here govern what you return. "
+                    if prescribed is not None else "")
     return (f" Conditional version obligation: JSON file {json.dumps(spec['path'])}, top-level field "
             f"{json.dumps(spec['field'])}; {base['basis']} {base['repository']}:{base['ref']} "
             f"at {base['sha']} carries {base['value']}; target {report['target']} "
-            f"({spec['increment']} increment, lower parts reset). "
+            f"({spec['increment']} increment, lower parts reset). " + prescription +
             "If the final PR diff touches a path matched by these use-rule groups, including removals "
-            "and both names of a rename, " + action + "An installed copy keyed on an unmoved "
+            "and both names of a rename, set that field to the target; retain a valid value already "
+            "at least that target and do not downgrade it. An installed copy keyed on an unmoved "
             "version misses the shipped change. Excludes apply within their own group only: "
             + json.dumps(groups, ensure_ascii=True, sort_keys=True)
             + ". The declared file counts only when it changes beyond that field; a change confined "
@@ -6995,18 +7004,28 @@ LOCAL_VERSION_STATUSES = {"M": "modified", "A": "added", "D": "removed", "T": "c
 
 
 def _local_version_records(root: Path, pinned: str, merged: str) -> list[dict]:
-    """List the merged result against the pinned base: the PR file list once pushed."""
-    result = _git(["diff", "--no-renames", "--name-status", "-z", pinned, merged], root)
+    """List the merged result against the pinned base: the PR file list once pushed.
+
+    Modes are read (--raw) because GitHub reports a mode change as `changed`, which is
+    never an ordinary modification; `--name-status` alone would call it `M`.
+    """
+    result = _git(["diff", "--no-renames", "--raw", "-z", pinned, merged], root)
     if result.returncode:
         raise WorkError(f"cannot read merged-result changes: {_git_failure(result)}")
     fields = result.stdout.split(b"\0")
     if fields[-1] != b"" or len(fields) % 2 != 1:
         raise WorkError("invalid merged-result change records")
     records = []
-    for letter, raw in zip(fields[:-1:2], fields[1:-1:2]):
-        status = LOCAL_VERSION_STATUSES.get(letter.decode("ascii", errors="replace"))
+    for identity, raw in zip(fields[:-1:2], fields[1:-1:2]):
+        parts = identity.decode("ascii", errors="replace").split(" ")
+        if len(parts) != 5 or not parts[0].startswith(":"):
+            raise WorkError(f"unexpected merged-result change record: {identity!r}")
+        old_mode, new_mode, letter = parts[0][1:], parts[1], parts[4]
+        status = LOCAL_VERSION_STATUSES.get(letter)
         if status is None or not raw:
-            raise WorkError(f"unexpected merged-result change record: {letter!r}")
+            raise WorkError(f"unexpected merged-result change record: {identity!r}")
+        if status == "modified" and old_mode != new_mode:
+            status = "changed"
         try:
             name = raw.decode("utf-8")
         except UnicodeError as exc:
