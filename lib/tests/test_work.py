@@ -1794,6 +1794,24 @@ class TestGoverningTerms:
         assert decision.reason == "stopped-run-resume" and comment["html_url"] in decision.detail
         assert "Run build" not in decision.detail
 
+    @pytest.mark.parametrize("stage", ["build", "review-disposition"])
+    def test_887_refused_turn_resumes_its_session_like_a_stopped_run(self, builder, stage):
+        """A turn whose stream showed work outliving the return is recovered, not held unproved."""
+        comment = self.amendment(builder)
+        _request, run = self.turn(builder, stage=stage, composed="2026-10-05T13:00:00Z",
+                                  launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run["outcome"] = "work_outlived_return"
+        self.save(builder)
+        work.validate_marker_claims(builder)
+        comparison = work._governing_terms_decision(builder)
+        assert comparison.stage == stage and comparison.reason == "stopped-run-resume"
+        assert comparison.dispatch and comparison.continuity == "resume"
+        assert comment["html_url"] in comparison.detail
+        decision = work.decide(builder, RULES)
+        assert decision.stage == stage and decision.reason == "stopped-run-resume" and decision.dispatch
+        assert work._resume_source("example/product#12", "build", builder.record_root,
+                                   state=builder).session == SESSION
+
     def test_second_look_866_released_stopped_bundle_does_not_own_successor(self, builder, monkeypatch):
         builder.pr = None
         request, run = builder.term_turns[0][2:]

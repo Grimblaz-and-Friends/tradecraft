@@ -77,6 +77,8 @@ CLAUDE_COMMAND_CEILING = "BASH_MAX_TIMEOUT_MS"
 CLAUDE_DISALLOWED_TOOLS = ("Monitor", "ScheduleWakeup", "CronCreate", "Workflow")
 CLAUDE_DISALLOWED_ARGUMENT = "--disallowedTools=" + ",".join(CLAUDE_DISALLOWED_TOOLS)
 NOT_RECORDED = "not recorded: launched before #887"
+NOT_LAUNCHED = "not applied: the attempt was not launched"
+NOT_COMPLETED = "not yet recorded: the launch has not completed"
 
 
 def claude_command_ceiling_ms(allocation_seconds):

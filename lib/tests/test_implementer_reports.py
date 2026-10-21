@@ -182,8 +182,11 @@ def test_887_R4_2_report_names_launch_controls_and_stream_check(tmp_path, monkey
     notice = lifecycle.claude_launch_notice(900)
     controls = lifecycle.claude_launch_controls(900, notice, disallowed=lifecycle.CLAUDE_DISALLOWED_TOOLS)
     check = lifecycle.stream_check_record(lifecycle.claude_stream_check(daemon_face()))
-    for name, protected in (("protected", True), ("older", False)):
-        path = bundle(tmp_path, name, outcome="work_outlived_return" if protected else "success")
+    # (name, controls on the request, attempt launched, lifecycle, stream check)
+    cases = (("protected", True, True, "completed", True), ("older", False, True, "completed", False),
+             ("unlaunched", False, False, "completed", False), ("running", True, True, "running", False))
+    for name, protected, launched, phase, checked in cases:
+        path = bundle(tmp_path, name, outcome="work_outlived_return" if checked else "success")
         request = json.loads(path.read_bytes())
         request["requested"] = {"vendor": "claude"}
         if protected:
@@ -192,8 +195,9 @@ def test_887_R4_2_report_names_launch_controls_and_stream_check(tmp_path, monkey
         run_path = path.with_name(name + ".run.json")
         run = json.loads(run_path.read_bytes())
         run["actual_vendor"] = "claude"
-        run["attempts"][0]["vendor"] = "claude"
-        if protected:
+        run["attempts"][0].update(vendor="claude", launched=launched)
+        run["lifecycle"] = phase
+        if checked:
             run["attempts"][0]["stream_check"] = check
         before = json.dumps(run).encode()
         run_path.write_bytes(before)
@@ -214,5 +218,10 @@ def test_887_R4_2_report_names_launch_controls_and_stream_check(tmp_path, monkey
         "task_event_after_return", "task_running_at_return"}
     assert rows["older"]["launch_controls"] == {"status": "not recorded: launched before #887"}
     assert rows["older"]["stream_check"] == {"status": "not recorded: launched before #887"}
+    # Only a launched, completed attempt from an older launcher is reported as one (PR #924 review).
+    assert rows["unlaunched"]["launch_controls"] == rows["unlaunched"]["stream_check"] == {
+        "status": "not applied: the attempt was not launched"}
+    assert rows["running"]["launch_controls"]["status"] == "recorded"
+    assert rows["running"]["stream_check"] == {"status": "not yet recorded: the launch has not completed"}
     assert run_path.read_bytes() == before
     assert rows["codex"]["launch_controls"] is None and rows["codex"]["stream_check"] is None

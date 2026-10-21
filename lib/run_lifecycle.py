@@ -387,7 +387,10 @@ def stopped(run):
         return True
     if not run.get("completed_at"):
         return True
-    return run.get("lifecycle") == "completed" and run.get("outcome") in {"interrupted", "error"} and any(
+    # A turn refused because work outlived its return (#887) recovers like a
+    # failed launched turn: its own session resumes, never a fresh builder.
+    return run.get("lifecycle") == "completed" and run.get("outcome") in {
+        "interrupted", "error", "work_outlived_return"} and any(
         a.get("launched") for a in run.get("attempts", []) if isinstance(a, dict))
 
 

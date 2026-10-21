@@ -49,7 +49,7 @@ from source_claims import (
 import cold_draft
 from connected_review import is_review_job
 import dispatch_record as records
-from dispatch_lifecycle import NOT_RECORDED
+from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
 import run_lifecycle as lifecycle
 import work_recovery
@@ -3337,24 +3337,35 @@ def _instruction_report(observed):
                       for entry in value.get("values") or [] if isinstance(entry, dict)]}
 
 
-def _launch_controls_report(request, attempt):
+def _unrecorded_status(run, attempt):
+    """Why a Claude attempt holds no #887 field, from what its record shows."""
+    if attempt.get("launched") is not True:
+        return NOT_LAUNCHED
+    if run.get("lifecycle") != "completed":
+        return NOT_COMPLETED
+    return NOT_RECORDED
+
+
+def _launch_controls_report(request, run, attempt):
     """What a Claude launch applied (#887); an older record says it holds nothing."""
     if (attempt.get("vendor") or (request.get("requested") or {}).get("vendor")) != "claude":
         return None
     controls = request.get("launch_controls")
     if not isinstance(controls, dict):
-        return {"status": NOT_RECORDED}
+        # Controls are written with the request, before launch, so only an
+        # unlaunched attempt or an older launcher leaves them absent.
+        return {"status": NOT_LAUNCHED if attempt.get("launched") is not True else NOT_RECORDED}
     return {"status": "recorded", **{key: controls.get(key) for key in (
         "background_tasks", "background_tasks_source", "command_ceiling_ms",
         "command_ceiling_source", "disallowed_tools", "notice_sha256")}}
 
 
-def _stream_check_report(attempt):
+def _stream_check_report(run, attempt):
     if attempt.get("vendor") != "claude":
         return None
     check = attempt.get("stream_check")
     if not isinstance(check, dict):
-        return {"status": NOT_RECORDED}
+        return {"status": _unrecorded_status(run, attempt)}
     return {key: check.get(key) for key in (
         "status", "reason", "return_line", "turn_end_line", "result_lines", "causes",
         "backgrounded_tasks_observed")}
@@ -3407,8 +3418,8 @@ def _implementer_environments(state):
                 "outcome": attempt.get("outcome") or run.get("outcome") or "unknown",
                 "record_error": run.get("recovery_error"),
                 "instructions": _instruction_report(observed),
-                "launch_controls": _launch_controls_report(request, attempt),
-                "stream_check": _stream_check_report(attempt),
+                "launch_controls": _launch_controls_report(request, run, attempt),
+                "stream_check": _stream_check_report(run, attempt),
                 "environment": observed})
     return {"status": "known", "attempts": values}
 
