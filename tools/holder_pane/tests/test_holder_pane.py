@@ -258,11 +258,30 @@ def test_c2_1_install_and_uninstall_stay_local(checkout, home):
     assert user_settings.read_bytes() == before
     assert [argv[1:] for argv in tools.claude] == [
         ["plugin", "marketplace", "add", "M", "--scope", "local"],
-        ["plugin", "install", "holder-pane@tradecraft-lab", "--scope", "local"],
-        ["plugin", "uninstall", "holder-pane@tradecraft-lab", "--scope", "local"],
-        ["plugin", "marketplace", "remove", "tradecraft-lab", "--scope", "local"],
+        ["plugin", "install", "holder-pane@tradecraft-holder-pane", "--scope", "local"],
+        ["plugin", "uninstall", "holder-pane@tradecraft-holder-pane", "--scope", "local"],
+        ["plugin", "marketplace", "remove", "tradecraft-holder-pane", "--scope", "local"],
     ]
     assert all(argv[-2:] == ["--scope", "local"] for argv in tools.claude)
+    # #915 row 1: the Steward's wake owns its marketplace name; the pane never names it.
+    wake = _marketplace_name(REPO / "tools" / "steward-wake")
+    assert not any(wake in part for argv in tools.claude for part in argv)
+
+
+def _marketplace_name(folder: Path) -> str:
+    path = folder / ".claude-plugin" / "marketplace.json"
+    return json.loads(path.read_bytes().decode("utf-8"))["name"]
+
+
+def test_the_pane_marketplace_cannot_share_the_wakes_name():
+    """#915 row 1: a second `marketplace add` under a registered name repoints it,
+    and the pane's uninstall removes its marketplace by name, so the two lab mods'
+    marketplaces must differ, and the installer must name only the pane's own."""
+    pane = _marketplace_name(PANE / "marketplace")
+    wake = _marketplace_name(REPO / "tools" / "steward-wake")
+    assert pane != wake
+    assert installer.MARKETPLACE == pane
+    assert installer.PLUGIN_REF == f"holder-pane@{pane}"
 
 
 @pytest.mark.parametrize("tracked,ignored", [(True, True), (True, False), (False, False)])
@@ -279,16 +298,16 @@ def test_c2_2_install_refuses_tracked_or_unignored_local_file(checkout, tracked,
 def test_c2_7_worktree_install_copies_keys_under_the_same_refusal(checkout, tmp_path):
     main_local = checkout / ".claude" / "settings.local.json"
     main_local.write_text(json.dumps({
-        "extraKnownMarketplaces": {"tradecraft-lab": {"source": {"source": "directory",
+        "extraKnownMarketplaces": {"tradecraft-holder-pane": {"source": {"source": "directory",
                                                                   "path": "M"}}},
-        "enabledPlugins": {"holder-pane@tradecraft-lab": True, "other@x": True},
+        "enabledPlugins": {"holder-pane@tradecraft-holder-pane": True, "other@x": True},
         "env": {"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"}}), encoding="utf-8")
     worktree = tmp_path / "wt"
     (worktree / ".claude").mkdir(parents=True)
     installer.install_worktree(worktree, checkout, FakeTools())
     copied = json.loads((worktree / ".claude" / "settings.local.json").read_text())
-    assert copied["enabledPlugins"] == {"holder-pane@tradecraft-lab": True}
-    assert "tradecraft-lab" in copied["extraKnownMarketplaces"]
+    assert copied["enabledPlugins"] == {"holder-pane@tradecraft-holder-pane": True}
+    assert "tradecraft-holder-pane" in copied["extraKnownMarketplaces"]
     assert copied["env"]["CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"] == "1"
     with pytest.raises(installer.Refused):
         installer.install_worktree(tmp_path / "wt", checkout, FakeTools(tracked=True))
@@ -865,7 +884,7 @@ def test_uninstall_keeps_an_opt_in_that_predates_the_install(checkout):
 
 def test_worktree_copy_requires_the_enabled_plugin_entry(checkout, tmp_path):
     (checkout / ".claude" / "settings.local.json").write_text(json.dumps({
-        "extraKnownMarketplaces": {"tradecraft-lab": {"source": {"source": "directory",
+        "extraKnownMarketplaces": {"tradecraft-holder-pane": {"source": {"source": "directory",
                                                                   "path": "M"}}},
         "enabledPlugins": {"other@x": True}}), encoding="utf-8")
     worktree = tmp_path / "wt2"

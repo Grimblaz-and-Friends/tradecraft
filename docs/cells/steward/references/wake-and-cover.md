@@ -2,7 +2,7 @@
 
 **Purpose:** operate the marker and watermark on #683, the `steward-wake` mod, the handover and the hourly cover that #890 built. **Audience:** the Steward, a Steward resumed from a handover, and a replacement installing or undoing any of it. **Success:** every Steward post is marked, handled intake moves the watermark, each wake turn is answered for what woke it, a handover loses nothing the Steward owed, and a stopped cover is reported to the owner.
 
-Everything runs through `tools/steward_watch.py` in the Steward's checkout. Each command prints one line of ASCII JSON. The mod and the cover call the same script, so they never disagree about what counts as intake or a due read.
+Everything runs through `tools/steward_watch.py` in the Steward's checkout. Each command prints one line of ASCII JSON. The mod and the cover call the same script, so they never disagree about what counts as intake or a due read. That holds because the mod's code, the script it runs and the cover all come from that one checkout, as Install below sets it up.
 
 ## The marker and the watermark
 
@@ -78,16 +78,40 @@ A run records `cover-last-success.json` only when every read, and any dispatch, 
 
 ## Install
 
-**First ask the owner, once, to approve the install's standing changes:** a marketplace record at user level that enables no plugin, the mod enabled at local scope in your checkout, an hourly scheduled task on his machine, a new alert issue, and a watermark comment on #683. Then, with the default state directory and no probe variable set:
+**First ask the owner, once, to approve the install's standing changes:**
 
-1. Check with `git status` that nothing of your own is at risk, and bring your checkout to a commit that contains #890's change.
+- a marketplace record `tradecraft-lab` at user level that enables no plugin and points at your own checkout's `tools\steward-wake`;
+- the mod enabled at local scope **in tradecraft's main checkout**, so it loads in every tradecraft desktop session he opens and starts only in the one titled `Steward`;
+- the hooks-module opt-in in `<main checkout>/.claude/settings.local.json`;
+- an hourly scheduled task on his machine, a new alert issue, and a watermark comment on #683.
+
+Then, with the default state directory and no probe variable set:
+
+1. Check with `git status` that nothing of your own is at risk, and bring your checkout to a commit that contains #890's and #915's changes.
 2. Handle any pending #683 intake.
 3. Open the alert issue in tradecraft. Its body opens with the line `<!-- lab:steward-alerts:v1 -->`, followed by plain English saying it carries the cover's alerts.
 4. `python tools/steward_watch.py seed --handled <newest #683 comment id> --read <current read> --cutoff <its cutoff> --alerts <alert issue>`.
 5. `python tools/steward_watch.py cover-task --register`. It records its registration time, and the cover is registered before the mod loads, so the mod's first wake does not report a cover that has never had its chance to run.
-6. From your checkout: `claude plugin marketplace add <checkout>\tools\steward-wake`, then `claude plugin install steward-wake@tradecraft-lab --scope local`, then `/reload-plugins`.
+6. Enable the mod in the main checkout, taking it from your checkout's folder:
+   1. Check that `<main checkout>/.claude/settings.local.json` is untracked and ignored there: `git -C <main checkout> ls-files --error-unmatch -- .claude/settings.local.json` must fail, and `git -C <main checkout> check-ignore -q -- .claude/settings.local.json` must succeed. If either answers otherwise, stop: the opt-in would go into tradecraft's history.
+   2. Note whether that file's `env` already holds `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`. Step 8 records the answer, and Undo reads it.
+   3. `claude plugin marketplace add <your checkout>\tools\steward-wake`.
+   4. With **tradecraft's main checkout** as the working directory, not your own: `claude plugin install steward-wake@tradecraft-lab --scope local`.
+   5. Merge `env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1"`, the string `"1"`, into `<main checkout>/.claude/settings.local.json`, keeping every other key.
+   6. Ask the owner to restart your session, because a session cannot restart itself.
+   7. Check the wake is back: after the restart its status line shows `steward-wake on · <root>`, and `origins.log` gains a line on your next prompt. `<root>` must be your own checkout, the one the cover runs from: compare it with the script path in the Task To Run line of `schtasks /Query /TN tradecraft-lab-steward-cover /V /FO LIST`. A line `steward-wake off: title unreadable (<reason>)` means the title read was refused or failed (`ask` means Claude Code's own check would have prompted for `get_session`), so the wake stays off until that is fixed and a later turn reads `Steward`.
+
+   **Why the main checkout.** The desktop app starts every session, worktree sessions included, with `--project-config-root` set to the repository's main checkout, and under that flag the CLI reads local-scope plugins and the local `env` block from there, not from the session's own folder. In #915's probe with the desktop app's own CLI, an install made in a worktree did not load under that flag, and one made in the main checkout did. That is why the first install, made in the Steward's worktree, never loaded.
+
+   **Why the code still comes from your checkout.** Under that flag the session's root stays its own folder, so the mod runs your checkout's `tools/steward_watch.py`, and the cover is registered from there too. The mod's own code is read from its marketplace folder at each load, not from the install's cached copy, and the marketplace points at your checkout. So the module, the script and the cover all come from one checkout, and the mod and the cover call one script.
+
+   **Why it starts only for you.** Enabled in the main checkout, the mod loads in every tradecraft desktop session. It starts only in a session whose live title is `Steward`, read through `get_session` the way the holder pane reads it; in any other session it does nothing beyond that read and shows nothing. The one exception is a failed read: in any session, it puts the reason on the wake's own status line, which is one per plugin, so it never touches another mod's line.
+
+   **Why the opt-in.** CLI 2.1.280, still the `claude` on PATH, loads a hooks module only with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` set. The desktop app's current CLI loads the mod without it, so a missing opt-in was not why the wake was off. The holder pane's installer writes the same key, with the same value, to the same file, so the two installs agree.
 7. Prove the dispatch route: `gh workflow run steward-alert.yml --repo Grimblaz-and-Friends/tradecraft --ref main -f issue=<alert issue> -f items=probe:1`, and check the bot comment mentions the owner. Then, with one item actually waiting, run `cover` twice in a row and check the alert issue gains exactly one bot comment for that key.
-8. Record the install on #890 and #683, with the before-and-after diff of `~/.claude/settings.json`, `~/.claude/plugins/known_marketplaces.json` and `~/.claude/plugins/installed_plugins.json`.
+8. Record the install on #890 and #683, with the before-and-after diff of `~/.claude/settings.json`, `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json` and `<main checkout>/.claude/settings.local.json`, and whether that file's `env` held `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` before step 6.
+
+**While the wake is installed, your session and your checkout stay.** Do not archive the session or remove its worktree: the mod, the script it runs and the cover all live in that checkout, so the wake, the handover and the cover would stop together, and nothing would alert, since the cover is what alerts. A move to another session or checkout follows Moving below, not Undo then Install.
 
 **Watch after install, and record on #890:**
 
@@ -96,9 +120,38 @@ A run records `cover-last-success.json` only when every read, and any dispatch, 
 
 ## Undo
 
-1. `claude plugin uninstall steward-wake@tradecraft-lab --scope local`, then `/reload-plugins`.
+1. With tradecraft's main checkout as the working directory: `claude plugin uninstall steward-wake@tradecraft-lab --scope local`. This removes the `enabledPlugins` entry Install added to `<main checkout>/.claude/settings.local.json`.
 2. `claude plugin marketplace remove tradecraft-lab`
-3. `python tools/steward_watch.py cover-task --unregister`, which also removes the cover's registration record.
-4. Close the alert issue.
-5. The state directory `~/.tradecraft-lab/steward` stays where it is. Read its `handover.md` first and carry anything still owed to #683; deleting the directory afterwards is the owner's call, because it is a delete. The install sets no `STEWARD_LAB_STATE_DIR`, so there is nothing to unset; if one was set by hand for a probe, unset it.
-6. Deleting the watermark comment is the owner's call, because it is a delete.
+3. Remove `env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` from `<main checkout>/.claude/settings.local.json` only if Install's step 8 record says the key was not there before, and no `holder-pane@…` entry in that file's `enabledPlugins` is still enabled, because the pane's installer writes the same key. Drop `env` if that leaves it empty. Otherwise leave the key where it is.
+4. Ask the owner to restart the Steward's session.
+5. `python tools/steward_watch.py cover-task --unregister`, which also removes the cover's registration record.
+6. Close the alert issue.
+7. The state directory `~/.tradecraft-lab/steward` stays where it is. Read its `handover.md` first and carry anything still owed to #683; deleting the directory afterwards is the owner's call, because it is a delete. The install sets no `STEWARD_LAB_STATE_DIR`, so there is nothing to unset; if one was set by hand for a probe, unset it.
+8. Deleting the watermark comment is the owner's call, because it is a delete.
+
+## Moving
+
+Undo removes the wake altogether. A move moves only what lives in your checkout: the mod's marketplace and the hourly cover. A session's root is its own folder and never changes, so a move to another checkout is always a move to another session, started in that checkout and titled `Steward`. The main checkout's enablement ends where it began, because step 5 uninstalls and reinstalls it at the same scope. The opt-in, the alert issue, the watermark and the state directory are not touched, because none of them lives in a checkout. Running Undo then Install instead would close the alert issue while the watermark still names it, and Install's `seed` is refused while a watermark exists.
+
+**In the old session, first:**
+
+1. Handle any pending #683 intake and any due read, as Install's step 2 does, or record what is left of them in the state file. Wake keys already recorded in the state directory do not wake the new session again.
+2. Write the handover state file, `handover.md` in the state directory, with the four headings the handover's step 1 names, and stop taking work. Intake that arrives after this is left for the new session, and step 8's check is what catches it.
+
+**Then in the new session, started in the new checkout and titled `Steward`:**
+
+3. Read the state file with the records `SKILL.md`'s handoff rule names, as a replacement Steward does. Bring the new checkout to a commit that contains #890's and #915's changes, and check with `git status` that nothing of your own is at risk there.
+4. Move the cover: from the old checkout, `python tools/steward_watch.py cover-task --unregister`; then from the new checkout, `python tools/steward_watch.py cover-task --register`. The cover is registered before the mod reloads, as in Install.
+5. Repoint the mod at the new checkout, without relying on `marketplace add` repointing a name already registered:
+   1. With tradecraft's main checkout as the working directory: `claude plugin uninstall steward-wake@tradecraft-lab --scope local`.
+   2. `claude plugin marketplace remove tradecraft-lab`.
+   3. `claude plugin marketplace add <new checkout>\tools\steward-wake`.
+   4. With tradecraft's main checkout as the working directory: `claude plugin install steward-wake@tradecraft-lab --scope local`.
+6. Ask the owner to restart the new session, then run Install's check in step 6: the status line shows `steward-wake on · <root>`, `<root>` is the new checkout and matches the cover's Task To Run path, and `origins.log` gains a line on your next prompt.
+7. Only after that check passes, ask the owner to archive the old session, or rename it away from `Steward` and restart it, so that only one session wakes: a wake already on reads its title again only when its process restarts. The old checkout may be removed after that, not before.
+8. Run `python tools/steward_watch.py status`, and handle any intake above the watermark and any due read it shows. The old session's wake kept ticking until step 7 and may have recorded their keys in the shared state directory, so the new session's wake would not wake for them.
+9. Record the move on #890 and #683, with the before-and-after diff of `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json` and `<main checkout>/.claude/settings.local.json`.
+
+## Updating
+
+After each tradecraft merge, fast-forward your own checkout, as you do the main checkout: the mod, the script it runs and the cover all run from it. A change to the mod's own code also needs the owner to restart your session. No version bump is needed, because the CLI reads the mod from its marketplace folder at each load.

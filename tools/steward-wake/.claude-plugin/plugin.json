@@ -1,7 +1,7 @@
 {
   "name": "steward-wake",
   "version": "0.1.0",
-  "description": "tradecraft lab only: wakes the Steward on due reads and intake, and hands it over before its conversation grows costly (#890). Install at local scope in the Steward's checkout only.",
+  "description": "tradecraft lab only: wakes the Steward on due reads and intake, and hands it over before its conversation grows costly (#890). Enabled at local scope in tradecraft's main checkout from the Steward's own checkout; starts only in the session titled Steward (#915).",
   "author": {
     "name": "Grimblaz-and-Friends"
   }

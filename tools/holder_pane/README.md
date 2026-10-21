@@ -9,7 +9,7 @@ This is a Claude Code mod that lives in tradecraft's repo-only `tools/` and is i
 | Path | What it is |
 |---|---|
 | `install.py` | Install, uninstall, and the existing-worktree copy. |
-| `marketplace/.claude-plugin/marketplace.json` | The folder marketplace `tradecraft-lab`, listing `holder-pane`. |
+| `marketplace/.claude-plugin/marketplace.json` | The folder marketplace `tradecraft-holder-pane`, listing `holder-pane`. |
 | `marketplace/holder-pane/hooks/register.ts` | The hooks module: a shim that watches the holder's own shell calls, draws, renames and reminds. |
 | `marketplace/holder-pane/core/holder_pane.py` | All the logic, stdlib-only Python, one JSON object in and one out per subcommand. |
 | `marketplace/holder-pane/hooks/register.test.ts` | The shim's behaviours under `claude plugin test`. |
@@ -17,7 +17,7 @@ This is a Claude Code mod that lives in tradecraft's repo-only `tools/` and is i
 
 ## Install
 
-Run from tradecraft's **main checkout**, once per lab repository's main checkout. The desktop app copies that checkout's `.claude/settings.local.json` into each new session worktree, so every holder session started afterwards gets the pane.
+Run from tradecraft's **main checkout**, once per lab repository's main checkout. The desktop app starts every session, worktree sessions included, with `--project-config-root` set to the repository's main checkout, and the CLI reads local-scope plugins and the local `env` block from there. So one install reaches every desktop session in that repository once it starts or restarts. The app also copies the main checkout's `.claude/settings.local.json` into each new session worktree, but that copy is not what loads the mod: in #915's probe with the desktop app's own CLI, an install made only in a worktree did not load under that flag, and one made in the main checkout did.
 
 ```text
 python tools/holder_pane/install.py install --checkout D:/Code/tradecraft
@@ -29,7 +29,7 @@ python tools/holder_pane/install.py install --checkout D:/Code/change-proof
 What it does, with the checkout as the working directory:
 
 1. `claude plugin marketplace add <tradecraft main checkout>/tools/holder_pane/marketplace --scope local`
-2. `claude plugin install holder-pane@tradecraft-lab --scope local`
+2. `claude plugin install holder-pane@tradecraft-holder-pane --scope local`
 3. Merges `env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1"` into that checkout's `.claude/settings.local.json`, keeping every other key.
 
 - The executable defaults to the newest desktop-app Claude Code under `%APPDATA%\Claude\claude-code\<version>\<hash>\claude.exe`, the runtime holders run in. `--claude <exe>` overrides it.
@@ -40,7 +40,9 @@ What it does, with the checkout as the working directory:
 
 ## A holder worktree created before the install
 
-A session worktree created before the install doesn't have the local file. Copy the main checkout's keys into it once, then restart that session:
+In the desktop app, restart that session: it reads the main checkout's install, so no copy is needed.
+
+A session started outside the desktop app, without `--project-config-root`, reads its own worktree's local file instead. For such a session only, copy the main checkout's keys into that worktree once, then restart it:
 
 ```text
 python tools/holder_pane/install.py install --worktree <the existing holder worktree>
@@ -52,7 +54,7 @@ python tools/holder_pane/install.py install --worktree <the existing holder work
 python tools/holder_pane/install.py uninstall --checkout <main checkout>
 ```
 
-It runs `claude plugin uninstall holder-pane@tradecraft-lab --scope local`, then `claude plugin marketplace remove tradecraft-lab --scope local`, then removes the opt-in key (and `env` if that leaves it empty) only if this installer added it; an opt-in that was already there stays. Whether it added the key is recorded in `~/.tradecraft/status/.pane/installs.json`. Session worktrees keep their copied file until they're removed.
+It runs `claude plugin uninstall holder-pane@tradecraft-holder-pane --scope local`, then `claude plugin marketplace remove tradecraft-holder-pane --scope local`, then removes the opt-in key (and `env` if that leaves it empty) only if this installer added it; an opt-in that was already there stays. Whether it added the key is recorded in `~/.tradecraft/status/.pane/installs.json`. Session worktrees keep their copied file until they're removed.
 
 ## Updating
 
