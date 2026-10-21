@@ -32,7 +32,10 @@ import uuid
 
 import dispatch_record as records
 import artifact_tree
-from dispatch_lifecycle import claude_terminal
+from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TOOLS,
+                                claude_launch_controls, claude_launch_env, claude_launch_notice,
+                                claude_stream_check, claude_terminal, stream_check_reason,
+                                stream_check_record)
 import launch_settings
 import run_lifecycle as lifecycle
 from codex_pytest import implementer_pytest_overrides
@@ -159,6 +162,9 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
             # With the child's ADDITIONAL_CLAUDE_MD, the runtime loads this
             # tree's own root instructions and imports; nothing above it.
             "--add-dir", str(Path(args.root).expanduser().resolve()),
+            # One =-joined argument: the flag is variadic and would otherwise
+            # swallow whatever argument follows it.
+            CLAUDE_DISALLOWED_ARGUMENT,
         ]
         if getattr(args, "instruction_shim", None):
             command.extend(("--add-dir", str(args.instruction_shim)))
@@ -173,8 +179,9 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
                                 artifact=getattr(args, "stage", None) == "artifact")
 
 
-def _claude_result(raw: bytes) -> tuple[bool, bytes, str | None, str]:
-    value = claude_terminal(raw)
+def _claude_result(raw: bytes, check: dict | None = None) -> tuple[bool, bytes, str | None, str]:
+    check = claude_stream_check(raw) if check is None else check
+    value = check["return"] or claude_terminal(raw)
     if value is None:
         return False, b"", None, "claude returned invalid JSON"
     if not isinstance(value, dict) or value.get("type") != "result":
@@ -182,6 +189,8 @@ def _claude_result(raw: bytes) -> tuple[bool, bytes, str | None, str]:
     session = value.get("session_id")
     if not isinstance(session, str) or not re.fullmatch(r"[0-9a-f-]{36}", session, re.I):
         session = None
+    if check["status"] == "work_outlived_return":
+        return False, b"", session, stream_check_reason(check)
     if value.get("permission_denials"):
         return False, b"", session, "Claude reported a tool permission denial; see its stdout log"
     if value.get("is_error") is not False or value.get("subtype") != "success":
@@ -603,6 +612,14 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 allocation = min(allocation, supplied)
             request["recipient_allocation_seconds"] = allocation
             request["budget_override_reason"] = budget_reason
+            if args.vendor == "claude" and command is not None and not preparation_error:
+                # The notice is part of the effective input; its digest covers it.
+                notice = claude_launch_notice(allocation)
+                effective_prompt = effective_prompt + b"\n\n" + notice
+                composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
+                child_env = claude_launch_env(child_env, allocation)
+                request["launch_controls"] = claude_launch_controls(
+                    allocation, notice, disallowed=CLAUDE_DISALLOWED_TOOLS)
             if args.stage != "artifact":
                 request.setdefault("budget_lineage", hashlib.sha256(
                     (args.work + str(root) + str(args.lineage_branch)).encode("utf-8")).hexdigest())
@@ -818,10 +835,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     reason = lifecycle.ceiling_reason(args.vendor, caller_limit=args.timeout_seconds,
                                                        allocation=allocation, elapsed=elapsed)
                 attempt["exit_code"] = result.returncode
+                outlived = False
                 if args.vendor == "claude":
-                    complete, message, session_id, failure_reason = _claude_result(result.stdout)
+                    check = claude_stream_check(result.stdout)
+                    if attempt["launched"]:
+                        attempt["stream_check"] = stream_check_record(check)
+                    outlived = check["status"] == "work_outlived_return"
+                    complete, message, session_id, failure_reason = _claude_result(result.stdout, check)
                     session_source = "claude JSON result.session_id" if session_id else ""
-                    if result.returncode != 0:
+                    if outlived:
+                        pass
+                    elif result.returncode != 0:
                         complete = False
                         failure_reason = f"claude exited {result.returncode}: {failure_reason}"
                 else:
@@ -888,6 +912,10 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         reason="turn completed without a final message",
                     )
                     record["outcome"] = "completed_no_output"
+                elif outlived and not ceiling and not reason:
+                    # Never success, but still this session's resume source.
+                    attempt.update(outcome="work_outlived_return", reason=failure_reason)
+                    record["outcome"] = "work_outlived_return"
                 else:
                     attempt.update(
                         outcome="interrupted" if ceiling else "error",
@@ -928,7 +956,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     staffing_status=(
                         "qualified" if record["outcome"] in {
                             "success", "success_uncontinuable", "completed_no_output",
-                            "invalid_artifact_return",
+                            "invalid_artifact_return", "work_outlived_return",
                         }
                         else "unfilled"
                     ),
@@ -961,7 +989,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         "completed" if (
                             return_code == 0 and published
                             or (attempt["observed"].get("session_id") == (args.session_id or args.resume)
-                                and record["outcome"] in {"invalid_artifact_return", "completed_no_output"})
+                                and record["outcome"] in {"invalid_artifact_return", "completed_no_output",
+                                                         "work_outlived_return"})
                         ) else "unresolved",
                     )
             if publication_error is not None:
@@ -973,6 +1002,14 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     f"implementer: failed artifact return: {validation['reason']}; "
                     f"bundle {record_path}; author session {session_note}; "
                     "holder: repeat run artifact to resume the recorded author",
+                    file=sys.stderr,
+                )
+            elif record["outcome"] == "work_outlived_return":
+                session_note = attempt["observed"].get("session_id") or "unavailable"
+                print(
+                    f"implementer: refused turn: {attempt['reason']}; bundle {record_path}; "
+                    f"session {session_note}; nothing was published, and the next run of this "
+                    "stage resumes this session",
                     file=sys.stderr,
                 )
             elif source_ready:

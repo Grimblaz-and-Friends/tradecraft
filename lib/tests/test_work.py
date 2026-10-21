@@ -1794,6 +1794,24 @@ class TestGoverningTerms:
         assert decision.reason == "stopped-run-resume" and comment["html_url"] in decision.detail
         assert "Run build" not in decision.detail
 
+    @pytest.mark.parametrize("stage", ["build", "review-disposition"])
+    def test_887_refused_turn_resumes_its_session_like_a_stopped_run(self, builder, stage):
+        """A turn whose stream showed work outliving the return is recovered, not held unproved."""
+        comment = self.amendment(builder)
+        _request, run = self.turn(builder, stage=stage, composed="2026-10-05T13:00:00Z",
+                                  launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run["outcome"] = "work_outlived_return"
+        self.save(builder)
+        work.validate_marker_claims(builder)
+        comparison = work._governing_terms_decision(builder)
+        assert comparison.stage == stage and comparison.reason == "stopped-run-resume"
+        assert comparison.dispatch and comparison.continuity == "resume"
+        assert comment["html_url"] in comparison.detail
+        decision = work.decide(builder, RULES)
+        assert decision.stage == stage and decision.reason == "stopped-run-resume" and decision.dispatch
+        assert work._resume_source("example/product#12", "build", builder.record_root,
+                                   state=builder).session == SESSION
+
     def test_second_look_866_released_stopped_bundle_does_not_own_successor(self, builder, monkeypatch):
         builder.pr = None
         request, run = builder.term_turns[0][2:]
@@ -8163,6 +8181,38 @@ def test_invalid_artifact_outcome_cannot_supply_other_stage_continuity(tmp_path)
     store = tmp_path / "dispatches"
     dispatch_bundle(store, stage="build", outcome="invalid_artifact_return")
     assert work._resume_source("example/product#12", "build", store) is None
+
+
+def test_R3_5_refused_turn_is_never_success_but_resumes_its_own_session(tmp_path):
+    """#887 R3-5: work that outlived the return keeps its session, never its credit."""
+    assert "work_outlived_return" in work.RESUMABLE_BUNDLE_OUTCOMES
+    assert "work_outlived_return" not in work.SUCCESSFUL_BUNDLE_OUTCOMES
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="build", outcome="work_outlived_return")
+    assert work._matching_bundles("example/product#12", {"build"}, store) == []
+    source = work._resume_source("example/product#12", "build", store)
+    assert source is not None and source.session == SESSION
+    for stage in ("floor", "review-disposition"):
+        assert work._resume_source("example/product#12", stage, store).session == SESSION
+    fixture = state(AFFIRMED)
+    fixture.record_root = store
+    assert work._producer_vendor(fixture, work.RESUME_SOURCE_STAGES["build"])[0] == "codex"
+
+
+def test_R3_5_refused_author_flags_a_later_draft_and_resumes(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome="work_outlived_return")
+    failed_path = store / "artifact" / "result.md.run.json"
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.record_root = store
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert not any(marker.name == "artifact" for marker in lawful)
+    claim = next(claim for claim in invalid if claim["name"] == "artifact")
+    assert claim["reason"] == f"latest artifact dispatch has a failed return: {failed_path}"
+    assert work.resume_session(fixture, "artifact", store) == SESSION
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
