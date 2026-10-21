@@ -221,7 +221,8 @@ def test_C4_named_passing_controls_reach_real_effects(stage, version, files, dec
     ("runtime/gone.py", "removed", None, ["runtime/gone.py"]),
     ("notes/moved.py", "renamed", "runtime/old.py", ["runtime/old.py"]),
     ("runtime/new.py", "renamed", "notes/old.py", ["runtime/new.py"]),
-    ("package.json", "modified", None, ["package.json"]),
+    # A change confined to the declared field owes nothing by itself (#910 row 2).
+    ("package.json", "modified", None, []),
     ("runtime/tests/unit.py", "added", None, []),
     ("runtime/tests/delivery.py", "added", None, ["runtime/tests/delivery.py"]),
     ("Runtime/code.py", "modified", None, []),
@@ -266,6 +267,11 @@ def test_C2_C7_every_composed_stage_gets_conditional_target_and_correct_subject(
         assert value in prompt
     assert ("actual PR base tip example/product:release/2" if pr else "default-branch tip before a PR exists example/product:main") in prompt
     assert ("runtime/code.py" in instruction.split("Current matching paths:")[1]) is match
+    # C11: the no-owing branch and the field-only rule reach every composed prompt.
+    for value in ("If the final PR diff owes no version, keep the field at the base's value 2.9.9",
+                  "a change confined to the field owes nothing by itself",
+                  "returned before readiness and proof"):
+        assert value in prompt
     assert work.build_reach.PRESERVATION in prompt
     if lane == "mechanical":
         assert "map each affirmed brief row" in prompt and "artifact acceptance criterion" not in prompt
@@ -525,10 +531,11 @@ def test_C2_prescribed_merge_version_governs_coexisting_instruction(stage, presc
     assert prompt.startswith("Merge obligation:") and "target 2.11.0" in instruction
     if prescribed:
         assert 'to "2.11.0" in this merge' in prompt
-        assert "merge obligation's prescribed version value 2.11.0 governs this turn" in instruction
-        assert "do not downgrade" not in instruction and "retain a valid value" not in instruction
-    else:
-        assert "retain a valid value already at least that target and do not downgrade it" in instruction
+        assert ("merge obligation's prescribed version value 2.11.0 governs the merge commit; "
+                "the final-diff rules here govern what you return") in instruction
+    # Both final-diff branches stay in force whether or not a merge value is prescribed.
+    assert "retain a valid value already at least that target and do not downgrade it" in instruction
+    assert "If the final PR diff owes no version, keep the field at the base's value 2.10.0" in instruction
 
 
 @pytest.mark.parametrize("step", ["rerun", "floor-identity", "work-policy"])
@@ -793,3 +800,198 @@ def test_C5_committed_policy_moves_while_selected_policy_is_unchanged(tmp_path, 
     assert report["proof_version_obligation"]["status"] == "unverifiable"
     assert "HEAD changed" in report["proof_version_obligation"]["message"]
     assert not transport.effects
+
+
+LAB_FIELD = [{"filename": "README.md", "status": "modified"},
+             {"filename": "package.json", "status": "modified"}]
+
+
+@pytest.mark.parametrize("member,owed", [(False, False), (True, True)])
+def test_C6_field_only_change_owes_nothing_and_another_member_still_owes(member, owed):
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD))
+    transport.version = json.dumps({"release": "2.10.0", **({"name": "renamed"} if member else {})}).encode()
+    report = assess(state, transport)
+    assert report["owed"] is owed
+    assert report["declared_field_only"] is (not owed)
+    assert report["paths"] == (["package.json"] if owed else [])
+    assert report["declared_changed"] is True
+    # The field-only judgement reads the merge base GitHub's file list is taken against.
+    assert any(call[1] == f"repos/{REPO}/compare/{BASE}...{HEAD}" for call in transport.calls)
+    assert any(call[1] == f"repos/{REPO}/contents/package.json?ref={'b' * 40}" for call in transport.calls)
+
+
+def test_C6_renamed_or_added_declared_file_is_never_field_only():
+    for record in ({"filename": "package.json", "status": "added"},
+                   {"filename": "package.json", "status": "renamed", "previous_filename": "old.json"}):
+        state, transport = fixture_state(files=[record])
+        report = assess(state, transport)
+        assert report["owed"] is True and report["declared_field_only"] is False
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+def test_C9_unowed_moved_version_is_refused_before_effects(stage, tmp_path, capsys, monkeypatch):
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0")
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    monkeypatch.setattr(work, "compose_proof", lambda *a: pytest.fail("unowed version composed proof"))
+    assert named(stage, state, transport, root) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "version-obligation-blocked"
+    version = report["version_obligation"]
+    assert (version["status"], version["owed"], version["unowed"], version["met"]) == ("blocked", False, True, False)
+    assert version["target"] == "2.9.9" and version["merge_base"]["value"] == "2.9.9"
+    assert "no version is owed" in report["detail"] and "restore 2.9.9" in report["detail"]
+    assert "owed version is below target" not in report["detail"]
+    assert "Return this repair to the builder with run build" in report["detail"]
+    assert not transport.effects
+
+
+def test_C9_read_only_routing_returns_unowed_moved_version_to_builder(tmp_path, capsys):
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0")
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    args = work.parser().parse_args(["--repo", REPO, "--issue", "12", "--root", str(root)])
+    assert work.run(args, transport=transport) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (report["stage"], report["reason"]) == ("build", "version-obligation-blocked")
+    assert report["dispatch"] is True and report["continuity"] == "resume"
+    assert not transport.effects
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("held,base,merge_base,message", [
+    ('{"release":"2.9.9"}', "2.9.9", None, "holds the base's value"),
+    # An older merge-base value the change never moved merges to the base's value.
+    ('{"release": "2.9.9"}\n', "2.10.0", "2.9.9", "unchanged from the merge base"),
+])
+def test_C9_lab_only_change_holding_the_base_or_merge_base_value_passes(
+        stage, held, base, merge_base, message, tmp_path, capsys):
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), base_version=base,
+                                     merge_base_version=merge_base)
+    transport.version = held.encode()
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    assert named(stage, state, transport, root) == 0
+    report = json.loads(capsys.readouterr().out)
+    version = report["version_obligation"]
+    assert (version["status"], version["owed"], version["unowed"]) == ("not-required", False, False)
+    assert message in version["message"]
+    assert transport.effects
+    if stage == "ready-reviewers":
+        assert report["ready"] is True
+    else:
+        assert report["comment"]["action"] == "created"
+
+
+def test_C10_change_that_lost_its_last_shipped_path_after_a_bump_is_refused():
+    # The head holds the base incremented, but the field is its only use-matched change now.
+    state, transport = fixture_state(files=[{"filename": "package.json", "status": "modified"},
+                                            {"filename": "notes/notes.md", "status": "modified"}],
+                                     version="2.10.0")
+    report = assess(state, transport)
+    assert (report["status"], report["owed"], report["unowed"]) == ("blocked", False, True)
+    assert report["paths"] == [] and report["declared_field_only"] is True
+    assert report["message"] == ("package.json field release: no version is owed; head 2.10.0 "
+                                 "moves the base's value 2.9.9; restore 2.9.9.")
+    state.version_obligation = report
+    refusal = work._version_obligation_refusal(state, "proof")
+    assert refusal.reason == "version-obligation-blocked"
+    assert refusal.detail.count("package.json") == 1
+
+
+UNREAD_ENDPOINTS = {
+    "compare": f"repos/{REPO}/compare/{BASE}...{HEAD}",
+    "merge-base-blob": f"repos/{REPO}/contents/package.json?ref={'b' * 40}",
+    "head-blob": f"repos/{REPO}/contents/package.json?ref={HEAD}",
+}
+
+
+@pytest.mark.parametrize("failure", sorted(UNREAD_ENDPOINTS))
+def test_C6_unread_field_only_evidence_is_unverifiable_never_owed(failure):
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0")
+    transport.overrides[UNREAD_ENDPOINTS[failure]] = work.WorkError("connection timed out")
+    report = assess(state, transport)
+    assert (report["status"], report["owed"], report["remedy"]) == ("unverifiable", None, "recollect")
+    assert "field-only version evidence for package.json field release" in report["message"]
+    assert "connection timed out" in report["message"]
+
+
+def test_C6_read_but_invalid_declared_content_still_counts():
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD))
+    transport.version = b'{"release": "2.10.0",'
+    report = assess(state, transport)
+    assert report["owed"] is True and report["paths"] == ["package.json"]
+    assert report["declared_field_only"] is False
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+def test_C9_unread_field_only_evidence_refuses_readiness_and_proof(stage, tmp_path, capsys, monkeypatch):
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0")
+    transport.overrides[UNREAD_ENDPOINTS["merge-base-blob"]] = work.WorkError("connection timed out")
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    monkeypatch.setattr(work, "compose_proof", lambda *a: pytest.fail("unread evidence composed proof"))
+    assert named(stage, state, transport, root) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "version-obligation-unverifiable"
+    assert report["version_obligation"]["owed"] is None
+    assert "Recollect version evidence" in report["detail"]
+    assert "owed version is met" not in json.dumps(report)
+    assert not transport.effects
+
+
+def test_C11_prescribed_not_owed_instruction_still_names_the_target_and_when_to_set_it():
+    # The merge was derived as owing nothing, so it prescribes the base's value; a shipped
+    # path added later in the turn must still be told to set the target.
+    state, transport = fixture_state(version="2.10.0", base_version="2.10.0")
+    adjustment = {**SPEC, "value": "2.10.0", "owed": False,
+                  "reason": "not owed: field set back to the base's 2.10.0 (the change carried 2.9.9)"}
+    obligation = work.MergeObligation(HEAD, REPO, "main", BASE, (), adjustment)
+    instruction = work._compose_version_instruction(state, transport, RULES, "fixture", obligation)
+    assert ("prescribed version value 2.10.0 governs the merge commit (not owed: field set back to "
+            "the base's 2.10.0 (the change carried 2.9.9))") in instruction
+    assert "target 2.11.0" in instruction
+    assert ("If the final PR diff touches a path matched by these use-rule groups, including removals "
+            "and both names of a rename, set that field to the target; retain a valid value already "
+            "at least that target and do not downgrade it.") in instruction
+    assert "If the final PR diff owes no version, keep the field at the base's value 2.10.0" in instruction
+
+
+ROW3_RULES = {**RULES, "rules": [{"include": ["runtime/**"], "exclude": []}]}
+
+
+def test_C9_head_holding_the_base_tip_value_passes_without_reading_the_merge_base():
+    # The declared file matches no rule here, so only row 3 reads it.
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.9.9")
+    transport.merge_base_version = b"not a version document"
+    report = assess(state, transport, ROW3_RULES)
+    assert (report["status"], report["owed"], report["unowed"]) == ("not-required", False, False)
+    assert "holds the base's value" in report["message"]
+    assert "merge_base" not in report
+    assert not any(call[1] == f"repos/{REPO}/contents/package.json?ref={'b' * 40}" for call in transport.calls)
+    assert not any("/compare/" in call[1] for call in transport.calls)
+
+
+def test_C9_moved_head_over_an_unreadable_merge_base_value_is_refused_as_moved():
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0")
+    transport.merge_base_version = b"not a version document"
+    report = assess(state, transport, ROW3_RULES)
+    assert (report["status"], report["owed"], report["unowed"]) == ("blocked", False, True)
+    assert report["merge_base"] == {"sha": "b" * 40, "value": None}
+    assert "merge base's value cannot be read to show it was kept; restore 2.9.9." in report["message"]
+    assert work._version_needs_builder(report)
+    state.version_obligation = report
+    refusal = work._version_obligation_refusal(state, "ready-reviewers")
+    assert refusal.reason == "version-obligation-blocked"
+    assert "Return this repair to the builder with run build" in refusal.detail
+
+
+def test_C11_field_only_declared_edit_composes_no_matching_paths_and_keeps_the_base_value():
+    # The Steward's case: only a field-only edit of the declared file plus an unmatched path.
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0", lane="connected")
+    work.validate_marker_claims(state)
+    instruction = work._compose_version_instruction(state, transport, RULES, "synthetic policy")
+    prompt = work._stage_prompt(state, work.Decision("build", True, "resume", "fixture"),
+                                floor_command="python check.py", version_instruction=instruction).decode()
+    assert "Current matching paths: []." in prompt
+    assert "keep the field at the base's value 2.9.9" in prompt

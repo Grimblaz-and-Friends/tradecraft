@@ -1,6 +1,7 @@
 """Real Git graph and publication checks for overlap and holder catch-up."""
 import base64
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -109,11 +110,14 @@ class PublicGit:
             behind = git(self.root, "rev-list", "--count", f"{right}..{left}")
             status = "identical" if left == right else "ahead" if common == left else "behind" if common == right else "diverged"
             files = []
-            for line in git(self.root, "diff", "--name-status", "-M", common, right).splitlines():
-                fields = line.split("\t")
-                item = {"filename": fields[-1], "status": "renamed" if fields[0].startswith("R") else {"A": "added", "D": "removed"}.get(fields[0], "modified")}
-                if fields[0].startswith("R"):
-                    item["previous_filename"] = fields[1]
+            for line in git(self.root, "diff", "--raw", "-M", common, right).splitlines():
+                identity, *fields = line.split("\t")
+                old_mode, new_mode, _old, _new, letter = identity.lstrip(":").split()
+                item = {"filename": fields[-1], "status": "renamed" if letter.startswith("R") else {"A": "added", "D": "removed"}.get(letter, "modified")}
+                if item["status"] == "modified" and old_mode != new_mode:
+                    item["status"] = "changed"  # GitHub's status for a mode change
+                if letter.startswith("R"):
+                    item["previous_filename"] = fields[0]
                 files.append(item)
             return {"status": status, "ahead_by": len(revisions), "behind_by": int(behind),
                     "merge_base_commit": {"sha": common}, "commits": [{"sha": sha} for sha in revisions],
@@ -875,3 +879,208 @@ def test_shared_public_fixtures_have_the_same_entrance_interpretation():
                                         case["head"], case["base"], case["policy"], work.use_required, case["changed_paths"])
         assert result["applicable"] is case["applicable"], case["name"]
         assert result["merge_commits"] == case["merge_commits"], case["name"]
+
+
+# One owing count for the report, catch-up and the merge obligation (#910).
+# Under LAB_RULES the fixture's own change to src/own ships nothing.
+LAB_RULES = {"schema_version": 1, "rules": [{"include": ["lib/**", "version.json"], "exclude": []}],
+             "version": SPEC}
+
+
+def version_document(value, name="fixture"):
+    return json.dumps({"version": value, "name": name}, separators=(",", ":")) + "\n"
+
+
+def merge_base_at(registered, value="1.2.0"):
+    """Give the parents a merge base whose declared field holds value."""
+    root, implementation, branch, remote, transport, state = registered
+    commit(root, "version.json", version_document(value))
+    git(implementation, "merge", "--no-ff", "-m", "fixture merge base", "main")
+    git(implementation, "push")
+    git(root, "push", "origin", "main")
+
+
+def collect_landed_inventory(transport, monkeypatch):
+    """The next report reads the pushed PR's three-dot file list, as GitHub serves it."""
+    original_read = work.read_state
+    def collected(*args):
+        fresh = original_read(*args)
+        fresh.files = transport.get(
+            f"repos/example/product/compare/{fresh.pr['base']['sha']}...{fresh.pr['head']['sha']}")["files"]
+        fresh.pr["changed_files"] = len(fresh.files)
+        fresh.changed_paths = [item["filename"] for item in fresh.files]
+        return fresh
+    monkeypatch.setattr(work, "read_state", collected)
+
+
+DECISION_FIELDS = {"owed", "paths", "declared_field_only", "field_conflicted", "base_value",
+                   "pr_value", "value", "reason", "policy_sha256"}
+
+
+@pytest.mark.parametrize("carried", [None, "1.3.0"])
+def test_C1_C4_lab_only_catch_up_keeps_the_base_value(registered, carried, monkeypatch, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    merge_base_at(registered)
+    if carried:
+        commit(implementation, "version.json", version_document(carried))
+        git(implementation, "push")
+    pinned = commit(root, "version.json", version_document("1.4.0"))
+    git(root, "push", "origin", "main")
+    collect_landed_inventory(transport, monkeypatch)
+    assert work._execute_catch_up(transport, state, root, None, "holder-id", LAB_RULES) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "holder-owned" and report["pinned_base"] == pinned
+    assert json.loads((implementation / "version.json").read_bytes())["version"] == "1.4.0"
+    decision = report["version_decision"]
+    assert set(decision) == DECISION_FIELDS
+    assert decision["owed"] is False and decision["paths"] == [] and decision["base_value"] == "1.4.0"
+    if carried:
+        assert decision["field_conflicted"] is True and decision["pr_value"] == "1.3.0"
+        assert decision["reason"] == "not owed: field set back to the base's 1.4.0 (the change carried 1.3.0)"
+        assert report["version_adjustment"] == {**SPEC, "value": "1.4.0"}
+    else:
+        assert decision["field_conflicted"] is False and decision["value"] is None
+        assert decision["reason"] == "not owed: field already holds the base's 1.4.0"
+        assert report["version_adjustment"] is None
+    assert decision["reason"].startswith("not owed")
+    # The holder reads the landed answer without opening the file.
+    assert report["next"]["version_obligation"]["status"] == "not-required"
+    assert "version.json" not in git(implementation, "diff", "--name-only", pinned, "HEAD").splitlines()
+
+
+@pytest.mark.parametrize("head_value", ["1.3.0", "1.8.0", "1.2.0"])
+def test_C2_shipped_catch_up_increments_the_base_even_over_a_higher_head(registered, head_value, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    merge_base_at(registered)
+    if head_value != "1.2.0":
+        commit(implementation, "version.json", version_document(head_value))
+        git(implementation, "push")
+    commit(root, "version.json", version_document("1.4.0"))
+    git(root, "push", "origin", "main")
+    assert work._execute_catch_up(transport, state, root, None, "holder-id", RULES) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "holder-owned"
+    assert json.loads((implementation / "version.json").read_bytes())["version"] == "1.5.0"
+    decision = report["version_decision"]
+    assert decision["owed"] is True and "src/own" in decision["paths"]
+    assert decision["field_conflicted"] is (head_value != "1.2.0")
+    assert decision["reason"].startswith("owed (")
+    assert decision["reason"].endswith("base changed the declared file: base 1.4.0 incremented to 1.5.0")
+    assert report["version_adjustment"] == {**SPEC, "value": "1.5.0"}
+
+
+def test_C3_C4_version_only_bump_is_set_back(registered, monkeypatch, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    commit(implementation, "version.json", version_document("1.8.0"))
+    git(implementation, "push")
+    pinned = commit(root, "src/other", "incoming\n")
+    git(root, "push", "origin", "main")
+    collect_landed_inventory(transport, monkeypatch)
+    assert work._execute_catch_up(transport, state, root, None, "holder-id", LAB_RULES) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "holder-owned"
+    assert json.loads((implementation / "version.json").read_bytes())["version"] == "1.2.3"
+    decision = report["version_decision"]
+    assert (decision["owed"], decision["declared_field_only"], decision["field_conflicted"]) == (False, True, False)
+    assert decision["reason"] == "not owed: field set back to the base's 1.2.3 (the change carried 1.8.0)"
+    assert report["version_adjustment"] == {**SPEC, "value": "1.2.3"}
+    assert "version.json" not in git(implementation, "diff", "--name-only", pinned, "HEAD").splitlines()
+    assert report["next"]["version_obligation"]["status"] == "not-required"
+
+
+def test_C12_owing_uses_the_entrances_selected_policy(registered, tmp_path, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    # The merged result carries a policy that would make src/own ship; the entrance did not select it.
+    commit(implementation, "/".join((".github", "change-proof.json")),
+           json.dumps({**LAB_RULES, "rules": [{"include": ["src/**", "version.json"], "exclude": []}]}) + "\n")
+    git(implementation, "push")
+    commit(root, "version.json", version_document("1.4.0"))
+    git(root, "push", "origin", "main")
+    selected = (json.dumps(LAB_RULES) + "\n").encode("utf-8")
+    state.readiness_policy = (tmp_path / "selected-change-proof.json", selected)
+    assert work._execute_catch_up(transport, state, root, None, "holder-id", LAB_RULES) == 0
+    report = json.loads(capsys.readouterr().out)
+    decision = report["version_decision"]
+    assert decision["owed"] is False and decision["paths"] == []
+    assert decision["policy_sha256"] == hashlib.sha256(selected).hexdigest()
+    assert json.loads((implementation / "version.json").read_bytes())["version"] == "1.4.0"
+
+
+def test_C13_undeclared_catch_up_carries_no_version_decision(registered, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    commit(root, "version.json", version_document("1.4.0"))
+    git(root, "push", "origin", "main")
+    undeclared = {key: value for key, value in RULES.items() if key != "version"}
+    assert work._execute_catch_up(transport, state, root, None, "holder-id", undeclared) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "holder-owned"
+    assert report["version_decision"] is None and report["version_adjustment"] is None
+    assert json.loads((implementation / "version.json").read_bytes())["version"] == "1.4.0"
+
+
+C7_RULES = {"schema_version": 1, "rules": [
+    {"include": ["lib/**", "version.json"], "exclude": ["lib/tests/**"]},
+    {"include": ["lib/tests/delivery.py"], "exclude": []}], "version": SPEC}
+
+
+def _c7_change(implementation, case):
+    if case == "plain":
+        commit(implementation, "lib/a.py", "changed a\n")
+    elif case == "field-only":
+        commit(implementation, "version.json", version_document("1.3.0"))
+    elif case == "other-member":
+        commit(implementation, "version.json", version_document("1.2.3", name="renamed"))
+    elif case == "removal":
+        git(implementation, "rm", "lib/a.py")
+        git(implementation, "commit", "-m", "fixture removal")
+    elif case in {"rename-into", "rename-out", "declared-rename"}:
+        source, target = {"rename-into": ("notes/x.md", "lib/x.md"), "rename-out": ("lib/b.py", "notes/b.py"),
+                          "declared-rename": ("version.json", "release/version.json")}[case]
+        (implementation / target).parent.mkdir(parents=True, exist_ok=True)
+        git(implementation, "mv", source, target)
+        git(implementation, "commit", "-m", "fixture rename")
+    elif case in {"mode", "mode-field"}:
+        if case == "mode-field":
+            (implementation / "version.json").write_bytes(version_document("1.3.0").encode())
+            git(implementation, "add", "--", "version.json")
+        git(implementation, "update-index", "--chmod=+x", "version.json")
+        git(implementation, "commit", "-m", "fixture mode change")
+    else:
+        (implementation / "lib/tests/unit.py").write_bytes(b"changed unit\n")
+        commit(implementation, "lib/tests/delivery.py", "changed delivery\n")
+
+
+@pytest.mark.parametrize("case,expected", [
+    ("plain", ["lib/a.py"]), ("field-only", []), ("other-member", ["version.json"]),
+    ("removal", ["lib/a.py"]), ("rename-into", ["lib/x.md"]), ("rename-out", ["lib/b.py"]),
+    ("cross-rule-exclude", ["lib/tests/delivery.py"]), ("declared-rename", ["version.json"]),
+    # A mode change is never an ordinary modification, alone or beside a field-only edit.
+    ("mode", ["version.json"]), ("mode-field", ["version.json"]),
+])
+def test_C7_report_and_local_counts_agree(registered, case, expected):
+    root, implementation, branch, remote, transport, state = registered
+    for path, content in [("lib/a.py", "a\n"), ("lib/b.py", "b only\n"), ("notes/x.md", "x document\n"),
+                          ("lib/tests/delivery.py", "delivery\n"), ("lib/tests/unit.py", "unit\n")]:
+        commit(root, path, content)
+    pinned = git(root, "rev-parse", "HEAD")
+    git(implementation, "merge", "--no-ff", "-m", "fixture common base", "main")
+    _c7_change(implementation, case)
+    git(implementation, "push")
+    git(root, "push", "origin", "main")
+    head = git(implementation, "rev-parse", "HEAD")
+    # The report counts GitHub's three-dot file list (renames as one record with both names).
+    state.pr = transport.get("repos/example/product/pulls/7")
+    assert state.pr["head"]["sha"] == head and state.pr["base"]["sha"] == pinned
+    state.files = transport.get(f"repos/example/product/compare/{pinned}...{head}")["files"]
+    state.pr["changed_files"] = len(state.files)
+    report = work._assess_version(state, C7_RULES, "fixture policy", transport)
+    # Catch-up and the merge obligation count the merged result against the pinned base.
+    local = work._merge_version_decision(implementation, head, pinned, SPEC, C7_RULES,
+                                         merged=git(implementation, "rev-parse", "HEAD^{tree}"))
+    assert report["paths"] == local["paths"] == expected
+    assert report["owed"] is local["owed"] is bool(expected)
+    assert report["declared_field_only"] is local["declared_field_only"] is (case == "field-only")
+    if case.startswith("rename") or case == "declared-rename":
+        assert any(item["status"] == "renamed" for item in state.files)
+    if case.startswith("mode"):
+        assert [item["status"] for item in state.files if item["filename"] == "version.json"] == ["changed"]
