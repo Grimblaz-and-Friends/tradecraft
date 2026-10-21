@@ -384,13 +384,16 @@ class LiveGitHub:
 
     def _files(self, left, right):
         files = []
-        lines = _git_text(self.origin, "diff", "--name-status", "-M", left, right).splitlines()
+        lines = _git_text(self.origin, "diff", "--raw", "-M", left, right).splitlines()
         for line in lines:
-            fields = line.split("\t")
-            item = {"filename": fields[-1], "status": "renamed" if fields[0].startswith("R")
-                    else {"A": "added", "D": "removed"}.get(fields[0], "modified")}
-            if fields[0].startswith("R"):
-                item["previous_filename"] = fields[1]
+            identity, *fields = line.split("\t")
+            old_mode, new_mode, _old, _new, letter = identity.lstrip(":").split()
+            item = {"filename": fields[-1], "status": "renamed" if letter.startswith("R")
+                    else {"A": "added", "D": "removed"}.get(letter, "modified")}
+            if item["status"] == "modified" and old_mode != new_mode:
+                item["status"] = "changed"  # GitHub's status for a mode change
+            if letter.startswith("R"):
+                item["previous_filename"] = fields[0]
             files.append(item)
         return files
 
