@@ -11,6 +11,10 @@ stops) is refused before any command runs.
     python tools/holder_pane/install.py install --checkout <main checkout>
     python tools/holder_pane/install.py uninstall --checkout <main checkout>
     python tools/holder_pane/install.py install --worktree <existing holder worktree>
+
+The --worktree copy is only for a session started outside the desktop app; in
+the app, restart the session instead, because the app reads every session's
+local-scope plugins from the main checkout (#915).
 """
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ from typing import Any, Callable
 
 HERE = Path(__file__).resolve().parent
 MARKETPLACE_DIR = HERE / "marketplace"
-MARKETPLACE = "tradecraft-lab"
+MARKETPLACE = "tradecraft-holder-pane"
 PLUGIN = "holder-pane"
 PLUGIN_REF = f"{PLUGIN}@{MARKETPLACE}"
 OPT_IN = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"
@@ -220,7 +224,9 @@ def main(argv: list[str] | None = None) -> int:
     where = parser.add_mutually_exclusive_group(required=True)
     where.add_argument("--checkout", type=Path, help="a lab repository's main checkout")
     where.add_argument("--worktree", type=Path,
-                       help="an existing holder worktree (install only): copy the keys")
+                       help="an existing holder worktree (install only): copy the keys, "
+                            "only for a session started outside the desktop app; in the "
+                            "app, restart the session instead")
     parser.add_argument("--claude", type=Path,
                         help="the Claude Code executable (default: the newest desktop one)")
     args = parser.parse_args(argv)

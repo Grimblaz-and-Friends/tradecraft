@@ -7,8 +7,24 @@
 // calls that script, and submits or runs what it prints. It never calls a
 // model, never writes a file and never uses the mod store: all local state is
 // written by the script, under the state directory it resolves.
+//
+// The gate (#915). The mod is enabled in tradecraft's main checkout, so it
+// loads in every tradecraft desktop session, but it starts only in the one
+// whose live title is `Steward`. The title is read the way the holder pane
+// reads it: get_session for `self`, called only when Claude Code's own check
+// answers `allow`, the title taken from the last JSON object in the answer,
+// trimmed and compared case-insensitively. Until the wake is on, that read is
+// the module's only work: at session start, then at the start of each main
+// turn without waiting on it, one read at a time, so a session renamed
+// `Steward` wakes from its next turn. A read that fails leaves the wake off
+// and names why on the status line. Once on, the title is never read again:
+// a later session start in the same process, the handover's in-place clear
+// included, does nothing, so renaming the Steward away takes effect only when
+// the session's process next starts (a restart).
 
 const SCRIPT = 'tools/steward_watch.py'
+const GET_SESSION = 'mcp__ccd_session_mgmt__get_session'
+const STEWARD = 'steward'
 const PROBE_ENV = [
   'STEWARD_WAKE_TICK_SECONDS',
   'STEWARD_WAKE_HANDOVER_TOKENS',
@@ -22,6 +38,10 @@ const BUSY = new Set(['pending', 'running', 'waiting'])
 const BACKSLASH = String.fromCharCode(92)
 
 const state = {
+  // 'off' until a read answers `Steward`, 'reading' while one is in flight, then 'on' for good.
+  gate: 'off',
+  offShown: false,
+  cwd: null,
   host: null,
   root: null,
   python: 'python',
@@ -60,6 +80,9 @@ function hostOf($) {
       STEWARD_WAKE_PAGE: await $.env.get('STEWARD_WAKE_PAGE'),
     }),
     sessionId: () => $.session.id(),
+    tools: () => $.tool.list(),
+    check: (tool, input) => $.tool.check({ tool, input }),
+    call: (tool, input) => $.tool.call({ tool, ...input }),
     root: () => $.session.root(),
     every: (ms, fn) => $.clock.every(ms, fn),
     after: (ms, fn) => $.clock.after(ms, fn),
@@ -242,6 +265,93 @@ async function tick() {
   }
 }
 
+// The last JSON object in a tool's text, as the holder pane's core takes it.
+function lastJsonObject(text) {
+  let found = null
+  let index = 0
+  for (;;) {
+    const begin = text.indexOf('{', index)
+    if (begin < 0) return found
+    const end = objectEnd(text, begin)
+    let value
+    try {
+      value = end < 0 ? undefined : JSON.parse(text.slice(begin, end))
+    } catch (err) {
+      value = undefined
+    }
+    if (value !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      found = value
+      index = end
+    } else {
+      index = begin + 1
+    }
+  }
+}
+
+// Where the bracket-balanced span opened at `begin` closes, minding strings; -1 if it never does.
+function objectEnd(text, begin) {
+  let depth = 0
+  let quoted = false
+  for (let i = begin; i < text.length; i++) {
+    const ch = text[i]
+    if (quoted) {
+      if (ch === BACKSLASH) i++
+      else if (ch === '"') quoted = false
+    } else if (ch === '"') {
+      quoted = true
+    } else if (ch === '{' || ch === '[') {
+      depth++
+    } else if (ch === '}' || ch === ']') {
+      depth--
+      if (depth === 0) return i + 1
+    }
+  }
+  return -1
+}
+
+// Every get_session call goes through here, behind an `allow` from Claude Code's
+// own permission check, so the read never puts a prompt in front of the owner.
+async function readTitle(host) {
+  try {
+    const input = { session_id: 'self' }
+    const listed = ((await host.tools()) || []).some(one => one && one.name === GET_SESSION)
+    if (!listed) return { title: null, reason: 'absent' }
+    const { decision } = (await host.check(GET_SESSION, input)) || {}
+    if (decision !== 'allow') return { title: null, reason: String(decision) }
+    const ran = await host.call(GET_SESSION, input)
+    const answered = lastJsonObject(ran && typeof ran.text === 'string' ? ran.text : '')
+    const title = answered && typeof answered.title === 'string' ? answered.title : ''
+    return title ? { title, reason: null } : { title: null, reason: 'no title' }
+  } catch (err) {
+    return { title: null, reason: 'failed' }
+  }
+}
+
+function isSteward(title) {
+  return typeof title === 'string' && title.trim().toLowerCase() === STEWARD
+}
+
+// The gate: the only path to `start`, and so to the script.
+async function admit(host) {
+  if (state.gate !== 'off') return
+  state.gate = 'reading'
+  if (!state.host) state.host = host
+  const read = await readTitle(host)
+  if (isSteward(read.title)) {
+    state.gate = 'on'
+    await start(host, state.cwd)
+    return
+  }
+  state.gate = 'off'
+  if (read.title === null) {
+    status('steward-wake off: title unreadable (' + read.reason + ')')
+    state.offShown = true
+  } else if (state.offShown) {
+    status(undefined)
+    state.offShown = false
+  }
+}
+
 async function start(host, cwd) {
   if (state.started) return
   state.started = true
@@ -261,6 +371,8 @@ async function start(host, cwd) {
     status('not started: ' + message(err).slice(0, 200))
     return
   }
+  // Row 6's check reads this line: the wake is on, and from which checkout.
+  status('steward-wake on \u00b7 ' + state.root)
   state.ownerAt = Date.now()
   await guarded(() => handoverStep('load'))
   state.timers.push(host.every(state.cfg.tick_seconds * 1000, () => tick()))
@@ -269,14 +381,20 @@ async function start(host, cwd) {
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
-    await start(hostOf($), e && e.cwd)
-    return next(e)
+    const started = await next(e)
+    if (state.gate === 'off') {
+      state.cwd = (e && e.cwd) || null
+      await admit(hostOf($))
+    }
+    return started
   })
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
       state.turnRunning = true
       state.lastTurnStart = Date.now()
+      // Not awaited: no turn waits on the title read, or on the start that follows it.
+      if (state.gate === 'off') void admit(hostOf($)).catch(() => undefined)
     }
     return next(e)
   })
