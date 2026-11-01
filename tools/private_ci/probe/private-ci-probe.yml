@@ -1,0 +1,50 @@
+# The private-ci probe (#929), committed by tradecraft's
+# tools/private_ci/setup.py probe at tradecraft __TRADECRAFT__.
+# It lives alone on lab/private-ci-probe in a parentless commit, so a push
+# starts only this workflow. The label jobs are meant never to be placed:
+# setup.py cancels them after its all-idle hold.
+name: private-ci probe
+
+on: push
+
+permissions:
+  contents: read
+
+jobs:
+  local:
+    strategy:
+      matrix:
+        instance: [1, 2]
+    runs-on: private-ci
+    steps:
+      - uses: actions/checkout@v5
+      - name: Isolation check
+        run: python3 isolation_check.py --context job --win-user '__WIN_USER__' --local-port __LOCAL_PORT__
+      - name: Hold both instances at once
+        run: sleep 60
+
+  smoke:
+    runs-on: private-ci
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: PowerShell
+        run: pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion'
+      - name: Chromium without --with-deps or install-deps
+        run: bash smoke.sh __PLAYWRIGHT__
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: dotnet
+        run: dotnet --info
+
+  labels:
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [self-hosted, Linux, X64, Windows]
+    runs-on: [private-ci, "${{ matrix.pair }}"]
+    steps:
+      - run: echo "no runner should carry private-ci and ${{ matrix.pair }}"
