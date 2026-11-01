@@ -90,6 +90,8 @@ HOLD_DEADLINE_SECONDS = 1800
 SAMPLE_SECONDS = 10
 JOB_WAIT_SECONDS = 3600
 START_WITHIN_SECONDS = 120
+CONNECT_WAIT_SECONDS = 300
+LISTENING = "Listening for Jobs"
 CHECK_PREFIX = "PRIVATE-CI-CHECK "
 
 
@@ -291,13 +293,20 @@ def clear_stubs_argv() -> list[str]:
 
 
 def root_settings_argv() -> list[str]:
-    return ["/usr/bin/python3", CHECK, "--root-settings"]
+    return ["/usr/bin/python3", CHECK, "--context", "verify", "--root-settings"]
 
 
 def parse_check(text: str) -> dict:
+    """The check's report, from anywhere in the text.
+
+    A job log prefixes every line with a timestamp, so the report's prefix is
+    searched for within each line of the whole log, not only at its start. The
+    excerpt kept on a miss is for reading, never for parsing.
+    """
     for line in text.splitlines():
-        if line.startswith(CHECK_PREFIX):
-            return json.loads(line[len(CHECK_PREFIX):])
+        at = line.find(CHECK_PREFIX)
+        if at >= 0:
+            return json.loads(line[at + len(CHECK_PREFIX):])
     return {"ok": False, "failed": ["no check output"], "probes": [], "output": text[-2000:]}
 
 
@@ -649,6 +658,47 @@ def outside_in(host: Host) -> list[str]:
     return failures
 
 
+def listening_epoch(journal: str, since: int) -> float | None:
+    """When the runner last logged "Listening for Jobs" at or after `since`, from
+    `journalctl -o short-unix`, whose lines open with an epoch."""
+    found = None
+    for line in journal.splitlines():
+        if LISTENING not in line:
+            continue
+        try:
+            at = float(line.split(None, 1)[0])
+        except (ValueError, IndexError):
+            continue
+        if at >= since:
+            found = at
+    return found
+
+
+def wait_until_listening(host: Host, states: dict[int, dict], *, sleep=time.sleep,
+                         monotonic=time.monotonic) -> tuple[dict, list[str]]:
+    """Wait, bounded, until each instance is connected to GitHub after its last start.
+
+    After WSL stops, GitHub holds the old session for a while ("A session for this
+    runner already exists"), so a unit can be active long before its runner can take
+    a job. The start bound the probe applies is about the runner, not that hold.
+    """
+    reconnect: dict[str, float] = {}
+    pending = dict(states)
+    deadline = monotonic() + CONNECT_WAIT_SECONDS
+    while True:
+        for n in sorted(pending):
+            enter = int(pending[n].get("active_enter_epoch") or 0)
+            _, journal = host.guest("journalctl", "-u", unit_name(n), "--since", f"@{enter}",
+                                    "-o", "short-unix", "--no-pager", check=False)
+            at = listening_epoch(journal, enter)
+            if at is not None:
+                reconnect[runner_name(n)] = round(at - enter, 1)
+                del pending[n]
+        if not pending or monotonic() >= deadline:
+            return reconnect, [runner_name(n) for n in sorted(pending)]
+        sleep(SAMPLE_SECONDS)
+
+
 def judge_jobs(jobs: list[dict], timed: bool) -> list[str]:
     failures = []
     local = [j for j in jobs if j["name"].startswith("local")]
@@ -657,6 +707,11 @@ def judge_jobs(jobs: list[dict], timed: bool) -> list[str]:
         failures.append("local: both jobs must succeed")
     if len(names) != 2 or not all(n.startswith("blaz-top-wsl-") for n in names):
         failures.append(f"local: ran on {sorted(names)}, not two distinct blaz-top-wsl-*")
+    spans = [(watch.parse_time(j.get("started_at")), watch.parse_time(j.get("completed_at")))
+             for j in local]
+    if len(spans) != 2 or not all(start and end for start, end in spans) or \
+            max(start for start, _ in spans) >= min(end for _, end in spans):
+        failures.append("local: the two jobs did not run at the same time")
     smoke = [j for j in jobs if j["name"] == "smoke"]
     if not smoke or smoke[0].get("conclusion") != "success":
         failures.append("smoke: did not succeed")
@@ -704,6 +759,14 @@ def probe(host: Host, github: watch.GitHub, *, require_idle: int | None = None,
                 if last and now_epoch - last < limit:
                     summary["failures"].append(f"{runner_name(n)}: ran a job in the last "
                                                f"{require_idle} min")
+        reconnect, waiting = wait_until_listening(host, states, sleep=sleep, monotonic=monotonic)
+        summary["reconnect_seconds"] = reconnect
+        if waiting:
+            summary["failures"].append(
+                "runners not connected to GitHub within "
+                f"{CONNECT_WAIT_SECONDS} s of their last start: " + ", ".join(waiting))
+            summary["ok"] = False
+            return summary
     summary["registration"] = watch.read_json((state_dir or default_state_dir()) / "install.json",
                                               {}).get("instances", {})
     with Listener() as listener:

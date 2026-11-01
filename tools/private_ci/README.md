@@ -45,7 +45,7 @@ Everything else the setup runs (`wsl.exe`, `schtasks.exe`, `tasklist.exe` and Wi
 3. From a tradecraft checkout at the head, run `python tools/private_ci/setup.py install`. Type the token only into its prompt, and answer any Windows prompt. It ends by running `verify`.
 4. In Settings → Actions → Runners, read each runner's labels and tell the holder: `blaz-top-wsl-1` and `blaz-top-wsl-2` should show only `private-ci`, and `BLAZ-TOP` should not show `private-ci` (C19).
 5. Run `python tools/private_ci/setup.py probe`.
-6. Simulate a reboot: run `wsl --shutdown`, then `schtasks /Run /TN tradecraft-lab-private-ci-start`, wait a minute, then run `python tools/private_ci/setup.py probe --after-restart`.
+6. Simulate a reboot: run `wsl --shutdown`, then `schtasks /Run /TN tradecraft-lab-private-ci-start`, then run `python tools/private_ci/setup.py probe --after-restart`. You needn't wait: after its outside-in checks, the probe waits up to 5 minutes for both runners to reconnect to GitHub (GitHub holds a stopped runner's old session for a minute or two), and reports how long each took.
 7. After 30 idle minutes, run `python tools/private_ci/setup.py probe --require-idle 30`.
 
 The holder records each probe's JSON summary, with your group and label reports, in the release report. `install` refuses to change a `.wslconfig` setting you chose (`networkingMode`, `processors`, `memory` or `guiApplications` set to something else); it names the key, and you decide.

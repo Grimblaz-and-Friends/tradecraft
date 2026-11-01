@@ -353,7 +353,11 @@ def test_c16_verify_runs_the_check_under_setpriv_as_the_units_account():
     assert argv[:6] == ["setpriv", "--reuid=ci-runner", "--regid=ci-runner", "--init-groups",
                         "--no-new-privs", "--reset-env"]
     assert argv[-6:] == ["--context", "verify", "--win-user", "Micah", "--local-port", "5000"]
-    assert ps.root_settings_argv()[-1] == "--root-settings"
+    assert ps.root_settings_argv()[2:] == ["--context", "verify", "--root-settings"]
+    # The root-side run reports itself as verify's, not as a job's (reading 7).
+    report = ic.run_check(ic.build_parser().parse_args(ps.root_settings_argv()[2:]),
+                          euid=1001, runner=lambda argv, env=None: (0, ""))
+    assert report["context"] == "verify" and report["root_settings"] is True
 
 
 # ---------------------------------------------------------------- the fake Windows host
@@ -383,6 +387,8 @@ class FakeWindows:
         self.verify_report = check_line()
         self.dirty = ""
         self.stubs = ["/mnt/c", "/mnt/d"]
+        self.journal = lambda unit, reads: "-- No entries --\n"
+        self.journal_reads = 0
 
     def __call__(self, argv, stdin_bytes=None):
         self.calls.append((list(argv), stdin_bytes))
@@ -437,6 +443,9 @@ class FakeWindows:
             return 0, b"", b""
         if argv[:2] == ["cat", "/etc/wsl.conf"]:
             return 0, self.wsl_conf.encode("utf-8"), b""
+        if argv[0] == "journalctl":
+            self.journal_reads += 1
+            return 0, self.journal(argv[2], self.journal_reads).encode("utf-8"), b""
         if argv[0] == "systemctl":
             return 0, (self.nnp + "\n").encode("ascii"), b""
         if argv == ps.clear_stubs_argv():
@@ -643,6 +652,68 @@ def test_a15_probe_never_enters_a_stopped_distribution(windows, tmp_path):
         assert windows.entered() == []
 
 
+def test_a4_the_check_is_read_from_anywhere_in_a_long_job_log():
+    """Run 41272485277: each local job's log held the report early, behind a timestamp,
+    and `probe` reported `no check output`."""
+    report = {"ok": True, "failed": [], "context": "job",
+              "probes": [{"probe": "settings", "result": "info", "failures": [],
+                          "detail": {"nproc": 8, "mem_total_kib": 12249308}}]}
+    lines = ["2026-11-01T04:18:30.1000000Z ##[group]Run python3 isolation_check.py",
+             "2026-11-01T04:18:31.2000000Z " + ps.CHECK_PREFIX + json.dumps(report)]
+    lines += [f"2026-11-01T04:18:{32 + i % 20:02d}.0000000Z post-step noise line {i}"
+              for i in range(200)]
+    log = "\n".join(lines) + "\n"
+    assert len(log) > 9000 and ps.CHECK_PREFIX not in log[-2000:]
+    assert ps.parse_check(log) == report
+    missing = ps.parse_check("\n".join(lines[2:]))
+    assert missing["failed"] == ["no check output"] and len(missing["output"]) == 2000
+
+
+def job_span(name, start, end, runner):
+    return {"name": name, "conclusion": "success", "runner_name": runner,
+            "created_at": f"2026-11-01T04:18:{start:02d}Z",
+            "started_at": f"2026-11-01T04:18:{start:02d}Z",
+            "completed_at": f"2026-11-01T04:{end // 60 + 18:02d}:{end % 60:02d}Z"}
+
+
+def test_a14_the_two_local_jobs_must_overlap():
+    smoke = {"name": "smoke", "conclusion": "success", "runner_name": "blaz-top-wsl-1"}
+    together = [job_span("local (1)", 0, 61, "blaz-top-wsl-1"),
+                job_span("local (2)", 1, 62, "blaz-top-wsl-2"), smoke]
+    assert ps.judge_jobs(together, timed=False) == []
+    # Run 41272485277: local (2) began on the other instance as local (1) ended.
+    in_turn = [job_span("local (1)", 0, 32, "blaz-top-wsl-2"),
+               {**job_span("local (2)", 0, 0, "blaz-top-wsl-1"),
+                "started_at": "2026-11-01T04:18:32Z", "completed_at": "2026-11-01T04:19:33Z"},
+               smoke]
+    assert ps.judge_jobs(in_turn, timed=False) == ["local: the two jobs did not run at the same time"]
+
+
+def test_a15_the_probe_waits_for_both_runners_to_reconnect(windows):
+    lines = {1: "1793505400.000000 host runsvc.sh[1]: A session for this runner already exists.\n",
+             2: "1793505479.500000 host runsvc.sh[1]: 2026-11-01 04:17:59Z: Listening for Jobs\n"}
+    windows.journal = lambda unit, reads: lines[1] + (lines[2] if reads > 2 else "")
+    states = {1: {"active_enter_epoch": 1793505385}, 2: {"active_enter_epoch": 1793505385}}
+    ticks = iter(range(0, 10_000, 10))
+    found, waiting = ps.wait_until_listening(ps.Host(windows), states, sleep=lambda s: None,
+                                             monotonic=lambda: next(ticks))
+    assert waiting == [] and found == {"blaz-top-wsl-1": 94.5, "blaz-top-wsl-2": 94.5}
+    assert ps.listening_epoch(lines[2], 1793505500) is None  # before the last start
+
+
+def test_a15_a_runner_that_never_reconnects_fails_before_any_push(windows, tmp_path):
+    windows.distros[ps.DISTRO] = "Running"
+    windows.keepalive = True
+    ticks = iter(range(0, 10_000, 10))
+    github = pw.GitHub(runner=lambda *a, **k: pytest.fail("probe reached GitHub"))
+    found = ps.probe(ps.Host(windows), github, after_restart=True, state_dir=tmp_path,
+                     sleep=lambda s: None, monotonic=lambda: next(ticks))
+    assert found["ok"] is False
+    assert any("not connected to GitHub within 300 s" in f and "blaz-top-wsl-1" in f
+               for f in found["failures"])
+    assert found["reconnect_seconds"] == {}
+
+
 def test_a4_probe_refuses_a_dirty_tree(windows, tmp_path):
     windows.dirty = " M tools/private_ci/setup.py\n"
     github = pw.GitHub(runner=lambda *a, **k: pytest.fail("probe reached GitHub"))
@@ -660,6 +731,9 @@ def test_a10_a19_the_probe_workflow():
         assert re.search(r"^    runs-on: private-ci$", block, re.M), job
     assert "--win-user 'Micah' --local-port 5123" in workflow
     assert "pair: [self-hosted, Linux, X64, Windows]" in workflow
+    smoke_block = workflow.split("\n  smoke:\n", 1)[1].split("\n  labels:", 1)[0]
+    assert re.search(r"^    needs: local$", smoke_block, re.M), \
+        "smoke waits for local, so the two local jobs must hold both instances at once"
     assert 'runs-on: [private-ci, "${{ matrix.pair }}"]' in workflow
     assert "dotnet-version: '8.0.x'" in workflow and "pwsh -NoProfile" in workflow
     smoke = files["smoke.sh"].decode("utf-8")

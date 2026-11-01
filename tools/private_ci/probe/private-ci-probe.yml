@@ -24,6 +24,9 @@ jobs:
         run: sleep 60
 
   smoke:
+    # After local, so the two local jobs are queued alone and must hold both
+    # instances at once.
+    needs: local
     runs-on: private-ci
     steps:
       - uses: actions/checkout@v5
