@@ -21,7 +21,7 @@ A comment on #683 opening with `<!-- lab:private-ci-watch:v1 keys=... -->` carri
 
 They go in row 8's order, each filed only after the one before it has merged and its first local run has passed: Countdown-Clash first, then Organizations-of-Verra, Windgust-Questbook and Daemon.
 
-- **The lane.** A carrier is `ordinary` / `mechanical` where it only changes `runs-on:` and drops what row 7's setup makes possible. A carrier that needs anything beyond that needs its own brief.
+- **The lane.** A carrier is `ordinary` / `mechanical` when it holds exactly what its product's entry lists: the `runs-on:` changes, Verra's two drops, and Daemon's two record updates. Daemon's updates are included because row 8 names them as part of its carrier. A carrier that needs anything beyond that needs its own brief.
 - **Verra's two drops.** `--with-deps` in `e2e.yml` :30 and the cache-hit `install-deps` step at :33.
 - **Daemon's two record updates.** The CI line in Daemon's roadmap (`roadmap.md` :74 under its `docs`: "runs on GitHub-hosted Linux runners only") and `ci.yml` :18 ("GitHub-hosted Linux only, per the roadmap's CI paragraph and ADR-0005"). ADR-0005 stays as it is.
 - **Daemon's route.** Daemon's carrier goes by Daemon's brief route as it stands at the time: #918's trial ends 2026-11-06, and its judge settles what follows.
