@@ -13,8 +13,11 @@ import argparse
 import errno
 import importlib.util
 import json
+import os
 import re
+import shutil
 import socket
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -527,6 +530,40 @@ def test_a3_verify_fails_on_each_mismatch(windows, loosen, named):
     assert any(named in f for f in found["failures"]), found["failures"]
     root_calls = [argv for argv in windows.entered() if argv[6:] == ps.root_settings_argv()]
     assert root_calls and root_calls[0][3:5] == ["-u", "root"]
+
+
+REAL_SHELL = os.name != "nt" and shutil.which("bash") and shutil.which("systemctl")
+
+
+def run_provision(subcommand: str, home: Path) -> subprocess.CompletedProcess:
+    env = {**os.environ, "TRADECRAFT_CI_RUNNER_HOME": str(home)}
+    return subprocess.run(["bash", str(PRIVATE_CI / "guest" / "provision.sh"), subcommand],
+                          stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=60)
+
+
+@pytest.mark.skipif(not REAL_SHELL, reason="needs Linux bash and systemctl")
+def test_provision_state_reports_a_fresh_install_and_exits_0(tmp_path):
+    """The owner's first install: `state` ran before any instance was unpacked, and
+    `find` on the missing `_diag` ended the script under `set -euo pipefail` after
+    it had printed only `{"instances": [`."""
+    proc = run_provision("state", tmp_path)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    lines = proc.stdout.decode("utf-8").strip().splitlines()
+    assert len(lines) == 1
+    data = json.loads(lines[0])
+    assert [item["n"] for item in data["instances"]] == [1, 2]
+    for item in data["instances"]:
+        assert item["unpacked"] is False and item["runner"] is None
+        assert item["active_enter_epoch"] == 0 and item["last_worker_epoch"] == 0
+        assert not ps.instance_matches(item["n"], item)
+    assert isinstance(data["now_epoch"], int)
+
+
+@pytest.mark.skipif(not REAL_SHELL, reason="needs Linux bash and systemctl")
+def test_provision_workers_prints_a_count_and_exits_0(tmp_path):
+    proc = run_provision("workers", tmp_path)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert proc.stdout.decode("utf-8").strip().isdigit()
 
 
 def test_a11_registration_carries_only_the_private_ci_label():

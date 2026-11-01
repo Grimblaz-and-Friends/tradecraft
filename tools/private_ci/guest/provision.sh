@@ -13,7 +13,9 @@
 set -euo pipefail
 
 ACCOUNT=ci-runner
-HOME_DIR=/home/$ACCOUNT
+# The runner account's home. Only the tests override it, to run `state` and
+# `workers` against a fresh tree.
+HOME_DIR=${TRADECRAFT_CI_RUNNER_HOME:-/home/$ACCOUNT}
 LIB=/usr/local/lib/tradecraft-private-ci
 ORG=Grimblaz-and-Friends
 
@@ -115,7 +117,8 @@ register() {
   # C10: the token arrives on stdin and reaches config.sh as an environment
   # input (ACTIONS_RUNNER_INPUT_TOKEN, which runner 2.338.0's CommandSettings
   # reads when no token argument is given), never in an argv or a file.
-  IFS= read -r ACTIONS_RUNNER_INPUT_TOKEN
+  # read answers 1 at end of input with no newline; the token is still read.
+  IFS= read -r ACTIONS_RUNNER_INPUT_TOKEN || [ -n "$ACTIONS_RUNNER_INPUT_TOKEN" ]
   export ACTIONS_RUNNER_INPUT_TOKEN
   export HOME="$HOME_DIR"
   cd "$dir"
@@ -166,8 +169,13 @@ state() {
     nnp=$(systemctl show -p NoNewPrivileges --value "$unit" 2>/dev/null || true)
     enter=$(systemctl show -p ActiveEnterTimestamp --value "$unit" 2>/dev/null || true)
     enter=$( [ -n "$enter" ] && date -d "$enter" +%s 2>/dev/null || echo 0)
-    worker=$(find "$dir/_diag" -maxdepth 1 -name 'Worker_*.log' -printf '%T@\n' 2>/dev/null \
-      | sort -n | tail -n 1 | cut -d. -f1)
+    # Before an instance has run a job it has no _diag directory, and find's
+    # non-zero exit there is an ordinary answer, not a failure of the script.
+    worker=0
+    if [ -d "$dir/_diag" ]; then
+      worker=$( { find "$dir/_diag" -maxdepth 1 -name 'Worker_*.log' -printf '%T@\n' 2>/dev/null || true; } \
+        | sort -n | tail -n 1 | cut -d. -f1)
+    fi
     runner=""
     if [ -f "$dir/.runner" ]; then
       runner=$(tr -d '\r\n' < "$dir/.runner" | sed 's/^\xEF\xBB\xBF//')
