@@ -30,6 +30,16 @@ Local state lives in `~/.tradecraft-lab/private-ci/`: `install.json` (each insta
 
 The holder walks these with you. Registration needs an organization-admin token, which no session holds, so you type it into the setup yourself.
 
+**Before step 1**, these must already be true:
+
+- WSL 2 is installed: `wsl --version` reports it. `install` refuses without it.
+- Python 3 is on the `PATH` as `python`. The scheduled tasks run the installed copy with the `pythonw.exe` beside the Python that ran `install`.
+- `git` is on the `PATH`. `install` and `probe` read the checkout's commit with it, and `probe` reads whether the tree is clean.
+- `gh` is signed in as you, with the `repo` and `workflow` scopes. The probe pushes its workflow file to Countdown-Clash with it, and the watch reads the private repositories' job records and posts on #683 with it.
+- A clean tradecraft checkout is at the pull request's final head. `probe` refuses a dirty tree, and `install` stamps the installed copy with that commit.
+
+Everything else the setup runs (`wsl.exe`, `schtasks.exe`, `tasklist.exe` and Windows PowerShell) ships with Windows.
+
 1. In the organization's Settings → Actions → Runner groups, create `private-ci`: selected repositories set to Organizations-of-Verra, Daemon, Countdown-Clash and Windgust-Questbook; "Allow public repositories" off; workflow access set to all workflows. Tell the holder it covers those four and allows no public repository. A public repository's fork pull request could name the label, which is why the group must exclude them.
 2. Open Settings → Actions → Runners → New self-hosted runner, and leave the page open for its registration token.
 3. From a tradecraft checkout at the head, run `python tools/private_ci/setup.py install`. Type the token only into its prompt, and answer any Windows prompt. It ends by running `verify`.
@@ -81,11 +91,13 @@ Each product moves in its own carrier change after #929 merges (row 8). This sec
 3. **Windgust-Questbook**.
 4. **Daemon**.
 
-**The lane condition.** A carrier is `ordinary` / `mechanical` where it only changes `runs-on:` and drops what row 7's setup now provides. A carrier that needs anything more gets its own brief. Each carrier's lane is affirmed by the owner on that product's own brief.
+**The lane condition.** A carrier is `ordinary` / `mechanical` when it holds exactly what its product's entry under "Each carrier's diff" lists: the `runs-on:` changes, Verra's two drops, and Daemon's two record updates. Row 8 names Daemon's updates as part of its carrier, so they don't take it off the mechanical lane. A carrier that needs anything more gets its own brief. Each carrier's lane is affirmed by the owner on that product's own brief.
 
 **Each carrier's diff.**
 
 - Every job in that product's own workflows gets `runs-on: private-ci`. The `connected-review.yml` caller and the gate are excluded, because neither moves.
+  - **The gate** is the organization's required change-proof workflow, `.github/workflows/self-change-proof.yml`, which the ruleset runs. It isn't a file in any product's tree, so no carrier touches it.
+  - A product's own job with "gate" in its name, such as Verra's `residue-gate` in `ci-ready.yml`, is that product's job and moves like any other.
 - **Organizations-of-Verra** also drops `--with-deps` from `e2e.yml` :30 (`npx playwright install --with-deps chromium` becomes `npx playwright install chromium`) and removes the cache-hit step at :33 (`npx playwright install-deps chromium`).
 - **Daemon** also updates the two places that record hosted-only CI:
   - the CI line in `docs/roadmap.md` :74, which reads "runs on GitHub-hosted Linux runners only";
