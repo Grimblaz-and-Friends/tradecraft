@@ -41,6 +41,7 @@ def _load(name: str, path: Path):
 
 ic = _load("private_ci_isolation_check", PRIVATE_CI / "guest" / "isolation_check.py")
 ps = _load("private_ci_setup", PRIVATE_CI / "setup.py")
+cds = _load("private_ci_clear_drive_stubs", PRIVATE_CI / "guest" / "clear_drive_stubs.py")
 
 NOW = datetime(2026, 10, 31, 12, 0, 0, tzinfo=timezone.utc)
 CC = "Grimblaz-and-Friends/Countdown-Clash"
@@ -185,6 +186,34 @@ def test_a2_each_loosened_setting_fails_naming_it(tmp_path, quiet_loopback, loos
     assert not report["ok"]
     assert probe in report["failed"]
     assert any(named in failure for failure in failures_of(report, probe)), failures_of(report, probe)
+
+
+def test_drive_stubs_go_and_real_exposures_stay(tmp_path):
+    """The owner's install at 10d5009: WSL's first boot left /mnt/c and /mnt/d as empty,
+    unmounted directories, and the drives probe failed on them."""
+    mnt = tmp_path / "mnt"
+    for letter in "cde":
+        (mnt / letter).mkdir(parents=True)
+    (mnt / "d" / "file.txt").write_text("something")
+    (mnt / "wsl").mkdir()
+    mounted = str(mnt / "e")
+    before = ic.probe_drives(mnt, "Micah")
+    assert before["result"] == "reachable"
+    found = cds.clear_drive_stubs(mnt, is_mount=lambda path: path == mounted)
+    assert found["removed"] == [str(mnt / "c")]
+    assert found["kept"] == [{"path": str(mnt / "d"), "reason": "not empty"},
+                             {"path": mounted, "reason": "a mount point"}]
+    assert not (mnt / "c").exists() and (mnt / "d").exists() and (mnt / "e").exists()
+    assert (mnt / "wsl").exists()
+    after = ic.probe_drives(mnt, "Micah")
+    assert after["result"] == "reachable"
+    assert sorted(after["failures"]) == [f"drive:{mnt / 'd'}", f"drive:{mnt / 'e'}"]
+    (mnt / "d" / "file.txt").unlink()
+    again = cds.clear_drive_stubs(mnt, is_mount=lambda path: path == mounted)
+    assert again["removed"] == [str(mnt / "d")]
+    os.rmdir(mounted)  # the mount is gone; the empty directory is now a stub
+    cds.clear_drive_stubs(mnt, is_mount=lambda path: False)
+    assert ic.probe_drives(mnt, "Micah")["result"] == "blocked"
 
 
 def test_a2_canary_readable_fails(tmp_path, quiet_loopback):
@@ -353,6 +382,7 @@ class FakeWindows:
         self.root_report = check_line()
         self.verify_report = check_line()
         self.dirty = ""
+        self.stubs = ["/mnt/c", "/mnt/d"]
 
     def __call__(self, argv, stdin_bytes=None):
         self.calls.append((list(argv), stdin_bytes))
@@ -409,6 +439,9 @@ class FakeWindows:
             return 0, self.wsl_conf.encode("utf-8"), b""
         if argv[0] == "systemctl":
             return 0, (self.nnp + "\n").encode("ascii"), b""
+        if argv == ps.clear_stubs_argv():
+            removed, self.stubs = self.stubs, []
+            return 0, (json.dumps({"removed": removed, "kept": []}) + "\n").encode("utf-8"), b""
         if argv == ps.root_settings_argv():
             return 0, self.root_report.encode("utf-8"), b""
         if argv[0] == "setpriv":
@@ -470,6 +503,12 @@ def test_a3_a16_a17_a23_install_then_reinstall(windows, tmp_path):
     assert first["prompted_for_token"] is True
     assert (Path(ps.profile()) / ".wslconfig").read_text(encoding="utf-8") == GOOD_WSLCONFIG
     assert sorted(tasks.tasks) == [ps.START_TASK, pw.TASK_NAME]
+    stubs = next(s for s in first["steps"] if s["step"] == "drive stubs")
+    assert stubs["changed"] and stubs["removed"] == ["/mnt/c", "/mnt/d"]
+    calls = [argv for argv, _ in windows.calls]
+    restart = next(i for i, argv in enumerate(calls) if argv[:2] == ["wsl.exe", "--shutdown"])
+    clear = next(i for i, argv in enumerate(calls) if argv[6:] == ps.clear_stubs_argv())
+    assert restart < clear, "the stubs are removed only after the restart that applies wsl.conf"
 
     # A16: the token appears only in the stdin piped to the two register calls.
     carriers = [(argv, data) for argv, data in windows.calls if data and TOKEN.encode() in data]

@@ -71,7 +71,9 @@ PROVISION = f"{GUEST_LIB}/provision.sh"
 KEEPALIVE_ARGS = f"-d {DISTRO} --exec /bin/sleep infinity"
 GUEST_FILES = (("guest/provision.sh", PROVISION, "0755"),
                ("guest/isolation_check.py", CHECK, "0755"),
-               ("guest/wsl.conf", f"{GUEST_LIB}/wsl.conf", "0644"))
+               ("guest/wsl.conf", f"{GUEST_LIB}/wsl.conf", "0644"),
+               ("guest/clear_drive_stubs.py", f"{GUEST_LIB}/clear_drive_stubs.py", "0755"))
+CLEAR_STUBS = f"{GUEST_LIB}/clear_drive_stubs.py"
 BIN_FILES = ("watch.py", "hosted.json", "keepalive.py")
 WSLCONFIG_EXPECTED = {"processors": "8", "memory": "12GB", "guiApplications": "false"}
 WSL_CONF_EXPECTED = {
@@ -284,6 +286,10 @@ def verify_check_argv(user: str, port: int) -> list[str]:
             "--context", "verify", "--win-user", user, "--local-port", str(port)]
 
 
+def clear_stubs_argv() -> list[str]:
+    return ["/usr/bin/python3", CLEAR_STUBS, "/mnt"]
+
+
 def root_settings_argv() -> list[str]:
     return ["/usr/bin/python3", CHECK, "--root-settings"]
 
@@ -469,6 +475,15 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
             host.run(["wsl.exe", "--shutdown"], check=False)
             steps.append({"step": "restart", "changed": True})
         sleep(8)
+
+    # WSL's first boot automounted the drives before wsl.conf turned that off, and
+    # left empty /mnt/<letter> directories behind. Once the restart has applied
+    # wsl.conf they are no longer mount points, so each run removes the empty ones;
+    # anything else stays for verify to fail on.
+    _, cleared = host.guest(*clear_stubs_argv())
+    stubs = json.loads(cleared.strip().splitlines()[-1])
+    steps.append({"step": "drive stubs", "changed": bool(stubs["removed"]),
+                  "removed": stubs["removed"], "kept": stubs["kept"]})
 
     token = None
     prompted = False
