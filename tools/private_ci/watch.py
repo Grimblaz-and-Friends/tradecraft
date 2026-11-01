@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import urllib.parse
 import subprocess
 import sys
 import tempfile
@@ -47,7 +48,10 @@ PROBE_PATH = ".github/workflows/private-ci-probe.yml"
 PACE_LIMIT = 1500
 PACE_FLOOR_DAYS = 7
 QUEUE_LIMIT = timedelta(hours=24) - timedelta(minutes=10)
-RERUN_LOOKBACK_DAYS = 14
+# GitHub re-runs a run, its failed jobs or specific jobs "up to 30 days after its
+# initial run" (docs.github.com, Re-running workflows and jobs), so a run that old
+# can still be re-run, and bill, this month.
+RERUN_LOOKBACK_DAYS = 30
 FOLLOW_INTERVAL_SECONDS = 120
 LOGON_FOLLOW_MINUTES = 240
 TASK_NAME = "tradecraft-lab-private-ci-watch"
@@ -55,6 +59,11 @@ GH_TIMEOUT_SECONDS = 60
 HOSTED_IMAGES = re.compile(r"(ubuntu|windows|macos)-")
 MULTIPLIER = {"ubuntu": 1, "windows": 2, "macos": 10}
 ALERT_MARKER = re.compile(r"<!-- lab:private-ci-watch:v1 keys=(?P<keys>\S+) -->")
+# What GitHub annotates on a job a person, or a concurrency group, cancelled: live on
+# Countdown-Clash run 41330709137 ("The run was canceled by @Grimblaz.") and Daemon
+# run 40055645534 ("Canceling since a higher priority waiting request ... exists").
+CANCELLED_BY = re.compile(r"was canceled by @|Canceling since a higher priority")
+DAILY_START = "2026-11-01"
 QUIET = ("success", "skipped", "neutral")
 BOM = chr(0xFEFF)  # built at runtime: a byte-order mark GitHub may keep
 
@@ -181,6 +190,10 @@ class GitHub:
                                f"?filter={which}&per_page=100")
         return [job for page in pages for job in page.get("jobs", [])]
 
+    def annotations(self, repo: str, job_id: int) -> list[dict]:
+        return [a for page in self.get_pages(f"repos/{repo}/check-runs/{job_id}/annotations")
+                for a in (page if isinstance(page, list) else [page])]
+
     def comments(self, repo: str, issue: int) -> list[dict]:
         return [c for page in self.get_pages(f"repos/{repo}/issues/{issue}/comments?per_page=100")
                 for c in (page if isinstance(page, list) else [page])]
@@ -248,17 +261,24 @@ def projection(minutes: int, moment: datetime) -> float:
     return minutes * days_in_month(moment) / max(elapsed, PACE_FLOOR_DAYS)
 
 
-def collect_month(github: GitHub, repo: str, moment: datetime, cache_dir: Path) -> list[dict]:
-    """Every job of every run created this UTC month, across all attempts.
+def job_time(job: dict) -> datetime | None:
+    """When a job ran: its start, or, for one that never got a runner, its creation."""
+    if got_runner(job) and job.get("started_at"):
+        return parse_time(job.get("started_at"))
+    return parse_time(job.get("created_at"))
 
-    A completed run's jobs are cached by its attempt number, so each attempt is
-    read once and a re-run's new attempt is read when it appears.
+
+def collect_month(github: GitHub, repo: str, moment: datetime, cache_dir: Path) -> list[dict]:
+    """Every job that ran this UTC month, across all attempts of every run.
+
+    A run created up to GitHub's re-run limit before the month can still run and
+    bill in it, so runs are read from that far back and their jobs kept by when
+    each job ran, cached and fresh alike. A completed run's jobs are cached by its
+    attempt number, so each attempt is read once.
     """
+    start = month_start(moment)
     jobs = []
-    for run in github.runs(repo, month_start(moment)):
-        created = parse_time(run.get("created_at"))
-        if created is None or created < month_start(moment):
-            continue
+    for run in github.runs(repo, start - timedelta(days=RERUN_LOOKBACK_DAYS)):
         cache = cache_dir / repo.replace("/", "__") / f"{run['id']}.json"
         held = read_json(cache, None)
         if held and held.get("run_attempt") == run.get("run_attempt"):
@@ -269,6 +289,9 @@ def collect_month(github: GitHub, repo: str, moment: datetime, cache_dir: Path) 
                 write_json_atomic(cache, {"run_attempt": run.get("run_attempt"),
                                           "jobs": [slim(job) for job in run_jobs]})
         for job in run_jobs:
+            ran = job_time(job)
+            if ran is None or ran < start:
+                continue
             jobs.append({**slim(job), "repo": repo, "path": run.get("path"),
                          "run_url": run.get("html_url")})
     return jobs
@@ -281,14 +304,34 @@ def slim(job: dict) -> dict:
     return {key: job.get(key) for key in keep}
 
 
-def moved_now(jobs: list[dict]) -> set[str]:
-    """C8: a repository has moved once a non-probe job ran on a private-ci runner."""
-    return {job["repo"] for job in jobs
-            if LABEL in (job.get("labels") or []) and got_runner(job)
-            and job.get("path") != PROBE_PATH}
+def moved_now(jobs: list[dict]) -> dict[str, str]:
+    """C8: when each repository moved, the first non-probe job it ran on a private-ci runner."""
+    moved: dict[str, str] = {}
+    for job in jobs:
+        if LABEL in (job.get("labels") or []) and got_runner(job) \
+                and job.get("path") != PROBE_PATH and job_time(job) is not None:
+            at = iso(job_time(job))
+            moved[job["repo"]] = min(moved.get(job["repo"], at), at)
+    return moved
 
 
-def evaluate(jobs: list[dict], hosted: list[dict], moved: set[str], moment: datetime) -> dict:
+def load_moved(path: Path) -> dict[str, str]:
+    """`moved.json`, from either form: a list of names (before #929's repair) or name to time."""
+    held = read_json(path, {})
+    if isinstance(held, list):
+        return {repo: "1970-01-01T00:00:00Z" for repo in held}
+    return dict(held)
+
+
+def merge_moved(old: dict[str, str], new: dict[str, str]) -> dict[str, str]:
+    merged = dict(old)
+    for repo, at in new.items():
+        merged[repo] = min(merged.get(repo, at), at)
+    return merged
+
+
+def evaluate(jobs: list[dict], hosted: list[dict], moved: dict[str, str],
+             moment: datetime) -> dict:
     """Both alert conditions over one month's jobs; no I/O."""
     declared = {(entry["path"], entry["job"]) for entry in hosted}
     month = moment.strftime("%Y-%m")
@@ -307,6 +350,10 @@ def evaluate(jobs: list[dict], hosted: list[dict], moved: set[str], moment: date
             matched.add((job.get("path"), job.get("name")))
             continue
         if job.get("path") == PROBE_PATH or job["repo"] not in moved:
+            continue
+        # A hosted job from before its repository moved was expected then, so only
+        # one that ran after the move is condition 1.
+        if job_time(job) is None or job_time(job) < parse_time(moved[job["repo"]]):
             continue
         key = f"unlisted:{job['repo']}:{job.get('path')}:{job.get('name')}:{month}"
         entry = unlisted.setdefault(key, {"key": key, "repo": job["repo"],
@@ -336,13 +383,18 @@ def alerted_keys(comments: list[dict]) -> set[str]:
         first = (comment.get("body") or "").lstrip(BOM).split("\n", 1)[0].strip()
         match = ALERT_MARKER.fullmatch(first)
         if match:
-            keys.update(match.group("keys").split(","))
+            keys.update(urllib.parse.unquote(key) for key in match.group("keys").split(","))
     return keys
+
+
+def encode_keys(alerts: list[dict]) -> str:
+    """Keys hold job names, which hold spaces and commas, so each is percent-encoded."""
+    return ",".join(urllib.parse.quote(alert["key"], safe=":/()") for alert in alerts)
 
 
 def alert_body(alerts: list[dict]) -> str:
     """The alert comment. Its marker is not the Steward's, so the wake reads it as intake."""
-    lines = [f"<!-- lab:private-ci-watch:v1 keys={','.join(a['key'] for a in alerts)} -->",
+    lines = [f"<!-- lab:private-ci-watch:v1 keys={encode_keys(alerts)} -->",
              "**Private-CI watch (#929).** Verify with `python tools/private_ci/watch.py "
              "status`; the Steward's `references/private-ci.md` says which one-line move "
              "to bring the owner.", ""]
@@ -367,9 +419,9 @@ def watch(github: GitHub, state_dir: Path, moment: datetime, *, post: bool = Tru
     jobs = []
     for repo in repos:
         jobs.extend(collect_month(github, repo, moment, state_dir / "jobs"))
-    moved = set(read_json(state_dir / "moved.json", [])) | moved_now(jobs)
+    moved = merge_moved(load_moved(state_dir / "moved.json"), moved_now(jobs))
     if post:
-        write_json_atomic(state_dir / "moved.json", sorted(moved))
+        write_json_atomic(state_dir / "moved.json", moved)
     result = evaluate(jobs, hosted, moved, moment)
     seen = alerted_keys(github.comments(LAB_REPO, STANDING_PAGE))
     seen |= set(read_json(state_dir / "alerted.json", []))
@@ -381,8 +433,8 @@ def watch(github: GitHub, state_dir: Path, moment: datetime, *, post: bool = Tru
         posted = (comment or {}).get("html_url")
         write_json_atomic(state_dir / "alerted.json",
                           sorted(seen | {alert["key"] for alert in fresh}))
-    return {**result, "moved": sorted(moved),
-            "awaiting_carrier": sorted(set(repos) - moved),
+    return {**result, "moved": moved,
+            "awaiting_carrier": sorted(set(repos) - set(moved)),
             "would_alert": [a["key"] for a in fresh], "posted": posted}
 
 
@@ -414,39 +466,78 @@ def owed(job: dict, path: str | None) -> bool:
     return created is not None and completed is not None and completed - created >= QUEUE_LIMIT
 
 
-def plan_call(run: dict, all_jobs: list[dict], latest_jobs: list[dict]) -> dict | None:
-    """The one call a pass makes on a completed run, or None when nothing is owed."""
+def plan_call(run: dict, all_jobs: list[dict], latest_jobs: list[dict],
+              cancelled_by_person=lambda job: False) -> dict | None:
+    """The one call a pass makes on a completed run, or None when nothing is owed.
+
+    A `cancelled` job with no runner after ~24 hours is a queue drop unless GitHub's
+    annotation says a person or a concurrency group cancelled it, which only
+    `cancelled_by_person` can read.
+    """
     path = run.get("path")
     latest = latest_occurrences(all_jobs)
-    owing = sorted((job for job in latest.values() if owed(job, path)), key=lambda j: j["id"])
+    owing = sorted((job for job in latest.values() if owed(job, path)
+                    and not (job.get("conclusion") == "cancelled" and cancelled_by_person(job))),
+                   key=lambda j: j["id"])
     if not owing:
         return None
     owed_ids = {job["id"] for job in owing}
     names = {job["name"] for job in latest_jobs}
     failed = [job for job in latest_jobs if job.get("conclusion") not in QUIET]
-    if names >= set(latest) and all(job["id"] in owed_ids for job in failed):
-        return {"kind": "run", "endpoint": f"actions/runs/{run['id']}/rerun-failed-jobs",
-                "jobs": [job["name"] for job in owing]}
     first = owing[0]
-    return {"kind": "job", "endpoint": f"actions/jobs/{first['id']}/rerun",
-            "jobs": [first["name"]]}
+    job_call = {"kind": "job", "endpoint": f"actions/jobs/{first['id']}/rerun",
+                "jobs": [first["name"]]}
+    if names >= set(latest) and all(job["id"] in owed_ids for job in failed):
+        # The job-level call is the fallback if GitHub rejects the run-level one.
+        return {"kind": "run", "endpoint": f"actions/runs/{run['id']}/rerun-failed-jobs",
+                "jobs": [job["name"] for job in owing], "fallback": job_call}
+    return job_call
+
+
+def person_cancelled(github: GitHub, repo: str):
+    """Whether GitHub's annotations on a job say a person or a concurrency group cancelled it.
+
+    An unreadable annotation list counts as a person's cancellation, so a doubt
+    never re-runs a job a person stopped.
+    """
+    def check(job: dict) -> bool:
+        try:
+            notes = github.annotations(repo, job["id"])
+        except WatchError:
+            return True
+        return any(CANCELLED_BY.search(str(note.get("message") or "")) for note in notes)
+    return check
+
 
 
 def rerun_pass(github: GitHub, state_dir: Path, moment: datetime, *,
                repos: list[str] | None = None, only: set[tuple] | None = None) -> dict:
-    """One pass: at most one call per run; returns calls made and runs still owing."""
+    """One pass: at most one call per run; returns calls made and runs still owing.
+
+    A rejected call never stops the pass: a rejected run-level call falls back to
+    the job-level one, and a run whose calls are both rejected is recorded in
+    `rerun-failures.json` and left alone until it has a new attempt. A read that
+    fails is reported in `errors` and the pass goes on to the next run.
+    """
     repos = repos if repos is not None else product_repos()
     ledger = read_json(state_dir / "reruns.json", {})
-    calls, owing, waiting = [], [], []
+    failures = read_json(state_dir / "rerun-failures.json", {})
+    calls, owing, waiting, errors = [], [], [], []
     since = moment - timedelta(days=RERUN_LOOKBACK_DAYS)
     for repo in repos:
-        if only is not None:
-            runs = [github.run(repo, run_id) for (r, run_id) in sorted(only) if r == repo]
-        else:
-            runs = github.runs(repo, since)
+        try:
+            if only is not None:
+                runs = [github.run(repo, run_id) for (r, run_id) in sorted(only) if r == repo]
+            else:
+                runs = github.runs(repo, since)
+        except WatchError as exc:
+            errors.append(f"{repo}: {exc}")
+            continue
         for run in runs:
             key = f"{repo}#{run['id']}"
             if run.get("path") == PROBE_PATH:
+                continue
+            if key in failures and (run.get("run_attempt") or 1) <= failures[key]["attempt"]:
                 continue
             if run.get("status") != "completed":
                 if key in ledger:
@@ -455,29 +546,58 @@ def rerun_pass(github: GitHub, state_dir: Path, moment: datetime, *,
             if key in ledger and (run.get("run_attempt") or 1) <= ledger[key]:
                 waiting.append((repo, run["id"]))
                 continue
-            all_jobs = github.jobs(repo, run["id"], "all")
-            plan = plan_call(run, all_jobs, github.jobs(repo, run["id"], "latest"))
+            try:
+                all_jobs = github.jobs(repo, run["id"], "all")
+                latest_jobs = github.jobs(repo, run["id"], "latest")
+            except WatchError as exc:
+                errors.append(f"{key}: {exc}")
+                continue
+            check = person_cancelled(github, repo)
+            plan = plan_call(run, all_jobs, latest_jobs, check)
             if plan is None:
                 continue
-            github.send("POST", f"repos/{repo}/{plan['endpoint']}")
-            ledger[key] = run.get("run_attempt") or 1
+            attempt = run.get("run_attempt") or 1
+            candidates = [plan] + ([plan["fallback"]] if plan.get("fallback") else [])
+            rejected, made = [], None
+            for candidate in candidates:
+                try:
+                    github.send("POST", f"repos/{repo}/{candidate['endpoint']}")
+                except WatchError as exc:
+                    rejected.append(f"{candidate['endpoint']}: {exc}")
+                    continue
+                made = candidate
+                break
+            if made is None:
+                # Recorded and left alone until the run has a new attempt, so a call
+                # GitHub keeps refusing is not made again at every pass.
+                failures[key] = {"attempt": attempt, "rejected": rejected, "at": iso(moment)}
+                write_json_atomic(state_dir / "rerun-failures.json", failures)
+                calls.append({"repo": repo, "run": run["id"], "kind": "failed",
+                              "rejected": rejected})
+                continue
+            ledger[key] = attempt
             write_json_atomic(state_dir / "reruns.json", ledger)
-            calls.append({"repo": repo, "run": run["id"], **plan})
+            call = {key_: value for key_, value in made.items() if key_ != "fallback"}
+            calls.append({"repo": repo, "run": run["id"], **call,
+                          **({"rejected": rejected} if rejected else {})})
             owing.append((repo, run["id"]))
-    return {"calls": calls, "pending": sorted(set(owing) | set(waiting))}
+    return {"calls": calls, "pending": sorted(set(owing) | set(waiting)), "errors": errors}
 
 
 def rerun_dropped(github: GitHub, state_dir: Path, *, follow_minutes: int = 0,
                   repos: list[str] | None = None, clock=now_utc, sleep=time.sleep) -> dict:
     first = rerun_pass(github, state_dir, clock(), repos=repos)
     calls, pending = list(first["calls"]), set(first["pending"])
+    errors = list(first["errors"])
     deadline = time.monotonic() + follow_minutes * 60
     while follow_minutes and pending and time.monotonic() < deadline:
         sleep(FOLLOW_INTERVAL_SECONDS)
         result = rerun_pass(github, state_dir, clock(), repos=repos, only=pending)
         calls.extend(result["calls"])
+        errors.extend(result["errors"])
         pending = set(result["pending"])
-    return {"calls": calls, "pending": [f"{r}#{n}" for r, n in sorted(pending)]}
+    return {"calls": calls, "pending": [f"{r}#{n}" for r, n in sorted(pending)],
+            "errors": errors}
 
 
 # ---------------------------------------------------------------- tasks
@@ -531,10 +651,17 @@ def logon_trigger(user: str) -> str:
 
 
 def watch_task_xml(interpreter: str, script: str, working_dir: str, user: str,
-                   start: datetime) -> str:
-    """The watch task: `logon` at the owner's logon and daily at 09:00 local."""
+                   state_dir: str | None = None) -> str:
+    """The watch task: `logon` at the owner's logon and daily at 09:00 local.
+
+    The daily trigger's start is a fixed past date, so the definition, and the
+    digest `install` compares, is the same whatever day it is built. A state
+    directory other than the default is passed through, so the task and the
+    install keep one set of records.
+    """
+    where = f' --state-dir "{state_dir}"' if state_dir else ""
     daily = ("    <CalendarTrigger>\n"
-             f"      <StartBoundary>{start.strftime('%Y-%m-%d')}T09:00:00</StartBoundary>\n"
+             f"      <StartBoundary>{DAILY_START}T09:00:00</StartBoundary>\n"
              "      <ScheduleByDay>\n"
              "        <DaysInterval>1</DaysInterval>\n"
              "      </ScheduleByDay>\n"
@@ -542,7 +669,7 @@ def watch_task_xml(interpreter: str, script: str, working_dir: str, user: str,
              "    </CalendarTrigger>\n")
     return task_xml("tradecraft lab: re-run private-repository jobs GitHub dropped after "
                     "24 hours queued, and watch hosted minutes (#929). No model runs.",
-                    logon_trigger(user) + daily, interpreter, f'"{script}" logon',
+                    logon_trigger(user) + daily, interpreter, f'"{script}"{where} logon',
                     working_dir, "PT5H")
 
 
@@ -591,12 +718,28 @@ def emit(value) -> None:
 
 def logon(github: GitHub, state_dir: Path, *, clock=now_utc, sleep=time.sleep,
           repos: list[str] | None = None, hosted: list[dict] | None = None) -> dict:
-    """At logon: re-run, then watch, then follow the re-run for 240 minutes."""
-    steps = {}
-    steps["rerun"] = rerun_dropped(github, state_dir, repos=repos, clock=clock, sleep=sleep)
-    steps["watch"] = watch(github, state_dir, clock(), repos=repos, hosted=hosted)
-    steps["follow"] = rerun_dropped(github, state_dir, follow_minutes=LOGON_FOLLOW_MINUTES,
-                                    repos=repos, clock=clock, sleep=sleep)
+    """At logon: re-run, then watch, then follow the re-run for 240 minutes.
+
+    One step's failure never skips the others; it is reported in `errors`.
+    """
+    steps: dict = {}
+    errors: list[str] = []
+    work = (
+        ("rerun", lambda: rerun_dropped(github, state_dir, repos=repos, clock=clock,
+                                        sleep=sleep)),
+        ("watch", lambda: watch(github, state_dir, clock(), repos=repos, hosted=hosted)),
+        ("follow", lambda: rerun_dropped(github, state_dir,
+                                         follow_minutes=LOGON_FOLLOW_MINUTES,
+                                         repos=repos, clock=clock, sleep=sleep)),
+    )
+    for name, step in work:
+        try:
+            steps[name] = step()
+            errors += [f"{name}: {e}" for e in steps[name].get("errors", [])]
+        except (WatchError, ValueError, KeyError, OSError) as exc:
+            steps[name] = {"error": str(exc)}
+            errors.append(f"{name}: {exc}")
+    steps["errors"] = errors
     return steps
 
 
@@ -629,12 +772,14 @@ def run_command(args: argparse.Namespace, github: GitHub, state_dir: Path) -> di
         seen = watch(github, state_dir, moment, post=False)
         ledger = read_json(state_dir / "reruns.json", {})
         return {**seen, "reruns_recorded": ledger,
+                "rerun_failures": read_json(state_dir / "rerun-failures.json", {}),
                 "last_run": read_json(state_dir / "last-run.json", None),
                 "last_success": read_json(state_dir / "last-success.json", None)}
     if args.unregister:
         return {"unregistered": schtasks(["/Delete", "/TN", TASK_NAME, "/F"])}
     xml = watch_task_xml(windowless_interpreter(), str(HERE / "watch.py"), str(HERE),
-                         owner_account(), moment)
+                         owner_account(),
+                         None if state_dir == default_state_dir() else str(state_dir))
     return {"registered": register_task(TASK_NAME, xml)}
 
 
@@ -654,13 +799,16 @@ def main(argv: list[str] | None = None) -> int:
                                "error": str(exc)})
         emit({"ok": False, "error": str(exc)})
         return 1
+    errors = value.get("errors") or []
     if record:
         write_json_atomic(state_dir / "last-run.json",
-                          {"command": args.command, "at": started, "ok": True})
-        write_json_atomic(state_dir / "last-success.json",
-                          {"command": args.command, "at": started})
-    emit({"ok": True, **value})
-    return 0
+                          {"command": args.command, "at": started, "ok": not errors,
+                           **({"errors": errors} if errors else {})})
+        if not errors:
+            write_json_atomic(state_dir / "last-success.json",
+                              {"command": args.command, "at": started})
+    emit({"ok": not errors, **value})
+    return 0 if not errors else 1
 
 
 if __name__ == "__main__":

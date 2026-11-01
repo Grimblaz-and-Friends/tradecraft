@@ -363,9 +363,11 @@ def test_c16_verify_runs_the_check_under_setpriv_as_the_units_account():
 # ---------------------------------------------------------------- the fake Windows host
 
 
-def check_line(ok=True, failures=()) -> str:
+def check_line(ok=True, failures=(), nproc=8, mem=12249308) -> str:
     probes = [{"probe": "root", "result": "reachable" if failures else "blocked",
-               "failures": list(failures), "detail": {}}]
+               "failures": list(failures), "detail": {}},
+              {"probe": "settings", "result": "info", "failures": [],
+               "detail": {"nproc": nproc, "mem_total_kib": mem}}]
     return "PRIVATE-CI-CHECK " + json.dumps({"ok": ok, "failed": [] if ok else ["root"],
                                              "probes": probes}) + "\n"
 
@@ -383,6 +385,9 @@ class FakeWindows:
         self.keepalive = False
         self.wsl_conf = GOOD_WSL_CONF
         self.nnp = "yes"
+        self.hidden = "-/dev/dxg -/usr/lib/wsl -/mnt/wslg"
+        self.lib_listing = (f"d root root 755 {ps.GUEST_LIB}\n" + "".join(
+            f"f root root 755 {dest}\n" for _, dest, _ in ps.GUEST_FILES))
         self.root_report = check_line()
         self.verify_report = check_line()
         self.dirty = ""
@@ -446,6 +451,13 @@ class FakeWindows:
         if argv[0] == "journalctl":
             self.journal_reads += 1
             return 0, self.journal(argv[2], self.journal_reads).encode("utf-8"), b""
+        if argv[:2] == ["find", "/usr"]:
+            return 0, "".join(f"d root root 755 {path}\n"
+                              for path in ps.GUEST_LIB_PARENTS).encode("ascii"), b""
+        if argv[:2] == ["find", ps.GUEST_LIB]:
+            return 0, self.lib_listing.encode("ascii"), b""
+        if argv[0] == "systemctl" and "InaccessiblePaths" in argv:
+            return 0, (self.hidden + "\n").encode("ascii"), b""
         if argv[0] == "systemctl":
             return 0, (self.nnp + "\n").encode("ascii"), b""
         if argv == ps.clear_stubs_argv():
@@ -539,8 +551,9 @@ def test_a3_a16_a17_a23_install_then_reinstall(windows, tmp_path):
 
     # A17: a second run over the complete install prompts for nothing and changes nothing.
     windows.calls.clear()
+    # Item 5 (reading 8): three days later, so a day in the task's definition would show.
     second = ps.install(ps.Host(windows), state_dir, prompt=lambda: pytest.fail("prompted"),
-                        sleep=lambda s: None, schtasks=tasks, now=NOW)
+                        sleep=lambda s: None, schtasks=tasks, now=NOW + timedelta(days=3))
     assert second["ok"]
     assert second["prompted_for_token"] is False
     assert [s for s in second["steps"] if s["changed"]] == []
@@ -628,7 +641,8 @@ def test_a11_registration_carries_only_the_private_ci_label():
 def test_a12_nothing_names_the_windows_runner():
     """The only Windows-runner observation is C18's process-name query."""
     forbidden = re.compile(r"BLAZ-TOP|actions-runner\\|svc\.cmd|config\.cmd|"
-                           r"actions\.runner\.(?!%s|\{ORG\})" % re.escape("%s."))
+                           r"actions\.runner\.(?!%s|\{ORG\}|service\.template)"
+                           % re.escape("%s."))
     for path in PRIVATE_CI.rglob("*"):
         if path.suffix in (".py", ".sh", ".yml", ".conf", ".json"):
             text = path.read_text(encoding="utf-8")
@@ -744,9 +758,16 @@ def test_a10_a19_the_probe_workflow():
 
 def test_a7_task_definitions():
     xml = pw.watch_task_xml("C:\\py\\pythonw.exe", "C:\\state\\bin\\watch.py", "C:\\state\\bin",
-                            "BOX\\owner", NOW)
+                            "BOX\\owner")
     assert "<LogonTrigger>" in xml and "<UserId>BOX\\owner</UserId>" in xml
-    assert "<StartBoundary>2026-10-31T09:00:00</StartBoundary>" in xml
+    assert "<StartBoundary>2026-11-01T09:00:00</StartBoundary>" in xml
+    # Item 6: a state directory other than the default reaches the task.
+    elsewhere = pw.watch_task_xml("C:\\py\\pythonw.exe", "C:\\state\\bin\\watch.py",
+                                  "C:\\state\\bin", "BOX\\owner", state_dir="D:\\lab state")
+    assert "&quot;C:\\state\\bin\\watch.py&quot; --state-dir &quot;D:\\lab state&quot; logon" \
+        in elsewhere
+    assert pw.build_parser().parse_args(
+        ["--state-dir", "D:\\lab state", "logon"]).state_dir == "D:\\lab state"
     assert "<DaysInterval>1</DaysInterval>" in xml
     assert "&quot;C:\\state\\bin\\watch.py&quot; logon" in xml
     assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
@@ -803,6 +824,7 @@ class FakeActions:
         self.calls: list[str] = []
         self.comments: list[dict] = []
         self.shape = shape
+        self.notes: dict[int, list[dict]] = {}
 
     def add_run(self, repo, run_id, path, jobs, *, status="completed", attempt=1, created=30.0):
         self.runs[(repo, run_id)] = {"id": run_id, "path": path, "status": status,
@@ -876,6 +898,9 @@ class GitHubView:
 
     def send(self, method, endpoint, payload=None):
         return self.actions.send(method, endpoint, payload)
+
+    def annotations(self, repo, job_id):
+        return list(self.actions.notes.get(job_id, []))
 
     def comments(self, repo, issue):
         return list(self.actions.comments)
@@ -1101,3 +1126,331 @@ def test_a6_follow_takes_up_the_next_owed_job_once_the_attempt_completes(state):
     assert [c["endpoint"] for c in found["calls"]] == ["actions/jobs/61/rerun",
                                                        "actions/jobs/62/rerun"]
     assert found["pending"] == []
+
+
+# ---------------------------------------------------------------- holder reading 8 (PR #931)
+
+
+st = _load("private_ci_state", PRIVATE_CI / "guest" / "state.py")
+PROVISION_TEXT = (PRIVATE_CI / "guest" / "provision.sh").read_text(encoding="utf-8")
+ALLOWED_ROOT_LINES = (
+    re.compile(r'^dir=\$\(runner_dir "\$n"\)$'),
+    re.compile(r'^"(ExecStart|WorkingDirectory)=\$dir(/runsvc\.sh)?" \\$'),
+    re.compile(r'^"Environment=(DOTNET_INSTALL_DIR=\$dir/_dotnet|TMPDIR=\$dir/_tmp)"'),
+    re.compile(r"^' _ \"\$dir\"$"),
+)
+
+
+def code_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+
+
+def test_item1_root_never_works_in_the_account_tree():
+    """Every line naming the runner tree runs as the account, or is unit text root writes.
+
+    At 2b71440 root ran bin/installdependencies.sh and svc.sh from the tree, created
+    _dotnet and _tmp in it with `install -d -o`, and touched, appended to and chowned
+    .env there; each follows a symlink a job can plant.
+    """
+    offending = [line for line in code_lines(PROVISION_TEXT)
+                 if "$dir" in line and "as_account" not in line
+                 and not any(pattern.match(line) for pattern in ALLOWED_ROOT_LINES)]
+    assert offending == []
+    code = "\n".join(code_lines(PROVISION_TEXT))
+    assert "installdependencies.sh" not in code and not re.search(r"\bsvc\.sh", code)
+    assert not re.search(r"\bchown\b[^\n]*\$dir|install -d -o[^\n]*\$dir|>>\s*\"\$dir", code)
+    # The instance settings live in the root-owned drop-in, beside the device it hides.
+    assert "'InaccessiblePaths=-/dev/dxg -/usr/lib/wsl -/mnt/wslg'" in code
+    assert '"Environment=DOTNET_INSTALL_DIR=$dir/_dotnet"' in code
+    assert 'exec python3 "$(dirname "$0")/state.py"' in code
+    # The packages installdependencies.sh would have installed are in base's list.
+    for package in ("libkrb5-3", "zlib1g", "liblttng-ust1t64", "libssl3t64", "libicu74"):
+        assert re.search(rf"\s{re.escape(package)}(\s|$)", PROVISION_TEXT)
+
+
+linux_only = pytest.mark.skipif(os.name == "nt" or not hasattr(os, "O_NOFOLLOW"),
+                                reason="O_NOFOLLOW and dir_fd are POSIX")
+
+
+@linux_only
+def test_item1_state_reads_no_symlink_and_keeps_only_three_fields(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    secret = tmp_path / "secret.json"
+    secret.write_text(json.dumps({"agentName": "blaz-top-wsl-1", "poolName": "private-ci",
+                                  "gitHubUrl": "https://github.com/Grimblaz-and-Friends"}))
+    one = home / "runner-1"
+    one.mkdir(parents=True)
+    (one / "config.sh").write_text("#!/bin/sh\n")
+    os.chmod(one / "config.sh", 0o755)
+    (one / ".runner").symlink_to(secret)              # a symlinked .runner is not read
+    (one / "_diag").symlink_to(tmp_path)              # nor is a symlinked _diag
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "config.sh").write_text("#!/bin/sh\n")
+    os.chmod(elsewhere / "config.sh", 0o755)
+    (home / "runner-2").symlink_to(elsewhere)         # nor a symlinked runner directory
+    monkeypatch.setenv("TRADECRAFT_CI_RUNNER_HOME", str(home))
+    found = st.state(systemctl=lambda argv: "", to_epoch=lambda text: 0)
+    first, second = found["instances"]
+    assert first["unpacked"] is True and first["runner"] is None
+    assert first["last_worker_epoch"] == 0
+    assert second["unpacked"] is False and second["runner"] is None
+    # A real .runner is untrusted text: three short strings survive, nothing else.
+    (one / ".runner").unlink()
+    (one / ".runner").write_text(json.dumps({"AgentName": "blaz-top-wsl-1" + "x" * 500,
+                                             "PoolName": "private-ci", "injected": {"a": 1},
+                                             "gitHubUrl": 7}))
+    kept = st.state(systemctl=lambda argv: "", to_epoch=lambda text: 0)["instances"][0]["runner"]
+    assert kept == {"agentName": "blaz-top-wsl-1" + "x" * 186, "poolName": "private-ci"}
+    (one / ".runner").write_text("{ not json")
+    assert st.state(systemctl=lambda argv: "", to_epoch=lambda t: 0)["instances"][0]["runner"] is None
+
+
+def lib(lines: list[str]) -> str:
+    return "".join(f"d root root 755 {p}\n" for p in ps.GUEST_LIB_PARENTS) + "\n".join(lines)
+
+
+@pytest.mark.parametrize("entry, named", [
+    (f"l root root 777 {ps.GUEST_LIB}", "is a symlink"),
+    (f"f ci-runner ci-runner 755 {ps.CHECK}", "is ci-runner:ci-runner, not root:root"),
+    (f"f root root 775 {ps.CHECK}", "writable by others than root (775)"),
+    (f"d root root 757 {ps.GUEST_LIB}", "writable by others than root (757)"),
+])
+def test_item1_an_unsafe_guest_library_fails(entry, named):
+    good = [f"d root root 755 {ps.GUEST_LIB}", f"f root root 755 {ps.CHECK}"]
+    assert ps.check_guest_lib(lib(good), require_present=True) == []
+    failures = ps.check_guest_lib(lib(good + [entry]), require_present=True)
+    assert any(named in f for f in failures), failures
+    assert ps.check_guest_lib(lib([]), require_present=True) == [
+        f"guest library: {ps.GUEST_LIB} is missing"]
+    assert ps.check_guest_lib(lib([]), require_present=False) == []
+
+
+def test_item1_install_refuses_an_unsafe_library_and_verify_names_it(windows, tmp_path):
+    windows.lib_listing = (f"d root root 755 {ps.GUEST_LIB}\n"
+                           f"f ci-runner ci-runner 755 {ps.CHECK}\n")
+    with pytest.raises(ps.SetupError, match="isn't root's alone"):
+        run_install(windows, tmp_path / "state", [])
+    assert not any(argv[6:8] == ["/bin/sh", "-c"] for argv in windows.entered())
+    found = ps.verify(ps.Host(windows), wslconfig_text=GOOD_WSLCONFIG)
+    assert f"guest library: {ps.CHECK} is ci-runner:ci-runner, not root:root" in found["failures"]
+
+
+def test_item4_verify_needs_the_device_hidden_and_the_caps_in_effect(windows):
+    windows.hidden = ""
+    windows.verify_report = check_line(nproc=16, mem=16_000_000)
+    found = ps.verify(ps.Host(windows), wslconfig_text=GOOD_WSLCONFIG)
+    assert "unit blaz-top-wsl-1 InaccessiblePaths lacks /dev/dxg" in found["failures"]
+    assert any(f.startswith("caps: nproc 16, not 8") for f in found["failures"])
+    assert any(f.startswith("caps: MemTotal 16000000 KiB") for f in found["failures"])
+
+
+def test_item4_install_is_not_ok_while_wslconfig_waits_on_a_full_restart(windows, tmp_path):
+    windows.distros["Ubuntu"] = "Running"
+    result, _ = run_install(windows, tmp_path / "state", [])
+    assert result["verify"]["ok"] and result["ok"] is False
+    assert result["pending"] and "wsl --shutdown" in result["pending"][0]
+    assert ["wsl.exe", "--shutdown"] not in [argv for argv, _ in windows.calls]
+
+
+@pytest.mark.parametrize("loosen, named", [
+    ("display", "wslg:DISPLAY set"),
+    ("x0", "wslg:socket"),
+    ("pulse", "PulseServer"),
+    ("dxg", "gpu:"),
+])
+def test_item4_the_check_fails_on_each_wslg_route(tmp_path, quiet_loopback, loosen, named):
+    root = good_root(tmp_path)
+    environ = {"PATH": "/usr/bin:/bin"}
+    if loosen == "display":
+        environ["DISPLAY"] = ":0"
+    elif loosen == "x0":
+        (root / "tmp" / ".X11-unix").mkdir(parents=True)
+        (root / "tmp" / ".X11-unix" / "X0").write_text("")
+    elif loosen == "pulse":
+        (root / "mnt" / "wslg").mkdir()
+        (root / "mnt" / "wslg" / "PulseServer").write_text("")
+    else:
+        (root / "dev").mkdir()
+        (root / "dev" / "dxg").write_text("")
+    report = check(root, tmp_path, environ=environ)
+    assert "wslg" in report["failed"]
+    assert any(named in f for f in failures_of(report, "wslg"))
+    if loosen == "dxg":
+        # verify can't see the units' namespace; it reads their InaccessiblePaths instead.
+        assert "wslg" not in check(root, tmp_path, environ=environ, context="verify")["failed"]
+    # A job's own Xvfb on :99 is the distribution's display, not WSLg's.
+    clean = good_root(tmp_path / "again")
+    (clean / "tmp" / ".X11-unix").mkdir(parents=True)
+    (clean / "tmp" / ".X11-unix" / "X99").write_text("")
+    assert "wslg" not in check(clean, tmp_path, environ={"PATH": "/usr/bin"})["failed"]
+
+
+def test_item13_a_dangling_drive_symlink_fails(tmp_path):
+    mnt = tmp_path / "mnt"
+    mnt.mkdir()
+    try:
+        (mnt / "c").symlink_to(tmp_path / "gone")
+    except OSError:
+        pytest.skip("creating a symlink needs a privilege this host lacks")
+    assert not (mnt / "c").exists()
+    assert ic.probe_drives(mnt, "Micah")["failures"] == [f"drive:{mnt / 'c'}"]
+
+
+def test_item15_registration_names_the_organization():
+    record = {"AgentName": "blaz-top-wsl-1", "PoolName": "private-ci",
+              "GitHubUrl": "https://github.com/someone-else"}
+    assert not ps.instance_registered(1, {"runner": record})
+    assert ps.instance_registered(1, {"runner": {**record, "GitHubUrl": ps.ORG_URL + "/"}})
+
+
+def test_item16_an_apostrophe_in_the_user_name_survives_the_shell():
+    import shlex
+    workflow = ps.probe_files("O'Brien", 5123, "abc1234")[ps.PROBE_PATH].decode("utf-8")
+    line = next(l for l in workflow.splitlines() if "isolation_check.py" in l)
+    argv = shlex.split(line.split("run:", 1)[1])
+    assert argv[argv.index("--win-user") + 1] == "O'Brien"
+
+
+def test_item17_only_the_two_provisioned_runners_count():
+    smoke = {"name": "smoke", "conclusion": "success", "runner_name": "blaz-top-wsl-1"}
+    jobs = [job_span("local (1)", 0, 61, "blaz-top-wsl-1"),
+            job_span("local (2)", 1, 62, "blaz-top-wsl-3"), smoke]
+    assert any("not ['blaz-top-wsl-1', 'blaz-top-wsl-2']" in f
+               for f in ps.judge_jobs(jobs, timed=False))
+
+
+class ProbeGitHub:
+    """Enough of GitHub for the probe to push and find its run, then fail reading jobs."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, method, endpoint, payload=None):
+        self.sent.append(f"{method} {endpoint}")
+        return {"sha": "0" * 40}
+
+    def get(self, endpoint):
+        if "/git/ref/" in endpoint:
+            return {}
+        return {"workflow_runs": [{"id": 77, "html_url": "https://example.invalid/run/77"}]}
+
+    def jobs(self, repo, run_id, which="all"):
+        raise pw.WatchError("gh api exited 1: rate limited")
+
+
+def test_item18_a_failure_after_the_run_exists_still_cancels_it(windows, tmp_path):
+    github = ProbeGitHub()
+    with pytest.raises(pw.WatchError, match="rate limited"):
+        ps.probe(ps.Host(windows), github, state_dir=tmp_path, sleep=lambda s: None)
+    assert github.sent[-1] == f"POST repos/{ps.PROBE_REPO}/actions/runs/77/cancel"
+
+
+# ---------------------------------------------------------------- the watch, reading 8
+
+
+def test_item2_jobs_before_the_move_never_alert(state):
+    actions = FakeActions()
+    actions.add_run(DAEMON, 60, ".github/workflows/nightly.yml",
+                    [job(600, "sweep", run_id=60, seconds=125, created=100)], created=100)
+    actions.add_run(DAEMON, 61, CI, [job(610, "build", run_id=61, labels=("private-ci",),
+                                         runner="blaz-top-wsl-1", group=5, created=50)],
+                    created=50)
+    found = pw.watch(GitHubView(actions), state, NOW, repos=REPOS, hosted=HOSTED)
+    assert found["alerts"] == [] and DAEMON in found["moved"]
+    assert json.loads((state / "moved.json").read_text())[DAEMON] == stamp(50)
+    actions.add_run(DAEMON, 62, ".github/workflows/nightly.yml",
+                    [job(620, "sweep", run_id=62, seconds=125, created=10)], created=10)
+    after = pw.watch(GitHubView(actions), state, NOW, repos=REPOS, hosted=HOSTED)
+    assert after["would_alert"] == [f"unlisted:{DAEMON}:.github/workflows/nightly.yml:sweep:2026-10"]
+    assert after["alerts"][0]["minutes"] == 3  # the post-move job only
+
+
+def test_item2_a_moved_list_from_before_the_repair_still_reads(state):
+    state.mkdir(parents=True)
+    (state / "moved.json").write_text(json.dumps([DAEMON]))
+    assert pw.load_moved(state / "moved.json") == {DAEMON: "1970-01-01T00:00:00Z"}
+
+
+def test_item3_a_rejected_run_call_falls_back_to_the_job_call(state):
+    actions = FakeActions()
+    actions.add_run(CC, 1, CI, [dropped(11, "Validate", 1)])
+    original = actions.send
+    actions.reject = {f"repos/{CC}/actions/runs/1/rerun-failed-jobs"}
+
+    def send(method, endpoint, payload=None):
+        if endpoint in actions.reject:
+            raise pw.WatchError("gh api exited 1: HTTP 422")
+        return original(method, endpoint, payload)
+    actions.send = send
+    found = rerun(actions, state)
+    assert [c["endpoint"] for c in found["calls"]] == [f"actions/jobs/11/rerun"]
+    assert actions.calls == [f"POST repos/{CC}/actions/jobs/11/rerun"]
+
+
+def test_item3_a_run_whose_calls_are_both_rejected_is_recorded_and_left(state):
+    actions = FakeActions()
+    actions.add_run(CC, 1, CI, [dropped(11, "Validate", 1)])
+    actions.add_run(CC, 2, CI, [dropped(21, "Validate", 2)])
+
+    def send(method, endpoint, payload=None):
+        if "/runs/1/" in endpoint or "/jobs/11/" in endpoint:
+            raise pw.WatchError("gh api exited 1: HTTP 403")
+        return FakeActions.send(actions, method, endpoint, payload)
+    actions.send = send
+    first = rerun(actions, state)
+    assert [c["kind"] for c in first["calls"]] == ["failed", "run"]  # run 2 still went
+    recorded = json.loads((state / "rerun-failures.json").read_text())
+    assert recorded[f"{CC}#1"]["attempt"] == 1 and len(recorded[f"{CC}#1"]["rejected"]) == 2
+    second = rerun(actions, state)
+    assert second["calls"] == []  # not retried while the run has no new attempt
+
+
+def test_item3_logon_goes_on_when_the_rerun_raises(monkeypatch, tmp_path):
+    order = []
+
+    def boom(*a, **k):
+        order.append("rerun")
+        raise pw.WatchError("gh api exited 1: HTTP 500")
+    monkeypatch.setattr(pw, "rerun_dropped", boom)
+    monkeypatch.setattr(pw, "watch", lambda *a, **k: order.append("watch") or {})
+    steps = pw.logon(None, tmp_path, clock=lambda: NOW)
+    assert order == ["rerun", "watch", "rerun"]
+    assert steps["errors"] == ["rerun: gh api exited 1: HTTP 500",
+                               "follow: gh api exited 1: HTTP 500"]
+
+
+def test_item7_alert_keys_with_spaces_and_commas_read_back():
+    alerts = [{"key": "unlisted:A/B:.github/workflows/x.yml:Change proof (required) / "
+                      "Change proof:2026-11", "repo": "A/B", "path": "p", "job": "j",
+               "run_url": "u", "minutes": 1},
+              {"key": "unlisted:A/B:p:a, b:2026-11", "repo": "A/B", "path": "p",
+               "job": "j", "run_url": "u", "minutes": 1}]
+    body = pw.alert_body(alerts)
+    first = body.split("\n", 1)[0]
+    assert pw.ALERT_MARKER.fullmatch(first)
+    comment = {"user": {"login": "Grimblaz"}, "body": body}
+    assert pw.alerted_keys([comment]) == {alert["key"] for alert in alerts}
+
+
+def test_item8_a_run_from_last_month_billing_this_month_counts(state):
+    actions = FakeActions()
+    last_month = 24 * 35
+    actions.add_run(VERRA, 80, CI, [job(800, "e2e", run_id=80, created=last_month, seconds=600),
+                                    job(801, "e2e", run_id=80, attempt=2, created=5,
+                                        seconds=600)], created=last_month, attempt=2)
+    found = pw.watch(GitHubView(actions), state, NOW, repos=REPOS, hosted=HOSTED, post=False)
+    assert found["minutes"] == 10  # the re-run this month, not the September attempt
+    assert pw.RERUN_LOOKBACK_DAYS == 30
+
+
+def test_item9_a_cancellation_github_annotates_as_a_persons_is_never_rerun(state):
+    actions = FakeActions()
+    actions.add_run(CC, 9, CI, [job(91, "Validate", run_id=9, labels=("private-ci",),
+                                    never_ran=True, conclusion="cancelled", created=30,
+                                    seconds=24 * 3600 - 120)])
+    actions.notes[91] = [{"message": "The run was canceled by @Grimblaz."}]
+    assert rerun(actions, state)["calls"] == []
+    actions.notes[91] = []  # GitHub's own 24-hour drop leaves no such annotation
+    assert [c["kind"] for c in rerun(actions, state)["calls"]] == ["run"]

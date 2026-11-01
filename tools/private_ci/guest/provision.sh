@@ -4,10 +4,14 @@
 # nothing. setup.py copies this file, wsl.conf and isolation_check.py in through
 # stdin, since the distribution mounts no Windows drive.
 #
+# Root never follows a symlink into, writes, changes ownership in, reads from
+# or executes a file from the runner account's tree, because every job runs as
+# that account and can change anything in it (#929, holder reading 8).
+#
 #   base               account, /etc/wsl.conf, fstab, packages (rows 1, 5, 7)
 #   unpack N VER SHA   download and verify the runner into /home/ci-runner/runner-N
 #   register N URL     configure instance N; the token arrives on stdin (C10)
-#   service N          systemd unit, NoNewPrivileges drop-in, per-instance .env
+#   service N          systemd unit and its root-owned drop-in
 #   state              one JSON line describing both instances
 #   workers            the number of Runner.Worker processes running now
 set -euo pipefail
@@ -75,6 +79,9 @@ base() {
     # Daemon's ci.yml :26 (the SDK itself lands in DOTNET_INSTALL_DIR).
     libc6 libgcc-s1 libicu74 liblttng-ust1t64 libssl3t64 libstdc++6 libunwind8
     zlib1g tzdata
+    # The rest of what the runner's bin/installdependencies.sh installs on Ubuntu
+    # 24.04, which root no longer runs from the account's tree.
+    libkrb5-3
   )
   apt-get install -y -q --no-install-recommends "${packages[@]}"
 
@@ -93,21 +100,29 @@ base() {
 }
 
 unpack() {
-  local n=$1 version=$2 sha=$3 dir tarball
+  local n=$1 version=$2 sha=$3 dir work tarball
   dir=$(runner_dir "$n")
-  if [ -x "$dir/config.sh" ] && [ "$(cat "$dir/.tradecraft-version" 2>/dev/null)" = "$version" ]; then
+  # Everything under the runner home belongs to the account every job runs as, so
+  # a job can replace any path there with a symlink. Root never creates, reads,
+  # writes, changes ownership in or executes from that tree: the account does the
+  # account's work. Root keeps only the download and its SHA-256 check, in a
+  # directory of its own, and hands the verified bytes over on stdin.
+  if as_account test -x "$dir/config.sh" \
+      && [ "$(as_account cat "$dir/.tradecraft-version" 2>/dev/null || true)" = "$version" ]; then
     say "runner-$n already unpacked at $version"
     return
   fi
-  tarball=$(mktemp --suffix=.tar.gz)
+  work=$(mktemp -d)
+  tarball="$work/runner.tar.gz"
   curl -fsSL -o "$tarball" \
     "https://github.com/actions/runner/releases/download/v$version/actions-runner-linux-x64-$version.tar.gz"
   echo "$sha  $tarball" | sha256sum --check --quiet
-  install -d -o "$ACCOUNT" -g "$ACCOUNT" -m 0750 "$dir"
-  chmod 0644 "$tarball"
-  as_account tar -xzf "$tarball" -C "$dir"
-  rm -f "$tarball"
-  "$dir/bin/installdependencies.sh" >/dev/null
+  as_account mkdir -p -m 0750 "$dir"
+  as_account tar -xzf - -C "$dir" < "$tarball"
+  rm -rf "$work"
+  # The runner's bin/installdependencies.sh is not run: it is account-writable.
+  # What it installs on Ubuntu 24.04 (libkrb5-3, zlib1g, liblttng-ust1t64,
+  # libssl3t64, libicu74) is in base's package list.
   printf '%s\n' "$version" | as_account tee "$dir/.tradecraft-version" >/dev/null
 }
 
@@ -121,8 +136,9 @@ register() {
   IFS= read -r ACTIONS_RUNNER_INPUT_TOKEN || [ -n "$ACTIONS_RUNNER_INPUT_TOKEN" ]
   export ACTIONS_RUNNER_INPUT_TOKEN
   export HOME="$HOME_DIR"
-  cd "$dir"
-  as_account ./config.sh --unattended --url "$url" \
+  # The account enters its own directory; root never does.
+  as_account bash -c 'cd "$1" && shift && exec ./config.sh "$@"' _ "$dir" \
+    --unattended --url "$url" \
     --runnergroup private-ci --labels private-ci --no-default-labels \
     --name "$(runner_name "$n")" --work _work --replace
   unset ACTIONS_RUNNER_INPUT_TOKEN
@@ -132,27 +148,52 @@ service() {
   local n=$1 dir unit dropin
   dir=$(runner_dir "$n")
   unit=$(unit_name "$n")
-  cd "$dir"
-  if [ ! -f "/etc/systemd/system/$unit" ]; then
-    ./svc.sh install "$ACCOUNT"
-  fi
+
+  # The account lays out its own side: the service launcher svc.sh would copy,
+  # the per-instance tool and temp directories, and (on an install made before
+  # this setup wrote them into the drop-in) its old .env lines removed.
+  as_account bash -c '
+    set -euo pipefail
+    cd "$1"
+    install -m 0755 bin/runsvc.sh runsvc.sh
+    mkdir -p -m 0750 _dotnet _tmp
+    if [ -f .env ]; then sed -i -E "/^(DOTNET_INSTALL_DIR|TMPDIR)=/d" .env; fi
+  ' _ "$dir"
+
+  # Root writes the unit itself from the runner's own template
+  # (src/Misc/layoutbin/actions.runner.service.template at v2.338.0), rather
+  # than running the account-writable svc.sh. The unit runs as the account.
+  printf '%s\n' \
+    '[Unit]' \
+    "Description=GitHub Actions Runner ($ORG.$(runner_name "$n"))" \
+    'After=network-online.target' \
+    '' \
+    '[Service]' \
+    "ExecStart=$dir/runsvc.sh" \
+    "User=$ACCOUNT" \
+    "WorkingDirectory=$dir" \
+    'KillMode=process' \
+    'KillSignal=SIGTERM' \
+    'TimeoutStopSec=5min' \
+    '' \
+    '[Install]' \
+    'WantedBy=multi-user.target' > "/etc/systemd/system/$unit"
+  chmod 0644 "/etc/systemd/system/$unit"
+
+  # Everything root decides about the instance lives in this root-owned drop-in:
+  # no setuid route, the GPU paravirtualization device and WSLg's directory
+  # hidden from jobs, and the install locations that keep the two instances from
+  # racing on one directory (§3.7, C11) as Environment= lines, not lines in the
+  # account's .env.
   dropin="/etc/systemd/system/$unit.d"
   install -d -m 0755 "$dropin"
-  printf '[Service]\nNoNewPrivileges=true\n' > "$dropin/tradecraft.conf"
+  printf '%s\n' \
+    '[Service]' \
+    'NoNewPrivileges=true' \
+    'InaccessiblePaths=-/dev/dxg -/usr/lib/wsl -/mnt/wslg' \
+    "Environment=DOTNET_INSTALL_DIR=$dir/_dotnet" \
+    "Environment=TMPDIR=$dir/_tmp" > "$dropin/tradecraft.conf"
   chmod 0644 "$dropin/tradecraft.conf"
-
-  # Tool installs that default to system paths land in this instance's own
-  # space, so the two instances never race on one directory (§3.7, C11).
-  install -d -o "$ACCOUNT" -g "$ACCOUNT" -m 0750 "$dir/_dotnet" "$dir/_tmp"
-  touch "$dir/.env"
-  sed -i -E '/^(DOTNET_INSTALL_DIR|TMPDIR)=/d' "$dir/.env"
-  {
-    printf 'DOTNET_INSTALL_DIR=%s/_dotnet\n' "$dir"
-    # Verra's residue gate writes fixed names under the temp path; a per-instance
-    # TMPDIR keeps two concurrent jobs from colliding there.
-    printf 'TMPDIR=%s/_tmp\n' "$dir"
-  } >> "$dir/.env"
-  chown "$ACCOUNT:$ACCOUNT" "$dir/.env"
 
   systemctl daemon-reload
   systemctl enable "$unit" >/dev/null 2>&1
@@ -160,34 +201,9 @@ service() {
 }
 
 state() {
-  local first=1 n dir unit active nnp enter worker runner
-  printf '{"instances": ['
-  for n in 1 2; do
-    dir=$(runner_dir "$n")
-    unit=$(unit_name "$n")
-    active=$(systemctl is-active "$unit" 2>/dev/null || true)
-    nnp=$(systemctl show -p NoNewPrivileges --value "$unit" 2>/dev/null || true)
-    enter=$(systemctl show -p ActiveEnterTimestamp --value "$unit" 2>/dev/null || true)
-    enter=$( [ -n "$enter" ] && date -d "$enter" +%s 2>/dev/null || echo 0)
-    # Before an instance has run a job it has no _diag directory, and find's
-    # non-zero exit there is an ordinary answer, not a failure of the script.
-    worker=0
-    if [ -d "$dir/_diag" ]; then
-      worker=$( { find "$dir/_diag" -maxdepth 1 -name 'Worker_*.log' -printf '%T@\n' 2>/dev/null || true; } \
-        | sort -n | tail -n 1 | cut -d. -f1)
-    fi
-    runner=""
-    if [ -f "$dir/.runner" ]; then
-      runner=$(tr -d '\r\n' < "$dir/.runner" | sed 's/^\xEF\xBB\xBF//')
-    fi
-    [ "$first" = 1 ] || printf ', '
-    first=0
-    printf '{"n": %s, "unit": "%s", "unpacked": %s, "active": "%s", "no_new_privileges": "%s", ' \
-      "$n" "$unit" "$( [ -x "$dir/config.sh" ] && echo true || echo false)" "$active" "$nnp"
-    printf '"active_enter_epoch": %s, "last_worker_epoch": %s, "runner": %s}' \
-      "${enter:-0}" "${worker:-0}" "${runner:-null}"
-  done
-  printf '], "now_epoch": %s}\n' "$(date +%s)"
+  # Root reads the account's tree only through state.py, which opens nothing
+  # through a symlink and treats what it reads there as untrusted text.
+  exec python3 "$(dirname "$0")/state.py"
 }
 
 workers() {

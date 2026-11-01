@@ -32,6 +32,7 @@ WINDOWS_FS = ("9p", "drvfs", "virtiofs", "cifs", "smb3")
 # C9: the allowlist of Windows-backed mounts is empty. A mount added here must be
 # read-only, serve no drive root and no profile path, and be recorded in the PR.
 MOUNT_ALLOWLIST: tuple[str, ...] = ()
+WSLG_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "PULSE_SERVER")
 WINDOWS_PROGRAMS = ("cmd.exe", "powershell.exe", "pwsh.exe", "explorer.exe", "wsl.exe")
 ROOT_GROUPS = ("root", "sudo", "admin", "wheel", "docker", "lxd", "incus",
                "incus-admin", "disk", "libvirt")
@@ -98,8 +99,9 @@ def probe_mounts(mountinfo: Path, fstab: Path) -> dict:
 
 def probe_drives(mnt_root: Path, win_user: str | None) -> dict:
     """No drive letter under /mnt, and the owner's profile canary can't be opened."""
+    # lexists, so a dangling symlink at /mnt/<letter> counts as present.
     failures = [f"drive:{mnt_root / letter}" for letter in "abcdefghijklmnopqrstuvwxyz"
-                if (mnt_root / letter).exists()]
+                if os.path.lexists(mnt_root / letter)]
     unknowns = []
     if not win_user:
         unknowns.append("canary: no --win-user given")
@@ -167,6 +169,37 @@ def probe_interop(binfmt_dir: Path, environ: dict, scratch_dir: str | None = Non
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 failures.append(f"program resolves:{candidate}")
     return result("interop", failures, unknowns)
+
+
+def probe_wslg(root: Path, environ: dict, context: str) -> dict:
+    """No WSLg display, audio or clipboard bridge, and no GPU route into the host.
+
+    WSLg's sockets are its route into the owner's session, so the probe tests them
+    and the display variables a job would use, whatever `.wslconfig` says. In a job
+    the GPU device `/dev/dxg` must be hidden too: the runner units' InaccessiblePaths
+    does that, and only a unit's processes see it, so `verify` reads that unit
+    property instead (C16's pattern for NoNewPrivileges).
+    """
+    failures = []
+    for name in WSLG_VARIABLES:
+        if environ.get(name):
+            failures.append(f"wslg:{name} set")
+    # WSLg serves display :0. A job's own Xvfb (display :99 under xvfb-run) is the
+    # distribution's, not a bridge to Windows, so only X0 counts.
+    if os.path.lexists(root / "tmp" / ".X11-unix" / "X0"):
+        failures.append(f"wslg:socket {root / 'tmp' / '.X11-unix' / 'X0'}")
+    wslg = root / "mnt" / "wslg"
+    for relative in ("PulseServer", "runtime-dir/wayland-0", ".X11-unix/X0"):
+        if os.path.lexists(wslg / relative):
+            failures.append(f"wslg:socket {wslg / relative}")
+    detail = {}
+    device = root / "dev" / "dxg"
+    if context == "job":
+        if os.path.exists(device) and os.access(device, os.R_OK | os.W_OK):
+            failures.append(f"gpu:{device} openable")
+    else:
+        detail["gpu"] = f"{device} is checked as the units' InaccessiblePaths"
+    return result("wslg", failures, detail=detail)
 
 
 def _owner(path: str):
@@ -334,6 +367,7 @@ def run_check(args: argparse.Namespace, *, root: Path = Path("/"), environ=None,
                        str(root / "var" / "run" / "docker.sock"), runner,
                        owner_of, writable, files),
             probe_local_services(args.local_port),
+            probe_wslg(root, environ, args.context),
             probe_settings(root / "proc" / "meminfo", environ),
         ]
     failed = [p["probe"] for p in probes if p["result"] in (REACHABLE, UNKNOWN)]

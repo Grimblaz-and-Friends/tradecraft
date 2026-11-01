@@ -72,7 +72,15 @@ KEEPALIVE_ARGS = f"-d {DISTRO} --exec /bin/sleep infinity"
 GUEST_FILES = (("guest/provision.sh", PROVISION, "0755"),
                ("guest/isolation_check.py", CHECK, "0755"),
                ("guest/wsl.conf", f"{GUEST_LIB}/wsl.conf", "0644"),
-               ("guest/clear_drive_stubs.py", f"{GUEST_LIB}/clear_drive_stubs.py", "0755"))
+               ("guest/clear_drive_stubs.py", f"{GUEST_LIB}/clear_drive_stubs.py", "0755"),
+               ("guest/state.py", f"{GUEST_LIB}/state.py", "0755"))
+# Root runs everything in the guest library, so it and the directories above it
+# must be root's alone: a writable or symlinked path there is a route to root.
+GUEST_LIB_PARENTS = ("/usr", "/usr/local", "/usr/local/lib")
+LISTING = re.compile(r"([a-z]) (\S+) (\S+) ([0-7]+) (/.*)")
+CAP_THREADS = 8
+CAP_MEMORY_KIB = 12 * 1024 * 1024
+HIDDEN_DEVICE = "/dev/dxg"
 CLEAR_STUBS = f"{GUEST_LIB}/clear_drive_stubs.py"
 BIN_FILES = ("watch.py", "hosted.json", "keepalive.py")
 WSLCONFIG_EXPECTED = {"processors": "8", "memory": "12GB", "guiApplications": "false"}
@@ -352,9 +360,56 @@ def read_wslconfig() -> str | None:
         return None
 
 
+def guest_lib_listing(host: Host) -> str:
+    """`find -P` lines for the library's parents and the library, read without following links."""
+    _, parents = host.guest("find", *GUEST_LIB_PARENTS, "-maxdepth", "0",
+                            "-printf", "%y %u %g %m %p\n", check=False)
+    _, lib = host.guest("find", GUEST_LIB, "-maxdepth", "1",
+                        "-printf", "%y %u %g %m %p\n", check=False)
+    return parents + "\n" + lib
+
+
+def check_guest_lib(listing: str, *, require_present: bool) -> list[str]:
+    """Each path in the guest library, or above it, that isn't root's alone."""
+    failures = []
+    seen = set()
+    for line in listing.splitlines():
+        match = LISTING.fullmatch(line.strip())
+        if not match:
+            continue
+        kind, owner, group, mode, path = match.groups()
+        seen.add(path.rstrip("/"))
+        if kind == "l":
+            failures.append(f"guest library: {path} is a symlink")
+        elif kind not in ("d", "f"):
+            failures.append(f"guest library: {path} is not a file or directory ({kind})")
+        if (owner, group) != ("root", "root"):
+            failures.append(f"guest library: {path} is {owner}:{group}, not root:root")
+        if int(mode, 8) & 0o022:
+            failures.append(f"guest library: {path} is writable by others than root ({mode})")
+    if require_present and GUEST_LIB not in seen:
+        failures.append(f"guest library: {GUEST_LIB} is missing")
+    return failures
+
+
+def check_caps(report: dict) -> list[str]:
+    """The .wslconfig caps' effect, as the check saw it: they apply only after a full restart."""
+    probe = next((p for p in report.get("probes", []) if p.get("probe") == "settings"), None)
+    detail = (probe or {}).get("detail", {})
+    failures = []
+    if detail.get("nproc") != CAP_THREADS:
+        failures.append(f"caps: nproc {detail.get('nproc')}, not {CAP_THREADS} (.wslconfig "
+                        "processors applies only after a full WSL restart)")
+    mem = detail.get("mem_total_kib")
+    if not isinstance(mem, int) or mem > CAP_MEMORY_KIB:
+        failures.append(f"caps: MemTotal {mem} KiB, over 12 GiB (.wslconfig memory applies "
+                        "only after a full WSL restart)")
+    return failures
+
+
 def verify(host: Host, *, listener_factory=Listener, wslconfig_text=None) -> dict:
     """Row 1's settings read back, then the check as root and as the unit's account."""
-    failures = []
+    failures = check_guest_lib(guest_lib_listing(host), require_present=True)
     failures += check_wslconfig(read_wslconfig() if wslconfig_text is None else wslconfig_text)
     _, conf = host.guest("cat", "/etc/wsl.conf", check=False)
     failures += check_wsl_conf(conf)
@@ -362,6 +417,10 @@ def verify(host: Host, *, listener_factory=Listener, wslconfig_text=None) -> dic
         _, value = host.guest("systemctl", "show", "-p", "NoNewPrivileges", "--value",
                               unit_name(n), check=False)
         failures += check_unit(n, value)
+        _, hidden = host.guest("systemctl", "show", "-p", "InaccessiblePaths", "--value",
+                               unit_name(n), check=False)
+        if HIDDEN_DEVICE not in hidden:
+            failures.append(f"unit {runner_name(n)} InaccessiblePaths lacks {HIDDEN_DEVICE}")
     _, root_text = host.guest(*root_settings_argv(), check=False)
     root_report = parse_check(root_text)
     failures += [f"root-settings: {f}" for p in root_report.get("probes", [])
@@ -377,6 +436,7 @@ def verify(host: Host, *, listener_factory=Listener, wslconfig_text=None) -> dic
         failures.append("check: " + ",".join(report.get("failed", [])))
     if accepted:
         failures.append(f"local-services: the Windows listener accepted {accepted}")
+    failures += check_caps(report)
     return {"command": "verify", "ok": not failures, "failures": failures,
             "check": report, "root_settings": root_report, "listener_accepted": accepted}
 
@@ -458,6 +518,10 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
     guest_digest = digest([HERE / src for src, _, _ in GUEST_FILES])
     base_needed = (not installed) or record.get("base_digest") != guest_digest
     if base_needed:
+        unsafe = check_guest_lib(guest_lib_listing(host), require_present=False)
+        if unsafe:
+            raise SetupError("refusing to write the guest files into a library that isn't "
+                             "root's alone: " + "; ".join(unsafe))
         for src, dest, mode in GUEST_FILES:
             host.guest("/bin/sh", "-c", f"mkdir -p {GUEST_LIB} && cat > {dest} && "
                        f"chown root:root {dest} && chmod {mode} {dest}",
@@ -473,6 +537,7 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
         canary.write_text(secrets.token_hex(16) + "\n", encoding="ascii")
     steps.append({"step": "canary", "changed": canary_needed})
 
+    pending = []
     if wslconfig_changed or base_needed:
         others = [name for name in distributions(host) if name != DISTRO]
         if others:
@@ -480,6 +545,10 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
             steps.append({"step": "restart", "changed": True,
                           "note": "the .wslconfig caps take effect at WSL's next full "
                                   "restart, because other distributions are installed"})
+            if wslconfig_changed:
+                pending.append("a full WSL restart (`wsl --shutdown`, then re-run install): "
+                               ".wslconfig's caps and guiApplications=false wait on it, "
+                               f"because {', '.join(others)} kept WSL running")
         else:
             host.run(["wsl.exe", "--shutdown"], check=False)
             steps.append({"step": "restart", "changed": True})
@@ -504,7 +573,9 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
         if not state.get("unpacked"):
             host.guest("/bin/bash", PROVISION, "unpack", str(n), RUNNER_VERSION, RUNNER_SHA256)
             changed = True
-        if not instance_matches(n, state):
+        # A changed guest library can change the unit or its drop-in, so service
+        # runs again for every instance; registration still runs only when needed.
+        if not instance_matches(n, state) or base_needed:
             if not instance_registered(n, state):
                 if token is None:
                     token = prompt().strip()
@@ -546,8 +617,9 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
     tasks = {
         START_TASK: start_task_xml(interpreter, str(bin_dir / "keepalive.py"),
                                    str(bin_dir), user),
-        watch.TASK_NAME: watch.watch_task_xml(interpreter, str(bin_dir / "watch.py"),
-                                              str(bin_dir), user, now or watch.now_utc()),
+        watch.TASK_NAME: watch.watch_task_xml(
+            interpreter, str(bin_dir / "watch.py"), str(bin_dir), user,
+            state_dir=None if state_dir == default_state_dir() else str(state_dir)),
     }
     record.setdefault("tasks", {})
     for name, xml in tasks.items():
@@ -569,16 +641,18 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
     record["tradecraft_commit"] = commit
     watch.write_json_atomic(state_dir / "install.json", record)
     result = verify(host)
-    return {"command": "install", "ok": result["ok"], "steps": steps,
-            "prompted_for_token": prompted,
+    return {"command": "install", "ok": result["ok"] and not pending, "steps": steps,
+            "pending": pending, "prompted_for_token": prompted,
             "verify": result}
 
 
 def instance_registered(n: int, state: dict) -> bool:
-    """A `.runner` for this instance in the private-ci group: registration is done."""
+    """A `.runner` for this instance, this organization and the private-ci group."""
     record = state.get("runner")
+    url = str(_field(record, "gitHubUrl") or "")
     return (str(_field(record, "agentName") or "") == runner_name(n)
-            and str(_field(record, "poolName") or "") == GROUP)
+            and str(_field(record, "poolName") or "") == GROUP
+            and url.rstrip("/").lower() == ORG_URL.lower())
 
 
 def task_present(name: str, schtasks=watch.schtasks) -> bool:
@@ -617,7 +691,9 @@ def guest_workers(host: Host) -> int:
 
 def probe_files(user: str, port: int, commit: str) -> dict[str, bytes]:
     template = (HERE / "probe" / "private-ci-probe.yml").read_text(encoding="utf-8")
-    workflow = (template.replace("__WIN_USER__", user).replace("__LOCAL_PORT__", str(port))
+    # The template single-quotes the name for the shell, so a quote in it is closed,
+    # escaped and reopened.
+    workflow = (template.replace("__WIN_USER__", user.replace("'", "'\"'\"'")).replace("__LOCAL_PORT__", str(port))
                 .replace("__PLAYWRIGHT__", PLAYWRIGHT_VERSION)
                 .replace("__TRADECRAFT__", commit))
     return {PROBE_PATH: workflow.encode("utf-8"),
@@ -705,8 +781,9 @@ def judge_jobs(jobs: list[dict], timed: bool) -> list[str]:
     names = {j.get("runner_name") or "" for j in local}
     if len(local) != 2 or any(j.get("conclusion") != "success" for j in local):
         failures.append("local: both jobs must succeed")
-    if len(names) != 2 or not all(n.startswith("blaz-top-wsl-") for n in names):
-        failures.append(f"local: ran on {sorted(names)}, not two distinct blaz-top-wsl-*")
+    expected = {runner_name(n) for n in INSTANCES}
+    if names != expected:
+        failures.append(f"local: ran on {sorted(names)}, not {sorted(expected)}")
     spans = [(watch.parse_time(j.get("started_at")), watch.parse_time(j.get("completed_at")))
              for j in local]
     if len(spans) != 2 or not all(start and end for start, end in spans) or \
@@ -783,25 +860,34 @@ def probe(host: Host, github: watch.GitHub, *, require_idle: int | None = None,
             raise SetupError("the probe's run never appeared")
         summary["run_url"] = run.get("html_url")
         jobs: list[dict] = []
-        while monotonic() < deadline:
-            jobs = github.jobs(PROBE_REPO, run["id"], "latest")
-            done = [j for j in jobs if (j["name"].startswith("local") or j["name"] == "smoke")
-                    and j.get("status") == "completed"]
-            if len(done) == 3:
-                break
-            sleep(15)
+        labels: dict = {}
         hold = 0
         listener_up = True
-        hold_start = monotonic()
-        while hold < HOLD_SECONDS and monotonic() - hold_start < HOLD_DEADLINE_SECONDS:
-            busy = (windows_process_running(host, "Runner.Worker.exe")
-                    or guest_workers(host) > 0)
-            listener_up = listener_up and windows_process_running(host, "Runner.Listener.exe")
-            hold = 0 if busy else hold + SAMPLE_SECONDS
-            sleep(SAMPLE_SECONDS)
-        jobs = github.jobs(PROBE_REPO, run["id"], "latest")
-        labels = {j["name"]: j.get("status") for j in jobs if j["name"].startswith("labels")}
-        github.send("POST", f"repos/{PROBE_REPO}/actions/runs/{run['id']}/cancel")
+        cancel = f"repos/{PROBE_REPO}/actions/runs/{run['id']}/cancel"
+        # Once the run exists its label jobs sit queued until cancelled, so any
+        # failure from here on still cancels the run.
+        try:
+            while monotonic() < deadline:
+                jobs = github.jobs(PROBE_REPO, run["id"], "latest")
+                done = [j for j in jobs if (j["name"].startswith("local") or j["name"] == "smoke")
+                        and j.get("status") == "completed"]
+                if len(done) == 3:
+                    break
+                sleep(15)
+            hold_start = monotonic()
+            while hold < HOLD_SECONDS and monotonic() - hold_start < HOLD_DEADLINE_SECONDS:
+                busy = (windows_process_running(host, "Runner.Worker.exe")
+                        or guest_workers(host) > 0)
+                listener_up = listener_up and windows_process_running(host, "Runner.Listener.exe")
+                hold = 0 if busy else hold + SAMPLE_SECONDS
+                sleep(SAMPLE_SECONDS)
+            jobs = github.jobs(PROBE_REPO, run["id"], "latest")
+            labels = {j["name"]: j.get("status") for j in jobs if j["name"].startswith("labels")}
+        finally:
+            try:
+                github.send("POST", cancel)
+            except watch.WatchError as exc:
+                summary["cancel_error"] = str(exc)
         accepted = list(listener.accepted)
     checks = {}
     for job in jobs:

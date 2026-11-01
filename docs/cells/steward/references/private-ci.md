@@ -8,7 +8,7 @@ The runner, the watch and the carriers are described in `tools/private_ci/README
 
 A comment on #683 opening with `<!-- lab:private-ci-watch:v1 keys=... -->` carries no Steward marker, so the wake counts it as intake.
 
-1. Verify it from a tradecraft checkout with the owner's `gh`: `python tools/private_ci/watch.py status`. Its `would_alert` and per-repository readings show what the watch sees now.
+1. Verify it from a tradecraft checkout with the owner's `gh`: `python tools/private_ci/watch.py status`. Its `alerts`, every alert this month's jobs raise, and its per-repository readings show what the watch sees now. Don't read `would_alert`: it drops keys already posted, so it is empty for the alert you are verifying.
 2. For each unlisted job, bring the owner one line:
    - its `runs-on:` changed to `private-ci`, made in that product through its own entrance on the `ordinary` / `mechanical` lane; or
    - if the job is meant to stay hosted, one line added to `tools/private_ci/hosted.json` in tradecraft, on the same lane.

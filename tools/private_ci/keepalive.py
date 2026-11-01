@@ -6,6 +6,13 @@ on it. WSL keeps a distribution running while a `wsl.exe` process is attached,
 and systemd starts both runner services when the distribution boots, so the
 global idle timeouts stay at their defaults for every other distribution.
 
+Anything that stops WSL (`wsl --shutdown`, or `install`'s own restart) ends
+the `wsl.exe` this waits on, so this returns and the hold is gone until the
+owner's next logon. `install` starts the task again itself; after a shutdown
+of his own, `schtasks /Run /TN tradecraft-lab-private-ci-start` restores it. It
+deliberately doesn't relaunch in a loop: it would fight a shutdown the owner
+asked for, and boot the distribution he just stopped.
+
 Standard library only.
 """
 
