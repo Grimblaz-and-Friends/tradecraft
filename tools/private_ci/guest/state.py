@@ -60,7 +60,9 @@ def entry(dir_fd: int, name: str) -> os.stat_result | None:
 def read_runner(dir_fd: int) -> dict | None:
     """The three fields setup.py matches on, from `.runner`, as untrusted text."""
     try:
-        fd = os.open(".runner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+        # O_NONBLOCK, so a named pipe planted as .runner can't hang root here.
+        fd = os.open(".runner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0), dir_fd=dir_fd)
     except OSError:
         return None
     try:

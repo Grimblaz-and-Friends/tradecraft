@@ -490,8 +490,7 @@ def start_task_xml(interpreter: str, launcher: str, working_dir: str, user: str)
 def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
             schtasks=watch.schtasks, now=None) -> dict:
     """Bring the install to its settled state; a re-run over a complete one changes nothing."""
-    prompt = prompt or (lambda: getpass.getpass(
-        "Registration token from Settings > Actions > Runners (typed here only): "))
+    prompt = prompt or ask_token
     steps: list[dict] = []
     record = watch.read_json(state_dir / "install.json", {})
 
@@ -563,35 +562,52 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
     steps.append({"step": "drive stubs", "changed": bool(stubs["removed"]),
                   "removed": stubs["removed"], "kept": stubs["kept"]})
 
-    token = None
     prompted = False
     states = instance_state(host)
     record.setdefault("instances", {})
-    for n in INSTANCES:
-        state = states.get(n, {})
-        changed = False
-        if not state.get("unpacked"):
-            host.guest("/bin/bash", PROVISION, "unpack", str(n), RUNNER_VERSION, RUNNER_SHA256)
-            changed = True
-        # A changed guest library can change the unit or its drop-in, so service
-        # runs again for every instance; registration still runs only when needed.
-        if not instance_matches(n, state) or base_needed:
-            if not instance_registered(n, state):
-                if token is None:
-                    token = prompt().strip()
-                    prompted = True
-                    if not token:
-                        raise SetupError("no registration token was entered")
+    unregistered = [n for n in INSTANCES if not instance_registered(n, states.get(n, {}))]
+    changed = {n: False for n in INSTANCES}
+    if unregistered:
+        # An organization registration token can register a runner anywhere, the
+        # review job's group included, and every account process can read another's
+        # environment. So before the token is read no account process may run:
+        # both units stop, and every process the account runs ends.
+        reasons = [f"{runner_name(n)}: {why_unregistered(n, states.get(n, {}))}"
+                   for n in unregistered]
+        host.guest("/bin/bash", PROVISION, "quiesce")
+        token = prompt(reasons).strip()
+        prompted = True
+        if not token:
+            raise SetupError("no registration token was entered")
+        try:
+            for n in unregistered:
+                # Registered from the release's own files, not from a tree a job
+                # may have changed.
+                host.guest("/bin/bash", PROVISION, "fresh", str(n), RUNNER_VERSION,
+                           RUNNER_SHA256)
                 host.guest("/bin/bash", PROVISION, "register", str(n), ORG_URL,
                            stdin_bytes=(token + "\n").encode("ascii"))
                 record["instances"][str(n)] = {
                     "name": runner_name(n), "group": GROUP, "labels": [LABEL],
                     "no_default_labels": True, "request": registration_request(n),
                     "registered_at": watch.iso(now or watch.now_utc())}
+                changed[n] = True
+        finally:
+            token = None
+    for n in INSTANCES:
+        state = states.get(n, {})
+        if n not in unregistered and not state.get("unpacked"):
+            host.guest("/bin/bash", PROVISION, "unpack", str(n), RUNNER_VERSION, RUNNER_SHA256)
+            changed[n] = True
+        # A changed guest library can change the unit or its drop-in, so service
+        # runs again for every instance; registration ran above only when needed.
+        if n in unregistered or not instance_matches(n, state) or base_needed:
             host.guest("/bin/bash", PROVISION, "service", str(n))
-            changed = True
-        steps.append({"step": f"instance {runner_name(n)}", "changed": changed})
-    token = None
+            changed[n] = True
+        steps.append({"step": f"instance {runner_name(n)}", "changed": changed[n]})
+    if unregistered:
+        # quiesce stopped both units; one that needed no service starts again here.
+        host.guest("/bin/bash", PROVISION, "start")
 
     bin_dir = state_dir / "bin"
     commit = tradecraft_commit(host)
@@ -644,6 +660,33 @@ def install(host: Host, state_dir: Path, *, prompt=None, sleep=time.sleep,
     return {"command": "install", "ok": result["ok"] and not pending, "steps": steps,
             "pending": pending, "prompted_for_token": prompted,
             "verify": result}
+
+
+def why_unregistered(n: int, state: dict) -> str:
+    """Which `.runner` field didn't match, named for the owner before he is asked."""
+    record = state.get("runner")
+    if not record:
+        return "its .runner record is missing or unreadable"
+    wrong = []
+    for field, expected in (("agentName", runner_name(n)), ("poolName", GROUP),
+                            ("gitHubUrl", ORG_URL)):
+        held = str(_field(record, field) or "")
+        if held.rstrip("/").lower() != expected.lower() if field == "gitHubUrl" \
+                else held != expected:
+            wrong.append(f"{field} is {held!r}, not {expected!r}")
+    return "; ".join(wrong) or "its .runner record doesn't match"
+
+
+def ask_token(reasons: list[str]) -> str:
+    """Name why, then ask for the token with no echo, in the owner's own terminal."""
+    sys.stderr.write(
+        "These runner instances need registering:\n"
+        + "".join(f"  {reason}\n" for reason in reasons)
+        + "After the first install, a token prompt you didn't expect can mean a job "
+          "changed a runner's record. If so, don't type a token: tell the Steward.\n")
+    sys.stderr.flush()
+    return getpass.getpass(
+        "Registration token from Settings > Actions > Runners (typed here only): ")
 
 
 def instance_registered(n: int, state: dict) -> bool:
@@ -822,7 +865,6 @@ def probe(host: Host, github: watch.GitHub, *, require_idle: int | None = None,
             summary["ok"] = False
             return summary
         states = instance_state(host)
-        summary["units"] = states
         if require_idle:
             now_epoch = max(int(s.get("now_epoch", 0) or 0) for s in states.values()) or \
                 int(time.time())
@@ -836,14 +878,20 @@ def probe(host: Host, github: watch.GitHub, *, require_idle: int | None = None,
                 if last and now_epoch - last < limit:
                     summary["failures"].append(f"{runner_name(n)}: ran a job in the last "
                                                f"{require_idle} min")
-        reconnect, waiting = wait_until_listening(host, states, sleep=sleep, monotonic=monotonic)
-        summary["reconnect_seconds"] = reconnect
-        if waiting:
-            summary["failures"].append(
-                "runners not connected to GitHub within "
-                f"{CONNECT_WAIT_SECONDS} s of their last start: " + ", ".join(waiting))
-            summary["ok"] = False
-            return summary
+    else:
+        states = instance_state(host)
+    summary["units"] = states
+    # Every probe, not only the timed ones, waits out GitHub's hold on a restarted
+    # runner's old session: an install restarts both units, and a probe pushed into
+    # that hold measures the hold, not the runners.
+    reconnect, waiting = wait_until_listening(host, states, sleep=sleep, monotonic=monotonic)
+    summary["reconnect_seconds"] = reconnect
+    if waiting:
+        summary["failures"].append(
+            "runners not connected to GitHub within "
+            f"{CONNECT_WAIT_SECONDS} s of their last start: " + ", ".join(waiting))
+        summary["ok"] = False
+        return summary
     summary["registration"] = watch.read_json((state_dir or default_state_dir()) / "install.json",
                                               {}).get("instances", {})
     with Listener() as listener:

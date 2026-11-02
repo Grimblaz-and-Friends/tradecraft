@@ -54,6 +54,8 @@ The holder records each probe's JSON summary, with your group and label reports,
 
 `install` is re-runnable. Over a complete install it prompts for nothing, registers nothing, and reports every step unchanged. If a review fix changes anything the setup or the check reads, run `install` and `probe` again at the new head.
 
+**A token prompt you didn't expect.** After the first install, `install` asks for a token only when an instance's `.runner` record doesn't match, and it names the instance and the field first. That record belongs to the runner account, so a job can change it. If you didn't expect the prompt, don't type a token: tell the Steward. When it does prompt, it first stops both runners and ends every process the account runs, then registers each instance from a fresh copy of the verified release, so no job's leftover process can read the token or swap the files that receive it.
+
 ## The probe
 
 `probe` refuses on a dirty tree, so the commit it names is what ran. It pushes a parentless commit holding only the probe files to `lab/private-ci-probe` in Countdown-Clash, so the push starts only the probe workflow. Its jobs:

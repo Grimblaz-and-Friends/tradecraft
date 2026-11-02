@@ -10,7 +10,10 @@
 #
 #   base               account, /etc/wsl.conf, fstab, packages (rows 1, 5, 7)
 #   unpack N VER SHA   download and verify the runner into /home/ci-runner/runner-N
+#   quiesce            stop both units and end every process the account runs
+#   fresh N VER SHA    empty runner-N and extract the verified release into it
 #   register N URL     configure instance N; the token arrives on stdin (C10)
+#   start              start both units
 #   service N          systemd unit and its root-owned drop-in
 #   state              one JSON line describing both instances
 #   workers            the number of Runner.Worker processes running now
@@ -45,6 +48,12 @@ base() {
   # Its own group only: no sudo, docker, lxd, incus or any other root route.
   usermod --groups "" "$ACCOUNT"
   rm -f "/etc/sudoers.d/$ACCOUNT"
+  # No cron or at jobs for the account: either could start a process while a
+  # registration token is in the guest.
+  for deny in /etc/cron.deny /etc/at.deny; do
+    touch "$deny"
+    grep -qx "$ACCOUNT" "$deny" || printf '%s\n' "$ACCOUNT" >> "$deny"
+  done
 
   # Root's password stays locked (Ubuntu's default, asserted, never set here).
   field=$(awk -F: '$1 == "root" { print $2 }' /etc/shadow)
@@ -100,14 +109,14 @@ base() {
 }
 
 unpack() {
-  local n=$1 version=$2 sha=$3 dir work tarball
+  local n=$1 version=$2 sha=$3 force=${4:-} dir work tarball
   dir=$(runner_dir "$n")
   # Everything under the runner home belongs to the account every job runs as, so
   # a job can replace any path there with a symlink. Root never creates, reads,
   # writes, changes ownership in or executes from that tree: the account does the
   # account's work. Root keeps only the download and its SHA-256 check, in a
   # directory of its own, and hands the verified bytes over on stdin.
-  if as_account test -x "$dir/config.sh" \
+  if [ -z "$force" ] && as_account test -x "$dir/config.sh" \
       && [ "$(as_account cat "$dir/.tradecraft-version" 2>/dev/null || true)" = "$version" ]; then
     say "runner-$n already unpacked at $version"
     return
@@ -124,6 +133,46 @@ unpack() {
   # What it installs on Ubuntu 24.04 (libkrb5-3, zlib1g, liblttng-ust1t64,
   # libssl3t64, libicu74) is in base's package list.
   printf '%s\n' "$version" | as_account tee "$dir/.tradecraft-version" >/dev/null
+}
+
+quiesce() {
+  # Before a registration token enters the guest, no process of the account may
+  # run: a job's leftover process could read config.sh's environment, or replace
+  # config.sh or bin/ under it. The units' KillMode=process lets such a process
+  # outlive its job, so stopping the units isn't enough.
+  local n tries
+  for n in 1 2; do
+    systemctl stop "$(unit_name "$n")" 2>/dev/null || true
+  done
+  crontab -r -u "$ACCOUNT" 2>/dev/null || true
+  for tries in 1 2 3 4 5 6 7 8 9 10; do
+    pkill -KILL -u "$ACCOUNT" 2>/dev/null || true
+    pkill -KILL -U "$ACCOUNT" 2>/dev/null || true
+    if ! pgrep -u "$ACCOUNT" >/dev/null 2>&1 && ! pgrep -U "$ACCOUNT" >/dev/null 2>&1; then
+      say "no $ACCOUNT process runs"
+      return 0
+    fi
+    sleep 1
+  done
+  say "processes of $ACCOUNT still run after 10 s:"
+  pgrep -a -u "$ACCOUNT" >&2 || true
+  return 1
+}
+
+fresh() {
+  # The instance being registered gets the release's own config.sh and bin/: its
+  # directory is emptied (by the account, in its own tree) and re-extracted from
+  # the tarball whose SHA-256 root checked.
+  local n=$1 version=$2 sha=$3
+  as_account rm -rf "$(runner_dir "$n")"
+  unpack "$n" "$version" "$sha" force
+}
+
+start() {
+  local n
+  for n in 1 2; do
+    systemctl start "$(unit_name "$n")"
+  done
 }
 
 register() {
@@ -213,9 +262,12 @@ workers() {
 case "${1:-}" in
   base) base ;;
   unpack) unpack "$2" "$3" "$4" ;;
+  quiesce) quiesce ;;
+  fresh) fresh "$2" "$3" "$4" ;;
   register) register "$2" "$3" ;;
+  start) start ;;
   service) service "$2" ;;
   state) state ;;
   workers) workers ;;
-  *) say "usage: provision.sh base|unpack N VER SHA|register N URL|service N|state|workers"; exit 2 ;;
+  *) say "usage: provision.sh base|unpack N VER SHA|quiesce|fresh N VER SHA|register N URL|service N|start|state|workers"; exit 2 ;;
 esac

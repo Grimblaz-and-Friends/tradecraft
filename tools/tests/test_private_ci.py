@@ -440,6 +440,15 @@ class FakeWindows:
                                                "GitHubUrl": ps.ORG_URL}
             elif sub == "service":
                 self.instances[int(rest[0])]["active"] = "active"
+            elif sub == "fresh":
+                self.instances[int(rest[0])]["unpacked"] = True
+                self.instances[int(rest[0])]["runner"] = None
+            elif sub == "quiesce":
+                for item in self.instances.values():
+                    item["active"] = "inactive"
+            elif sub == "start":
+                for item in self.instances.values():
+                    item["active"] = "active"
             elif sub == "state":
                 data = {"instances": list(self.instances.values()), "now_epoch": 1_000_000}
                 return 0, (json.dumps(data) + "\n").encode("utf-8"), b""
@@ -507,8 +516,9 @@ TOKEN = "AABBCCTESTTOKEN0123456789"
 def run_install(windows: FakeWindows, state_dir: Path, prompts: list[str]):
     tasks = FakeTasks(windows)
 
-    def prompt():
+    def prompt(reasons):
         prompts.append("asked")
+        windows.calls.append((["<prompt>", *reasons], None))
         return TOKEN
     result = ps.install(ps.Host(windows), state_dir, prompt=prompt, sleep=lambda s: None,
                         schtasks=tasks, now=NOW)
@@ -552,7 +562,7 @@ def test_a3_a16_a17_a23_install_then_reinstall(windows, tmp_path):
     # A17: a second run over the complete install prompts for nothing and changes nothing.
     windows.calls.clear()
     # Item 5 (reading 8): three days later, so a day in the task's definition would show.
-    second = ps.install(ps.Host(windows), state_dir, prompt=lambda: pytest.fail("prompted"),
+    second = ps.install(ps.Host(windows), state_dir, prompt=lambda r: pytest.fail("prompted"),
                         sleep=lambda s: None, schtasks=tasks, now=NOW + timedelta(days=3))
     assert second["ok"]
     assert second["prompted_for_token"] is False
@@ -1340,8 +1350,12 @@ class ProbeGitHub:
         raise pw.WatchError("gh api exited 1: rate limited")
 
 
+LISTENING_LINE = "1793505479.500000 host runsvc.sh[1]: 2026-11-01 04:17:59Z: Listening for Jobs\n"
+
+
 def test_item18_a_failure_after_the_run_exists_still_cancels_it(windows, tmp_path):
     github = ProbeGitHub()
+    windows.journal = lambda unit, reads: LISTENING_LINE
     with pytest.raises(pw.WatchError, match="rate limited"):
         ps.probe(ps.Host(windows), github, state_dir=tmp_path, sleep=lambda s: None)
     assert github.sent[-1] == f"POST repos/{ps.PROBE_REPO}/actions/runs/77/cancel"
@@ -1454,3 +1468,101 @@ def test_item9_a_cancellation_github_annotates_as_a_persons_is_never_rerun(state
     assert rerun(actions, state)["calls"] == []
     actions.notes[91] = []  # GitHub's own 24-hour drop leaves no such annotation
     assert [c["kind"] for c in rerun(actions, state)["calls"]] == ["run"]
+
+
+# ---------------------------------------------------------------- holder reading 9 (PR #931)
+
+
+def guest_subs(windows: FakeWindows) -> list[str]:
+    """The provision.sh subcommands and the prompt, in the order they happened."""
+    order = []
+    for argv, _ in windows.calls:
+        if argv[:1] == ["<prompt>"]:
+            order.append("prompt")
+        elif argv[6:8] == ["/bin/bash", ps.PROVISION]:
+            order.append(" ".join(argv[8:10]) if argv[8] in ("fresh", "register", "service",
+                                                            "unpack") else argv[8])
+    return order
+
+
+def test_finding1_no_account_process_runs_while_the_token_is_in_the_guest(windows, tmp_path):
+    """The token is asked for only after both units stop and the account's processes end,
+    and each instance registers from a fresh extraction, before any unit starts again."""
+    prompts: list[str] = []
+    run_install(windows, tmp_path / "state", prompts)
+    order = [step for step in guest_subs(windows) if step not in ("base", "state")]
+    assert order == ["quiesce", "prompt", "fresh 1", "register 1", "fresh 2", "register 2",
+                     "service 1", "service 2", "start"]
+    reasons = next(argv[1:] for argv, _ in windows.calls if argv[:1] == ["<prompt>"])
+    assert reasons == ["blaz-top-wsl-1: its .runner record is missing or unreadable",
+                       "blaz-top-wsl-2: its .runner record is missing or unreadable"]
+
+
+def test_finding1_a_changed_record_is_named_before_the_prompt_and_rebuilt(windows, tmp_path):
+    state_dir = tmp_path / "state"
+    _, tasks = run_install(windows, state_dir, [])
+    windows.instances[2]["runner"]["PoolName"] = "Default"   # a job edited .runner
+    windows.calls.clear()
+    seen = []
+
+    def prompt(reasons):
+        seen.extend(reasons)
+        windows.calls.append((["<prompt>", *reasons], None))
+        return TOKEN
+    ps.install(ps.Host(windows), state_dir, prompt=prompt, sleep=lambda s: None,
+               schtasks=tasks, now=NOW)
+    assert seen == ["blaz-top-wsl-2: poolName is 'Default', not 'private-ci'"]
+    order = [step for step in guest_subs(windows) if step != "state"]
+    assert order == ["quiesce", "prompt", "fresh 2", "register 2", "service 2", "start"]
+
+
+def test_finding1_the_guest_side_stops_everything_and_extracts_afresh():
+    code = "\n".join(code_lines(PROVISION_TEXT))
+    quiesce = code.split("quiesce() {", 1)[1].split("\n}", 1)[0]
+    assert 'systemctl stop "$(unit_name "$n")"' in quiesce and "for n in 1 2" in quiesce
+    assert 'pkill -KILL -u "$ACCOUNT"' in quiesce and 'pkill -KILL -U "$ACCOUNT"' in quiesce
+    assert 'pgrep -u "$ACCOUNT"' in quiesce and quiesce.rstrip().endswith("return 1")
+    assert 'crontab -r -u "$ACCOUNT"' in quiesce
+    fresh = code.split("fresh() {", 1)[1].split("\n}", 1)[0]
+    assert fresh.index('as_account rm -rf "$(runner_dir "$n")"') < fresh.index(
+        'unpack "$n" "$version" "$sha" force')
+    assert '[ -z "$force" ] && as_account test -x "$dir/config.sh"' in code
+    assert re.search(r'for deny in /etc/cron\.deny /etc/at\.deny', code)
+
+
+@linux_only
+def test_finding2_a_fifo_planted_as_runner_cannot_hang_state(tmp_path, monkeypatch):
+    import threading
+    one = tmp_path / "home" / "runner-1"
+    one.mkdir(parents=True)
+    os.mkfifo(one / ".runner")
+    monkeypatch.setenv("TRADECRAFT_CI_RUNNER_HOME", str(tmp_path / "home"))
+    found = {}
+    worker = threading.Thread(target=lambda: found.update(
+        st.state(systemctl=lambda argv: "", to_epoch=lambda text: 0)), daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "state blocked opening a FIFO"
+    assert found["instances"][0]["runner"] is None
+
+
+def test_finding3_a_plain_probe_waits_for_both_runners_to_listen(windows, tmp_path):
+    windows.journal = lambda unit, reads: LISTENING_LINE if reads > 2 else "-- No entries --\n"
+    github = ProbeGitHub()
+    ticks = iter(range(0, 10_000, 10))
+    with pytest.raises(pw.WatchError, match="rate limited"):
+        ps.probe(ps.Host(windows), github, state_dir=tmp_path, sleep=lambda s: None,
+                 monotonic=lambda: next(ticks))
+    assert windows.journal_reads >= 3        # it waited a round before pushing
+    assert any("/git/blobs" in call for call in github.sent)
+
+
+def test_finding3_a_plain_probe_pushes_nothing_while_a_runner_never_listens(windows, tmp_path):
+    windows.journal = lambda unit, reads: "-- No entries --\n"
+    ticks = iter(range(0, 10_000, 10))
+    github = pw.GitHub(runner=lambda *a, **k: pytest.fail("probe reached GitHub"))
+    found = ps.probe(ps.Host(windows), github, state_dir=tmp_path, sleep=lambda s: None,
+                     monotonic=lambda: next(ticks))
+    assert found["ok"] is False and found["reconnect_seconds"] == {}
+    assert any("not connected to GitHub within 300 s" in f
+               and "blaz-top-wsl-1, blaz-top-wsl-2" in f for f in found["failures"])
