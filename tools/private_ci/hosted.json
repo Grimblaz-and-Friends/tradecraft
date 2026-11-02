@@ -1,0 +1,20 @@
+{
+  "about": "Row 2's declared hosted list (#929): the jobs in the four private repositories that stay on GitHub-hosted runners. Each entry is a workflow run's path and the job's exact name as the live job records give it. The holder owns this list; adding an entry is a one-line change on the ordinary / mechanical lane.",
+  "hosted": [
+    {
+      "path": ".github/workflows/self-change-proof.yml",
+      "job": "Change proof (required) / Change proof",
+      "why": "the required gate (change-proof's ruleset workflow)"
+    },
+    {
+      "path": ".github/workflows/connected-review.yml",
+      "job": "connected-review / prepare",
+      "why": "the reviewer's prepare job (shared workflow at reviewer-stable)"
+    },
+    {
+      "path": ".github/workflows/connected-review.yml",
+      "job": "connected-review / report",
+      "why": "the reviewer's report job (shared workflow at reviewer-stable)"
+    }
+  ]
+}

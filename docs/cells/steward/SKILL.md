@@ -13,6 +13,7 @@ The `engagement` cell owns the cross-change read and cross-session intake.
 
 - **Releasing the lab reviewer or rolling out its callers** → `references/connected-review-releases.md`: the shared workflow, canary review, the owner's settings check, manual tag moves, the first private product's execution check, and rollback.
 - **Posting on #683, a wake turn, a handover request or resume, a stale cover, or installing, moving or undoing any of them** → `references/wake-and-cover.md`: the marker grammar, the commands, the state directory and its override, the triggers, the handover sequence and its fallback, the cover's settings, and the install, move and undo steps.
+- **A private-CI watch alert on #683, or a private-CI carrier's pre-owner review** → `references/private-ci.md`: verifying the alert, the one-line move to bring the owner, the review job that never alerts, and the carriers' order, lane, drops and Daemon's route.
 
 ## What the Steward holds
 
