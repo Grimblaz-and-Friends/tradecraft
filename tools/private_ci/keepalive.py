@@ -6,6 +6,11 @@ on it. WSL keeps a distribution running while a `wsl.exe` process is attached,
 and systemd starts both runner services when the distribution boots, so the
 global idle timeouts stay at their defaults for every other distribution.
 
+It names root as its user. Without `-u`, WSL would open a login session of the
+distribution's default user, and a session of the runner account brings its
+user manager and processes that a job could use to step outside the units'
+sandbox (holder reading 10).
+
 Anything that stops WSL (`wsl --shutdown`, or `install`'s own restart) ends
 the `wsl.exe` this waits on, so this returns and the hold is gone until the
 owner's next logon. `install` starts the task again itself; after a shutdown
@@ -29,7 +34,7 @@ sys.path.insert(0, str(HERE.parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
 DISTRO = "tradecraft-ci"
-COMMAND = ["wsl.exe", "-d", DISTRO, "--exec", "/bin/sleep", "infinity"]
+COMMAND = ["wsl.exe", "-d", DISTRO, "-u", "root", "--exec", "/bin/sleep", "infinity"]
 
 
 def main() -> int:

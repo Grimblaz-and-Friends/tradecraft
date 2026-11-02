@@ -8,6 +8,11 @@
 # or executes a file from the runner account's tree, because every job runs as
 # that account and can change anything in it (#929, holder reading 8).
 #
+# No process of the account can reach WSL's routes into Windows (/dev/dxg,
+# /usr/lib/wsl, /mnt/wslg) through any view of the filesystem: root hides them
+# for the whole distribution at every boot, before any runner or account process
+# starts, and again before each one this script starts (holder reading 10).
+#
 #   base               account, /etc/wsl.conf, fstab, packages (rows 1, 5, 7)
 #   unpack N VER SHA   download and verify the runner into /home/ci-runner/runner-N
 #   quiesce            stop both units and end every process the account runs
@@ -25,6 +30,7 @@ ACCOUNT=ci-runner
 HOME_DIR=${TRADECRAFT_CI_RUNNER_HOME:-/home/$ACCOUNT}
 LIB=/usr/local/lib/tradecraft-private-ci
 ORG=Grimblaz-and-Friends
+HIDE_UNIT=tradecraft-private-ci-hide.service
 
 say() { printf '%s\n' "$*" >&2; }
 
@@ -33,8 +39,26 @@ runner_name() { printf 'blaz-top-wsl-%s' "$1"; }
 unit_name() { printf 'actions.runner.%s.%s.service' "$ORG" "$(runner_name "$1")"; }
 
 as_account() {
-  # The account's uid and groups with no_new_privs, the way the unit runs it.
+  # The account's uid and groups with no_new_privs, the way the unit runs it, and
+  # only once WSL's routes into Windows are hidden: a job watching this brief
+  # process could otherwise reach them through its /proc/<pid>/root.
+  python3 "$LIB/hide_routes.py" >/dev/null || { say "WSL's routes are not hidden"; exit 1; }
   setpriv --reuid="$ACCOUNT" --regid="$ACCOUNT" --init-groups --no-new-privs "$@"
+}
+
+account_processes() {
+  # Every process of the account, by effective or real uid, one per line. A pgrep
+  # that fails prints a line too, so a caller that needs none fails closed.
+  local flag out code
+  for flag in -u -U; do
+    code=0
+    out=$(pgrep -a "$flag" "$ACCOUNT" 2>&1) || code=$?
+    case $code in
+      0) printf '%s\n' "$out" ;;
+      1) ;;
+      *) printf 'pgrep %s failed (%s): %s\n' "$flag" "$code" "$out" ;;
+    esac
+  done | sort -u
 }
 
 base() {
@@ -48,12 +72,38 @@ base() {
   # Its own group only: no sudo, docker, lxd, incus or any other root route.
   usermod --groups "" "$ACCOUNT"
   rm -f "/etc/sudoers.d/$ACCOUNT"
+  # No user manager outlives a session: linger would start one at every boot.
+  rm -f "/var/lib/systemd/linger/$ACCOUNT"
   # No cron or at jobs for the account: either could start a process while a
   # registration token is in the guest.
   for deny in /etc/cron.deny /etc/at.deny; do
     touch "$deny"
     grep -qx "$ACCOUNT" "$deny" || printf '%s\n' "$ACCOUNT" >> "$deny"
   done
+
+  # WSL's routes into Windows, hidden for the whole distribution at every boot
+  # before any runner or login session can start (hide_routes.py says why).
+  printf '%s\n' \
+    '[Unit]' \
+    "Description=Hide WSL's routes into Windows from every account (#929)" \
+    'DefaultDependencies=no' \
+    'After=local-fs.target' \
+    'Before=sysinit.target systemd-user-sessions.service' \
+    '' \
+    '[Service]' \
+    'Type=oneshot' \
+    'RemainAfterExit=yes' \
+    "ExecStart=/usr/bin/python3 $LIB/hide_routes.py" \
+    '' \
+    '[Install]' \
+    'WantedBy=sysinit.target' > "/etc/systemd/system/$HIDE_UNIT"
+  chmod 0644 "/etc/systemd/system/$HIDE_UNIT"
+  systemctl daemon-reload
+  systemctl enable "$HIDE_UNIT" >/dev/null 2>&1
+  # Started, not restarted: the runner units require it, so a restart would
+  # restart them too. The script itself runs now, so a changed one applies.
+  systemctl start "$HIDE_UNIT"
+  python3 "$LIB/hide_routes.py" >/dev/null
 
   # Root's password stays locked (Ubuntu's default, asserted, never set here).
   field=$(awk -F: '$1 == "root" { print $2 }' /etc/shadow)
@@ -176,8 +226,15 @@ start() {
 }
 
 register() {
-  local n=$1 url=$2 dir
+  local n=$1 url=$2 dir running
   dir=$(runner_dir "$n")
+  # The owner may have spent minutes at the prompt since quiesce, so no process of
+  # the account may run immediately before the token is read.
+  running=$(account_processes)
+  if [ -n "$running" ]; then
+    say "refusing to read the token: processes of $ACCOUNT run: $(printf '%s' "$running" | tr '\n' ';')"
+    exit 1
+  fi
   # C10: the token arrives on stdin and reaches config.sh as an environment
   # input (ACTIONS_RUNNER_INPUT_TOKEN, which runner 2.338.0's CommandSettings
   # reads when no token argument is given), never in an argv or a file.
@@ -230,14 +287,21 @@ service() {
   chmod 0644 "/etc/systemd/system/$unit"
 
   # Everything root decides about the instance lives in this root-owned drop-in:
-  # no setuid route, the GPU paravirtualization device and WSLg's directory
-  # hidden from jobs, and the install locations that keep the two instances from
+  # the unit starts only once WSL's routes are hidden for the whole distribution,
+  # and hides them again first itself (the + runs it as root, outside the unit's
+  # namespace); no setuid route; the routes hidden in the unit's own namespace too;
+  # and the install locations that keep the two instances from
   # racing on one directory (§3.7, C11) as Environment= lines, not lines in the
   # account's .env.
   dropin="/etc/systemd/system/$unit.d"
   install -d -m 0755 "$dropin"
   printf '%s\n' \
+    '[Unit]' \
+    "Requires=$HIDE_UNIT" \
+    "After=$HIDE_UNIT" \
+    '' \
     '[Service]' \
+    "ExecStartPre=+/usr/bin/python3 $LIB/hide_routes.py" \
     'NoNewPrivileges=true' \
     'InaccessiblePaths=-/dev/dxg -/usr/lib/wsl -/mnt/wslg' \
     "Environment=DOTNET_INSTALL_DIR=$dir/_dotnet" \

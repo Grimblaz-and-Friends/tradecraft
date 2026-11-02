@@ -33,6 +33,9 @@ WINDOWS_FS = ("9p", "drvfs", "virtiofs", "cifs", "smb3")
 # read-only, serve no drive root and no profile path, and be recorded in the PR.
 MOUNT_ALLOWLIST: tuple[str, ...] = ()
 WSLG_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "PULSE_SERVER")
+# WSL's routes into Windows, which hide_routes.py hides for the whole distribution.
+HIDDEN_ROUTES = (("gpu", "dev/dxg"), ("wsl-lib", "usr/lib/wsl"), ("wslg", "mnt/wslg"))
+LIVE_UNIT_STATES = ("active", "activating", "reloading", "refreshing", "deactivating")
 WINDOWS_PROGRAMS = ("cmd.exe", "powershell.exe", "pwsh.exe", "explorer.exe", "wsl.exe")
 ROOT_GROUPS = ("root", "sudo", "admin", "wheel", "docker", "lxd", "incus",
                "incus-admin", "disk", "libvirt")
@@ -171,14 +174,38 @@ def probe_interop(binfmt_dir: Path, environ: dict, scratch_dir: str | None = Non
     return result("interop", failures, unknowns)
 
 
-def probe_wslg(root: Path, environ: dict, context: str) -> dict:
+def _reaches(base: Path) -> list[tuple[str, str]]:
+    """Which of WSL's routes open from this view of the filesystem: (name, path)."""
+    found = []
+    for name, relative in HIDDEN_ROUTES:
+        path = base / relative
+        if relative == "dev/dxg":
+            for flags in (os.O_RDWR, os.O_RDONLY):
+                try:
+                    handle = os.open(path, flags | getattr(os, "O_NONBLOCK", 0)
+                                     | getattr(os, "O_NOCTTY", 0))
+                except OSError:
+                    continue
+                os.close(handle)
+                found.append((name, str(path)))
+                break
+        else:
+            try:
+                os.listdir(path)
+            except OSError:
+                continue
+            found.append((name, str(path)))
+    return found
+
+
+def probe_wslg(root: Path, environ: dict) -> dict:
     """No WSLg display, audio or clipboard bridge, and no GPU route into the host.
 
     WSLg's sockets are its route into the owner's session, so the probe tests them
-    and the display variables a job would use, whatever `.wslconfig` says. In a job
-    the GPU device `/dev/dxg` must be hidden too: the runner units' InaccessiblePaths
-    does that, and only a unit's processes see it, so `verify` reads that unit
-    property instead (C16's pattern for NoNewPrivileges).
+    and the display variables a job would use, whatever `.wslconfig` says. The GPU
+    device `/dev/dxg`, WSL's library and WSLg's directory must not open either.
+    They are hidden for the whole distribution, so this holds in every context,
+    `verify`'s included (holder reading 10).
     """
     failures = []
     for name in WSLG_VARIABLES:
@@ -192,14 +219,55 @@ def probe_wslg(root: Path, environ: dict, context: str) -> dict:
     for relative in ("PulseServer", "runtime-dir/wayland-0", ".X11-unix/X0"):
         if os.path.lexists(wslg / relative):
             failures.append(f"wslg:socket {wslg / relative}")
-    detail = {}
-    device = root / "dev" / "dxg"
-    if context == "job":
-        if os.path.exists(device) and os.access(device, os.R_OK | os.W_OK):
-            failures.append(f"gpu:{device} openable")
-    else:
-        detail["gpu"] = f"{device} is checked as the units' InaccessiblePaths"
-    return result("wslg", failures, detail=detail)
+    for name, path in _reaches(root):
+        failures.append(f"{name}:{path} opens")
+    return result("wslg", failures)
+
+
+def _connects(path: Path) -> bool:
+    if not hasattr(socket, "AF_UNIX"):
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(3)
+            sock.connect(str(path))
+            return True
+    except OSError:
+        return False
+
+
+def probe_same_uid(proc_dir: Path, uid: int, run_user: Path, connects=_connects) -> dict:
+    """No other process of this account opens a way out of the job's sandbox.
+
+    A process of the same uid lends a job its view of the filesystem through
+    `/proc/<pid>/root`, and one without no_new_privs is a way round it. The user
+    manager, if it answers, starts services outside the unit (holder reading 10).
+    """
+    failures = []
+    try:
+        pids = sorted(int(entry) for entry in os.listdir(proc_dir) if entry.isdigit())
+    except OSError as exc:
+        return result("same-uid", [], [f"proc unreadable: {exc.strerror}"])
+    seen = 0
+    for pid in pids:
+        try:
+            status = (proc_dir / str(pid) / "status").read_text(encoding="utf-8",
+                                                                  errors="replace")
+        except OSError:
+            continue  # it ended, or isn't ours to read
+        fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+        if str(uid) not in fields.get("Uid", "").split()[:2]:
+            continue
+        seen += 1
+        name = fields.get("Name", "?").strip()
+        if fields.get("NoNewPrivs", "").strip() != "1":
+            failures.append(f"same-uid:pid {pid} ({name}) runs without no_new_privs")
+        for route, path in _reaches(proc_dir / str(pid) / "root"):
+            failures.append(f"same-uid:pid {pid} ({name}) opens {route} at {path}")
+    for path in (run_user / str(uid) / "systemd" / "private", run_user / str(uid) / "bus"):
+        if connects(path):
+            failures.append(f"user-manager:{path} answers")
+    return result("same-uid", failures, detail={"processes": seen})
 
 
 def _owner(path: str):
@@ -330,6 +398,48 @@ def probe_root_settings(euid: int, shadow: Path, runner=run_command) -> dict:
     return result("root-settings", failures, unknowns)
 
 
+def account_uid() -> int | None:
+    try:
+        import pwd
+        return pwd.getpwnam(ACCOUNT).pw_uid
+    except (ImportError, KeyError):
+        return None
+
+
+def probe_account_sessions(euid: int, linger_dir: Path, uid: int | None,
+                           runner=run_command) -> dict:
+    """As root: the account has no login session, no user manager and no linger."""
+    if euid != 0:
+        return result("sessions", [], ["not run as uid 0"])
+    if uid is None:
+        return result("sessions", [], [f"no {ACCOUNT} account"])
+    failures = []
+    unknowns = []
+    env = {"LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
+    if os.path.lexists(linger_dir / ACCOUNT):
+        failures.append(f"linger: {linger_dir / ACCOUNT} exists")
+    try:
+        code, output = runner(["loginctl", "list-sessions", "--no-legend"], env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        code, output = None, ""
+        unknowns.append(f"login-session: loginctl failed to run ({exc})")
+    if code not in (None, 0):
+        unknowns.append(f"login-session: loginctl exited {code}")
+    for line in output.splitlines():
+        fields = line.split()
+        if ACCOUNT in fields[1:3] or str(uid) in fields[1:3]:
+            failures.append(f"login-session: {' '.join(fields[:3])}")
+    try:
+        _, state = runner(["systemctl", "is-active", f"user@{uid}.service"], env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        state = ""
+        unknowns.append(f"user-manager: systemctl failed to run ({exc})")
+    state = (state.strip().splitlines() or [""])[-1]
+    if state in LIVE_UNIT_STATES:
+        failures.append(f"user-manager: user@{uid}.service is {state}")
+    return result("sessions", failures, unknowns)
+
+
 # ---------------------------------------------------------------- the check
 
 
@@ -350,11 +460,14 @@ def group_names() -> list[str]:
 def run_check(args: argparse.Namespace, *, root: Path = Path("/"), environ=None,
               euid: int | None = None, groups: list[str] | None = None,
               runner=run_command, executor=_default_executor,
-              owner_of=_owner, writable=_writable) -> dict:
+              owner_of=_owner, writable=_writable, connects=_connects,
+              uid_of_account=account_uid) -> dict:
     environ = dict(os.environ if environ is None else environ)
     euid = os.geteuid() if euid is None else euid  # type: ignore[attr-defined]
     if args.root_settings:
-        probes = [probe_root_settings(euid, root / "etc" / "shadow", runner)]
+        probes = [probe_root_settings(euid, root / "etc" / "shadow", runner),
+                  probe_account_sessions(euid, root / "var" / "lib" / "systemd" / "linger",
+                                         uid_of_account(), runner)]
     else:
         files = tuple(str(root / path.lstrip("/")) for path in ROOT_OWNED)
         probes = [
@@ -367,7 +480,8 @@ def run_check(args: argparse.Namespace, *, root: Path = Path("/"), environ=None,
                        str(root / "var" / "run" / "docker.sock"), runner,
                        owner_of, writable, files),
             probe_local_services(args.local_port),
-            probe_wslg(root, environ, args.context),
+            probe_wslg(root, environ),
+            probe_same_uid(root / "proc", euid, root / "run" / "user", connects),
             probe_settings(root / "proc" / "meminfo", environ),
         ]
     failed = [p["probe"] for p in probes if p["result"] in (REACHABLE, UNKNOWN)]

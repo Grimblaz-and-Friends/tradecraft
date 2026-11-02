@@ -308,7 +308,7 @@ GOOD_WSLCONFIG = "[wsl2]\nprocessors=8\nmemory=12GB\nguiApplications=false\n"
     ("appendWindowsPath=false", "appendWindowsPath=true", "interop.appendWindowsPath=true"),
     ("[automount]\nenabled=false", "[automount]\nenabled=true", "automount.enabled=true"),
     ("[gpu]\nenabled=false", "[gpu]\nenabled=true", "gpu.enabled=true"),
-    ("default=ci-runner", "default=root", "user.default=root"),
+    ("default=root", "default=ci-runner", "user.default=ci-runner"),
 ])
 def test_a2_wsl_conf_loosened_fails(old, new, named):
     assert ps.check_wsl_conf(GOOD_WSL_CONF) == []
@@ -394,6 +394,7 @@ class FakeWindows:
         self.stubs = ["/mnt/c", "/mnt/d"]
         self.journal = lambda unit, reads: "-- No entries --\n"
         self.journal_reads = 0
+        self.hide_state = "active"
 
     def __call__(self, argv, stdin_bytes=None):
         self.calls.append((list(argv), stdin_bytes))
@@ -465,6 +466,8 @@ class FakeWindows:
                               for path in ps.GUEST_LIB_PARENTS).encode("ascii"), b""
         if argv[:2] == ["find", ps.GUEST_LIB]:
             return 0, self.lib_listing.encode("ascii"), b""
+        if argv == ["systemctl", "is-active", ps.HIDE_UNIT]:
+            return 0, (self.hide_state + "\n").encode("ascii"), b""
         if argv[0] == "systemctl" and "InaccessiblePaths" in argv:
             return 0, (self.hidden + "\n").encode("ascii"), b""
         if argv[0] == "systemctl":
@@ -788,8 +791,9 @@ def test_a7_task_definitions():
     assert "<LogonTrigger>" in start and "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in start
     assert "keepalive.py" in start
     keepalive = (PRIVATE_CI / "keepalive.py").read_text(encoding="utf-8")
-    assert '["wsl.exe", "-d", DISTRO, "--exec", "/bin/sleep", "infinity"]' in keepalive
-    assert ps.KEEPALIVE_ARGS == "-d tradecraft-ci --exec /bin/sleep infinity"
+    assert '["wsl.exe", "-d", DISTRO, "-u", "root", "--exec", "/bin/sleep", "infinity"]' \
+        in keepalive
+    assert ps.KEEPALIVE_ARGS == "-d tradecraft-ci -u root --exec /bin/sleep infinity"
 
 
 def test_a7_logon_runs_rerun_then_watch_then_follow(monkeypatch, tmp_path):
@@ -1288,8 +1292,8 @@ def test_item4_the_check_fails_on_each_wslg_route(tmp_path, quiet_loopback, loos
     assert "wslg" in report["failed"]
     assert any(named in f for f in failures_of(report, "wslg"))
     if loosen == "dxg":
-        # verify can't see the units' namespace; it reads their InaccessiblePaths instead.
-        assert "wslg" not in check(root, tmp_path, environ=environ, context="verify")["failed"]
+        # Hidden for the whole distribution, so verify's own process tests it too.
+        assert "wslg" in check(root, tmp_path, environ=environ, context="verify")["failed"]
     # A job's own Xvfb on :99 is the distribution's display, not WSLg's.
     clean = good_root(tmp_path / "again")
     (clean / "tmp" / ".X11-unix").mkdir(parents=True)
@@ -1566,3 +1570,206 @@ def test_finding3_a_plain_probe_pushes_nothing_while_a_runner_never_listens(wind
     assert found["ok"] is False and found["reconnect_seconds"] == {}
     assert any("not connected to GitHub within 300 s" in f
                and "blaz-top-wsl-1, blaz-top-wsl-2" in f for f in found["failures"])
+
+
+# ---------------------------------------------------------------- holder reading 10 (PR #931)
+
+
+hr = _load("private_ci_hide_routes", PRIVATE_CI / "guest" / "hide_routes.py")
+
+
+def test_r10_neither_the_keepalive_nor_the_default_user_is_the_runner_account():
+    """At e70c280 the keepalive ran without -u under `[user] default=ci-runner`, so WSL
+    opened a ci-runner login session and its user manager."""
+    keepalive = _load("private_ci_keepalive", PRIVATE_CI / "keepalive.py")
+    command = keepalive.COMMAND
+    assert command[command.index("-u") + 1] == "root"
+    assert command.index("-u") < command.index("--exec")
+    assert ps.KEEPALIVE_ARGS == "-d tradecraft-ci -u root --exec /bin/sleep infinity"
+    assert ps.KEEPALIVE_ARGS in " ".join(command)
+    assert "default=root\n" in GOOD_WSL_CONF and "default=ci-runner" not in GOOD_WSL_CONF
+    assert ps.WSL_CONF_EXPECTED[("user", "default")] == "root"
+    assert any("user.default=ci-runner" in f for f in
+               ps.check_wsl_conf(GOOD_WSL_CONF.replace("default=root", "default=ci-runner")))
+
+
+def outside_process(root: Path, pid: int, uid: int, *, nnp: str = "1", reaches: bool = True):
+    """A process in the fixture's /proc whose root view holds WSL's routes, or doesn't."""
+    proc = root / "proc" / str(pid)
+    (proc / "root").mkdir(parents=True)
+    (proc / "status").write_text(f"Name:\tsleep\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+                                 f"NoNewPrivs:\t{nnp}\n", encoding="utf-8")
+    if reaches:
+        (proc / "root" / "dev").mkdir()
+        (proc / "root" / "dev" / "dxg").write_text("")
+        (proc / "root" / "usr" / "lib" / "wsl").mkdir(parents=True)
+        (proc / "root" / "mnt" / "wslg").mkdir(parents=True)
+
+
+def test_r10_the_check_fails_through_an_outside_same_uid_process(tmp_path, quiet_loopback):
+    """The holder opened /dev/dxg through the keepalive's /proc/666/root from inside a unit."""
+    root = good_root(tmp_path)
+    outside_process(root, 666, 1001)
+    report = check(root, tmp_path)
+    assert "same-uid" in report["failed"]
+    failures = failures_of(report, "same-uid")
+    for route in ("gpu", "wsl-lib", "wslg"):
+        assert any(f.startswith(f"same-uid:pid 666 (sleep) opens {route} at ") for f in failures)
+    # The same view in a process of another account, or a same-uid process whose view
+    # hides them, lends a job nothing.
+    clean = good_root(tmp_path / "clean")
+    outside_process(clean, 666, 0)
+    outside_process(clean, 777, 1001, reaches=False)
+    found = check(clean, tmp_path)
+    assert found["ok"], found["failed"]
+    assert next(p for p in found["probes"] if p["probe"] == "same-uid")["detail"] == {
+        "processes": 1}
+
+
+def test_r10_the_check_fails_on_a_same_uid_process_without_no_new_privs(tmp_path, quiet_loopback):
+    root = good_root(tmp_path)
+    outside_process(root, 812, 1001, nnp="0", reaches=False)
+    assert failures_of(check(root, tmp_path), "same-uid") == [
+        "same-uid:pid 812 (sleep) runs without no_new_privs"]
+
+
+def test_r10_the_check_fails_when_the_user_manager_answers(tmp_path):
+    root = good_root(tmp_path)
+    answering = str(root / "run" / "user" / "1001" / "bus")
+    found = ic.probe_same_uid(root / "proc", 1001, root / "run" / "user",
+                              connects=lambda path: str(path) == answering)
+    assert found["failures"] == [f"user-manager:{answering} answers"]
+    assert ic.probe_same_uid(root / "proc", 1001, root / "run" / "user",
+                             connects=lambda path: False)["result"] == "blocked"
+
+
+def test_r10_the_routes_fail_in_verify_context_too(tmp_path, quiet_loopback):
+    """Hidden for the whole distribution, so verify's own process tests them directly."""
+    root = good_root(tmp_path)
+    (root / "usr" / "lib" / "wsl").mkdir(parents=True)
+    report = check(root, tmp_path, context="verify")
+    assert any(f.startswith("wsl-lib:") and f.endswith(" opens")
+               for f in failures_of(report, "wslg"))
+
+
+SESSION = "      3  999 ci-runner -    pts/1 active no -\n"
+
+
+@pytest.mark.parametrize("loosen, named", [
+    ("session", "login-session: 3 999 ci-runner"),
+    ("manager", "user-manager: user@999.service is active"),
+    ("linger", "linger: "),
+])
+def test_r10_verify_fails_on_a_session_a_user_manager_or_linger(tmp_path, loosen, named):
+    linger = tmp_path / "linger"
+    linger.mkdir()
+
+    def runner(argv, env=None):
+        if argv[0] == "loginctl":
+            return 0, SESSION if loosen == "session" else ""
+        return (0, "active\n") if loosen == "manager" else (3, "inactive\n")
+    if loosen == "linger":
+        (linger / "ci-runner").write_text("")
+    found = ic.probe_account_sessions(0, linger, 999, runner)
+    assert found["result"] == "reachable"
+    assert any(f.startswith(named) for f in found["failures"]), found["failures"]
+    (linger / "ci-runner").unlink(missing_ok=True)
+    quiet = ic.probe_account_sessions(
+        0, linger, 999, lambda argv, env=None: (0, "") if argv[0] == "loginctl"
+        else (3, "inactive\n"))
+    assert quiet["result"] == "blocked"
+    assert ic.probe_account_sessions(1001, linger, 999, runner)["result"] == "unknown"
+    # verify's root-side run reads it beside sudo's answer.
+    report = ic.run_check(ic.build_parser().parse_args(ps.root_settings_argv()[2:]),
+                          root=tmp_path, euid=0, uid_of_account=lambda: 999,
+                          runner=lambda argv, env=None: (0, NO_RIGHTS) if argv[0] == "sudo"
+                          else runner(argv, env))
+    assert [p["probe"] for p in report["probes"]] == ["root-settings", "sessions"]
+
+
+def test_r10_verify_names_the_hide_unit_when_it_is_not_active(windows):
+    windows.hide_state = "failed"
+    found = ps.verify(ps.Host(windows), wslconfig_text=GOOD_WSLCONFIG)
+    assert any(f.startswith("tradecraft-private-ci-hide.service is failed, not active")
+               for f in found["failures"])
+
+
+def fake_tree(entries: dict[str, int]):
+    """An lstat over a dict of path -> st_mode, uid 0, that a fake bind mount rewrites."""
+    def lstat(path):
+        if path not in entries:
+            raise FileNotFoundError(path)
+        return os.stat_result((entries[path], 0, 0, 1, 0, 0, 0, 0, 0, 0))
+    return lstat
+
+
+def test_r10_hide_routes_mounts_a_mode_0_placeholder_over_each_route():
+    import stat as st_mod
+    entries = {"/dev/dxg": st_mod.S_IFCHR | 0o666, "/usr/lib/wsl": st_mod.S_IFDIR | 0o755,
+               "/mnt/wslg": st_mod.S_IFDIR | 0o755}
+    mounts = []
+
+    def mount(source, target):
+        mounts.append((source, target))
+        entries[target] = st_mod.S_IFMT(entries[target])   # the placeholder's mode 0
+    found = hr.hide(lstat=fake_tree(entries), mount=mount, make=lambda kind: f"/ph/{kind}")
+    assert found["ok"] and mounts == [("/ph/chr", "/dev/dxg"), ("/ph/dir", "/usr/lib/wsl"),
+                                      ("/ph/dir", "/mnt/wslg")]
+    assert set(found["hidden"].values()) == {"newly hidden"}
+    # Every boot and every account process runs it again: a hidden route is left alone.
+    again = hr.hide(lstat=fake_tree(entries), mount=lambda s, t: pytest.fail("remounted"),
+                    make=lambda kind: f"/ph/{kind}")
+    assert again["ok"] and set(again["hidden"].values()) == {"hidden"}
+    # Absent is fine; a symlink, or a mount that leaves the route open, fails closed.
+    del entries["/mnt/wslg"]
+    entries["/usr/lib/wsl"] = st_mod.S_IFLNK | 0o777
+    entries["/dev/dxg"] = st_mod.S_IFCHR | 0o666
+    bad = hr.hide(lstat=fake_tree(entries), mount=lambda s, t: None,
+                  make=lambda kind: f"/ph/{kind}")
+    assert bad["ok"] is False and bad["hidden"] == {"/mnt/wslg": "absent"}
+    assert bad["failures"] == ["/dev/dxg is still reachable after the mount",
+                               "/usr/lib/wsl is a symlink"]
+
+
+def test_r10_the_whole_distribution_hides_before_any_account_process_starts():
+    """Direction 3's mechanism: hidden at every boot before the runners and any login,
+    each runner unit requires it and hides again first, and every account process the
+    setup starts hides first."""
+    code = "\n".join(code_lines(PROVISION_TEXT))
+    for line in ("'DefaultDependencies=no'", "'Before=sysinit.target systemd-user-sessions.service'",
+                 "'WantedBy=sysinit.target'", '"ExecStart=/usr/bin/python3 $LIB/hide_routes.py"',
+                 'systemctl enable "$HIDE_UNIT"', 'systemctl start "$HIDE_UNIT"',
+                 '"Requires=$HIDE_UNIT"', '"After=$HIDE_UNIT"',
+                 '"ExecStartPre=+/usr/bin/python3 $LIB/hide_routes.py"',
+                 'rm -f "/var/lib/systemd/linger/$ACCOUNT"'):
+        assert line in code, line
+    # Never restarted: the runner units require it, so a restart would restart them.
+    assert 'systemctl restart "$HIDE_UNIT"' not in code
+    assert "HIDE_UNIT=tradecraft-private-ci-hide.service" in code
+    assert ps.HIDE_UNIT == "tradecraft-private-ci-hide.service"
+    as_account = code.split("as_account() {", 1)[1].split("\n}", 1)[0]
+    assert as_account.index('python3 "$LIB/hide_routes.py"') < as_account.index("setpriv")
+    assert "exit 1" in as_account
+    assert (f"{ps.GUEST_LIB}/hide_routes.py" in [dest for _, dest, _ in ps.GUEST_FILES])
+    # The routes are hidden in the units' own namespaces too.
+    assert "'InaccessiblePaths=-/dev/dxg -/usr/lib/wsl -/mnt/wslg'" in code
+
+
+def test_r10_finding2_register_checks_for_account_processes_just_before_the_token():
+    code = "\n".join(code_lines(PROVISION_TEXT))
+    register = code.split("register() {", 1)[1].split("\n}", 1)[0]
+    assert register.index("running=$(account_processes)") < register.index(
+        "IFS= read -r ACTIONS_RUNNER_INPUT_TOKEN")
+    assert register.index("exit 1") < register.index("IFS= read -r")
+    helper = code.split("account_processes() {", 1)[1].split("\n}", 1)[0]
+    assert 'pgrep -a "$flag" "$ACCOUNT"' in helper and "for flag in -u -U" in helper
+    # A pgrep that fails reads as a process found, so register fails closed.
+    assert "pgrep %s failed" in helper
+
+
+def test_r10_finding2_the_prompt_says_ci_is_paused(monkeypatch, capsys):
+    monkeypatch.setattr(ps.getpass, "getpass", lambda text: TOKEN)
+    assert ps.ask_token(["blaz-top-wsl-2: its .runner record is missing or unreadable"]) == TOKEN
+    said = capsys.readouterr().err
+    assert "Both runners are stopped now, so private CI is paused" in said
+    assert "they start again when install finishes" in said

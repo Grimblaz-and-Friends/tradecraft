@@ -68,12 +68,16 @@ PROBE_PATH = watch.PROBE_PATH
 GUEST_LIB = "/usr/local/lib/tradecraft-private-ci"
 CHECK = f"{GUEST_LIB}/isolation_check.py"
 PROVISION = f"{GUEST_LIB}/provision.sh"
-KEEPALIVE_ARGS = f"-d {DISTRO} --exec /bin/sleep infinity"
+# The keepalive runs as root, so holding the distribution up opens no session of
+# the runner account (holder reading 10).
+KEEPALIVE_ARGS = f"-d {DISTRO} -u root --exec /bin/sleep infinity"
+HIDE_UNIT = "tradecraft-private-ci-hide.service"
 GUEST_FILES = (("guest/provision.sh", PROVISION, "0755"),
                ("guest/isolation_check.py", CHECK, "0755"),
                ("guest/wsl.conf", f"{GUEST_LIB}/wsl.conf", "0644"),
                ("guest/clear_drive_stubs.py", f"{GUEST_LIB}/clear_drive_stubs.py", "0755"),
-               ("guest/state.py", f"{GUEST_LIB}/state.py", "0755"))
+               ("guest/state.py", f"{GUEST_LIB}/state.py", "0755"),
+               ("guest/hide_routes.py", f"{GUEST_LIB}/hide_routes.py", "0755"))
 # Root runs everything in the guest library, so it and the directories above it
 # must be root's alone: a writable or symlinked path there is a route to root.
 GUEST_LIB_PARENTS = ("/usr", "/usr/local", "/usr/local/lib")
@@ -91,7 +95,9 @@ WSL_CONF_EXPECTED = {
     ("interop", "enabled"): "false",
     ("interop", "appendWindowsPath"): "false",
     ("gpu", "enabled"): "false",
-    ("user", "default"): ACCOUNT,
+    # Root, not the runner account: a bare `wsl.exe -d tradecraft-ci` opens no
+    # session, and no user manager, of the account.
+    ("user", "default"): "root",
 }
 HOLD_SECONDS = 300
 HOLD_DEADLINE_SECONDS = 1800
@@ -421,6 +427,10 @@ def verify(host: Host, *, listener_factory=Listener, wslconfig_text=None) -> dic
                                unit_name(n), check=False)
         if HIDDEN_DEVICE not in hidden:
             failures.append(f"unit {runner_name(n)} InaccessiblePaths lacks {HIDDEN_DEVICE}")
+    _, hide_state = host.guest("systemctl", "is-active", HIDE_UNIT, check=False)
+    if hide_state.strip() != "active":
+        failures.append(f"{HIDE_UNIT} is {hide_state.strip() or 'unknown'}, not active: "
+                        "WSL's routes into Windows may be reachable")
     _, root_text = host.guest(*root_settings_argv(), check=False)
     root_report = parse_check(root_text)
     failures += [f"root-settings: {f}" for p in root_report.get("probes", [])
@@ -683,7 +693,10 @@ def ask_token(reasons: list[str]) -> str:
         "These runner instances need registering:\n"
         + "".join(f"  {reason}\n" for reason in reasons)
         + "After the first install, a token prompt you didn't expect can mean a job "
-          "changed a runner's record. If so, don't type a token: tell the Steward.\n")
+          "changed a runner's record. If so, don't type a token: tell the Steward.\n"
+          "Both runners are stopped now, so private CI is paused; they start again when "
+          "install finishes. If you stop here, they stay stopped until install runs "
+          "again or WSL restarts.\n")
     sys.stderr.flush()
     return getpass.getpass(
         "Registration token from Settings > Actions > Runners (typed here only): ")
