@@ -2473,7 +2473,7 @@ def test_direct_payload_without_a_credential_record_is_unchanged():
 
 # An over-budget prompt has its wholly deleted text files summarised (#902).
 
-FINDER_CONTRACT = ROOT / "skills/connected-review/references/finder.md"
+FINDER_CONTRACT_TEXT = "Report concrete, evidenced defects in the changed hunks."
 DELETED_FIXTURE_DIFF = (
     "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -2 +2 @@\n-old\n+new\n"
     "diff --git a/gone.py b/gone.py\ndeleted file mode 100644\nindex 1111111..0000000\n"
@@ -2484,6 +2484,7 @@ DELETED_FIXTURE_DIFF = (
 def recording_fixture(monkeypatch, tmp_path, diff, *, candidates=()):
     """Serve one exported diff to the real pass and record every CLI launch and post."""
     execute_fixture(monkeypatch, tmp_path, [])
+    (tmp_path / "finder.md").write_bytes(FINDER_CONTRACT_TEXT.encode("ascii"))
 
     def export(_repo, _head, _base, root):
         snapshot = root / "snapshot"
@@ -2527,7 +2528,7 @@ def recording_fixture(monkeypatch, tmp_path, diff, *, candidates=()):
 def recorded_review(monkeypatch, tmp_path, diff, *, candidates=()):
     """Run one live review through the real pass against a recording CLI."""
     launches, reviews = recording_fixture(monkeypatch, tmp_path, diff, candidates=candidates)
-    result = cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
+    result = cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, tmp_path / "finder.md")
     return result, launches, reviews
 
 
@@ -2546,7 +2547,7 @@ def test_under_budget_launch_is_byte_identical_to_the_reviewer_before_summaries(
     result, launches, _reviews = recorded_review(monkeypatch, tmp_path, DELETED_FIXTURE_DIFF)
     assert result["status"] == "reviewed" and len(launches) == 1
     argv, stdin = normalised_launch(launches[0])
-    assert hashlib.sha256(stdin).hexdigest() == "a666c6c4b02d49fb70e14fc22bb2e087484cd988e202bfbf6c5f0ad3ee123de1"
+    assert hashlib.sha256(stdin).hexdigest() == "bbe1497397f16028a7882f7b1b513ce1eb589f9e79d8d2caffabe1955ab4699c"
     assert hashlib.sha256(json.dumps(argv, ensure_ascii=True).encode("ascii")).hexdigest() == "27f1210219d9eedf39ddbad6710e729240a613833cd223db2b3e6be73c8751a8"
     assert len(launches[0]["readable"]) == 1
 
@@ -2647,7 +2648,7 @@ def oversize_skip(monkeypatch, tmp_path, capsys, diff):
     event_path = tmp_path / "event.json"
     event_path.write_bytes(json.dumps(event()).encode())
     assert cr.main(["review", "--event", str(event_path), "--owner-login", "Grimblaz", "--attempt", "92",
-                    "--finder-prompt", str(FINDER_CONTRACT)]) == 0
+                    "--finder-prompt", str(tmp_path / "finder.md")]) == 0
     assert not launches
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "skipped"
@@ -2699,17 +2700,17 @@ def test_summarised_input_at_the_budget_launches_and_one_byte_over_skips(tmp_pat
     recording_fixture(monkeypatch, tmp_path / "measure", diff)
     monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", 10)
     with pytest.raises(cr.FinderPromptTooLarge) as raised:
-        cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
+        cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, tmp_path / "measure" / "finder.md")
     summarised = raised.value.measured_bytes
     assert raised.value.before_bytes > summarised + 4000 and raised.value.summarised_files == 1
     launches, _reviews = recording_fixture(monkeypatch, tmp_path / "boundary", diff)
     monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", summarised - extra)
     if extra:
         with pytest.raises(cr.FinderPromptTooLarge):
-            cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
+            cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, tmp_path / "measure" / "finder.md")
         assert not launches
     else:
-        assert cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)["status"] == "reviewed"
+        assert cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, tmp_path / "measure" / "finder.md")["status"] == "reviewed"
         assert len(launches[0]["stdin"]) == summarised
 
 
@@ -2744,7 +2745,7 @@ def test_folder_holds_the_bases_exact_bytes_from_a_real_git_diff(tmp_path):
         "crlf.txt": b"alpha\r\nbeta\r\n",
         "no-final-newline.txt": b"alpha\nbeta",
         "empty.txt": b"",
-        "nested/multibyte.txt": "café ☃\n日本\n".encode("utf-8"),
+        "nested/multibyte.txt": ("caf" + chr(0xE9) + " " + chr(0x2603) + "\n" + chr(0x65E5) + chr(0x672C) + "\n").encode("utf-8"),
         "mixed.txt": b"one\r\ntwo\nthree",
     }
     raw, base = git_fixture(tmp_path / "repository", files)
@@ -2813,7 +2814,7 @@ def test_unsafe_summarised_path_takes_the_ordinary_failure_route(tmp_path, monke
     diff = APP_SECTION + deleted_section("../escape.py", big_lines("ESCAPE", 7000))
     launches, _reviews = recording_fixture(monkeypatch, tmp_path, diff)
     with pytest.raises(cr.ReviewError, match="unsafe path") as raised:
-        cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
+        cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, tmp_path / "finder.md")
     assert not isinstance(raised.value, cr.FinderPromptTooLarge) and not launches
 
 

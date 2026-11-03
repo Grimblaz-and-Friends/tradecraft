@@ -89,7 +89,7 @@ def measure(repository: str, base: str, head: str, *, check_folder: bool) -> dic
 
 
 def parser() -> argparse.ArgumentParser:
-    cli = argparse.ArgumentParser(description=__doc__)
+    cli = argparse.ArgumentParser(description="Reconstruct the connected reviewer's budget references")
     cli.add_argument(
         "--references", choices=("budget", "summary", "all"), default="all",
         help="budget: the fitting and rejected references; summary: the three skipped heads, "
