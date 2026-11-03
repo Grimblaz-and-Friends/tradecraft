@@ -1808,3 +1808,28 @@ def test_887_R3_2_seat_refuses_work_outliving_the_return_without_fallback(job, c
     assert not seat.sidecar(args.output, ".source.bin").read_bytes()
     assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes() == raw.encode("utf-8")
     assert "work outlived the return" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stage, requires, compared", [
+    ("use", "execute", True), ("use", "read", False), ("cold-read", "execute", False)])
+def test_906_ac10_only_a_claude_use_consumer_given_a_shell_is_compared(
+        job, tmp_path, monkeypatch, stage, requires, compared):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires = stage, requires
+    if stage == "use":
+        args.classification = "cold"
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    logged = record(args)
+    if not compared:
+        assert "write_bound" not in request and "launch_comparison" not in logged
+        return
+    assert request["write_bound"]["file_tools"] is None
+    assert request["write_bound"]["shell"] == "no OS fence"
+    boundary = request["requested"]["permission_boundary"]
+    assert "file_editing_tools=none" in boundary and "shell has no OS fence" in boundary
+    assert "os_sandbox" not in boundary
+    assert logged["launch_comparison"]["status"] == "clean"
+    assert {entry["item"] for entry in logged["launch_comparison"]["coverage"]} >= {
+        "switch", "registry", "dispatch-records", "own-request"}

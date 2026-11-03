@@ -65,6 +65,17 @@ if vendor == "claude":
     capture["add_dirs"] = {flags[i + 1]: (Path(flags[i + 1], "CLAUDE.md").read_text(encoding="utf-8")
         if Path(flags[i + 1], "CLAUDE.md").is_file() else None)
         for i, flag in enumerate(flags) if flag == "--add-dir"}
+    if "guard_decisions" in scenario:
+        # Stand in for the launch's write-guard hook (#906): its decisions land
+        # in the decision log the launch settings name.
+        import re
+        settings = json.loads(Path(flags[flags.index("--settings") + 1]).read_bytes())
+        command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        config = json.loads(Path(re.search(r'--config "([^"]+)"', command)[1]).read_bytes())
+        capture["guard_config"] = config
+        with Path(config["log"]).open("ab") as stream:
+            for entry in scenario["guard_decisions"]:
+                stream.write((json.dumps(entry) + "\n").encode("utf-8"))
     transcript = scenario.get("transcript")
     if transcript:
         # The runtime appends its session transcript; resumes extend the same file.

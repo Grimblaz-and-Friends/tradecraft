@@ -1975,3 +1975,51 @@ def test_887_R3_2_refused_author_resumes_and_is_not_validated(job, monkeypatch):
     assert "return_validation" not in logged["result"]
     captured = json.loads((args.root / "seen-claude.json").read_bytes())
     assert captured["background_switch"] == "1"
+
+
+@pytest.mark.parametrize("decided", [True, False])
+def test_906_ac1_ac13_refused_or_unproved_write_fails_the_turn_and_is_recorded(job, tmp_path, monkeypatch,
+                                                                               decided):
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command",
+        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    outside = str(tmp_path / "home" / ".claude" / "settings.json")
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Write", "input": {"file_path": outside}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": decided}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": FIXTURE_SESSION,
+         "result": "built"},
+    ]
+    decisions = [{"tool": "Write", "tool_use_id": "toolu_1", "raw": outside, "canonical": outside,
+                  "decision": "deny", "reason": "launch write bound: outside"}] if decided else []
+    scenario.write_bytes(json.dumps({"claude": {
+        "stdout": "\n".join(json.dumps(event) for event in events),
+        "guard_decisions": decisions}}).encode())
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    attempt = logged["attempts"][0]
+    assert logged["outcome"] == attempt["outcome"] == "error"
+    if decided:
+        assert attempt["reason"] == f"launch write bound refused Write {outside}"
+        assert logged["write_guard"]["refusals"][0]["canonical"] == outside
+    else:
+        assert "write bound unproved: Write" in attempt["reason"]
+        assert logged["write_guard"]["unguarded"][0]["tool_use_id"] == "toolu_1"
+    # AC-13: the record names exactly what applied.
+    assert request["requested"]["permission_boundary"] == implementer.launch_bound.IMPLEMENTER_BOUNDARY
+    bound = request["write_bound"]
+    assert bound["shell"] == "no OS fence" and bound["file_tools"]["guard_self_test"] == "passed"
+    assert bound["file_tools"]["allowed"][0] == str(args.root.resolve())
+    assert bound["memory"]["requested"].endswith("CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
+    assert logged["launch_comparison"]["schema_version"] == 1
+    # AC-6: the builder is told its bound, and the digest covers the notice.
+    captured = json.loads((args.root / "seen-claude.json").read_bytes())
+    sent = base64.b64decode(captured["stdin"])
+    notice = request["launch_controls"]["write_bound_notice"].encode("utf-8")
+    assert sent.endswith(b"\n\n" + notice) and b"no memory store" in notice
+    assert captured["guard_config"]["scratchpad"] in notice.decode("utf-8")
+    assert captured["argv"][captured["argv"].index("--session-id") + 1] == FIXTURE_SESSION
