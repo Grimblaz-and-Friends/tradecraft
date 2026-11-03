@@ -17,7 +17,7 @@ The request's `write_bound` states what applied: the guarded tools and allowed p
 
 ## The hold
 
-Any bundle for this change whose comparison has findings, or whose request has a write-bound baseline but whose run record has no comparison (`unrecorded`), holds every next stage, the holder-named `run <stage>` included. The run itself is untouched: a finding never fails or discards it.
+Any bundle for this change whose comparison has findings, or whose request has a write-bound baseline but whose stopped launch left no comparison (`unrecorded`), holds every next stage, the holder-named `run <stage>` included. A launch still running owes no account: its report entry reads `running`, because its comparison is written when it stops, and the live-launch routing governs it meanwhile. The run itself is untouched: a finding never fails or discards it.
 
 The hold releases when a trusted `launch-account` marker for that bundle's dispatch names exactly its finding ids (the `launch-account` contract in `markers.md`). Name each finding's party from what you know, never by default:
 

@@ -28,6 +28,9 @@ if flags[:3] == ["plugin", "list", "--json"]:
     print(json.dumps([] if vendor == "claude" else {"installed": []}))
     raise SystemExit(0)
 session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+if "--session-id" in flags:
+    # The runtime runs as the session a fresh launch names (#906).
+    session = flags[flags.index("--session-id") + 1]
 turn = "0199a214-81c0-7800-8aa1-bbab2a035a53"
 native = vendor == "codex" and flags[:1] == ["app-server"]
 resume = "--resume" in flags or "resume" in flags

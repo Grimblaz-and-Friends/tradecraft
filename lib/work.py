@@ -3857,6 +3857,12 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             bundles.append({**entry, "state": "not-recorded", "status": launch_bound.NOT_RECORDED})
             continue
         comparison = run.get("launch_comparison")
+        if not isinstance(comparison, dict) and lifecycle.liveness(run) == "active":
+            # A launch still running has written no comparison yet; it owes no
+            # account, and the live-launch routing still governs it.
+            bundles.append({**entry, "state": "running",
+                            "status": "not yet recorded: the launch is running"})
+            continue
         if not isinstance(comparison, dict):
             findings = [{"id": "unrecorded", "item": "comparison", "path": "",
                          "change": "unrecorded",

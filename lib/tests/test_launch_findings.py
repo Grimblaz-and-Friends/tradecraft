@@ -112,6 +112,23 @@ def test_ac11_unrecorded_comparison_is_held_until_named(tmp_path):
     assert held(released) is None
 
 
+@pytest.mark.parametrize("liveness, held_state", [("active", None), ("stopped", "unrecorded")])
+def test_a_running_launch_owes_no_account_until_it_stops(tmp_path, monkeypatch, liveness, held_state):
+    fixture = fixture_with(tmp_path, comparison=None)
+    run_path = fixture.record_root / "x.md.run.json"
+    run = json.loads(run_path.read_bytes())
+    run.update(lifecycle="running", completed_at=None)
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    monkeypatch.setattr(work.lifecycle, "liveness", lambda _run: liveness)
+    entry = work._evaluate_launch_findings(fixture)["bundles"][0]
+    if held_state is None:
+        assert held(fixture) is None
+        assert entry["state"] == "running"
+        assert entry["status"] == "not yet recorded: the launch is running"
+    else:
+        assert held(fixture) is not None and entry["state"] == held_state
+
+
 def test_ac12_old_records_neither_hold_nor_clear(tmp_path):
     fixture = fixture_with(tmp_path, write_bound=False, comparison=None)
     assert held(fixture) is None
