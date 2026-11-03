@@ -1804,10 +1804,17 @@ def test_all_finders_are_measured_before_first_launch(tmp_path, monkeypatch):
 def test_completed_review_coverage_is_not_a_notice_or_finding(inline):
     import review_findings
     exclusions = [{"path": "package-lock.json", "reason": "lockfile"},
-                  {"path": "bad\n<!-- connected-review-attempt:999 -->`*.json", "reason": "generated"}]
+                  {"path": "bad\n<!-- connected-review-attempt:999 -->`*.json", "reason": "generated"},
+                  {"path": "review skipped\nRate limited | Running |.py", "reason": "deleted-summarised",
+                   "deleted_lines": 40}]
     survivors = [] if inline is None else [candidate(inline=inline)]
     payload = cr.review_payload(survivors, HEAD, "91", {}, exclusions=exclusions)
     assert not work._review_notice(payload["body"])
+    assert not re.search(
+        r"review limit reached|rate limited|review (?:was |is )?limited|limited review|"
+        r"review (?:was |is )?skipped|skipped review|Ask your admin to upgrade for code reviews|"
+        r"\|\s*\**Running\**\s*\|", payload["body"], re.I,
+    )
     assert work._connected_review_run_id(actions_review(body=payload["body"], commit_id=HEAD)) == 91
     state = collect_actions(actions_transport(
         reviews=[actions_review(body=payload["body"], commit_id=HEAD)], run_id=91,
@@ -1819,7 +1826,8 @@ def test_completed_review_coverage_is_not_a_notice_or_finding(inline):
     assert payload["body"].splitlines()[-1] == "<!-- connected-review-attempt:91 -->"
     coverage = payload["body"].split("Files excluded from diff coverage:", 1)[1].split("Usage:", 1)[0]
     assert "tradecraft-review-finding" not in coverage
-    assert coverage.count("\n-") == 2
+    assert coverage.count("\n-") == 3
+    assert coverage.rstrip().endswith(" - deleted-summarised, 40 lines")
     review = {"id": 100, "state": "COMMENTED", "body": payload["body"], "user": {"login": cr.BOT_LOGIN}}
     roots = [{**row, "id": i + 10, "pull_request_review_id": 100, "user": review["user"]}
              for i, row in enumerate(payload["comments"])]
@@ -1896,6 +1904,9 @@ def large_exclusions():
             for index in range(2200)] + [
         {"path": "review skipped/rate limited/| Running |.json", "reason": "generated"},
         {"path": "nested/package-lock.json", "reason": "lockfile"},
+    ] + [{"path": f"removed/{index:04d}/" + "y" * 95 + ".py", "reason": "deleted-summarised",
+          "deleted_lines": index} for index in range(300)] + [
+        {"path": "limited review/review was skipped.py", "reason": "deleted-summarised", "deleted_lines": 7},
     ]
 
 
@@ -1934,6 +1945,8 @@ def assert_complete_coverage(comments, final, exclusions):
     for entry in exclusions:
         row = cr.coverage_text([entry]).split("\n", 1)[1]
         assert combined.count(row) == 1
+        if entry["reason"] == "deleted-summarised":
+            assert row.endswith(f" - deleted-summarised, {entry['deleted_lines']} lines")
     for part, comment in enumerate(continuations, 1):
         body = comment["body"]
         assert f"attempt=93 part={part}" in body
@@ -2468,8 +2481,8 @@ DELETED_FIXTURE_DIFF = (
 )
 
 
-def recorded_review(monkeypatch, tmp_path, diff, *, candidates=()):
-    """Run one live review through the real pass against a recording CLI."""
+def recording_fixture(monkeypatch, tmp_path, diff, *, candidates=()):
+    """Serve one exported diff to the real pass and record every CLI launch and post."""
     execute_fixture(monkeypatch, tmp_path, [])
 
     def export(_repo, _head, _base, root):
@@ -2508,6 +2521,12 @@ def recorded_review(monkeypatch, tmp_path, diff, *, candidates=()):
     monkeypatch.setattr(cr, "_run", run)
     monkeypatch.setattr(cr, "run_pass", REAL_RUN_PASS)
     monkeypatch.setattr(cr, "gh_json", gh)
+    return launches, reviews
+
+
+def recorded_review(monkeypatch, tmp_path, diff, *, candidates=()):
+    """Run one live review through the real pass against a recording CLI."""
+    launches, reviews = recording_fixture(monkeypatch, tmp_path, diff, candidates=candidates)
     result = cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
     return result, launches, reviews
 
@@ -2530,3 +2549,300 @@ def test_under_budget_launch_is_byte_identical_to_the_reviewer_before_summaries(
     assert hashlib.sha256(stdin).hexdigest() == "a666c6c4b02d49fb70e14fc22bb2e087484cd988e202bfbf6c5f0ad3ee123de1"
     assert hashlib.sha256(json.dumps(argv, ensure_ascii=True).encode("ascii")).hexdigest() == "27f1210219d9eedf39ddbad6710e729240a613833cd223db2b3e6be73c8751a8"
     assert len(launches[0]["readable"]) == 1
+
+
+def deleted_section(path, lines, *, newline="\n", final_newline=True):
+    marker = "" if final_newline else "\\ No newline at end of file\n"
+    return (
+        f"diff --git a/{path} b/{path}\ndeleted file mode 100644\nindex 1111111..0000000\n"
+        f"--- a/{path}\n+++ /dev/null\n@@ -1,{len(lines)} +0,0 @@\n"
+        + "".join(f"-{line}{newline}" for line in lines) + marker
+    )
+
+
+def big_lines(label, count):
+    return [f"{label}_{index:05d} " + "x" * 90 for index in range(count)]
+
+
+APP_SECTION = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -2 +2 @@\n-old\n+new\n"
+BINARY_DELETION = (
+    "diff --git a/image.bin b/image.bin\ndeleted file mode 100644\nindex 1111111..0000000\n"
+    "Binary files a/image.bin and /dev/null differ\n"
+)
+OVERSIZE_ADDITION = (
+    "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -2 +2 @@\n-old\n+" + "Y" * 700_000 + "\n"
+)
+
+
+def delimited(stdin, name):
+    text = stdin.decode("utf-8")
+    return text.split(f"<{name}>\n", 1)[1].split(f"\n</{name}>", 1)[0]
+
+
+def test_over_budget_deleted_files_are_summarised_readable_and_reviewed(tmp_path, monkeypatch):
+    diff = (
+        file_diff("package-lock.json", "LOCK_DELETED", deletion=True) + APP_SECTION
+        + deleted_section("big.py", big_lines("BIG_DELETED", 7000)) + BINARY_DELETION
+        + deleted_section("crlf.txt", ["one", "two"], newline="\r\n")
+    )
+    left = candidate(id="left", path="big.py", line=5, side="LEFT", root_cause="removed guard")
+    result, launches, reviews = recorded_review(monkeypatch, tmp_path, diff, candidates=[left])
+    assert result["status"] == "reviewed" and len(launches) == 1 and len(reviews) == 1
+    launch = launches[0]
+    stdin = launch["stdin"]
+    assert len(stdin) <= cr.MAX_FINDER_PROMPT_BYTES
+    assert b"BIG_DELETED" not in stdin and b"LOCK_DELETED" not in stdin
+    # Retained sections keep their bytes and order; nothing is written into the diff.
+    assert delimited(stdin, "pull_request_diff") == APP_SECTION + BINARY_DELETION
+    assert json.loads(delimited(stdin, "summarised_deleted_files")) == [
+        {"deleted_lines": 7000, "path": "big.py"}, {"deleted_lines": 2, "path": "crlf.txt"},
+    ]
+    assert json.loads(delimited(stdin, "excluded_diff_files")) == [
+        {"path": "package-lock.json", "reason": "lockfile"},
+    ]
+    # A second read-only directory beside the snapshot holds the old content, CRs kept.
+    snapshot, folder = launch["readable"]
+    assert folder.parent == snapshot.parent and folder.name == "deleted-at-base"
+    assert str(folder) in stdin.decode("utf-8")
+    assert launch["files"] == {
+        "big.py": "".join(line + "\n" for line in big_lines("BIG_DELETED", 7000)).encode(),
+        "crlf.txt": b"one\r\ntwo\r\n",
+    }
+    command = launch["command"]
+    assert command[command.index("--add-dir") + 1:command.index("--tools")] == [str(snapshot), str(folder)]
+    assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
+    assert "--restricted" in command and command[command.index("--permission-mode") + 1] == "plan"
+    # A finding on an old line of a summarised file still anchors inline.
+    assert reviews[0]["comments"][0]["path"] == "big.py" and reviews[0]["comments"][0]["side"] == "LEFT"
+    body = reviews[0]["body"]
+    assert '- `"big.py"` - deleted-summarised, 7000 lines' in body
+    assert '- `"crlf.txt"` - deleted-summarised, 2 lines' in body
+    assert '- `"package-lock.json"` - lockfile' in body
+    assert "image.bin" not in body
+
+
+def test_every_wholly_deleted_file_is_summarised_not_just_enough_to_fit(tmp_path, monkeypatch):
+    diff = APP_SECTION + deleted_section("one.py", big_lines("ONE", 3500)) + deleted_section("two.py", big_lines("TWO", 3500))
+    alone = len(deleted_section("one.py", big_lines("ONE", 3500)).encode())
+    # Either deletion alone would bring the input under the budget.
+    assert alone < cr.MAX_FINDER_PROMPT_BYTES - 100_000 and 2 * alone > cr.MAX_FINDER_PROMPT_BYTES
+    result, launches, _reviews = recorded_review(monkeypatch, tmp_path, diff)
+    assert result["status"] == "reviewed"
+    stdin = launches[0]["stdin"]
+    assert b"ONE_" not in stdin and b"TWO_" not in stdin
+    assert [row["path"] for row in json.loads(delimited(stdin, "summarised_deleted_files"))] == ["one.py", "two.py"]
+    assert sorted(launches[0]["files"]) == ["one.py", "two.py"]
+
+
+def test_under_budget_review_creates_no_folder_and_names_no_summary(tmp_path, monkeypatch):
+    result, launches, reviews = recorded_review(monkeypatch, tmp_path, DELETED_FIXTURE_DIFF)
+    assert result["status"] == "reviewed"
+    assert len(launches[0]["readable"]) == 1
+    assert b"summarised" not in launches[0]["stdin"] and "deleted-summarised" not in reviews[0]["body"]
+
+
+def oversize_skip(monkeypatch, tmp_path, capsys, diff):
+    launches, _reviews = recording_fixture(monkeypatch, tmp_path, diff)
+    monkeypatch.setattr(cr, "resolve_command", lambda *_: "claude")
+    event_path = tmp_path / "event.json"
+    event_path.write_bytes(json.dumps(event()).encode())
+    assert cr.main(["review", "--event", str(event_path), "--owner-login", "Grimblaz", "--attempt", "92",
+                    "--finder-prompt", str(FINDER_CONTRACT)]) == 0
+    assert not launches
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "skipped"
+    comments = []
+
+    def api(endpoint, **kwargs):
+        if kwargs.get("method") == "POST":
+            comments.append({"body": kwargs["payload"]["body"], "user": {"login": cr.BOT_LOGIN}})
+            return {"id": 1}
+        if endpoint.endswith("/comments"):
+            return comments
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(cr, "gh_json", api)
+    for status in ("skipped", "already-reported"):
+        assert cr.report_skip(event(), "Grimblaz", "92", "success", result["cause"], "92", result["usage"])["status"] == status
+    assert len(comments) == 1 and comments[0]["body"].startswith("Review skipped: ")
+    return result, comments[0]["body"]
+
+
+def test_still_over_after_summarising_skips_naming_both_sizes_and_every_summary(tmp_path, monkeypatch, capsys):
+    diff = OVERSIZE_ADDITION + deleted_section("old.py", big_lines("OLD", 3000)) + file_diff("yarn.lock", deletion=True)
+    result, body = oversize_skip(monkeypatch, tmp_path, capsys, diff)
+    match = re.fullmatch(
+        r"finder prompt is (\d+) UTF-8 bytes after summarising 1 wholly deleted file \((\d+) before\); "
+        r"budget is 600000 UTF-8 bytes\.", result["cause"],
+    )
+    assert match and cr.MAX_FINDER_PROMPT_BYTES < int(match[1]) < int(match[2]) - 290_000
+    assert f"Review skipped: {result['cause']}" in body
+    assert '- `"old.py"` - deleted-summarised, 3000 lines' in body and '- `"yarn.lock"` - lockfile' in body
+    assert json.loads(result["usage"])["excluded_files"] == [
+        {"path": "yarn.lock", "reason": "lockfile"},
+        {"path": "old.py", "reason": "deleted-summarised", "deleted_lines": 3000},
+    ]
+    assert work._review_notice(body)
+
+
+def test_over_budget_with_nothing_wholly_deleted_skips_with_todays_cause(tmp_path, monkeypatch, capsys):
+    result, body = oversize_skip(monkeypatch, tmp_path, capsys, OVERSIZE_ADDITION + BINARY_DELETION)
+    assert re.fullmatch(r"finder prompt is \d+ UTF-8 bytes; budget is 600000 UTF-8 bytes\.", result["cause"])
+    assert "deleted-summarised" not in body
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_summarised_input_at_the_budget_launches_and_one_byte_over_skips(tmp_path, monkeypatch, extra):
+    diff = APP_SECTION + deleted_section("gone.py", big_lines("GONE", 50))
+    recording_fixture(monkeypatch, tmp_path / "measure", diff)
+    monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", 10)
+    with pytest.raises(cr.FinderPromptTooLarge) as raised:
+        cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
+    summarised = raised.value.measured_bytes
+    assert raised.value.before_bytes > summarised + 5000 and raised.value.summarised_files == 1
+    launches, _reviews = recording_fixture(monkeypatch, tmp_path / "boundary", diff)
+    monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", summarised - extra)
+    if extra:
+        with pytest.raises(cr.FinderPromptTooLarge):
+            cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
+        assert not launches
+    else:
+        assert cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)["status"] == "reviewed"
+        assert len(launches[0]["stdin"]) == summarised
+
+
+def git_fixture(root, files):
+    """Commit files, delete them all, and return the deletion diff with each base blob."""
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", *args],
+            cwd=root, capture_output=True, check=True,
+        ).stdout
+    root.mkdir()
+    git("init", "--quiet")
+    git("config", "user.email", "fixture@example.invalid")
+    git("config", "user.name", "fixture")
+    git("config", "commit.gpgsign", "false")
+    for name, content in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(content)
+    git("add", "--all")
+    git("commit", "--quiet", "-m", "base")
+    for name in files:
+        (root / name).unlink()
+    git("add", "--all")
+    git("commit", "--quiet", "-m", "delete")
+    raw = git("diff", "--no-color", "--no-renames", "--no-ext-diff", "HEAD~1", "HEAD")
+    return raw, {name: git("show", f"HEAD~1:{name}") for name in files}
+
+
+def test_folder_holds_the_bases_exact_bytes_from_a_real_git_diff(tmp_path):
+    files = {
+        "lf.txt": b"alpha\nbeta\n",
+        "crlf.txt": b"alpha\r\nbeta\r\n",
+        "no-final-newline.txt": b"alpha\nbeta",
+        "empty.txt": b"",
+        "nested/multibyte.txt": "café ☃\n日本\n".encode("utf-8"),
+        "mixed.txt": b"one\r\ntwo\nthree",
+    }
+    raw, base = git_fixture(tmp_path / "repository", files)
+    diff = raw.decode("utf-8", errors="replace")
+    summarised, entries = cr.summarise_deleted_files(diff)
+    assert summarised == "" and sorted(row["path"] for row in entries) == sorted(files)
+    assert {row["path"]: row["deleted_lines"] for row in entries}["empty.txt"] == 0
+    folder = tmp_path / "deleted-at-base"
+    cr.write_deleted_files(diff, entries, folder)
+    written = {str(path.relative_to(folder)).replace(os.sep, "/"): path.read_bytes()
+               for path in folder.rglob("*") if path.is_file()}
+    assert written == base
+
+
+def test_summary_keeps_retained_sections_and_skips_binary_and_partial_deletions():
+    partial = "diff --git a/kept.py b/kept.py\n--- a/kept.py\n+++ b/kept.py\n@@ -1,2 +1 @@\n-gone\n same\n"
+    diff = "preamble\n" + partial + deleted_section("gone.py", ["a", "b"]) + BINARY_DELETION + APP_SECTION
+    summarised, entries = cr.summarise_deleted_files(diff)
+    assert summarised == "preamble\n" + partial + BINARY_DELETION + APP_SECTION
+    assert entries == [{"path": "gone.py", "deleted_lines": 2}]
+    assert cr.summarise_deleted_files(APP_SECTION) == (APP_SECTION, [])
+
+
+@pytest.mark.parametrize("path", [
+    "/absolute.py", "../escape.py", "a/../../escape.py", "a\\..\\escape.py", "c:escape.py",
+    "a//b.py", "./x.py", "a/./b.py",
+])
+def test_unsafe_summarised_path_is_refused_before_anything_is_written(tmp_path, path):
+    diff = deleted_section("safe.py", ["fine"]) + deleted_section(path, ["escape"])
+    _summarised, entries = cr.summarise_deleted_files(diff)
+    assert [row["path"] for row in entries] == ["safe.py", path]
+    with pytest.raises(cr.ReviewError, match="unsafe path"):
+        cr.write_deleted_files(diff, entries, tmp_path / "folder")
+    assert sorted(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("path", ["CON", "nested/aux.txt", "NUL.py", "trailing."])
+def test_windows_reserved_summarised_names_are_refused_only_on_windows(tmp_path, path):
+    diff = deleted_section(path, ["reserved"])
+    _summarised, entries = cr.summarise_deleted_files(diff)
+    if os.name == "nt":
+        with pytest.raises(cr.ReviewError, match="unsafe path"):
+            cr.write_deleted_files(diff, entries, tmp_path / "folder")
+        assert sorted(tmp_path.iterdir()) == []
+    else:
+        cr.write_deleted_files(diff, entries, tmp_path / "folder")
+        assert (tmp_path / "folder" / path).read_bytes() == b"reserved\n"
+
+
+@pytest.mark.parametrize("paths", [["dup.py", "dup.py"], ["a", "a/b"], ["a/b", "a"]])
+def test_colliding_summarised_paths_end_with_a_named_cause(tmp_path, paths):
+    diff = "".join(deleted_section(path, [f"from {index}"]) for index, path in enumerate(paths))
+    _summarised, entries = cr.summarise_deleted_files(diff)
+    with pytest.raises(cr.ReviewError, match="collides"):
+        cr.write_deleted_files(diff, entries, tmp_path / "folder")
+    assert [path.name for path in tmp_path.iterdir()] == ["folder"]
+
+
+def test_unsafe_summarised_path_takes_the_ordinary_failure_route(tmp_path, monkeypatch):
+    diff = APP_SECTION + deleted_section("../escape.py", big_lines("ESCAPE", 7000))
+    launches, _reviews = recording_fixture(monkeypatch, tmp_path, diff)
+    with pytest.raises(cr.ReviewError, match="unsafe path") as raised:
+        cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
+    assert not isinstance(raised.value, cr.FinderPromptTooLarge) and not launches
+
+
+def test_run_pass_adds_the_folder_to_the_same_read_only_launch_and_redacts_it(tmp_path, monkeypatch):
+    snapshot, folder = tmp_path / "snapshot", tmp_path / "deleted-at-base"
+    snapshot.mkdir()
+    folder.mkdir()
+    seen = {}
+
+    def run(command, **kwargs):
+        seen["command"] = command
+        body = {"is_error": True, "result": f"could not open {folder / 'x.py'}", "usage": {}}
+        return subprocess.CompletedProcess(command, 1, json.dumps(body).encode(), b"")
+
+    monkeypatch.setattr(cr, "_run", run)
+    with pytest.raises(cr.ReviewError) as raised:
+        cr.run_pass("claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, TOKEN,
+                    effort=cr.LIVE_FINDER_EFFORT, readable=folder)
+    command = seen["command"]
+    assert command[command.index("--add-dir") + 1:command.index("--tools")] == [str(snapshot), str(folder)]
+    assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
+    assert "--restricted" in command and command[command.index("--permission-mode") + 1] == "plan"
+    assert str(folder) not in str(raised.value) and "[deleted-at-base]" in str(raised.value)
+
+
+def test_summarised_coverage_rows_carry_line_counts_and_other_reasons_render_as_before():
+    rows = cr.coverage_text([
+        {"path": "package-lock.json", "reason": "lockfile"},
+        {"path": "gone.py", "reason": "deleted-summarised", "deleted_lines": 12},
+    ]).splitlines()
+    assert rows == [
+        "Files excluded from diff coverage:",
+        '- `"package-lock.json"` - lockfile',
+        '- `"gone.py"` - deleted-summarised, 12 lines',
+    ]
+
+
+def test_coverage_policy_names_the_over_budget_summary_rule():
+    assert cr.COVERAGE_POLICY_VERSION == 3
+    assert cr.coverage_settings()["coverage_policy_version"] == 3
