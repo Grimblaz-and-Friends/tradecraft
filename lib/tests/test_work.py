@@ -8746,6 +8746,9 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
     monkeypatch.setattr(implementer, "resolve_command", lambda *_a: [
         sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
     monkeypatch.setattr(implementer.records, "runtime_version", lambda *_a: "fixture runtime")
+    # A fresh Claude author names its session (#906); the fixture answers as it.
+    from test_dispatch_implementer import fixture_session
+    monkeypatch.setattr(implementer, "new_session_id", lambda: fixture_session(scenario))
     class ArtifactTransport:
         def get(self, endpoint, *, paginate=False):
             if endpoint.endswith("/comments"):
