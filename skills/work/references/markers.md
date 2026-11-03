@@ -137,12 +137,12 @@ The head binds the covered flags; initial adoption may cover historical turns at
 {
   "schema_version": 1,
   "findings": [
-    {"id": "3fa9c1d2e0b4", "party": "owner", "basis": "The owner edited his settings during the run."}
+    {"id": "3fa9c1d2e0b4", "party": "owner", "basis": "The owner edited the Claude settings during the run."}
   ]
 }
 ```
 
-The hold releases only when the named ids equal the bundle's finding ids exactly; an unrecorded comparison is named by the id `unrecorded`. A partial, extra-id, untrusted or malformed account discharges nothing. The procedure is `launch-findings.md`.
+The hold releases only when the named ids equal the bundle's finding ids exactly and the comment was posted after the run completed (for an unrecorded comparison, after the launch began); an unrecorded comparison is named by the id `unrecorded`. A partial, extra-id, untrusted or malformed account discharges nothing. The procedure is `launch-findings.md`.
 
 ## `builder-session`
 

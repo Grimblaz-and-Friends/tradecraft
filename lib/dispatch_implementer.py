@@ -209,8 +209,15 @@ def _claude_result(raw: bytes, check: dict | None = None) -> tuple[bool, bytes, 
     return True, message.encode("utf-8"), session, ""
 
 
-def _finish_comparison(comparison, error, deadline) -> dict[str, object]:
-    """The after-snapshot; one that cannot run is held as uncompared (#906)."""
+def _finish_comparison(comparison, error, deadline, *, process_started=True) -> dict[str, object]:
+    """The after-snapshot; one that cannot run is held as unrecorded (#906).
+
+    A launch that failed before its process call ran nothing, so it records
+    ``not-launched``. ``attempt["launched"]`` can't decide this: an unresolved
+    Windows launch keeps it False though its process may have run.
+    """
+    if not process_started:
+        return launch_bound.not_launched()
     if comparison is None:
         return launch_bound.unrecorded(error or "no comparison was prepared")
     try:
@@ -790,6 +797,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         deadline.remaining()  # An exhausted window is not a recorded comparison.
                         seconds = 0
                     comparison.take_before(seconds)
+            process_started = False
             verdict: bytes | None = None
             source_ready = False
             publication_error: OSError | None = None
@@ -840,6 +848,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         )
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation
+                    process_started = True
                     result = run_process(command, input=native.input if native else effective_prompt, cwd=root, timeout=allocation,
                                          env=child_env,
                                          on_output=capture, on_tick=checkpoint,
@@ -1011,13 +1020,15 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)
-                    if "write_bound" in request:
-                        record["launch_comparison"] = _finish_comparison(comparison, comparison_error, deadline)
                     if args.stage != "artifact":
                         try:
                             record["stop_snapshot"] = lifecycle.content_snapshot(root, timeout=deadline.probe(cleanup=True))
                         except TimeoutError as exc:
                             record["stop_snapshot"] = {"digest": None, "unavailable_reason": str(exc)}
+                    if "write_bound" in request:
+                        # After recovery's own evidence, with whatever cleanup window remains.
+                        record["launch_comparison"] = _finish_comparison(
+                            comparison, comparison_error, deadline, process_started=process_started)
                 records.add_usage_record(
                     attempt, request, completed_at=record["completed_at"],
                     staffing_status=(

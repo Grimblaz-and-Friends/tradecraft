@@ -8,6 +8,7 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 sys.path.insert(0, str(LIB / "tests"))
+import launch_bound
 import work
 from test_work import PRODUCER, RULES, state
 
@@ -35,6 +36,8 @@ def store_bundle(store, *, write_bound=True, comparison="findings", stage="build
     elif comparison == "clean":
         run["launch_comparison"] = {"schema_version": 1, "status": "clean", "findings": [],
                                     "attributed": [], "coverage": []}
+    elif isinstance(comparison, dict):
+        run["launch_comparison"] = comparison
     (store / "x.md.request.json").write_text(json.dumps(request), encoding="utf-8")
     (store / "x.md.run.json").write_text(json.dumps(run), encoding="utf-8")
 
@@ -56,8 +59,10 @@ def held(fixture):
     return work._launch_account_refusal(fixture, "use")
 
 
-def fixture_with(tmp_path, *texts, **bundle):
+def fixture_with(tmp_path, *texts, posted="2026-11-03T07:00:00Z", **bundle):
     fixture = state(*texts)
+    for comment in fixture.issue_comments:
+        comment["created_at"] = posted  # After the bundle completed at 06:00.
     fixture.record_root = tmp_path / "store"
     store_bundle(fixture.record_root, **bundle)
     work.validate_marker_claims(fixture)
@@ -102,6 +107,29 @@ def test_ac11_hold_releases_only_on_an_exact_account(tmp_path, second):
     assert report["bundles"][0]["state"] == "accounted"
     run = json.loads((fixture.record_root / "x.md.run.json").read_bytes())
     assert run["outcome"] == "success"  # A finding never alters the run.
+
+
+def test_an_exact_account_posted_before_its_findings_exist_does_not_release(tmp_path):
+    early = fixture_with(tmp_path, account(OWNER, SESSION), posted="2026-11-03T05:30:00Z")
+    assert held(early) is not None
+    assert work._evaluate_launch_findings(early)["bundles"][0]["state"] == "account-required"
+    unrecorded = fixture_with(tmp_path / "u", account({"id": "unrecorded", "party": "none-found",
+                                                        "basis": "inspected the coverage"}),
+                              comparison=None, posted="2026-11-03T04:59:00Z")
+    assert held(unrecorded) is not None
+
+
+@pytest.mark.parametrize("reason", ["coverage could not be planned: boom",
+                                    "after-snapshot had no cleanup window: no probe window"])
+def test_the_launchers_unrecorded_comparison_shares_the_documented_id(tmp_path, reason):
+    comparison = launch_bound.unrecorded(reason)
+    assert [finding["id"] for finding in comparison["findings"]] == ["unrecorded"]
+    assert comparison["findings"][0]["change"] == "unrecorded"
+    assert held(fixture_with(tmp_path, comparison=comparison)) is not None
+    released = fixture_with(tmp_path / "r", account({"id": "unrecorded", "party": "none-found",
+                                                     "basis": "inspected every covered item"}),
+                            comparison=comparison)
+    assert held(released) is None
 
 
 def test_ac11_unrecorded_comparison_is_held_until_named(tmp_path):

@@ -1833,3 +1833,44 @@ def test_906_ac10_only_a_claude_use_consumer_given_a_shell_is_compared(
     assert logged["launch_comparison"]["status"] == "clean"
     assert {entry["item"] for entry in logged["launch_comparison"]["coverage"]} >= {
         "switch", "registry", "dispatch-records", "own-request"}
+
+
+def test_906_a_slow_before_snapshot_comes_out_of_the_use_consumers_window(job, tmp_path, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    original = seat.launch_bound.Comparison.take_before
+
+    def slow(self, seconds):
+        time.sleep(1.5)
+        return original(self, seconds)
+
+    monkeypatch.setattr(seat.launch_bound.Comparison, "take_before", slow)
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    logged = record(args)
+    claude = [attempt for attempt in logged["attempts"] if attempt["vendor"] == "claude"][0]
+    assert claude["allocation_seconds"] <= request["recipient_allocation_seconds"] - 1.5
+    # The after-snapshot still had its cleanup window.
+    assert logged["launch_comparison"]["status"] == "clean"
+
+
+@pytest.mark.parametrize("launched", [False, True])
+def test_906_a_seat_whose_planning_failed_records_not_launched_unless_it_ran(
+        job, tmp_path, monkeypatch, launched):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    if not launched:
+        args.claude_unavailable_reason = "fixture: claude unavailable"
+
+    def unplannable(**_kwargs):
+        raise OSError("planning failed")
+
+    monkeypatch.setattr(seat.launch_bound, "Comparison", unplannable)
+    seat.run_dispatch(args)
+    comparison = record(args)["launch_comparison"]
+    if launched:
+        assert [finding["id"] for finding in comparison["findings"]] == ["unrecorded"]
+    else:
+        assert comparison["status"] == "not-launched" and comparison["findings"] == []

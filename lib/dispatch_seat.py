@@ -171,11 +171,12 @@ def build_command(
             "--permission-mode", "dontAsk", "--strict-mcp-config"]
 
 
-def _finish_comparison(comparison, error, deadline):
+def _finish_comparison(comparison, error, deadline, *, process_started=True):
+    # A seat whose compared process call never ran changed nothing (#906).
+    if not process_started or (comparison is not None and comparison.before is None):
+        return launch_bound.not_launched()
     if comparison is None:
         return launch_bound.unrecorded(error or "no comparison was prepared")
-    if comparison.before is None:
-        return launch_bound.not_launched()
     try:
         seconds = deadline.probe(COMPARISON_SECONDS, cleanup=True)
     except TimeoutError as exc:
@@ -597,6 +598,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
         )
         request["requested"]["required_capability"] = args.requires
         comparison = None
+        process_started = False
         if "claude" in vendors and compared_launch(args, "claude"):
             plan_error = None
             try:
@@ -722,6 +724,14 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             started = time.monotonic()
                             try:
                                 record["actual_vendor"] = vendor
+                                if comparison is not None and compared_launch(args, vendor):
+                                    # The before-snapshot comes out of the recipient's window.
+                                    try:
+                                        seconds = deadline.probe(COMPARISON_SECONDS)
+                                    except TimeoutError:
+                                        deadline.remaining()
+                                        seconds = 0
+                                    comparison.take_before(seconds)
                                 allocation = deadline.remaining()
                                 attempt["allocation_seconds"] = allocation
                                 launch_input, launch_env = prompt, None
@@ -729,13 +739,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                     launch_input = prompt + b"\n\n" + claude_notice
                                     launch_env = claude_launch_env(
                                         os.environ, request["recipient_allocation_seconds"])
-                                if comparison is not None and compared_launch(args, vendor):
-                                    try:
-                                        seconds = deadline.probe(COMPARISON_SECONDS)
-                                    except TimeoutError:
-                                        deadline.remaining()
-                                        seconds = 0
-                                    comparison.take_before(seconds)
+                                if compared_launch(args, vendor):
+                                    process_started = True
                                 result = run_process(command, input=launch_input, cwd=root, timeout=allocation,
                                                      env=launch_env,
                                                      on_output=growing.output, on_tick=growing.tick,
@@ -851,7 +856,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                     if "write_bound" in request:
                         record["launch_comparison"] = _finish_comparison(
                             comparison, request["write_bound"]["comparison"].get("unavailable_reason"),
-                            deadline)
+                            deadline, process_started=process_started)
                 if verdict is not None:
                     degraded = record["actual_vendor"] == args.own_vendor
                     record["staffing_status"] = "degraded" if degraded else "qualified"

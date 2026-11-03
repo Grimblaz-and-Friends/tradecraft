@@ -183,6 +183,13 @@ def test_ac5_memory_store_write_is_refused_and_memory_is_switched_off(bound):
     assert launch_bound.memory_record()["requested"].endswith("CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
 
 
+def test_a_double_quote_in_a_guard_path_refuses_preparation(bound, tmp_path):
+    quoted = tmp_path / 'temp"base'
+    with pytest.raises(launch_bound.BoundError, match="double quote"):
+        launch_bound.prepare_guard(quoted, bound["root"], SESSION, dict(os.environ), None)
+    assert not (tmp_path / 'temp"base').exists() if os.name != "nt" else True
+
+
 def test_ac4_self_test_has_its_own_log_and_a_broken_guard_refuses_preparation(bound, tmp_path,
                                                                                   monkeypatch):
     env = {**os.environ, "CLAUDE_CODE_TMPDIR": str(tmp_path / "temp"),

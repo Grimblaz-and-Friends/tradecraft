@@ -68,13 +68,14 @@ def stamp(delta=0):
 
 
 def bundle(machine, name, *, dispatch, root=None, holder=None, work="acme/widget#5",
-           opened=-3600, closed=-1800):
+           opened=-3600, closed=-1800, elapsed=0):
     request = {"schema_version": 2, "dispatch_id": dispatch, "work": work, "stage": "build",
                "root": str(root) if root else None, "holder_session_id": holder,
                "launched_at": stamp(opened)}
     run = {"schema_version": 2, "dispatch_id": dispatch,
            "completed_at": stamp(closed) if closed is not None else None,
-           "launcher_process": {"host": "elsewhere", "pid": 1}}
+           "launcher_process": {"host": "elsewhere", "pid": 1},
+           "elapsed_checkpoint_seconds": elapsed}
     (machine["store"] / f"{name}.md.request.json").write_text(json.dumps(request), encoding="utf-8")
     (machine["store"] / f"{name}.md.run.json").write_text(json.dumps(run), encoding="utf-8")
     (machine["store"] / f"{name}.md").write_bytes(b"result")
@@ -135,8 +136,9 @@ def test_ac7_deleted_bundle_and_unattributed_other_holder_row_are_findings(machi
 
 def test_ac8_concurrent_run_nested_tree_git_and_own_root_are_not_flagged(machine):
     # An overlapping run of the other holder, for that row's work and root.
+    # Unfinished, with its last checkpoint after this run's before-snapshot: still live.
     bundle(machine, "live", dispatch="d" * 32, root=machine["registered"], holder=OTHER_HOLDER,
-           opened=-60, closed=None)
+           opened=-60, closed=None, elapsed=3600)
     before = comparison(machine)
     (machine["registered"] / "tracked.txt").write_bytes(b"their edit")
     (machine["holder"] / "nested" / "work.txt").write_bytes(b"builder edit")
@@ -176,6 +178,22 @@ def test_ac8_each_attribution_has_its_negative(machine, case):
         assert ("checkout:" + str(machine["registered"]), "tracked.txt", "modified") in changes(result)
 
 
+@pytest.mark.parametrize("elapsed, attributed", [(10, False), (3700, True)])
+def test_ac8_a_hard_killed_run_is_live_only_up_to_its_last_checkpoint(machine, elapsed, attributed):
+    # Launched an hour ago and never completed; its launcher is not active here.
+    bundle(machine, "killed", dispatch="e" * 32, root=machine["registered"], holder=OTHER_HOLDER,
+           opened=-3600, closed=None, elapsed=elapsed)
+    before = comparison(machine)
+    (machine["registered"] / "tracked.txt").write_bytes(b"a later edit")
+    result = before.finish(60)
+    change = ("checkout:" + str(machine["registered"]), "tracked.txt", "modified")
+    if attributed:
+        assert change not in changes(result)
+        assert result["attributed"][0]["to"]["dispatch_id"] == "e" * 32
+    else:
+        assert change in changes(result) and result["attributed"] == []
+
+
 def test_ac9_unreadable_and_timed_out_items_are_uncompared(machine, monkeypatch):
     before = comparison(machine)
     machine["registry"].write_bytes(b"not json")
@@ -184,7 +202,8 @@ def test_ac9_unreadable_and_timed_out_items_are_uncompared(machine, monkeypatch)
     assert "registry" in uncompared
     assert any(item.startswith("checkout:") for item in uncompared)
     assert result["status"] == "findings"
-    assert launch_bound.unrecorded("killed")["findings"][0]["change"] == "uncompared"
+    assert launch_bound.unrecorded("killed")["findings"][0] == {
+        "id": "unrecorded", "item": "comparison", "path": "", "change": "unrecorded", "reason": "killed"}
 
 
 def test_absent_items_are_recorded_without_findings(machine):

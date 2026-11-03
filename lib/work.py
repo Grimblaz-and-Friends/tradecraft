@@ -3879,9 +3879,16 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
             status = "account-required"
         ids = {finding.get("id") for finding in findings}
+        # An account counts only once its findings exist: after the run completed,
+        # or, for an unrecorded comparison, after the launch began.
+        recorded_at = _time(run.get("completed_at") if isinstance(comparison, dict)
+                            else request.get("launched_at"))
         account = None
         for marker in accounts:
             if marker.attributes.get("dispatch") != request.get("dispatch_id"):
+                continue
+            posted = _time(marker.timestamp)
+            if recorded_at is None or posted is None or posted <= recorded_at:
                 continue
             named = {finding["id"] for finding in launch_account_payload(marker.body)["findings"]}
             if named == ids:

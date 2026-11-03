@@ -1,5 +1,6 @@
 import json
 from contextlib import nullcontext
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import signal
@@ -528,6 +529,8 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
                             "basis": "a fixture launch the test stopped; its fixture home is unchanged"}
                            for identity in ids]}) + "\n```\n")
             fixture = state(MECHANICAL, account)
+            # Posted after the stopped launch's findings exist, as an account must be.
+            fixture.issue_comments[-1]["created_at"] = datetime.now(timezone.utc).isoformat()
             fixture.record_root, fixture.holder_root = output.parent, holder
             row = registry_row(root, holder, branch)
             monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [row]})

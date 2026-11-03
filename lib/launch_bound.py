@@ -2,14 +2,15 @@
 
 A builder's or author's file-editing tools are confined to its tree and its
 session scratchpad by a launch-owned PreToolUse hook (``tree_write_guard``).
-Shell commands have no fence, so every writing launch, a use consumer given a
-shell included, also compares what it must not touch before and after its run.
+Shell commands have no fence, so the Claude author and builder launches and the
+Claude use consumer given a shell also compare what they must not touch before
+and after the run. Other Claude seats given a shell are not compared.
 A change the launcher cannot attribute to another live recorded run is a
 finding the holder must account for; the entrance holds the change until then.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -124,6 +125,11 @@ def prepare_guard(temporary: Path, root: Path, session: str, env: dict[str, str]
     denials never reach the launch's decision log.
     """
     temporary = Path(temporary)
+    for path in (sys.executable, GUARD, temporary / "write-guard.json"):
+        # The hook command quotes each path; a quote inside one would break it,
+        # and the argument-list self-test would not notice.
+        if '"' in str(path):
+            raise BoundError(f"write guard path contains a double quote: {path}")
     test_dir = temporary / "write-guard-self-test"
     test_dir.mkdir()
     test_config_path = test_dir / "write-guard.json"
@@ -480,13 +486,32 @@ def recorded_runs(store: Path, own_dispatch: str) -> list[dict]:
     return runs
 
 
+def _last_checkpoint(run: dict) -> datetime | None:
+    """An unfinished run's last durable moment: its launch plus its recorded elapsed time."""
+    try:
+        elapsed = float(run["run"].get("elapsed_checkpoint_seconds") or 0)
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    return run["opened"] + timedelta(seconds=max(0.0, elapsed)) if run["opened"] else None
+
+
 def _overlaps(run: dict, before_at: datetime, after_at: datetime) -> bool:
-    """Opened before this run's after-snapshot and not closed before its before-snapshot."""
+    """Opened before this run's after-snapshot and not closed before its before-snapshot.
+
+    A run that never completed, a hard-killed launcher's, is not live forever:
+    it overlaps only while its process is active or when its last checkpoint
+    falls at or after this run's before-snapshot.
+    """
     if run["opened"] is None or run["opened"] >= after_at:
         return False
-    if run["closed"] is None or run["closed"] >= before_at:
+    if run["closed"] is not None and run["closed"] >= before_at:
         return True
-    return lifecycle.liveness(run["run"]) == "active"
+    if lifecycle.liveness(run["run"]) == "active":
+        return True
+    if run["closed"] is None:
+        checkpoint = _last_checkpoint(run)
+        return checkpoint is not None and checkpoint >= before_at
+    return False
 
 
 def _diff_entries(item: str, top: str, before: dict, after: dict, method: str) -> list[dict]:
@@ -656,8 +681,10 @@ def unrecorded(reason: str) -> dict[str, object]:
     stamp = now()
     return {"schema_version": SCHEMA_VERSION, "status": "findings", "before_at": None,
             "after_at": stamp, "elapsed_seconds": 0.0, "coverage": [],
-            "findings": [{"id": _finding_id("comparison", "", "uncompared"), "item": "comparison",
-                          "path": "", "change": "uncompared", "reason": reason}],
+            # The id the entrance gives a missing comparison, so both routes to
+            # an unrecorded comparison are named alike in an account.
+            "findings": [{"id": "unrecorded", "item": "comparison",
+                          "path": "", "change": "unrecorded", "reason": reason}],
             "attributed": []}
 
 

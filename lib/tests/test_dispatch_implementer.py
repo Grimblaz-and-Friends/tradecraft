@@ -2023,3 +2023,65 @@ def test_906_ac1_ac13_refused_or_unproved_write_fails_the_turn_and_is_recorded(j
     assert sent.endswith(b"\n\n" + notice) and b"no memory store" in notice
     assert captured["guard_config"]["scratchpad"] in notice.decode("utf-8")
     assert captured["argv"][captured["argv"].index("--session-id") + 1] == FIXTURE_SESSION
+
+
+def test_906_a_launch_that_failed_before_its_process_records_not_launched(job, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.session_id = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    args.handover_state = args.dispatch.with_name("handover.json")
+    args.handover_from = "predecessor-bundle"
+    args.handover_state.write_bytes(json.dumps({
+        "replacement_session": args.session_id, "phase": "reserved"}).encode())
+    original = implementer._handover_phase
+
+    def failing(path, session, phase):
+        if phase == "running":
+            raise implementer.ImplementerError("reservation lost before the process call")
+        return original(path, session, phase)
+
+    monkeypatch.setattr(implementer, "_handover_phase", failing)
+    with pytest.raises(implementer.ImplementerError, match="reservation lost"):
+        implementer.run_implementer(args)
+    logged = record(args)
+    assert "write_bound" in json.loads(implementer.records.sidecar(
+        args.output, ".request.json").read_bytes())
+    assert logged["launch_comparison"]["status"] == "not-launched"
+    assert logged["launch_comparison"]["findings"] == []
+
+
+def test_906_recovery_evidence_is_recorded_before_the_comparison_takes_the_cleanup_window(
+        job, monkeypatch):
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": FIXTURE_SESSION, "result": "built"})}}).encode())
+    from test_work import git
+    git(args.root, "init")
+    (args.root / "fixture.txt").write_bytes(b"committed fixture\n")
+    git(args.root, "add", "fixture.txt")
+    git(args.root, "-c", "user.name=fixture", "-c", "user.email=f@x", "commit", "-m", "fixture")
+    order = []
+    snapshot = implementer.lifecycle.content_snapshot
+
+    def recorded_snapshot(*a, **k):
+        order.append("snapshot")
+        return snapshot(*a, **k)
+
+    def exhausting_comparison(*_a, **_k):
+        # A slow comparison that uses up what the cleanup reserve has left.
+        order.append("comparison")
+        return implementer.launch_bound.unrecorded("after-snapshot had no cleanup window")
+
+    monkeypatch.setattr(implementer.lifecycle, "content_snapshot", recorded_snapshot)
+    monkeypatch.setattr(implementer, "_finish_comparison", exhausting_comparison)
+    assert implementer.run_implementer(args) == 0
+    logged = record(args)
+    assert order[-2:] == ["snapshot", "comparison"]
+    assert logged["stop_snapshot"]["digest"]
+    assert logged["launch_comparison"]["findings"][0]["id"] == "unrecorded"
