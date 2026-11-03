@@ -481,7 +481,9 @@ def test_public_restart_after_prelaunch_ceiling_reaches_latest_launched_author(e
     _, unused_path, unused_request, unused_run = bundles(store)[-1]
     assert unused_run["outcome"] == "interrupted" and unused_run["attempts"][0]["launched"] is False
     fixture = repair_state(holder, store)
-    assert work.work_recovery.latest_stopped(fixture, "artifact")[1] == author_path
+    # repair_state posts a newer draft, so only the explicit restart still names the older stop (#919).
+    assert work.work_recovery.latest_stopped(fixture, "artifact") is None
+    assert work.work_recovery.latest_stopped(fixture, "artifact", explicit_restart=True)[1] == author_path
     assert trees._read(unused_request["artifact_copy"]["lifecycle_record"])["state"] == "removed"
     assert snapshot(Path(request["root"])) == before
     assert trees.dispose(request["artifact_copy"])["state"] == "removed"

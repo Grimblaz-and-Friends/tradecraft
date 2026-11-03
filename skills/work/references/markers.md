@@ -85,7 +85,7 @@ A holder reading counts strictly after that effective place, in record order, in
 
 - **Exact form:** `<!-- tradecraft:holder-reading:v1 result=RESULT -->`.
 - **Attributes and lawful values:** `result=no-amendment|amended`.
-- **Producer, surface, moment:** the holder, in an issue comment carrying the whole-change reading after a qualifying cold verdict and before the first build, or, after that reading, in an issue comment carrying a later direction to the builder on the settled artifact with `result=amended`, because both record the holder's calls without a new verdict.
+- **Producer, surface, moment:** the holder, in an issue comment carrying the whole-change reading after a qualifying cold verdict and before the first build, or, after that reading, in an issue comment carrying a later direction to the builder on the settled artifact with `result=amended`, because both record the holder's calls without a new verdict. It may also come after a `would-not` verdict and before the revision it directs, in an issue comment carrying the holder's decisions on that verdict's points with `result=amended`. Such a reading directs the composed revision of the draft it follows. It counts for the builder only when it falls after the effective settlement place, so a reading posted before a settlement — including the decisions a `route=cap` settlement names — never becomes one of the builder's governing readings and does not supply the whole-change reading owed after settlement.
 
 ```text
 <!-- tradecraft:holder-reading:v1 result=no-amendment -->

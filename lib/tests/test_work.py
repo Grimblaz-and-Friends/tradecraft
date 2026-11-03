@@ -2507,8 +2507,9 @@ def gate_check(*, identity=91, run_id=81, workflow_id=11, head=SHA,
     (state(), ("convergence", False, None)),
     (state(AFFIRMED), ("artifact", True, "fresh")),
     (state(AFFIRMED, ARTIFACT), ("cold-seat", True, "fresh")),
+    # #919: with no author on record for the draft, the revision is recommended fresh.
     (state(AFFIRMED, ARTIFACT, "<!-- tradecraft:cold-verdict:v1 verdict=would-not staffing_status=qualified -->"),
-     ("artifact", True, "resume")),
+     ("artifact", True, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD), ("holder-read", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER), ("build", True, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True), ("floor", True, "resume")),
@@ -2537,10 +2538,11 @@ def test_each_state_table_row_routes_exactly_one_stage(fixture, expected):
     assert (decision.stage, decision.dispatch, decision.continuity) == expected
 
 
-def test_would_not_without_a_newer_draft_resumes_artifact():
+def test_would_not_without_a_newer_draft_revises_the_artifact():
+    # #919: no author is on record for this draft, so the revision is recommended fresh.
     decision = work.decide(state(AFFIRMED, ARTIFACT, WOULD_NOT), RULES)
     assert (decision.stage, decision.dispatch, decision.continuity) == (
-        "artifact", True, "resume",
+        "artifact", True, "fresh",
     )
 
 
@@ -6501,7 +6503,8 @@ def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
 def dispatch_bundle(record_root, *, work_value="example/product#12", stage="build",
                     session=SESSION, completed_at="2026-09-20T10:00:00+00:00",
                     name="result.md", producer_version=None,
-                    request_schema=2, run_schema=2, outcome="success"):
+                    request_schema=2, run_schema=2, outcome="success",
+                    returned=None, launched_at=None, launched=None):
     if producer_version is None:
         producer_version = ("0.185.0" if stage == "artifact" else
                             "0.189.0" if stage == "cold-seat" else work.records.producer_version())
@@ -6509,18 +6512,34 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
     bundle.mkdir(parents=True, exist_ok=True)
     request = bundle / f"{name}.request.json"
     run = bundle / f"{name}.run.json"
-    request.write_text(json.dumps({
+    request_value = {
         "schema_version": request_schema, "work": work_value, "stage": stage,
         "producer_version": producer_version,
         "requested": {"vendor": "codex"},
-    }), encoding="utf-8")
-    run.write_text(json.dumps({
+    }
+    attempts = [] if session is None else [{"observed": {"session_id": session}}]
+    run_value = {
         "schema_version": run_schema,
         "actual_vendor": "codex",
         "outcome": outcome,
         "completed_at": completed_at,
-        "attempts": ([] if session is None else [{"observed": {"session_id": session}}]),
-    }), encoding="utf-8")
+        "attempts": attempts,
+    }
+    if launched_at is not None:
+        # Launch-ordered discovery needs the launch time and dispatch identity.
+        request_value.update(launched_at=launched_at, dispatch_id=name)
+        run_value.update(dispatch_id=name, lifecycle="completed")
+    if launched is not None:
+        run_value["attempts"] = [{**attempt, "launched": launched} for attempt in attempts] or [
+            {"launched": launched}]
+    if returned is not None:
+        # A retained return; False names a return file that cannot be read.
+        source = bundle / f"{name}.source.md"
+        if returned is not False:
+            source.write_text(returned, encoding="utf-8")
+        run_value["result"] = {"source_output": str(source)}
+    request.write_text(json.dumps(request_value), encoding="utf-8")
+    run.write_text(json.dumps(run_value), encoding="utf-8")
 
 
 def native_bundle(record_root, monkeypatch, *, stage="use", vendor="claude",
@@ -8046,7 +8065,7 @@ def test_artifact_review_amendment_starts_a_fresh_author(tmp_path, outcome):
 
 @pytest.mark.parametrize("outcome", ["success", "success_uncontinuable", "error"])
 @pytest.mark.parametrize("session", [SESSION, None])
-def test_artifact_review_current_nonfailure_keeps_the_recommendation(tmp_path, outcome, session):
+def test_artifact_review_current_nonfailure_starts_a_first_draft_fresh(tmp_path, outcome, session):
     store = tmp_path / "dispatches"
     dispatch_bundle(store, stage="artifact", outcome=outcome, session=session)
     fixture = state(AFFIRMED)
@@ -8055,8 +8074,9 @@ def test_artifact_review_current_nonfailure_keeps_the_recommendation(tmp_path, o
     recommendation = work.decide(fixture, RULES)
     assert recommendation.continuity == "fresh"
     assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+    # #919: with no draft to revise, a recommended resume no longer decides continuity.
     resumed = work.Decision("artifact", True, "resume", "artifact-repair")
-    assert work._named_continuity(fixture, "artifact", resumed) == "resume"
+    assert work._named_continuity(fixture, "artifact", resumed) == "fresh"
 
 
 @pytest.mark.parametrize("kind", ["old-request", "old-run", "unreadable"])
@@ -8213,6 +8233,494 @@ def test_R3_5_refused_author_flags_a_later_draft_and_resumes(tmp_path):
     assert work.resume_session(fixture, "artifact", store) == SESSION
     recommendation = work.decide(fixture, RULES)
     assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+
+
+# #919: a named artifact revision resumes the draft's author, and its composed
+# prompt carries the verdicts and holder readings the revision answers to.
+
+def _at(hour, minute=0):
+    return f"2026-10-01T{hour:02d}:{minute:02d}:00+00:00"
+
+
+def _return_text(token):
+    return WHOLE_ARTIFACT.lstrip("\n") + f"{token}: the decision this draft makes.\n"
+
+
+def _draft(token):
+    return ARTIFACT + "\n" + _return_text(token)
+
+
+def _verdict(token, verdict="would-not"):
+    return (f"<!-- tradecraft:cold-verdict:v1 verdict={verdict} staffing_status=qualified -->\n"
+            f"{token}: the seat's whole return.")
+
+
+def revision_fixture(tmp_path, monkeypatch, *comments, merged_at=None):
+    """Comments are (body, created_at) in record order; bundles go to the default store."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(*(body for body, _moment in comments))
+    for index, (comment, (_body, moment)) in enumerate(zip(fixture.issue_comments, comments)):
+        comment.update(id=900 + index, created_at=moment,
+                       html_url=f"https://github.example/example/product/issues/12#issuecomment-{900 + index}")
+    if merged_at is not None:
+        fixture.merged_pr = {"number": 41, "merged_at": merged_at}
+        fixture.instalment_boundary = merged_at
+    return fixture, work.records.default_record_root()
+
+
+def _codex_implementer(tmp_path):
+    setting = tmp_path / "home" / ".tradecraft" / "implementer-vendor"
+    setting.parent.mkdir(parents=True, exist_ok=True)
+    setting.write_bytes(b"codex")
+
+
+def _facts(prompt):
+    return json.loads(prompt.decode("utf-8").split("\n\n")[1])
+
+
+def _cap_fixture(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(2)), (_verdict("V1"), _at(3)),
+        (_draft("D2"), _at(5)), (_verdict("V2"), _at(6)),
+    )
+    dispatch_bundle(store, stage="artifact", name="first.md", session=OTHER_SESSION,
+                    completed_at=_at(1), returned=_return_text("D1"))
+    dispatch_bundle(store, stage="artifact", name="second.md", session=SESSION,
+                    completed_at=_at(4), returned=_return_text("D2"))
+    return fixture, store
+
+
+def test_919_C1_cap_repair_resumes_the_session_that_wrote_the_draft(tmp_path, monkeypatch):
+    fixture, store = _cap_fixture(tmp_path, monkeypatch)
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.stage == "artifact-cap"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+    author = work._artifact_author(fixture)
+    assert (author.status, author.session) == ("proved", SESSION)
+    assert author.bundle.endswith("second.md.run.json")
+    source = work._resume_source("example/product#12", "artifact", store,
+                                 completed_after=_at(0), state=fixture)
+    assert (source.session, source.path) == (SESSION, author.bundle)
+
+
+def test_919_C1_C5_launch_plan_names_the_proved_author_and_a_fresh_holder_copy(tmp_path, monkeypatch):
+    fixture, _store = _cap_fixture(tmp_path, monkeypatch)
+    holder = repository(tmp_path, "holder")
+    _codex_implementer(tmp_path)
+    fixture.holder_root = holder
+    recommendation = work.decide(fixture, RULES)
+    decision = work.Decision("artifact", True,
+                             work._named_continuity(fixture, "artifact", recommendation), "holder-named-stage")
+    plan = work._launch_plan(fixture, decision, root=holder)
+    assert plan["continuity"] == "resume"
+    assert plan["author"]["status"] == "proved" and plan["author"]["session"] == SESSION
+    assert plan["session"]["id"] == SESSION and plan["session"]["source"] == plan["author"]["bundle"]
+    assert plan["artifact_copy"]["selection"] == "planned"
+    assert plan["artifact_copy"]["source_commit"] == git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+
+
+def _instalment_fixture(tmp_path, monkeypatch, *later):
+    """Daemon #94's shape: instalment 1 merged after two verdicts; instalment 2 revises."""
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(2)), (_verdict("V1"), _at(3)),
+        (_draft("D1 REVISED"), _at(5)), (_verdict("V2"), _at(6)),
+        (_draft("D2"), _at(9)), (_verdict("V3"), _at(10)), *later,
+        merged_at=_at(7),
+    )
+    dispatch_bundle(store, stage="artifact", name="one.md", session=OTHER_SESSION,
+                    completed_at=_at(1), returned=_return_text("D1"))
+    dispatch_bundle(store, stage="artifact", name="one-revised.md", session=OTHER_SESSION,
+                    completed_at=_at(4), returned=_return_text("D1 REVISED"))
+    dispatch_bundle(store, stage="artifact", name="two.md", session=SESSION,
+                    completed_at=_at(8), returned=_return_text("D2"))
+    return fixture, store
+
+
+def test_919_C2_later_instalment_revision_resumes_its_own_author(tmp_path, monkeypatch):
+    fixture, _store = _instalment_fixture(tmp_path, monkeypatch)
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.stage == "merged-pull-request"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+    author = work._artifact_author(fixture)
+    assert (author.status, author.session) == ("proved", SESSION)
+    assert author.bundle.endswith("two.md.run.json")
+
+
+@pytest.mark.parametrize("unposted_after_draft", [False, True])
+def test_919_C3_an_earlier_bundle_that_wrote_the_draft_beats_a_later_return(
+        tmp_path, monkeypatch, unposted_after_draft):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(3)), (_verdict("V1"), _at(5)),
+    )
+    dispatch_bundle(store, stage="artifact", name="author.md", session=OTHER_SESSION,
+                    completed_at=_at(1), returned=_return_text("D1"))
+    dispatch_bundle(store, stage="artifact", name="unposted.md", session=SESSION,
+                    completed_at=_at(4 if unposted_after_draft else 2), returned=_return_text("UNPOSTED"))
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+    source = work._resume_source("example/product#12", "artifact", store,
+                                 completed_after=_at(0), state=fixture)
+    assert source.session == OTHER_SESSION and source.path.endswith("author.md.run.json")
+
+
+NEW_SECTION_LABELS = (b"This turn resumes the session", b"You are a new author",
+                      b"--- cold verdict against")
+
+
+def test_919_C4_no_draft_in_term_or_instalment_starts_a_first_draft_fresh(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(tmp_path, monkeypatch, (AFFIRMED, _at(0)))
+    dispatch_bundle(store, stage="artifact", completed_at=_at(1), returned=_return_text("D1"))
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+    assert work._artifact_author(fixture).reason == "no-draft-in-term"
+
+    later, _store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(2)), (_verdict("V1"), _at(3)),
+        merged_at=_at(7),
+    )
+    recommendation = work.decide(later, RULES)
+    assert work._named_continuity(later, "artifact", recommendation) == "fresh"
+    author = work._artifact_author(later)
+    assert (author.status, author.reason) == ("first-draft", "no-draft-in-instalment")
+    for decided in (fixture, later):
+        prompt = work._stage_prompt(decided, work.Decision("artifact", True, "fresh", "holder-named-stage"))
+        assert not any(label in prompt for label in NEW_SECTION_LABELS)
+        assert _facts(prompt)["revision_sources"] == []
+    # The earlier instalment's draft is still carried as today, without its verdicts.
+    assert b"D1: the decision" in prompt and b"V1: the seat" not in prompt
+
+
+def test_919_C7_revision_carries_only_its_instalments_would_not_verdicts(tmp_path, monkeypatch):
+    fixture, store = _instalment_fixture(
+        tmp_path, monkeypatch, (_draft("D2 REVISED"), _at(12)), (_verdict("V4"), _at(13)))
+    dispatch_bundle(store, stage="artifact", name="two-revised.md", session=SESSION,
+                    completed_at=_at(11), returned=_return_text("D2 REVISED"))
+    work.decide(fixture, RULES)
+    prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "resume", "holder-named-stage"))
+    text = prompt.decode("utf-8")
+    assert "D2 REVISED: the decision" in text.split("--- artifact under revision begin ---")[1]
+    assert "V1: the seat" not in text and "V2: the seat" not in text
+    v3, v4 = text.index("V3: the seat"), text.index("V4: the seat")
+    assert text.index("Each cold verdict below is the whole comment the holder posted, oldest first.") < v3 < v4
+    assert text.index("--- artifact under revision end ---") < v3
+    v3_url = "https://github.example/example/product/issues/12#issuecomment-906"
+    v4_url = "https://github.example/example/product/issues/12#issuecomment-908"
+    assert f"--- cold verdict against an earlier draft of this artifact ({v3_url}) begin ---" in text
+    assert f"--- cold verdict against the artifact under revision ({v4_url}) begin ---" in text
+
+
+def test_919_C7_would_and_not_settleable_verdicts_are_not_carried(tmp_path, monkeypatch):
+    fixture, _store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(2)), (_verdict("V1"), _at(3)),
+        (_draft("D2"), _at(5)), (_verdict("NOT SETTLEABLE", "not-settleable"), _at(6)),
+        (_draft("D3"), _at(8)), (_verdict("WOULD", "would"), _at(9)),
+    )
+    work.decide(fixture, RULES)
+    prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "holder-named-stage"))
+    assert b"V1: the seat" in prompt
+    assert b"NOT SETTLEABLE: the seat" not in prompt and b"WOULD: the seat" not in prompt
+
+
+def test_919_C8_readings_after_the_latest_verdict_govern_the_revision(tmp_path, monkeypatch):
+    fixture, store = _instalment_fixture(
+        tmp_path, monkeypatch,
+        (_draft("D2 REVISED"), _at(12)), (_holder_reading("R0 BEFORE THE VERDICT"), _at(12, 30)),
+        (_verdict("V4"), _at(13)), (_holder_reading("R1 DECISION"), _at(14)),
+        (_holder_reading("R2 LATER DECISION"), _at(15)),
+    )
+    dispatch_bundle(store, stage="artifact", name="two-revised.md", session=SESSION,
+                    completed_at=_at(11), returned=_return_text("D2 REVISED"))
+    work.decide(fixture, RULES)
+    prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "resume", "holder-named-stage"))
+    text = prompt.decode("utf-8")
+    assert "R0 BEFORE THE VERDICT" not in text
+    label = "--- holder reading made against artifact under revision (governs where it differs) begin ---"
+    assert text.count(label) == 2
+    newest = text.index("The newest governs where readings differ from each other.")
+    assert text.index("V4: the seat") < newest < text.index("R1 DECISION") < text.index("R2 LATER DECISION")
+
+
+def test_919_C9_a_pre_revision_reading_never_governs_the_builder():
+    decisions = _holder_reading("R1 CAP DECISIONS: keep row 2 wording.")
+    fixture = state(AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT, decisions, _settled("cap"))
+    assert work.decide(fixture, RULES).stage == "holder-read"
+    built = state(AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT, decisions, _settled("cap"), HOLDER)
+    decision = work.decide(built, RULES)
+    assert decision.stage == "build"
+    prompt = work._stage_prompt(built, decision)
+    assert b"R1 CAP DECISIONS" not in prompt
+
+
+def test_919_C12_cold_input_is_unchanged_and_the_revision_names_its_sources(tmp_path, monkeypatch):
+    reading = _holder_reading("R1 PRE-REVISION DECISION")
+    without = state(AFFIRMED, _draft("D1"), _verdict("V1"), _draft("D2"))
+    with_reading = state(AFFIRMED, _draft("D1"), _verdict("V1"), reading, _draft("D2"))
+    assert work._cold_stage_prompt(without, tmp_path) == work._cold_stage_prompt(with_reading, tmp_path)
+
+    fixture, _store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(2)), (_verdict("V1"), _at(3)), (reading, _at(4)),
+    )
+    work.decide(fixture, RULES)
+    facts = _facts(work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "holder-named-stage")))
+    assert [(item["kind"], item["source_id"]) for item in facts["revision_sources"]] == [
+        ("artifact", "901"), ("cold-verdict", "902"), ("holder-reading", "903")]
+    assert facts["author"]["reason"] == "no-author-bundle-for-draft"
+
+
+def test_919_C13_no_author_on_record_starts_fresh_and_says_so(tmp_path, monkeypatch):
+    fixture, _store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(2)), (_verdict("V1"), _at(3)),
+    )
+    _codex_implementer(tmp_path)
+    recommendation = work.decide(fixture, RULES)
+    continuity = work._named_continuity(fixture, "artifact", recommendation)
+    assert continuity == "fresh"
+    decision = work.Decision("artifact", True, continuity, "holder-named-stage")
+    prompt = work._stage_prompt(fixture, decision).decode("utf-8")
+    statement = prompt.index("You are a new author. You did not write the artifact under revision below")
+    assert "no-author-bundle-for-draft" in prompt
+    assert statement < prompt.index("--- artifact under revision begin ---") < prompt.index("V1: the seat")
+    assert "This turn resumes" not in prompt
+    plan = work._launch_plan(fixture, decision)
+    assert plan["continuity"] == "fresh"
+    assert (plan["author"]["status"], plan["author"]["reason"]) == ("none", "no-author-bundle-for-draft")
+
+
+def test_919_C14_an_edited_draft_goes_fresh_naming_what_was_compared(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(2)), (_verdict("V1"), _at(3)),
+    )
+    dispatch_bundle(store, stage="artifact", name="edited.md", completed_at=_at(1),
+                    returned=_return_text("D1").replace("D1:", "D1 BEFORE THE HOLDER'S EDIT:"))
+    _codex_implementer(tmp_path)
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+    plan = work._launch_plan(fixture, work.Decision("artifact", True, "fresh", "holder-named-stage"))
+    assert plan["author"]["reason"] == "draft-matches-no-author-return"
+    assert len(plan["author"]["compared"]) == 1 and plan["author"]["compared"][0].endswith("edited.md.run.json")
+
+
+def test_919_C14_H2_a_matching_turn_with_no_session_goes_fresh(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(2)), (_verdict("V1"), _at(3)),
+    )
+    dispatch_bundle(store, stage="artifact", name="uncontinuable.md", session=None,
+                    outcome="success_uncontinuable", completed_at=_at(1), returned=_return_text("D1"))
+    _codex_implementer(tmp_path)
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+    author = work._launch_plan(fixture, work.Decision("artifact", True, "fresh", "holder-named-stage"))["author"]
+    assert author["reason"] == "author-session-uncontinuable"
+    assert author["bundle"].endswith("uncontinuable.md.run.json")
+
+
+def _h1_fixture(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(tmp_path, monkeypatch, (AFFIRMED, _at(0)), (_draft("HAND"), _at(3)))
+    dispatch_bundle(store, stage="artifact", name="earlier.md", session=OTHER_SESSION,
+                    completed_at=_at(1), launched_at=_at(0, 30), returned=_return_text("UNPOSTED"))
+    fixture.record_root = store
+    return fixture, store
+
+
+@pytest.mark.parametrize(("attempt", "after_draft"), [
+    ("completed_no_output", False), ("completed_no_output", True),
+    ("stopped", False), ("stopped", True),
+])
+def test_919_H1_only_an_attempt_later_than_the_draft_recovers_first(tmp_path, monkeypatch, attempt, after_draft):
+    fixture, store = _h1_fixture(tmp_path, monkeypatch)
+    launched, completed = (_at(3, 30), _at(4)) if after_draft else (_at(1, 30), _at(2))
+    if attempt == "stopped":
+        dispatch_bundle(store, stage="artifact", name="attempt.md", outcome="error", launched=True,
+                        completed_at=completed, launched_at=launched)
+    else:
+        dispatch_bundle(store, stage="artifact", name="attempt.md", outcome=attempt,
+                        completed_at=completed, launched_at=launched)
+    lawful, _invalid = work.validate_marker_claims(fixture)
+    assert any(marker.name == "artifact" for marker in lawful)
+    recommendation = work.decide(fixture, RULES)
+    continuity = work._named_continuity(fixture, "artifact", recommendation)
+    assert continuity == ("resume" if after_draft else "fresh")
+    author = work._artifact_author(fixture)
+    assert (author.status, author.reason) == ("none", "draft-matches-no-author-return")
+    assert [Path(path).name for path in author.compared] == ["earlier.md.run.json"]
+
+
+def test_919_H1_a_failed_return_before_a_hand_posted_draft_already_invalidates_it(tmp_path, monkeypatch):
+    fixture, store = _h1_fixture(tmp_path, monkeypatch)
+    dispatch_bundle(store, stage="artifact", name="attempt.md", outcome="invalid_artifact_return",
+                    completed_at=_at(2), launched_at=_at(1, 30), returned=_return_text("INVALID"))
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert not any(marker.name == "artifact" for marker in lawful)
+    assert "failed return" in next(claim["reason"] for claim in invalid if claim["name"] == "artifact")
+    # With no draft under revision, the failed author recovers as before.
+    assert work._named_continuity(fixture, "artifact", work.decide(fixture, RULES)) == "resume"
+    assert work._artifact_author(fixture).status == "first-draft"
+
+
+@pytest.mark.parametrize("case", ["ambiguous", "unreadable-other", "unreadable-same"])
+def test_919_C15_H3_an_unprovable_author_refuses_naming_the_cause(tmp_path, monkeypatch, capsys, case):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    dispatch_bundle(store, stage="artifact", name="x.md", session=OTHER_SESSION,
+                    completed_at=_at(1), returned=_return_text("D1"))
+    sibling_session = OTHER_SESSION if case == "unreadable-same" else SESSION
+    dispatch_bundle(store, stage="artifact", name="y.md", session=sibling_session, completed_at=_at(2),
+                    returned=_return_text("D1") if case == "ambiguous" else False)
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+    if case == "unreadable-same":
+        source = work._resume_source("example/product#12", "artifact", store,
+                                     completed_after=_at(0), state=fixture)
+        assert source.session == OTHER_SESSION and source.path.endswith("x.md.run.json")
+        return
+    monkeypatch.setattr(work, "_stage_root", lambda *_a, **_k: pytest.fail("launched an unprovable author"))
+    decision = work.Decision("artifact", True, "resume", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (report["status"], report["reason"]) == ("refused", "resume-bundle-invalid-for-artifact")
+    assert "x.md.run.json" in report["detail"] and "y.md.run.json" in report["detail"]
+    assert ("different sessions" if case == "ambiguous" else "unreadable") in report["detail"]
+
+
+def test_919_C16_only_the_proved_authors_resumed_session_is_told_it_wrote_the_draft(tmp_path, monkeypatch):
+    fixture, store = _cap_fixture(tmp_path, monkeypatch)
+    work.decide(fixture, RULES)
+    decision = work.Decision("artifact", True, "resume", "holder-named-stage")
+    source = work._resume_source("example/product#12", "artifact", store,
+                                 completed_after=_at(0), state=fixture)
+    prompt = work._stage_prompt(fixture, decision, resumed=source).decode("utf-8")
+    statement = prompt.index(f"This turn resumes the session that wrote the artifact under revision below "
+                             f"(session {SESSION}, bundle {source.path}).")
+    assert statement < prompt.index("--- artifact under revision begin ---")
+    recovered = work.ResumeSource(source.completed, source.path, source.request, source.run, OTHER_SESSION)
+    other = work._stage_prompt(fixture, decision, resumed=recovered)
+    assert not any(label in other for label in NEW_SECTION_LABELS[:2])
+
+
+class _BoundaryTransport:
+    def __init__(self, pulls):
+        self.pulls = pulls
+
+    def get(self, endpoint, *, paginate=False):
+        if endpoint.endswith("/comments"):
+            return []
+        if "/pulls?" in endpoint:
+            return self.pulls
+        return {"number": 12, "state": "open", "body": "", "labels": [], "user": {"login": PRODUCER}}
+
+
+@pytest.mark.parametrize("merged", [1, 2])
+def test_919_instalment_boundary_is_the_latest_merged_implementing_pull_request(merged):
+    pulls = [{"number": 40 + index, "state": "closed", "body": "Closes #12",
+              "merged_at": f"2026-10-0{index + 1}T07:00:00Z"} for index in range(merged)]
+    pulls.append({"number": 50, "state": "closed", "body": "Closes #12", "merged_at": None})
+    fixture = work.read_state(_BoundaryTransport(pulls), "example/product", 12, CONFIG)
+    assert fixture.instalment_boundary == f"2026-10-0{merged}T07:00:00Z"
+    assert bool(fixture.ambiguous_prs) == (merged == 2)
+
+
+# #933 reviewer repairs: the revision's author decision and its recovery gate.
+
+THIRD_SESSION = "fedcba98-7654-3210-fedc-ba9876543210"
+
+
+def test_933_an_earlier_instalments_unreadable_return_cannot_block_the_revision(tmp_path, monkeypatch):
+    fixture, store = _instalment_fixture(tmp_path, monkeypatch)
+    dispatch_bundle(store, stage="artifact", name="old-unreadable.md", session=THIRD_SESSION,
+                    completed_at=_at(4, 30), returned=False)
+    work.decide(fixture, RULES)
+    author = work._artifact_author(fixture)
+    assert (author.status, author.session) == ("proved", SESSION)
+    assert not any(path.endswith("old-unreadable.md.run.json") for path in author.compared)
+
+
+def _stopped_before_draft_fixture(tmp_path, monkeypatch, *, completed, posted="D1"):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft(posted), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    dispatch_bundle(store, stage="artifact", name="author.md", session=OTHER_SESSION,
+                    completed_at=_at(1), launched_at=_at(0, 30), returned=_return_text("D1"))
+    # A later attempt with no session, launched before the draft was posted.
+    dispatch_bundle(store, stage="artifact", name="stopped.md", session=None, outcome="error",
+                    launched=True, launched_at=_at(1, 30), completed_at=_at(2) if completed else None)
+    return fixture
+
+
+def test_933_a_finished_stop_older_than_the_draft_neither_recovers_nor_blocks(tmp_path, monkeypatch):
+    fixture = _stopped_before_draft_fixture(tmp_path, monkeypatch, completed=True)
+    recommendation = work.decide(fixture, RULES)
+    # The read-only recommendation no longer names the old stop, nor offers a restart.
+    assert (recommendation.stage, recommendation.reason) == ("artifact", "cold-verdict-would-not")
+    assert recommendation.continuity == "resume"
+    assert work.work_recovery.latest_stopped(fixture, "artifact") is None
+    assert work.work_recovery.stopped_source(fixture, "artifact") is None
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+    assert work._artifact_author(fixture).session == OTHER_SESSION
+
+
+def test_933_an_unfinished_attempt_older_than_the_draft_still_returns_to_the_holder(tmp_path, monkeypatch):
+    # A hand-posted draft has no author on record, so only the live attempt can force resume.
+    fixture = _stopped_before_draft_fixture(tmp_path, monkeypatch, completed=False, posted="HAND")
+    stopped = work.work_recovery.latest_stopped(fixture, "artifact")
+    assert stopped is not None and stopped[1].endswith("stopped.md.run.json")
+    recommendation = work.decide(fixture, RULES)
+    assert work._artifact_author(fixture).status == "none"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+
+
+def test_933_a_legacy_schema_bundle_is_not_an_author_candidate(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    dispatch_bundle(store, stage="artifact", name="legacy.md", completed_at=_at(1),
+                    request_schema=1, returned=_return_text("D1"))
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.continuity == "fresh"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+    assert work._artifact_author(fixture).reason == "no-author-bundle-for-draft"
+
+
+def test_933_a_returned_turn_without_its_retained_return_is_unprovable(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    dispatch_bundle(store, stage="artifact", name="lost.md", completed_at=_at(1), returned=_return_text("D1"))
+    run_path = store / "artifact" / "lost.md.run.json"
+    run = json.loads(run_path.read_bytes())
+    run["result"]["source_output"] = None
+    run_path.write_bytes(json.dumps(run).encode())
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+    author = work._artifact_author(fixture)
+    assert (author.status, author.reason) == ("unprovable", "author-record-unreadable")
+    assert "lost.md.run.json" in author.detail
+
+
+def test_933_the_would_not_recommendation_resumes_only_a_proved_author(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    assert work.decide(fixture, RULES).continuity == "fresh"
+    dispatch_bundle(store, stage="artifact", name="author.md", session=OTHER_SESSION,
+                    completed_at=_at(1), returned=_return_text("D1"))
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.continuity) == ("artifact", "resume")
+    assert decision.launch_settings["author"]["session"] == OTHER_SESSION
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])

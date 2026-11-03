@@ -145,10 +145,15 @@ def handover_predecessor(state, latest):
     return None
 
 
-def latest_stopped(state, stage):
+def latest_stopped(state, stage, *, explicit_restart=False):
     rows = launches(state, stage)
     if stage == "artifact":
         rows = authored(rows, state=state, work_value=f"{state.repo}#{state.issue_number}")
+        # A finished attempt older than the draft under revision recovers nothing (#919);
+        # only the holder's explicit restart still names it.
+        if not explicit_restart and rows and lifecycle.stopped(rows[-1][3]) and not _entrance()._later_than_revision_draft(
+                state, rows[-1][0], rows[-1][3]):
+            return None
     return rows[-1] if rows and lifecycle.stopped(rows[-1][3]) else None
 
 

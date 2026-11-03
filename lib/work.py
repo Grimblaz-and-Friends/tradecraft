@@ -263,6 +263,8 @@ SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
 RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {
     "completed_no_output", "invalid_artifact_return", "work_outlived_return",
 }
+# Outcomes whose turn returned text the launcher retains as its source output.
+RETURNED_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {"invalid_artifact_return"}
 WORKFLOW_RUN_FILES_QUERY = """query($ids:[ID!]!){
   nodes(ids:$ids){
     ... on CheckSuite {
@@ -338,6 +340,7 @@ class WorkState:
     issue_comments: list[dict[str, object]] = field(default_factory=list)
     pr: dict[str, object] | None = None
     merged_pr: dict[str, object] | None = None
+    instalment_boundary: str | None = None
     pr_comments: list[dict[str, object]] = field(default_factory=list)
     reviews: list[dict[str, object]] = field(default_factory=list)
     review_comments: list[dict[str, object]] = field(default_factory=list)
@@ -351,6 +354,7 @@ class WorkState:
     invalid_marker_claims: list[dict[str, object]] = field(default_factory=list)
     quotation_claims: list[dict[str, object]] = field(default_factory=list)
     artifact_phase: ArtifactPhase | None = None
+    artifact_author: ArtifactAuthor | None = None
     selected_bundles: dict[tuple[int, int], tuple | None] = field(default_factory=dict)
     cold_judgments: dict[tuple[int, int], dict[str, object]] = field(default_factory=dict)
     collection_diagnostics: list[dict[str, object]] = field(default_factory=list)
@@ -1240,6 +1244,13 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     )
     candidates = sorted(open_candidates or merged_candidates)
     state = WorkState(repo, issue_number, issue, issue_comments, config=work_config)
+    # A later instalment's revision begins after the latest merged instalment,
+    # whether or not another candidate is open or ambiguous.
+    merged_times = [
+        str(pull["merged_at"]) for pull in pulls
+        if pull.get("number") in merged_candidates and _aware_time(pull.get("merged_at")) is not None
+    ]
+    state.instalment_boundary = max(merged_times, key=_aware_time) if merged_times else None
     if len(candidates) > 1:
         state.ambiguous_prs = candidates
         return state
@@ -1573,20 +1584,18 @@ def _native_staffing(state: WorkState, marker: Marker,
     }
 
 
-def _cold_return_match_length(bundle: tuple, body: str) -> int:
-    """Measure a whole-line source return match outside tradecraft marker comments."""
+def _retained_return_path(bundle: tuple) -> Path | None:
     _completed, path, _request, run = bundle
     result = run.get("result")
     source = result.get("source_output") if isinstance(result, dict) else None
     if not isinstance(source, str) or not source:
-        return 0
+        return None
     source_path = Path(source)
-    if not source_path.is_absolute():
-        source_path = Path(path).parent / source_path
-    try:
-        returned = cold_draft.read_input(source_path).decode("utf-8")
-    except (OSError, ValueError):
-        return 0
+    return source_path if source_path.is_absolute() else Path(path).parent / source_path
+
+
+def _return_match_length(returned: str, body: str) -> int:
+    """Measure a whole-line return match outside tradecraft marker comments."""
     def normalized(text: str) -> str:
         return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")).rstrip("\n")
     returned = normalized(MARKER.sub("", returned))
@@ -1594,6 +1603,18 @@ def _cold_return_match_length(bundle: tuple, body: str) -> int:
     if returned and "\n" + returned + "\n" in "\n" + comment + "\n":
         return len(returned)
     return 0
+
+
+def _cold_return_match_length(bundle: tuple, body: str) -> int:
+    """Measure a whole-line source return match outside tradecraft marker comments."""
+    source_path = _retained_return_path(bundle)
+    if source_path is None:
+        return 0
+    try:
+        returned = cold_draft.read_input(source_path).decode("utf-8")
+    except (OSError, ValueError):
+        return 0
+    return _return_match_length(returned, body)
 
 
 def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) -> tuple | None:
@@ -1757,6 +1778,7 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
     lawful: list[Marker] = []
     invalid: list[dict[str, object]] = []
     state.artifact_phase = None
+    state.artifact_author = None
     state.selected_bundles = {}
     state.cold_judgments = {}
     classified = _classify_sources(_state_sources(state))
@@ -1825,6 +1847,11 @@ class ArtifactPhase:
     invalid_settlements: tuple[tuple[Marker, str], ...]
     settlement_origin: Marker | None = None
     judgments: tuple[dict[str, object], ...] = ()
+    # A revision answers only its own instalment's drafts (#919); the cap count
+    # above still spans the term (#928).
+    revision_draft: Marker | None = None
+    revision_verdicts: tuple[Marker, ...] = ()
+    revision_readings: tuple[Marker, ...] = ()
 
 
 def _source_order(marker: Marker) -> tuple[datetime, int, int]:
@@ -2001,6 +2028,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
     invalid: list[tuple[Marker, str]] = []
     anchors: dict[tuple, tuple[Marker, tuple[datetime, int, int]]] = {}
     settlement_origin: Marker | None = None
+    drafts: dict[tuple[int, int], Marker] = {}
 
     for group in ordered_groups:
         if any(marker.name == "affirmed-brief" for marker in group):
@@ -2042,6 +2070,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
             verdicts = []
             anchors = {}
             settlement_origin = None
+            drafts = {}
             continue
         if not active:
             continue
@@ -2060,6 +2089,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                 current_artifact_error = None
                 current_artifact_order = order
                 latest_draft_identity = (marker.source_order, marker.occurrence_order)
+                drafts[latest_draft_identity] = marker
                 latest_settlement = None
                 settled_artifact = None
                 source_error = None
@@ -2149,6 +2179,21 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
         verdict.attributes.get("verdict") == "would-not"
         for verdict, _draft_identity in verdicts
     )
+    revision_draft = (latest_draft if latest_draft is not None
+                      and _after_instalment_boundary(state, latest_draft) else None)
+    revision_verdicts: tuple[Marker, ...] = ()
+    revision_readings: tuple[Marker, ...] = ()
+    if revision_draft is not None:
+        revision_verdicts = tuple(
+            verdict for verdict, draft_identity in verdicts
+            if verdict.attributes.get("verdict") == "would-not"
+            and draft_identity in drafts and _after_instalment_boundary(state, drafts[draft_identity])
+        )
+        cutoff = max([_source_order(revision_draft)]
+                     + [_source_order(verdict) for verdict in current_verdicts])
+        revision_readings = tuple(
+            reading for reading in holder_readings if _source_order(reading) > cutoff
+        )
     return ArtifactPhase(
         latest_draft=latest_draft,
         prior_artifact=prior_artifact,
@@ -2169,7 +2214,176 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
         invalid_settlements=tuple(invalid),
         settlement_origin=settlement_origin,
         judgments=tuple(_cold_judgment(state, verdict) for verdict, _identity in verdicts),
+        revision_draft=revision_draft,
+        revision_verdicts=revision_verdicts,
+        revision_readings=revision_readings,
     )
+
+
+def _after_instalment_boundary(state: WorkState, draft: Marker) -> bool:
+    boundary = _aware_time(state.instalment_boundary)
+    if boundary is None:
+        return True
+    posted = _aware_time(draft.timestamp)
+    return posted is not None and posted > boundary
+
+
+@dataclass(frozen=True)
+class ArtifactAuthor:
+    """Who wrote the draft under revision, decided from that draft's own history (#919)."""
+    status: str
+    reason: str
+    detail: str
+    draft: str | None = None
+    bundle: str | None = None
+    session: str | None = None
+    compared: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {"status": self.status, "reason": self.reason, "detail": self.detail,
+                "draft": self.draft, "bundle": self.bundle, "session": self.session,
+                "compared": list(self.compared)}
+
+
+def _bundle_sessions(request: dict[str, object], run: dict[str, object], *, native: bool) -> list[str]:
+    sessions: list[str] = []
+    attempts = run.get("attempts")
+    for attempt in attempts if isinstance(attempts, list) else []:
+        observed = attempt.get("observed") if isinstance(attempt, dict) else None
+        session = observed.get("session_id") if isinstance(observed, dict) else None
+        if isinstance(session, str) and SESSION_ID.fullmatch(session):
+            sessions.append(session)
+        if native and isinstance(observed, dict) and isinstance(observed.get("thread_ids"), list):
+            sessions.extend(value for value in observed["thread_ids"]
+                            if isinstance(value, str) and SESSION_ID.fullmatch(value))
+    return sessions
+
+
+def _author_session(bundle: tuple) -> str | None:
+    _completed, _path, request, run = bundle
+    if run.get("outcome") == "success_uncontinuable":
+        return None
+    sessions = _bundle_sessions(request, run, native=artifact_tree.native_recording(request))
+    return sessions[-1] if sessions else None
+
+
+def _artifact_author(state: WorkState) -> ArtifactAuthor:
+    if state.artifact_author is None:
+        state.artifact_author = _prove_artifact_author(state)
+    return state.artifact_author
+
+
+def _prove_artifact_author(state: WorkState) -> ArtifactAuthor:
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    phase = state.artifact_phase or _artifact_phase(state)
+    draft = phase.revision_draft
+    if draft is None:
+        if phase.latest_draft is None:
+            return ArtifactAuthor("first-draft", "no-draft-in-term",
+                                  "the current term has no draft; this stage writes its first draft")
+        return ArtifactAuthor(
+            "first-draft", "no-draft-in-instalment",
+            f"the term's latest draft {_marker_setting_source(phase.latest_draft)} predates the latest "
+            f"merged implementing pull request ({state.instalment_boundary}); this stage writes the "
+            "instalment's first draft")
+    source = _marker_setting_source(draft)
+    term, _lane = _affirmed_review(state)
+    work_value = f"{state.repo}#{state.issue_number}"
+    # An earlier instalment's returns cannot write, or block, this draft.
+    starts = [value for value in (term.timestamp if term else None, state.instalment_boundary)
+              if _aware_time(value) is not None]
+    try:
+        bundles = _matching_bundles(
+            work_value, frozenset({"artifact"}),
+            state.record_root or records.default_record_root().expanduser().resolve(),
+            outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+            completed_after=max(starts, key=_aware_time) if starts else None,
+            completed_no_later_than=draft.timestamp, schema_policy="skip",
+        )
+        bundles = work_recovery.authored(work_recovery.scoped(state, bundles),
+                                         state=state, work_value=work_value)
+    except (WorkError, OSError) as exc:
+        return ArtifactAuthor("unprovable", "author-record-unreadable",
+                              f"author records for draft {source} cannot be read: {exc}", draft=source)
+    compared: list[str] = []
+    unreadable: list[tuple] = []
+    paired: list[tuple[int, tuple]] = []
+    for bundle in bundles:
+        returned_path = _retained_return_path(bundle)
+        if returned_path is None:
+            result = bundle[3].get("result")
+            if bundle[3].get("outcome") in RETURNED_BUNDLE_OUTCOMES and isinstance(result, dict) and (
+                    "source_output" in result):
+                # A returned turn whose retained return is missing is corrupt evidence.
+                compared.append(bundle[1])
+                unreadable.append(bundle)
+            continue  # A turn that recorded no return wrote no draft.
+        compared.append(bundle[1])
+        try:
+            returned = cold_draft.read_input(returned_path).decode("utf-8")
+        except (OSError, ValueError):
+            unreadable.append(bundle)
+            continue
+        length = _return_match_length(returned, draft.body)
+        if length:
+            paired.append((length, bundle))
+    named = tuple(compared)
+    if paired:
+        longest = max(length for length, _bundle in paired)
+        best = [bundle for length, bundle in paired if length == longest]
+        if len({_author_session(bundle) for bundle in best}) > 1:
+            return ArtifactAuthor(
+                "unprovable", "draft-author-ambiguous",
+                f"draft {source} matches equally long returns from different sessions; bundles: "
+                + ", ".join(bundle[1] for bundle in best), draft=source, compared=named)
+        chosen = best[-1]
+        session = _author_session(chosen)
+        # An unreadable return could be an equally long match from another session.
+        if any(session is None or _author_session(bundle) != session for bundle in unreadable):
+            return ArtifactAuthor(
+                "unprovable", "author-record-unreadable",
+                f"draft {source} matches bundle {chosen[1]}, but unreadable author returns from "
+                "another or unknown session cannot be excluded: "
+                + ", ".join(bundle[1] for bundle in unreadable), draft=source, compared=named)
+        if session is None:
+            return ArtifactAuthor(
+                "none", "author-session-uncontinuable",
+                f"draft {source} was written by bundle {chosen[1]}, whose turn reported no "
+                "resumable session", draft=source, bundle=chosen[1], compared=named)
+        return ArtifactAuthor(
+            "proved", "draft-matches-author-return",
+            f"draft {source} matches the retained return of bundle {chosen[1]} (session {session})",
+            draft=source, bundle=chosen[1], session=session, compared=named)
+    if unreadable:
+        return ArtifactAuthor(
+            "unprovable", "author-record-unreadable",
+            f"no readable author return matches draft {source}, and these returns cannot be read: "
+            + ", ".join(bundle[1] for bundle in unreadable), draft=source, compared=named)
+    if not compared:
+        return ArtifactAuthor(
+            "none", "no-author-bundle-for-draft",
+            f"no launched author bundle in this term, holder and instalment retained a return "
+            f"before draft {source}", draft=source)
+    return ArtifactAuthor(
+        "none", "draft-matches-no-author-return",
+        f"draft {source} matches no retained author return, so it was edited or posted by hand; "
+        "compared: " + ", ".join(compared), draft=source, compared=named)
+
+
+def _later_than_revision_draft(state: WorkState, order: object, run: dict[str, object]) -> bool:
+    """Recover an attempt first only when it is later than the draft under revision."""
+    phase = state.artifact_phase or _artifact_phase(state)
+    draft = phase.revision_draft
+    posted = _aware_time(draft.timestamp) if draft is not None else None
+    if posted is None:
+        return True
+    if (not run.get("completed_at") or run.get("launch_unresolved") or run.get("recovery_error")
+            or run.get("cleanup_proven") is False):
+        # A live or unresolved attempt returns to the holder rather than gaining a second writer.
+        return True
+    moment = _aware_time(run.get("completed_at")) or _aware_time(order)
+    return moment is None or moment > posted
 
 
 def _apply_artifact_invalids(state: WorkState, phase: ArtifactPhase) -> None:
@@ -4443,7 +4657,10 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
                 )
             latest_verdict = current_verdicts[-1].attributes.get("verdict")
             if latest_verdict == "would-not":
-                return result("artifact", True, "resume", "cold-verdict-would-not")
+                # The draft's own history decides, as it does for the named stage (#919).
+                return result("artifact", True, _named_continuity(
+                    state, "artifact", Decision("artifact", True, "resume", "cold-verdict-would-not")),
+                    "cold-verdict-would-not")
             route = "would" if latest_verdict == "would" else "discharge"
             detail = (
                 _settlement_posting_guidance(route) + " Invalid settlement "
@@ -5157,7 +5374,8 @@ def sweep_registry(transport: GitHubREST) -> None:
 def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None,
                   branch: str | None = None, *, floor_command: str | None = None,
                   merge_obligation: MergeObligation | None = None,
-                  version_instruction: str = "") -> bytes:
+                  version_instruction: str = "",
+                  resumed: ResumeSource | None = None) -> bytes:
     if decision.stage == "use":
         raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
@@ -5240,6 +5458,11 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         artifact = phase.settled_artifact
     if brief is None:
         raise WorkError(f"{decision.stage} dispatch requires an authorized affirmed brief")
+    author = _artifact_author(state) if explicit_artifact else None
+    revision = explicit_artifact and artifact is not None and artifact is phase.revision_draft
+    revision_sources = (
+        [artifact, *phase.revision_verdicts, *phase.revision_readings] if revision else []
+    )
     pr_number = state.pr.get("number") if state.pr else None
     facts = {
         "schema_version": 1,
@@ -5269,6 +5492,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             if mechanical
             else None
         ),
+        "author": author.as_dict() if author is not None else None,
+        "revision_sources": [_governing_identity(marker) for marker in revision_sources],
     }
     fetches = [
         f"gh api --method GET repos/{state.repo}/issues/{state.issue_number}",
@@ -5292,10 +5517,41 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         draft_explanation = _settled_draft_explanation(phase) if not explicit_artifact else None
         if draft_explanation:
             sections.append(draft_explanation)
+        if revision and decision.continuity == "resume" and author.status == "proved" and (
+                resumed is not None and resumed.session == author.session):
+            sections.append(
+                f"This turn resumes the session that wrote the artifact under revision below "
+                f"(session {author.session}, bundle {author.bundle}). Revise your draft against "
+                "the cold verdicts and holder readings that follow it."
+            )
+        elif revision and decision.continuity == "fresh" and author.status == "none":
+            sections.append(
+                "You are a new author. You did not write the artifact under revision below, and no "
+                f"author session for it could be resumed ({author.reason}: {author.detail}). Read it "
+                "whole, then revise it against the cold verdicts and holder readings that follow it."
+            )
         sections.append(
             f"--- {artifact_label} begin ---\n" + artifact.body
             + f"\n--- {artifact_label} end ---"
         )
+    if revision and phase.revision_verdicts:
+        sections.append(
+            "Each cold verdict below is the whole comment the holder posted, oldest first. "
+            "Repair what each one names."
+        )
+        current = {id(verdict) for verdict in phase.current_verdicts}
+        for verdict in phase.revision_verdicts:
+            verdict_label = (
+                f"cold verdict against the artifact under revision ({_marker_setting_source(verdict)})"
+                if id(verdict) in current else
+                f"cold verdict against an earlier draft of this artifact ({_marker_setting_source(verdict)})"
+            )
+            sections.append(
+                f"--- {verdict_label} begin ---\n" + verdict.body
+                + f"\n--- {verdict_label} end ---"
+            )
+    if revision and phase.revision_readings:
+        prior_holder_readings = phase.revision_readings
     if prior_holder_readings:
         reading_label = (
             "holder reading made against artifact under revision "
@@ -6144,7 +6400,9 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
             and not lifecycle.stopped(latest[-1][3])
             and latest[-1][3].get("outcome") not in RESUMABLE_BUNDLE_OUTCOMES):
         raise WorkError(f"latest artifact bundle has no proved continuable return: {latest[-1][1]}")
-    if latest and lifecycle.stopped(latest[-1][3]):
+    if latest and lifecycle.stopped(latest[-1][3]) and (
+            stage != "artifact" or state is None
+            or _later_than_revision_draft(state, latest[-1][0], latest[-1][3])):
         if state is not None:
             predecessor = work_recovery.handover_predecessor(state, latest[-1])
             if predecessor is not None:
@@ -6173,8 +6431,21 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
         matched = work_recovery.scoped(state, matched)
     if stage == "artifact":
         matched = work_recovery.authored(matched, state=state, work_value=work_value)
+    selected = matched[-1:] if stage == "artifact" else matched
+    if stage == "artifact" and state is not None and not (
+            matched and matched[-1][3].get("outcome") not in SUCCESSFUL_BUNDLE_OUTCOMES
+            and _later_than_revision_draft(state, matched[-1][0], matched[-1][3])):
+        # A failed attempt after the draft recovers as before; otherwise the
+        # draft under revision names its author (#919).
+        author = _artifact_author(state)
+        if author.status == "unprovable":
+            raise WorkError(author.detail)
+        if author.status == "proved":
+            selected = [bundle for bundle in matched if bundle[1] == author.bundle]
+            if not selected:
+                raise WorkError(f"proved author bundle is not a continuable resume source: {author.bundle}")
     candidates: list[ResumeSource] = []
-    for completed, run_path, request, run in (matched[-1:] if stage == "artifact" else matched):
+    for completed, run_path, request, run in selected:
         if stage == "artifact":
             try:
                 artifact_tree.validate_resume(request, run, run_path,
@@ -6198,15 +6469,7 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
             raise WorkError(f"matching dispatch bundle has unproved vendor: {run_path}")
         if not isinstance(attempts, list):
             continue
-        sessions: list[str] = []
-        for attempt in attempts:
-            observed = attempt.get("observed") if isinstance(attempt, dict) else None
-            session = observed.get("session_id") if isinstance(observed, dict) else None
-            if isinstance(session, str) and SESSION_ID.fullmatch(session):
-                sessions.append(session)
-            if native and isinstance(observed, dict) and isinstance(observed.get("thread_ids"), list):
-                sessions.extend(value for value in observed["thread_ids"]
-                                if isinstance(value, str) and SESSION_ID.fullmatch(value))
+        sessions = _bundle_sessions(request, run, native=native)
         if native:
             identities = set(sessions)
             if len(identities) > 1 or (identities and requested.get("session_id")
@@ -6345,6 +6608,8 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
         "cold-seat" if decision.stage == "cold-seat" else "use-consumer")
     plan = {"status": "resolved", "stage": decision.stage, "role": MODEL_OVERRIDE_ROLES[role],
             "continuity": decision.continuity or "fresh"}
+    if decision.stage == "artifact":
+        plan["author"] = _artifact_author(state).as_dict()
     if judging:
         settings = {vendor: _launch_settings(state, role, vendor, "cold", bridge=bridge).as_dict(
             vendor, f"work entrance {role} route" if vendor == "claude" else "availability fallback to comparison vendor"
@@ -7888,7 +8153,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
     recovery_info = None
     restart_source = None
     if restart_unresolved_reason is not None:
-        restart_source = work_recovery.latest_stopped(state, decision.stage)
+        restart_source = work_recovery.latest_stopped(state, decision.stage, explicit_restart=True)
         if (not restart_unresolved_reason.strip() or restart_source is None
                 or not work_recovery.restartable(restart_source[2], restart_source[3])):
             raise WorkError("restart requires a dead completed fresh failure with no reported session and a nonempty reason")
@@ -7903,8 +8168,9 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
     if restart_source is None and decision.stage in RESUME_SOURCE_STAGES:
         try:
             stopped = work_recovery.latest_stopped(state, decision.stage)
-            if stopped is not None and (not merged_fresh_build
-                                        or stopped[2].get("lineage_pull_request") is None):
+            if stopped is not None and (decision.stage != "artifact"
+                                        or _later_than_revision_draft(state, stopped[0], stopped[3])) and (
+                    not merged_fresh_build or stopped[2].get("lineage_pull_request") is None):
                 decision = replace(decision, continuity="resume")
                 merged_fresh_build = False
         except (WorkError, OSError, ValueError) as exc:
@@ -7933,7 +8199,9 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                                  if decision.stage == "artifact" and _affirmed_review(state)[0] else None), state=state,
             )
             stopped_source = work_recovery.stopped_source(state, decision.stage)
-            if stopped_source is not None:
+            if stopped_source is not None and (
+                    decision.stage != "artifact"
+                    or _later_than_revision_draft(state, stopped_source.completed, stopped_source.run)):
                 resume_source = stopped_source
                 recovery_info = work_recovery.info(state, stopped_source)
         except WorkError as exc:
@@ -8255,7 +8523,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 prepared_prompt = _stage_prompt(
                     state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                     merge_obligation=obligation,
-                    version_instruction=version_instruction,
+                    version_instruction=version_instruction, resumed=resume_source,
                 )
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
@@ -8426,7 +8694,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     prepared_prompt = _stage_prompt(
                         state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                         merge_obligation=obligation,
-                        version_instruction=version_instruction,
+                        version_instruction=version_instruction, resumed=resume_source,
                     )
                 except WorkError as exc:
                     if getattr(exc, "version_obligation", None) is not None:
@@ -8702,7 +8970,8 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
             return "fresh"
         if stage in RESUME_SOURCE_STAGES:
             stopped = work_recovery.latest_stopped(state, stage)
-            if stopped is not None and (not merged_build or stopped[2].get("lineage_pull_request") is None):
+            if (stopped is not None and (not merged_build or stopped[2].get("lineage_pull_request") is None)
+                    and (stage != "artifact" or _later_than_revision_draft(state, stopped[0], stopped[3]))):
                 return "resume"
     except (WorkError, OSError, ValueError):
         # Let the named stage's existing refusal report discovery uncertainty.
@@ -8711,8 +8980,10 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
         # Without a stopped further lineage, release the old registration first.
         return "fresh"
     if stage == "artifact":
-        continuity = (recommendation.continuity if recommendation.stage == stage
-                      and recommendation.continuity is not None else "fresh")
+        # The draft under revision decides, whatever stage is recommended (#919).
+        # An unprovable author resumes so that the resume route refuses and names it.
+        author = _artifact_author(state)
+        continuity = "resume" if author.status in {"proved", "unprovable"} else "fresh"
         term, _ = _affirmed_review(state)
         if term is None or _time(term.timestamp) is None:
             return continuity
@@ -8727,7 +8998,8 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
         except WorkError:
             return continuity
         if bundles and bundles[-1][3].get("outcome") in {
-                "invalid_artifact_return", "completed_no_output", "work_outlived_return"}:
+                "invalid_artifact_return", "completed_no_output", "work_outlived_return"} and (
+                _later_than_revision_draft(state, bundles[-1][0], bundles[-1][3])):
             # The resume route refuses an unproved session rather than replacing the failed author.
             return "resume"
         return continuity
