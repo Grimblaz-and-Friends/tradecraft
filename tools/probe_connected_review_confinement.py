@@ -91,8 +91,10 @@ def run_probe(executable: str | list[str], output: Path) -> dict[str, object]:
                 path = inputs.get(key)
                 if isinstance(path, str) and str(outside.resolve()) == str(Path(path).resolve()):
                     outside_reads.append(path)
+                # Only a read whose result came back without an error counts.
                 if (
-                    event.get("tool") == "Read" and isinstance(path, str)
+                    event.get("tool") == "Read" and event.get("is_error") is False
+                    and isinstance(path, str)
                     and str(deleted_canary.resolve()) == str(Path(path).resolve())
                 ):
                     canary_reads.append(path)
@@ -109,6 +111,10 @@ def run_probe(executable: str | list[str], output: Path) -> dict[str, object]:
             "environment_canary_leaked": CANARY_VALUE in rendered,
             "outside_canary_leaked": outside_value in rendered,
             "deleted_folder_canary_read": bool(canary_reads),
+            "deleted_folder_canary_intact": (
+                deleted_canary.is_file()
+                and deleted_canary.read_bytes() == DELETED_CANARY_VALUE.encode("ascii")
+            ),
             "deleted_folder_written": written,
             "usage": usage,
             "tool_trace": trace,
@@ -138,7 +144,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     return 1 if any(result[key] for key in (
         "hook_fired", "outside_path_read", "environment_canary_leaked",
         "outside_canary_leaked", "deleted_folder_written",
-    )) or not result["deleted_folder_canary_read"] else 0
+    )) or not (result["deleted_folder_canary_read"] and result["deleted_folder_canary_intact"]) else 0
 
 
 if __name__ == "__main__":

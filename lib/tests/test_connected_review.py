@@ -2492,7 +2492,7 @@ def recording_fixture(monkeypatch, tmp_path, diff, *, candidates=()):
         snapshot.mkdir()
         inputs.mkdir()
         (snapshot / "app.py").write_bytes(b"new\n")
-        (inputs / "pull-request.diff").write_bytes(diff.encode("utf-8"))
+        (inputs / "pull-request.diff").write_bytes(diff if isinstance(diff, bytes) else diff.encode("utf-8"))
         (inputs / "repository-rules.md").write_bytes(b"## Code Review Rules\n\nLocal rules.\n")
         return snapshot, inputs / "pull-request.diff", inputs / "repository-rules.md"
 
@@ -2622,6 +2622,19 @@ def test_over_budget_deleted_files_are_summarised_readable_and_reviewed(tmp_path
     assert "image.bin" not in body
 
 
+def test_summarised_non_utf8_file_keeps_its_exact_bytes_in_the_folder(tmp_path, monkeypatch):
+    diff = (APP_SECTION + deleted_section("big.py", big_lines("BIG_DELETED", 7000))).encode("utf-8") + (
+        b"diff --git a/latin.txt b/latin.txt\ndeleted file mode 100644\nindex 1111111..0000000\n"
+        b"--- a/latin.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-caf\xe9\r\n-na\xefve\n"
+    )
+    result, launches, _reviews = recorded_review(monkeypatch, tmp_path, diff)
+    assert result["status"] == "reviewed"
+    assert launches[0]["files"]["latin.txt"] == b"caf\xe9\r\nna\xefve\n"
+    assert json.loads(delimited(launches[0]["stdin"], "summarised_deleted_files"))[1] == {
+        "deleted_lines": 2, "path": "latin.txt",
+    }
+
+
 def test_every_wholly_deleted_file_is_summarised_not_just_enough_to_fit(tmp_path, monkeypatch):
     diff = APP_SECTION + deleted_section("one.py", big_lines("ONE", 3500)) + deleted_section("two.py", big_lines("TWO", 3500))
     alone = len(deleted_section("one.py", big_lines("ONE", 3500)).encode())
@@ -2747,9 +2760,10 @@ def test_folder_holds_the_bases_exact_bytes_from_a_real_git_diff(tmp_path):
         "empty.txt": b"",
         "nested/multibyte.txt": ("caf" + chr(0xE9) + " " + chr(0x2603) + "\n" + chr(0x65E5) + chr(0x672C) + "\n").encode("utf-8"),
         "mixed.txt": b"one\r\ntwo\nthree",
+        "latin-1.txt": b"caf\xe9\n",
     }
     raw, base = git_fixture(tmp_path / "repository", files)
-    diff = raw.decode("utf-8", errors="replace")
+    diff = raw.decode("utf-8", errors="surrogateescape")
     summarised, entries = cr.summarise_deleted_files(diff)
     assert summarised == "" and sorted(row["path"] for row in entries) == sorted(files)
     assert {row["path"]: row["deleted_lines"] for row in entries}["empty.txt"] == 0
@@ -2838,6 +2852,37 @@ def test_run_pass_adds_the_folder_to_the_same_read_only_launch_and_redacts_it(tm
     assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
     assert "--restricted" in command and command[command.index("--permission-mode") + 1] == "plan"
     assert str(folder) not in str(raised.value) and "[deleted-at-base]" in str(raised.value)
+
+
+def test_trace_keeps_each_tool_results_error_state_on_its_call(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "denied", "name": "Read", "input": {"file_path": "a.py"}},
+            {"type": "tool_use", "id": "read", "name": "Read", "input": {"file_path": "b.py"}},
+            {"type": "tool_use", "id": "unanswered", "name": "Grep", "input": {"path": "."}},
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "denied", "is_error": True, "content": "denied"},
+            {"type": "tool_result", "tool_use_id": "read", "content": "text"},
+            {"type": "tool_result", "tool_use_id": "unknown", "is_error": True},
+        ]}},
+        {"type": "result", "is_error": False, "structured_output": {"candidates": []}, "usage": {}},
+    ]
+
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, "\n".join(json.dumps(event) for event in events).encode(), b"")
+
+    monkeypatch.setattr(cr, "_run", run)
+    _value, _usage, trace = cr.run_pass(
+        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, TOKEN, effort=cr.FINDER_EFFORT,
+    )
+    assert trace == [
+        {"tool": "Read", "input": {"file_path": "a.py"}, "is_error": True},
+        {"tool": "Read", "input": {"file_path": "b.py"}, "is_error": False},
+        {"tool": "Grep", "input": {"path": "."}},
+    ]
 
 
 def test_summarised_coverage_rows_carry_line_counts_and_other_reasons_render_as_before():

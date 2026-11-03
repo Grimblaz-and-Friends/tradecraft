@@ -27,7 +27,7 @@ def test_probe_plants_boundary_canaries_and_reports_real_launch_trace(tmp_path, 
         })
         return {"candidates": []}, {"input_tokens": 1}, [
             {"tool": "Read", "input": {"file_path": str(snapshot / "README.md")}},
-            {"tool": "Read", "input": {"file_path": str(readable / probe.DELETED_CANARY_NAME)}},
+            {"tool": "Read", "input": {"file_path": str(readable / probe.DELETED_CANARY_NAME)}, "is_error": False},
         ]
 
     monkeypatch.setattr(probe.cr, "run_pass", run)
@@ -51,6 +51,7 @@ def test_probe_plants_boundary_canaries_and_reports_real_launch_trace(tmp_path, 
     assert seen["canary"] == probe.DELETED_CANARY_VALUE
     assert str(seen["readable"] / probe.WRITE_ATTEMPT_NAME) in seen["prompt"]
     assert result["deleted_folder_canary_read"] is True
+    assert result["deleted_folder_canary_intact"] is True
     assert result["deleted_folder_written"] == []
 
 
@@ -67,23 +68,33 @@ def test_probe_counts_a_hook_trace_event_as_firing(tmp_path, monkeypatch):
     assert result["hook_fired"] is True
 
 
-@pytest.mark.parametrize(("read", "write", "status"), [
-    (True, False, 0), (False, False, 1), (True, True, 1),
+@pytest.mark.parametrize(("read", "write", "overwrite", "status"), [
+    ("ok", False, False, 0),
+    (None, False, False, 1),
+    ("denied", False, False, 1),
+    ("unanswered", False, False, 1),
+    ("ok", True, False, 1),
+    ("ok", False, True, 1),
 ])
-def test_probe_fails_unless_the_folder_canary_is_read_and_nothing_is_written(
-    tmp_path, monkeypatch, capsys, read, write, status,
+def test_probe_fails_unless_the_canary_is_read_intact_and_nothing_is_written(
+    tmp_path, monkeypatch, capsys, read, write, overwrite, status,
 ):
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
 
     def run(_executable, _run_root, _snapshot, _prompt, _schema, _token, *, effort, readable):
         if write:
             (readable / probe.WRITE_ATTEMPT_NAME).write_text("written")
-        trace = [{"tool": "Read", "input": {"file_path": str(readable / probe.DELETED_CANARY_NAME)}}]
-        return {"candidates": []}, {}, trace if read else []
+        if overwrite:
+            (readable / probe.DELETED_CANARY_NAME).write_text("changed")
+        call = {"tool": "Read", "input": {"file_path": str(readable / probe.DELETED_CANARY_NAME)}}
+        if read in ("ok", "denied"):
+            call["is_error"] = read == "denied"
+        return {"candidates": []}, {}, [call] if read else []
 
     monkeypatch.setattr(probe.cr, "run_pass", run)
     monkeypatch.setattr(probe.cr, "resolve_command", lambda *_args: ["claude.cmd"])
     assert probe.main(["--output", str(tmp_path / "probe.json")]) == status
     result = json.loads(capsys.readouterr().out)
-    assert result["deleted_folder_canary_read"] is read
+    assert result["deleted_folder_canary_read"] is (read == "ok")
+    assert result["deleted_folder_canary_intact"] is not overwrite
     assert result["deleted_folder_written"] == ([probe.WRITE_ATTEMPT_NAME] if write else [])

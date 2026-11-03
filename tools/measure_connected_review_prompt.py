@@ -44,7 +44,7 @@ def folder_blob_matches(
     blobs = {entry["path"]: entry["sha"] for entry in tree["tree"] if entry.get("type") == "blob"}
     with tempfile.TemporaryDirectory(prefix="connected-review-measure-") as temporary:
         folder = Path(temporary) / cr.DELETED_FOLDER_NAME
-        cr.write_deleted_files(raw.decode("utf-8", errors="replace"), summarised, folder)
+        cr.write_deleted_files(raw.decode("utf-8", errors="surrogateescape"), summarised, folder)
         mismatched = [
             entry["path"] for entry in summarised
             if blobs.get(entry["path"]) != _blob_sha(folder.joinpath(*str(entry["path"]).split("/")).read_bytes())

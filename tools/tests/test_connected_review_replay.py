@@ -1127,7 +1127,7 @@ def deletion_export(root: Path) -> Path:
     export = build_export(root, cases=1)
     manifest = replay.read_object(export / "manifest.json")
     case = manifest["cases"][0]
-    (export / case["diff"]).write_bytes(DELETED_DIFF.encode("utf-8"))
+    (export / case["diff"]).write_bytes(DELETED_DIFF.encode("utf-8").replace(b"-second", b"-second\xe9"))
     case["diff_sha256"] = replay.file_digest(export / case["diff"])
     replay.write_object(export / "manifest.json", manifest)
     return export
@@ -1176,7 +1176,7 @@ def test_replay_summary_reads_its_case_folder_in_bounds(tmp_path, monkeypatch, s
     assert len(launches) == (1 if single_pass else 2)
     for launch in launches:
         assert launch["readable"].name == "deleted-at-base"
-        assert launch["content"] == b"first\r\nsecond\n"
+        assert launch["content"] == b"first\r\nsecond\xe9\n"
         assert "-first" not in launch["prompt"] and "<summarised_deleted_files>" in launch["prompt"]
     finder_launch = launches[0]
     assert case["finder_input_utf8_bytes"] == {

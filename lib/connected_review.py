@@ -1136,8 +1136,9 @@ def _deleted_target(folder: Path, path: str, platform: str = os.name) -> Path:
 def write_deleted_files(diff: str, summarised: list[dict[str, Any]], folder: Path) -> None:
     """Write each summarised file's base content, rebuilt from its deleted lines, under folder.
 
-    The diff must be decoded without newline translation, so CRs survive.  Every
-    path is checked before the folder is created.
+    The diff must be decoded without newline translation and with
+    ``surrogateescape``, so CRs and non-UTF-8 bytes come back exactly as the base
+    held them.  Every path is checked before the folder is created.
     """
     _preamble, pairs = _diff_sections(diff)
     # The summary came from the selected diff, so it is an ordered subset of these deletions.
@@ -1154,7 +1155,7 @@ def write_deleted_files(diff: str, summarised: list[dict[str, Any]], folder: Pat
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("xb") as handle:
-                handle.write(text.encode("utf-8"))
+                handle.write(text.encode("utf-8", errors="surrogateescape"))
         except (OSError, UnicodeError) as exc:
             raise ReviewError(
                 f"summarised deleted file collides with another or cannot be written: {path!r}"
@@ -1650,14 +1651,24 @@ def run_pass(
     elif not isinstance(parsed, dict):
         raise ReviewError("Claude process returned no result event")
     trace = []
+    calls: dict[str, dict[str, Any]] = {}
     for event in events:
         if event.get("type") == "assistant" and isinstance(event.get("message"), dict):
             for block in event["message"].get("content", []):
                 if isinstance(block, dict) and block.get("type") == "tool_use":
-                    trace.append({
-                        "tool": block.get("name"),
-                        "input": block.get("input"),
-                    })
+                    call = {"tool": block.get("name"), "input": block.get("input")}
+                    trace.append(call)
+                    if isinstance(block.get("id"), str):
+                        calls[block["id"]] = call
+        elif event.get("type") == "user" and isinstance(event.get("message"), dict):
+            # A call's result says whether it succeeded; a probe credits only a read that did.
+            content = event["message"].get("content", [])
+            for block in content if isinstance(content, list) else []:
+                if (
+                    isinstance(block, dict) and block.get("type") == "tool_result"
+                    and block.get("tool_use_id") in calls
+                ):
+                    calls[block["tool_use_id"]]["is_error"] = bool(block.get("is_error", False))
         else:
             event_type = str(event.get("type", ""))
             event_subtype = str(event.get("subtype", ""))
@@ -2322,9 +2333,9 @@ def execute_review(
                         summarised_largest, covered,
                         before_bytes=largest, summarised_files=len(summarised),
                     )
-                # The bytes, not read_text's translated lines, keep each CR the base held.
+                # The raw bytes, not read_text's translated and replaced text, keep the base's exact bytes.
                 write_deleted_files(
-                    diff_path.read_bytes().decode("utf-8", errors="replace"), summarised, readable,
+                    diff_path.read_bytes().decode("utf-8", errors="surrogateescape"), summarised, readable,
                 )
                 diff_text = summarised_diff
             try:

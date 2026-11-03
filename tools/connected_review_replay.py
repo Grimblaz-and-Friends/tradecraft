@@ -598,7 +598,7 @@ def run_replay(
                         summarised = entries
                         readable = case_root / cr.DELETED_FOLDER_NAME
                         cr.write_deleted_files(
-                            diff_path.read_bytes().decode("utf-8", errors="replace"), entries, readable,
+                            diff_path.read_bytes().decode("utf-8", errors="surrogateescape"), entries, readable,
                         )
                         case_result["summarised_deleted_files"] = cr.summary_exclusions(entries)
                         case_result["finder_input_utf8_bytes_before_summary"] = {
