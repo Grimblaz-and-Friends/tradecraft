@@ -1,16 +1,17 @@
 ---
 name: authoring
-description: How to create and revise this practice's prose and record run evidence. Use when writing, restructuring or revising a skill or governing document, including a description alone or what sheds behind a pointer; when deciding where content belongs; when recording or requesting raw run evidence; or when a write-up, a pre-implementation artifact included, states derived figures or describes current behaviour; not for how code is written, though where such a rule belongs is here; not for reviewing finished content, and not for deciding what a change is for.
+description: How to create and revise this practice's prose, how code and its documents carry their reasons, and how run evidence is recorded. Use when writing, restructuring or revising a skill or governing document, including a description alone or what sheds behind a pointer; when deciding where content belongs; when writing or changing code, a comment in it, its design document or a decision record; when recording or requesting raw run evidence; or when a write-up, a pre-implementation artifact included, states derived figures or describes current behaviour; not for how code behaves across platforms, not for reviewing finished content, and not for deciding what a change is for.
 ---
 
 # authoring
 
-**Purpose:** make governing prose accountable to a stated job and its evidence re-derivable rather than inherited. **Audience:** any session creating or revising a skill or governing document, recording or requesting run evidence, or stating a derived figure or behaviour claim in a write-up — here or in an adopting repository. **Success:** governing documents say what they are for, who reads them and what review judges; skills earn their context and keep depth behind pointers; figures carry their command and tree, frozen behaviour claims name their demonstrator, and raw run files leave reproducible summaries as their whole record.
+**Purpose:** make governing prose accountable to a stated job and its evidence re-derivable rather than inherited. **Audience:** any session creating or revising a skill or governing document, a session writing code, its comments, design documents or decision records, or one recording or requesting run evidence or stating a derived figure or behaviour claim in a write-up — here or in an adopting repository. **Success:** governing documents say what they are for, who reads them and what review judges; skills earn their context and keep depth behind pointers; code says why where a newcomer would ask and points to the design document holding the decisions in force; figures carry their command and tree, frozen behaviour claims name their demonstrator, and raw run files leave reproducible summaries as their whole record.
 
 ## Where this cell's depth lives
 
 - **Creating a cell, restructuring one, writing or revising a description, or writing prose that names or relies on another cell** → `references/cell-structure.md`: what the description owes, when depth leaves the body, the index a cell with depth carries, and the pointer form and its one-way rules.
 - **Deciding which home a piece of content belongs in** → `references/routing.md`: the four homes a concept takes and the four materials a rule takes instead.
+- **Writing or changing code, a comment in it, its design document or a decision record** → `references/code-reasons.md`: the three homes for the why, the one-line reason and what it never says, the pointer to the design document, and what leaves the brief before merge.
 - **Changing prose that already governs something, rather than writing new prose** → `references/revising.md`: reading the cited decision first, naming every meaning change, and what a reviser owes the entry it supersedes.
 - **About to put a figure, or a claim about current behaviour, into anything that does not re-derive it at read time** → `references/frozen-documents.md`: what a frozen surface may state, and why the command and the tree go in place of the number.
 - **Recording or requesting raw run evidence** → `references/run-output.md`: conclusions, exact-byte metadata and reproducing instructions that remain after discarding raw files.
@@ -27,7 +28,7 @@ A document that cannot state these three is not ready to be written; the missing
 
 ## Routing — where content lives
 
-Every piece of content has one home: methodology in a skill, what must hold before any context loads in the practice's always-on surface, rationale in a decision entry, what happened in append-only exhaust — and a rule in a guard, a script's own message, an exhibit, or unwritten. Which one a given piece takes, and what a shipped standard owes its local application, are in `references/routing.md`.
+Every piece of content has one home: methodology in a skill, what must hold before any context loads in the practice's always-on surface, rationale in a decision entry, what happened in append-only exhaust — and a rule in a guard, a script's own message, an exhibit, or unwritten. For code, the why has three homes, in `references/code-reasons.md`. Which one a given piece takes, and what a shipped standard owes its local application, are in `references/routing.md`.
 
 ## Writing standards
 

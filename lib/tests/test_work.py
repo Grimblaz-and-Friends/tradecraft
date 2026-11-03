@@ -6462,6 +6462,7 @@ def test_explicit_cold_seat_prompt_carries_artifact_brief_and_check_contract(tmp
     assert b"OTHER COMMENT MUST STAY OUT" not in prompt
     assert b"The bar is plausible" in prompt
     assert b"Trace both directions" in prompt
+    assert b"a named check no criterion carries is a failed point" in prompt
     assert b"This list is closed" in prompt
 
 
