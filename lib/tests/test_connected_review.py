@@ -2456,3 +2456,77 @@ def test_direct_payload_without_a_credential_record_is_unchanged():
     assert "Credential:" not in cr.review_payload([], HEAD, "91", {})["body"]
     assert cr._credential_text({"finder:coverage": {"credentials": ["unknown"]}}) == ""
     assert cr._credential_text("not a record") == ""
+
+
+# An over-budget prompt has its wholly deleted text files summarised (#902).
+
+FINDER_CONTRACT = ROOT / "skills/connected-review/references/finder.md"
+DELETED_FIXTURE_DIFF = (
+    "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -2 +2 @@\n-old\n+new\n"
+    "diff --git a/gone.py b/gone.py\ndeleted file mode 100644\nindex 1111111..0000000\n"
+    "--- a/gone.py\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-first\n-second\n-third\n"
+)
+
+
+def recorded_review(monkeypatch, tmp_path, diff, *, candidates=()):
+    """Run one live review through the real pass against a recording CLI."""
+    execute_fixture(monkeypatch, tmp_path, [])
+
+    def export(_repo, _head, _base, root):
+        snapshot = root / "snapshot"
+        inputs = root / "input"
+        snapshot.mkdir()
+        inputs.mkdir()
+        (snapshot / "app.py").write_bytes(b"new\n")
+        (inputs / "pull-request.diff").write_bytes(diff.encode("utf-8"))
+        (inputs / "repository-rules.md").write_bytes(b"## Code Review Rules\n\nLocal rules.\n")
+        return snapshot, inputs / "pull-request.diff", inputs / "repository-rules.md"
+
+    monkeypatch.setattr(cr, "export_inputs", export)
+    launches, reviews = [], []
+
+    def run(command, **kwargs):
+        add_dir = command.index("--add-dir")
+        readable = [Path(value) for value in command[add_dir + 1:command.index("--tools")]]
+        launches.append({
+            "command": list(command), "stdin": kwargs["input_bytes"], "readable": readable,
+            "files": {
+                str(path.relative_to(directory)).replace(os.sep, "/"): path.read_bytes()
+                for directory in readable[1:] for path in sorted(directory.rglob("*")) if path.is_file()
+            },
+        })
+        return success_process(command, candidates)
+
+    def gh(endpoint, **kwargs):
+        if endpoint.endswith("/pulls/746"):
+            return {"head": {"sha": HEAD}, "draft": False}
+        if endpoint.endswith("/pulls/746/reviews") and kwargs.get("method") == "POST":
+            reviews.append(kwargs["payload"])
+            return {"id": 1}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(cr, "_run", run)
+    monkeypatch.setattr(cr, "run_pass", REAL_RUN_PASS)
+    monkeypatch.setattr(cr, "gh_json", gh)
+    result = cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
+    return result, launches, reviews
+
+
+def normalised_launch(launch):
+    """Replace the review's temporary paths so a launch compares across runs and systems."""
+    snapshot = str(launch["readable"][0])
+    root = str(launch["readable"][0].parent)
+    argv = [value.replace(snapshot, "<snapshot>") for value in launch["command"]]
+    stdin = launch["stdin"].replace(snapshot.encode("utf-8"), b"<snapshot>")
+    assert all(root not in value for value in argv) and root.encode("utf-8") not in stdin
+    return argv, stdin
+
+
+def test_under_budget_launch_is_byte_identical_to_the_reviewer_before_summaries(tmp_path, monkeypatch):
+    # Pinned from 71a639a's runtime with this fixture, before summarising existed.
+    result, launches, _reviews = recorded_review(monkeypatch, tmp_path, DELETED_FIXTURE_DIFF)
+    assert result["status"] == "reviewed" and len(launches) == 1
+    argv, stdin = normalised_launch(launches[0])
+    assert hashlib.sha256(stdin).hexdigest() == "a666c6c4b02d49fb70e14fc22bb2e087484cd988e202bfbf6c5f0ad3ee123de1"
+    assert hashlib.sha256(json.dumps(argv, ensure_ascii=True).encode("ascii")).hexdigest() == "27f1210219d9eedf39ddbad6710e729240a613833cd223db2b3e6be73c8751a8"
+    assert len(launches[0]["readable"]) == 1
