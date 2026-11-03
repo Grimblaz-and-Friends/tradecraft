@@ -8,6 +8,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import dispatch_implementer
 import dispatch_seat
+import launch_bound
 import run_lifecycle as lifecycle
 
 kind, vendor, store = sys.argv[1:4]
@@ -16,6 +17,21 @@ module.resolve_command = lambda *_a, **_k: [sys.executable, str(Path(__file__).w
 module.records.runtime_version = lambda *_a, **_k: "deterministic fixture 1.0"
 dispatch_seat.windows_codex_sandbox = lambda: dispatch_seat.WindowsSandboxSelection("unelevated", "fixture", None)
 arguments = sys.argv[4:]
+# A fresh Claude launch names its session (#906); the test asserts this one.
+dispatch_implementer.new_session_id = lambda: "0199a213-81c0-7800-8aa1-bbab2a035a53"
+# The launch comparison reads a fixture home, never the owner's machine records.
+_comparison = launch_bound.Comparison
+
+
+class FixtureComparison(_comparison):
+    def __init__(self, **kwargs):
+        home = Path(store) / "home"
+        kwargs.setdefault("home", home)
+        kwargs.setdefault("store", home / ".tradecraft" / "dispatches")
+        super().__init__(**kwargs)
+
+
+launch_bound.Comparison = FixtureComparison
 if kind == "seat":
     # Resolve the fixture's canonical comment locally while exercising the real
     # launcher's source grammar and frozen binding before the interrupted run.

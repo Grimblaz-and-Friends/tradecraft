@@ -1,5 +1,6 @@
 import json
 from contextlib import nullcontext
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import signal
@@ -517,7 +518,19 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             (identity, lifecycle.liveness({"launcher_process": identity})) for identity in identities]
         assert lifecycle.liveness(saved) == "stopped"
         if kind == "implementer":
-            fixture = state(MECHANICAL)
+            # The stopped launch's comparison holds the change until the holder
+            # accounts for it (#906); a hard kill leaves none (`unrecorded`).
+            stopped = json.loads(run_path.read_bytes())
+            comparison = stopped.get("launch_comparison")
+            ids = [finding["id"] for finding in comparison["findings"]] if comparison else ["unrecorded"]
+            account = (f"<!-- tradecraft:launch-account:v1 dispatch={stopped['dispatch_id']} -->\n\n"
+                       "```json\n" + json.dumps({"schema_version": 1, "findings": [
+                           {"id": identity, "party": "none-found",
+                            "basis": "a fixture launch the test stopped; its fixture home is unchanged"}
+                           for identity in ids]}) + "\n```\n")
+            fixture = state(MECHANICAL, account)
+            # Posted after the stopped launch's findings exist, as an account must be.
+            fixture.issue_comments[-1]["created_at"] = datetime.now(timezone.utc).isoformat()
             fixture.record_root, fixture.holder_root = output.parent, holder
             row = registry_row(root, holder, branch)
             monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [row]})

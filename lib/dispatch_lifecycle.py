@@ -104,8 +104,20 @@ def claude_launch_notice(allocation_seconds):
     ).encode("utf-8")
 
 
-def claude_launch_controls(allocation_seconds, notice, *, disallowed):
-    return {
+def claude_write_bound_notice(root, scratchpad):
+    """What a Claude author or builder is told of its write bound (#906)."""
+    return (
+        f"Launcher write bound: your file-editing tools write only inside {root} and your session "
+        f"scratchpad {scratchpad}; a write anywhere else is refused, names the path and fails this "
+        "turn. You have no memory store in this session. Shell commands are not fenced, but the "
+        "launcher compares the owner's settings, plugins, records and other checkouts before and "
+        "after this run, and any change it cannot attribute holds the change for the holder's "
+        "account.\n"
+    ).encode("utf-8")
+
+
+def claude_launch_controls(allocation_seconds, notice, *, disallowed, write_bound_notice=None):
+    controls = {
         "background_tasks": "disabled",
         "background_tasks_source": f"child process environment {CLAUDE_BACKGROUND_SWITCH}=1",
         "command_ceiling_ms": claude_command_ceiling_ms(allocation_seconds),
@@ -114,6 +126,10 @@ def claude_launch_controls(allocation_seconds, notice, *, disallowed):
         "notice": notice.decode("utf-8"),
         "notice_sha256": hashlib.sha256(notice).hexdigest(),
     }
+    if write_bound_notice is not None:
+        controls["write_bound_notice"] = write_bound_notice.decode("utf-8")
+        controls["write_bound_notice_sha256"] = hashlib.sha256(write_bound_notice).hexdigest()
+    return controls
 
 
 TASK_EVENTS = frozenset({"task_started", "task_updated", "task_progress", "task_notification"})

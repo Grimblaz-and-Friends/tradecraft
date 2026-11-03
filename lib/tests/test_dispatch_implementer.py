@@ -103,6 +103,17 @@ def supply_artifact_brief(args):
     args.lifecycle_input.write_bytes(json.dumps({"artifact_copy": copy}).encode())
 
 
+FIXTURE_SESSION = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+
+
+def fixture_session(scenario):
+    """The session a fixture's Claude stream answers as, else the default."""
+    import re
+    stdout = json.loads(scenario.read_bytes()).get("claude", {}).get("stdout", "")
+    found = re.search(r'"session_id":\s*"([0-9a-f-]{36})"', stdout if isinstance(stdout, str) else "")
+    return found[1] if found else FIXTURE_SESSION
+
+
 @pytest.fixture
 def job(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
@@ -131,6 +142,8 @@ def job(tmp_path, monkeypatch):
     monkeypatch.setattr(implementer.policy, "discover", lambda vendor, *_a, **_k:
         json.loads(scenario.read_bytes()).get(vendor, {}).get("plugin_list", []))
     monkeypatch.setattr(implementer.native_codex, "read_config", lambda *_a, **_k: {})
+    # A fresh Claude launch names its session (#906); fixtures answer as it.
+    monkeypatch.setattr(implementer, "new_session_id", lambda: fixture_session(scenario))
     with ExitStack() as stack:
         args.artifact_stack = stack
         yield args, scenario
@@ -466,6 +479,9 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
     ]
     if resume:
         expected.extend(("--resume", session))
+    else:
+        # A fresh launch always names its session, for its scratchpad (#906).
+        expected.extend(("--session-id", args.session_id))
     assert observed["argv"] == expected
     assert observed["pytest_addopts"] == inherited
     assert observed["additional_claude_md"] == "1"
@@ -1594,6 +1610,8 @@ def test_artifact_byte_bound_keeps_exact_return_and_generated_context(
     if vendor == "claude":
         # The launcher's #887 notice closes the bytes the child receives.
         effective_input += b"\n\n" + request["launch_controls"]["notice"].encode("utf-8")
+        # Then its write-bound notice (#906).
+        effective_input += b"\n\n" + request["launch_controls"]["write_bound_notice"].encode("utf-8")
     assert base64.b64decode(captured["stdin"]) == effective_input
     assert request["effective_input_sha256"] == hashlib.sha256(effective_input).hexdigest()
     assert request["context"]["sha256"] == hashlib.sha256(effective_context).hexdigest()
@@ -1897,7 +1915,10 @@ def test_887_R1_1_R2_1_R4_1_every_claude_route_is_protected_and_recorded(job, mo
     assert controls["disallowed_tools"] == ["Monitor", "ScheduleWakeup", "CronCreate", "Workflow"]
     assert "--disallowedTools=Monitor,ScheduleWakeup,CronCreate,Workflow" in captured["argv"]
     sent = base64.b64decode(captured["stdin"])
-    assert sent.endswith(b"\n\n" + controls["notice"].encode("utf-8"))
+    assert sent.endswith(b"\n\n" + controls["notice"].encode("utf-8") + b"\n\n"
+                         + controls["write_bound_notice"].encode("utf-8"))
+    assert controls["write_bound_notice_sha256"] == hashlib.sha256(
+        controls["write_bound_notice"].encode("utf-8")).hexdigest()
     assert request["effective_input_sha256"] == hashlib.sha256(sent).hexdigest()
     assert request["prompt_composition"]["effective_input_sha256"] == hashlib.sha256(sent).hexdigest()
     assert record(args)["attempts"][0]["stream_check"]["status"] == "clean"
@@ -1954,3 +1975,113 @@ def test_887_R3_2_refused_author_resumes_and_is_not_validated(job, monkeypatch):
     assert "return_validation" not in logged["result"]
     captured = json.loads((args.root / "seen-claude.json").read_bytes())
     assert captured["background_switch"] == "1"
+
+
+@pytest.mark.parametrize("decided", [True, False])
+def test_906_ac1_ac13_refused_or_unproved_write_fails_the_turn_and_is_recorded(job, tmp_path, monkeypatch,
+                                                                               decided):
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command",
+        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    outside = str(tmp_path / "home" / ".claude" / "settings.json")
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Write", "input": {"file_path": outside}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": decided}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": FIXTURE_SESSION,
+         "result": "built"},
+    ]
+    decisions = [{"tool": "Write", "tool_use_id": "toolu_1", "raw": outside, "canonical": outside,
+                  "decision": "deny", "reason": "launch write bound: outside"}] if decided else []
+    scenario.write_bytes(json.dumps({"claude": {
+        "stdout": "\n".join(json.dumps(event) for event in events),
+        "guard_decisions": decisions}}).encode())
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    attempt = logged["attempts"][0]
+    assert logged["outcome"] == attempt["outcome"] == "error"
+    if decided:
+        assert attempt["reason"] == f"launch write bound refused Write {outside}"
+        assert logged["write_guard"]["refusals"][0]["canonical"] == outside
+    else:
+        assert "write bound unproved: Write" in attempt["reason"]
+        assert logged["write_guard"]["unguarded"][0]["tool_use_id"] == "toolu_1"
+    # AC-13: the record names exactly what applied.
+    assert request["requested"]["permission_boundary"] == implementer.launch_bound.IMPLEMENTER_BOUNDARY
+    bound = request["write_bound"]
+    assert bound["shell"] == "no OS fence" and bound["file_tools"]["guard_self_test"] == "passed"
+    assert bound["file_tools"]["allowed"][0] == str(args.root.resolve())
+    assert bound["memory"]["requested"].endswith("CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
+    assert logged["launch_comparison"]["schema_version"] == 1
+    # AC-6: the builder is told its bound, and the digest covers the notice.
+    captured = json.loads((args.root / "seen-claude.json").read_bytes())
+    sent = base64.b64decode(captured["stdin"])
+    notice = request["launch_controls"]["write_bound_notice"].encode("utf-8")
+    assert sent.endswith(b"\n\n" + notice) and b"no memory store" in notice
+    assert captured["guard_config"]["scratchpad"] in notice.decode("utf-8")
+    assert captured["argv"][captured["argv"].index("--session-id") + 1] == FIXTURE_SESSION
+
+
+def test_906_a_launch_that_failed_before_its_process_records_not_launched(job, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.session_id = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    args.handover_state = args.dispatch.with_name("handover.json")
+    args.handover_from = "predecessor-bundle"
+    args.handover_state.write_bytes(json.dumps({
+        "replacement_session": args.session_id, "phase": "reserved"}).encode())
+    original = implementer._handover_phase
+
+    def failing(path, session, phase):
+        if phase == "running":
+            raise implementer.ImplementerError("reservation lost before the process call")
+        return original(path, session, phase)
+
+    monkeypatch.setattr(implementer, "_handover_phase", failing)
+    with pytest.raises(implementer.ImplementerError, match="reservation lost"):
+        implementer.run_implementer(args)
+    logged = record(args)
+    assert "write_bound" in json.loads(implementer.records.sidecar(
+        args.output, ".request.json").read_bytes())
+    assert logged["launch_comparison"]["status"] == "not-launched"
+    assert logged["launch_comparison"]["findings"] == []
+
+
+def test_906_recovery_evidence_is_recorded_before_the_comparison_takes_the_cleanup_window(
+        job, monkeypatch):
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": FIXTURE_SESSION, "result": "built"})}}).encode())
+    from test_work import git
+    git(args.root, "init")
+    (args.root / "fixture.txt").write_bytes(b"committed fixture\n")
+    git(args.root, "add", "fixture.txt")
+    git(args.root, "-c", "user.name=fixture", "-c", "user.email=f@x", "commit", "-m", "fixture")
+    order = []
+    snapshot = implementer.lifecycle.content_snapshot
+
+    def recorded_snapshot(*a, **k):
+        order.append("snapshot")
+        return snapshot(*a, **k)
+
+    def exhausting_comparison(*_a, **_k):
+        # A slow comparison that uses up what the cleanup reserve has left.
+        order.append("comparison")
+        return implementer.launch_bound.unrecorded("after-snapshot had no cleanup window")
+
+    monkeypatch.setattr(implementer.lifecycle, "content_snapshot", recorded_snapshot)
+    monkeypatch.setattr(implementer, "_finish_comparison", exhausting_comparison)
+    assert implementer.run_implementer(args) == 0
+    logged = record(args)
+    assert order[-2:] == ["snapshot", "comparison"]
+    assert logged["stop_snapshot"]["digest"]
+    assert logged["launch_comparison"]["findings"][0]["id"] == "unrecorded"

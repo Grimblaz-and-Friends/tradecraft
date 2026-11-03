@@ -1808,3 +1808,69 @@ def test_887_R3_2_seat_refuses_work_outliving_the_return_without_fallback(job, c
     assert not seat.sidecar(args.output, ".source.bin").read_bytes()
     assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes() == raw.encode("utf-8")
     assert "work outlived the return" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stage, requires, compared", [
+    ("use", "execute", True), ("use", "read", False), ("cold-read", "execute", False)])
+def test_906_ac10_only_a_claude_use_consumer_given_a_shell_is_compared(
+        job, tmp_path, monkeypatch, stage, requires, compared):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires = stage, requires
+    if stage == "use":
+        args.classification = "cold"
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    logged = record(args)
+    if not compared:
+        assert "write_bound" not in request and "launch_comparison" not in logged
+        return
+    assert request["write_bound"]["file_tools"] is None
+    assert request["write_bound"]["shell"] == "no OS fence"
+    boundary = request["requested"]["permission_boundary"]
+    assert "file_editing_tools=none" in boundary and "shell has no OS fence" in boundary
+    assert "os_sandbox" not in boundary
+    assert logged["launch_comparison"]["status"] == "clean"
+    assert {entry["item"] for entry in logged["launch_comparison"]["coverage"]} >= {
+        "switch", "registry", "dispatch-records", "own-request"}
+
+
+def test_906_a_slow_before_snapshot_comes_out_of_the_use_consumers_window(job, tmp_path, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    original = seat.launch_bound.Comparison.take_before
+
+    def slow(self, seconds):
+        time.sleep(1.5)
+        return original(self, seconds)
+
+    monkeypatch.setattr(seat.launch_bound.Comparison, "take_before", slow)
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    logged = record(args)
+    claude = [attempt for attempt in logged["attempts"] if attempt["vendor"] == "claude"][0]
+    assert claude["allocation_seconds"] <= request["recipient_allocation_seconds"] - 1.5
+    # The after-snapshot still had its cleanup window.
+    assert logged["launch_comparison"]["status"] == "clean"
+
+
+@pytest.mark.parametrize("launched", [False, True])
+def test_906_a_seat_whose_planning_failed_records_not_launched_unless_it_ran(
+        job, tmp_path, monkeypatch, launched):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    if not launched:
+        args.claude_unavailable_reason = "fixture: claude unavailable"
+
+    def unplannable(**_kwargs):
+        raise OSError("planning failed")
+
+    monkeypatch.setattr(seat.launch_bound, "Comparison", unplannable)
+    seat.run_dispatch(args)
+    comparison = record(args)["launch_comparison"]
+    if launched:
+        assert [finding["id"] for finding in comparison["findings"]] == ["unrecorded"]
+    else:
+        assert comparison["status"] == "not-launched" and comparison["findings"] == []

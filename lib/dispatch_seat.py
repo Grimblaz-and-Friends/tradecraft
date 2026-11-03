@@ -34,6 +34,7 @@ import cold_draft
 from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claude_launch_notice,
                                 claude_stream_check, claude_terminal, stream_check_reason,
                                 stream_check_record)
+import launch_bound
 import launch_settings
 import run_lifecycle as lifecycle
 from codex_pytest import pytest_addopts_override
@@ -51,6 +52,7 @@ DEFAULT_CODEX_EFFORT = "xhigh"
 CLAUDE_EFFORTS = {"ordinary": "high", "cold": "xhigh", "terminal": "xhigh"}
 CLAUDE_READ_TOOLS = "Read,Glob,Grep"
 CLAUDE_EXECUTE_TOOLS = "Read,Glob,Grep,Bash"
+COMPARISON_SECONDS = 120
 GIT_ENVIRONMENT_KEYS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 
 
@@ -169,6 +171,22 @@ def build_command(
             "--permission-mode", "dontAsk", "--strict-mcp-config"]
 
 
+def _finish_comparison(comparison, error, deadline, *, process_started=True):
+    # A seat whose compared process call never ran changed nothing (#906).
+    if not process_started or (comparison is not None and comparison.before is None):
+        return launch_bound.not_launched()
+    if comparison is None:
+        return launch_bound.unrecorded(error or "no comparison was prepared")
+    try:
+        seconds = deadline.probe(COMPARISON_SECONDS, cleanup=True)
+    except TimeoutError as exc:
+        return launch_bound.unrecorded(f"after-snapshot had no cleanup window: {exc}")
+    try:
+        return comparison.finish(seconds)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        return launch_bound.unrecorded(f"comparison failed: {type(exc).__name__}: {exc}")
+
+
 def can_supply(vendor, required_capability):
     if required_capability == "read":
         return True
@@ -181,7 +199,7 @@ def capability_refusal(vendor, required_capability):
     return f"{vendor} cannot supply required capability {required_capability}; no process was launched"
 
 
-def permission_boundary(vendor, required_capability, root, windows_sandbox=None):
+def permission_boundary(vendor, required_capability, root, windows_sandbox=None, *, compared=False):
     if vendor == "claude":
         if required_capability == "read":
             tools = CLAUDE_READ_TOOLS
@@ -189,6 +207,13 @@ def permission_boundary(vendor, required_capability, root, windows_sandbox=None)
             tools = CLAUDE_EXECUTE_TOOLS
         else:
             raise DispatchError(f"unknown required capability: {required_capability}")
+        if compared:
+            # A use consumer given a shell is compared before and after (#906).
+            return (
+                f"Claude tools={tools}; safe_mode=true; permission_mode=dontAsk; "
+                "strict_mcp_config=true; file_editing_tools=none; covered items compared before "
+                f"and after; shell has no OS fence; detached_root_verified={root}"
+            )
         return (
             f"Claude tools={tools}; safe_mode=true; permission_mode=dontAsk; "
             f"strict_mcp_config=true; os_sandbox=none; detached_root_verified={root}"
@@ -407,10 +432,16 @@ def setting_sources(args, vendor, windows_sandbox=None):
     return sources
 
 
+def compared_launch(args, vendor):
+    """Only a Claude use consumer given a shell can write outside its tree (#906)."""
+    return vendor == "claude" and args.stage == "use" and args.requires == "execute"
+
+
 def request_permission_boundary(args, root, windows_sandbox):
     boundary = permission_boundary(
         args.vendor, args.requires, root,
         windows_sandbox if args.vendor == "codex" else None,
+        compared=compared_launch(args, args.vendor),
     )
     if windows_sandbox is not None and args.vendor != "codex":
         fallback = permission_boundary("codex", args.requires, root, windows_sandbox)
@@ -566,6 +597,23 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
             setting_sources=setting_sources(args, args.vendor, codex_sandbox),
         )
         request["requested"]["required_capability"] = args.requires
+        comparison = None
+        process_started = False
+        if "claude" in vendors and compared_launch(args, "claude"):
+            plan_error = None
+            try:
+                comparison = launch_bound.Comparison(
+                    root=root, env=None, launcher_plugin=Path(__file__).resolve().parent.parent,
+                    own_output=output, own_request=request_path, holder_session_id=None,
+                    dispatch_id=request["dispatch_id"])
+            except (OSError, ValueError, TypeError) as exc:
+                plan_error = f"coverage could not be planned: {exc}"
+            request["write_bound"] = {
+                "file_tools": None, "memory": None,
+                "comparison": ({"coverage": comparison.planned()} if comparison is not None
+                               else {"coverage": [], "unavailable_reason": plan_error}),
+                "shell": launch_bound.SHELL,
+            }
         request["comparison_vendor"] = args.own_vendor
         request["comparison_vendor_source"] = args.own_vendor_source or "caller-selected"
         request["caller_limit_seconds"] = args.timeout_seconds
@@ -665,6 +713,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             boundary = permission_boundary(
                                 vendor, args.requires, root,
                                 codex_sandbox if vendor == "codex" else None,
+                                compared=compared_launch(args, vendor),
                             )
                             attempt["command"] = command
                             attempt["runtime_version"] = records.runtime_version(executable)
@@ -675,6 +724,14 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             started = time.monotonic()
                             try:
                                 record["actual_vendor"] = vendor
+                                if comparison is not None and compared_launch(args, vendor):
+                                    # The before-snapshot comes out of the recipient's window.
+                                    try:
+                                        seconds = deadline.probe(COMPARISON_SECONDS)
+                                    except TimeoutError:
+                                        deadline.remaining()
+                                        seconds = 0
+                                    comparison.take_before(seconds)
                                 allocation = deadline.remaining()
                                 attempt["allocation_seconds"] = allocation
                                 launch_input, launch_env = prompt, None
@@ -682,6 +739,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                     launch_input = prompt + b"\n\n" + claude_notice
                                     launch_env = claude_launch_env(
                                         os.environ, request["recipient_allocation_seconds"])
+                                if compared_launch(args, vendor):
+                                    process_started = True
                                 result = run_process(command, input=launch_input, cwd=root, timeout=allocation,
                                                      env=launch_env,
                                                      on_output=growing.output, on_tick=growing.tick,
@@ -794,6 +853,10 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)
+                    if "write_bound" in request:
+                        record["launch_comparison"] = _finish_comparison(
+                            comparison, request["write_bound"]["comparison"].get("unavailable_reason"),
+                            deadline, process_started=process_started)
                 if verdict is not None:
                     degraded = record["actual_vendor"] == args.own_vendor
                     record["staffing_status"] = "degraded" if degraded else "qualified"

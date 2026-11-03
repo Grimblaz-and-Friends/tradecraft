@@ -126,6 +126,24 @@ Only the latest actual turn with a live launcher or recipient, unresolved spawn 
 
 The head binds the covered flags; initial adoption may cover historical turns at the proved current head. Ordinary coverage is checked against the merge-base path set at that reading head. Subsequent descendant progress retains a complete account even when catch-up removes some or all of that turn's current flags; it cannot make an originally partial or forged account valid. Newly flagged turns owe new accounts. A superseding rebase/amendment requires a new current-head account. Quoted, forged, unauthorized, wrong-surface, malformed or stale claims discharge nothing. The procedure, including reading the builder's returned recommendations even without flags and restoring missing superset evidence, is `reach.md`.
 
+## `launch-account`
+
+- **Exact form:** `<!-- tradecraft:launch-account:v1 dispatch=DISPATCH_ID -->`.
+- **Attributes:** only `dispatch`, the 32-digit lowercase hexadecimal dispatch id of the held launch bundle.
+- **Producer, surface, moment:** an authorized marker producer acting as holder, in an issue comment after the entrance reports that bundle's launch findings. It accounts for that bundle's comparison only, never reach, artifact settlement or a whole-change reading.
+- **Payload:** exactly one fenced `json` object with integer `schema_version: 1` and a `findings` list. Each entry has a unique `id`, a `party` of `owner`, `plugin-update`, `session`, `builder-damage` or `none-found`, and a nonempty `basis`; for `none-found`, the basis says what was inspected and how; `session` also requires the session's id in `session`, and `builder-damage` requires `owner_report` (the URL of the notice that told the owner, or another exact locator where it is not on GitHub) and `practice_issue` (`owner/repo#n` of the practice's `product-incident` filing). Any other field or party makes the marker invalid. The party is whatever made the change: `plugin-update` covers the runtime's plugin machinery installing, updating or refreshing a plugin, a marketplace or its cached data, even when the launched runtime did it itself; `builder-damage` is only a tool call or command the launched recipient made.
+
+```json
+{
+  "schema_version": 1,
+  "findings": [
+    {"id": "3fa9c1d2e0b4", "party": "owner", "basis": "The owner edited the Claude settings during the run."}
+  ]
+}
+```
+
+The hold releases only when the named ids equal the bundle's finding ids exactly and the comment was posted after the run completed (for an unrecorded comparison, after the launch began); an unrecorded comparison is named by the id `unrecorded`. A partial, extra-id, untrusted or malformed account discharges nothing. The procedure is `launch-findings.md`.
+
 ## `builder-session`
 
 - **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.
