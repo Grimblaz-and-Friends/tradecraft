@@ -524,7 +524,8 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             ids = [finding["id"] for finding in comparison["findings"]] if comparison else ["unrecorded"]
             account = (f"<!-- tradecraft:launch-account:v1 dispatch={stopped['dispatch_id']} -->\n\n"
                        "```json\n" + json.dumps({"schema_version": 1, "findings": [
-                           {"id": identity, "party": "owner", "basis": "the test stopped this launch"}
+                           {"id": identity, "party": "none-found",
+                            "basis": "a fixture launch the test stopped; its fixture home is unchanged"}
                            for identity in ids]}) + "\n```\n")
             fixture = state(MECHANICAL, account)
             fixture.record_root, fixture.holder_root = output.parent, holder

@@ -3789,7 +3789,10 @@ def _reach_refusal(state: WorkState, stage: str) -> Decision | None:
         status="holder-owned")
 
 
-LAUNCH_ACCOUNT_PARTIES = frozenset({"owner", "plugin-update", "session", "builder-damage"})
+# `none-found`: the holder inspected what the finding names and found no change
+# needing a party, which is the true account of an uncompared or unrecorded one.
+LAUNCH_ACCOUNT_PARTIES = frozenset({"owner", "plugin-update", "session", "builder-damage",
+                                    "none-found"})
 LAUNCH_ACCOUNT_FIELDS = frozenset({"id", "party", "basis", "session", "owner_report", "practice_issue"})
 LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposition", "use"})
 LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched"})

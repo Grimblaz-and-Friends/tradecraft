@@ -24,6 +24,9 @@ The hold releases when a trusted `launch-account` marker for that bundle's dispa
 - `owner` — the owner changed it;
 - `plugin-update` — an installed plugin changed under the run;
 - `session` — another named session changed it; give its id in `session`;
-- `builder-damage` — the launch's own recipient changed it.
+- `builder-damage` — the launch's own recipient changed it;
+- `none-found` — you inspected what the finding names and found no change needing a party; the `basis` says what you inspected and how.
+
+An `uncompared` finding or an `unrecorded` comparison is not a change anyone made, so inspect before naming a party. For `uncompared`, inspect the item it names; for `unrecorded`, inspect every item in the request's `write_bound.comparison.coverage`. When the inspection finds nothing, `none-found` is the true party; when it finds a change, name the party that made it instead, and builder damage still goes to the owner and the practice.
 
 For builder damage, tell the owner first, who decides any restore. Then file the practice's `product-incident` record as the charter directs for a practice failure. The account names both, in `owner_report` and `practice_issue`. A bundle recorded before this bound neither holds nor clears; the report says `not recorded: launched before #906`.

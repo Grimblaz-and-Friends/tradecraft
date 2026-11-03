@@ -112,6 +112,17 @@ def test_ac11_unrecorded_comparison_is_held_until_named(tmp_path):
     assert held(released) is None
 
 
+@pytest.mark.parametrize("basis, releases", [("inspected every covered item; nothing changed", True),
+                                               ("", False), ("   ", False)])
+def test_none_found_releases_only_with_a_basis(tmp_path, basis, releases):
+    entries = [{"id": "unrecorded", "party": "none-found", "basis": basis}]
+    fixture = fixture_with(tmp_path, account(*entries), comparison=None)
+    assert (held(fixture) is None) is releases
+    lawful = fixture_with(tmp_path / "findings", account(
+        {**OWNER, "party": "none-found", "basis": "inspected the settings file; unchanged"}, SESSION))
+    assert held(lawful) is None
+
+
 @pytest.mark.parametrize("liveness, held_state", [("active", None), ("stopped", "unrecorded")])
 def test_a_running_launch_owes_no_account_until_it_stops(tmp_path, monkeypatch, liveness, held_state):
     fixture = fixture_with(tmp_path, comparison=None)

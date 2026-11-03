@@ -131,7 +131,7 @@ The head binds the covered flags; initial adoption may cover historical turns at
 - **Exact form:** `<!-- tradecraft:launch-account:v1 dispatch=DISPATCH_ID -->`.
 - **Attributes:** only `dispatch`, the 32-digit lowercase hexadecimal dispatch id of the held launch bundle.
 - **Producer, surface, moment:** an authorized marker producer acting as holder, in an issue comment after the entrance reports that bundle's launch findings. It accounts for that bundle's comparison only, never reach, artifact settlement or a whole-change reading.
-- **Payload:** exactly one fenced `json` object with integer `schema_version: 1` and a `findings` list. Each entry has a unique `id`, a `party` of `owner`, `plugin-update`, `session` or `builder-damage`, and a nonempty `basis`; `session` also requires the session's id in `session`, and `builder-damage` requires `owner_report` (where the owner was told) and `practice_issue` (`owner/repo#n` of the practice's `product-incident` filing). Any other field or party makes the marker invalid.
+- **Payload:** exactly one fenced `json` object with integer `schema_version: 1` and a `findings` list. Each entry has a unique `id`, a `party` of `owner`, `plugin-update`, `session`, `builder-damage` or `none-found`, and a nonempty `basis`; for `none-found`, the basis says what was inspected and how; `session` also requires the session's id in `session`, and `builder-damage` requires `owner_report` (where the owner was told) and `practice_issue` (`owner/repo#n` of the practice's `product-incident` filing). Any other field or party makes the marker invalid.
 
 ```json
 {
