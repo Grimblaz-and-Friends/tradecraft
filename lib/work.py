@@ -263,6 +263,8 @@ SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
 RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {
     "completed_no_output", "invalid_artifact_return", "work_outlived_return",
 }
+# Outcomes whose turn returned text the launcher retains as its source output.
+RETURNED_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {"invalid_artifact_return"}
 WORKFLOW_RUN_FILES_QUERY = """query($ids:[ID!]!){
   nodes(ids:$ids){
     ... on CheckSuite {
@@ -2288,12 +2290,16 @@ def _prove_artifact_author(state: WorkState) -> ArtifactAuthor:
     source = _marker_setting_source(draft)
     term, _lane = _affirmed_review(state)
     work_value = f"{state.repo}#{state.issue_number}"
+    # An earlier instalment's returns cannot write, or block, this draft.
+    starts = [value for value in (term.timestamp if term else None, state.instalment_boundary)
+              if _aware_time(value) is not None]
     try:
         bundles = _matching_bundles(
             work_value, frozenset({"artifact"}),
             state.record_root or records.default_record_root().expanduser().resolve(),
-            outcomes=RESUMABLE_BUNDLE_OUTCOMES, completed_after=term.timestamp if term else None,
-            completed_no_later_than=draft.timestamp,
+            outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+            completed_after=max(starts, key=_aware_time) if starts else None,
+            completed_no_later_than=draft.timestamp, schema_policy="skip",
         )
         bundles = work_recovery.authored(work_recovery.scoped(state, bundles),
                                          state=state, work_value=work_value)
@@ -2306,7 +2312,13 @@ def _prove_artifact_author(state: WorkState) -> ArtifactAuthor:
     for bundle in bundles:
         returned_path = _retained_return_path(bundle)
         if returned_path is None:
-            continue  # A turn that retained no return wrote no draft.
+            result = bundle[3].get("result")
+            if bundle[3].get("outcome") in RETURNED_BUNDLE_OUTCOMES and isinstance(result, dict) and (
+                    "source_output" in result):
+                # A returned turn whose retained return is missing is corrupt evidence.
+                compared.append(bundle[1])
+                unreadable.append(bundle)
+            continue  # A turn that recorded no return wrote no draft.
         compared.append(bundle[1])
         try:
             returned = cold_draft.read_input(returned_path).decode("utf-8")
@@ -2365,6 +2377,10 @@ def _later_than_revision_draft(state: WorkState, order: object, run: dict[str, o
     draft = phase.revision_draft
     posted = _aware_time(draft.timestamp) if draft is not None else None
     if posted is None:
+        return True
+    if (not run.get("completed_at") or run.get("launch_unresolved") or run.get("recovery_error")
+            or run.get("cleanup_proven") is False):
+        # A live or unresolved attempt returns to the holder rather than gaining a second writer.
         return True
     moment = _aware_time(run.get("completed_at")) or _aware_time(order)
     return moment is None or moment > posted
@@ -4641,7 +4657,10 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
                 )
             latest_verdict = current_verdicts[-1].attributes.get("verdict")
             if latest_verdict == "would-not":
-                return result("artifact", True, "resume", "cold-verdict-would-not")
+                # The draft's own history decides, as it does for the named stage (#919).
+                return result("artifact", True, _named_continuity(
+                    state, "artifact", Decision("artifact", True, "resume", "cold-verdict-would-not")),
+                    "cold-verdict-would-not")
             route = "would" if latest_verdict == "would" else "discharge"
             detail = (
                 _settlement_posting_guidance(route) + " Invalid settlement "
@@ -8134,7 +8153,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
     recovery_info = None
     restart_source = None
     if restart_unresolved_reason is not None:
-        restart_source = work_recovery.latest_stopped(state, decision.stage)
+        restart_source = work_recovery.latest_stopped(state, decision.stage, explicit_restart=True)
         if (not restart_unresolved_reason.strip() or restart_source is None
                 or not work_recovery.restartable(restart_source[2], restart_source[3])):
             raise WorkError("restart requires a dead completed fresh failure with no reported session and a nonempty reason")

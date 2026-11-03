@@ -2507,8 +2507,9 @@ def gate_check(*, identity=91, run_id=81, workflow_id=11, head=SHA,
     (state(), ("convergence", False, None)),
     (state(AFFIRMED), ("artifact", True, "fresh")),
     (state(AFFIRMED, ARTIFACT), ("cold-seat", True, "fresh")),
+    # #919: with no author on record for the draft, the revision is recommended fresh.
     (state(AFFIRMED, ARTIFACT, "<!-- tradecraft:cold-verdict:v1 verdict=would-not staffing_status=qualified -->"),
-     ("artifact", True, "resume")),
+     ("artifact", True, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD), ("holder-read", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER), ("build", True, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True), ("floor", True, "resume")),
@@ -2537,10 +2538,11 @@ def test_each_state_table_row_routes_exactly_one_stage(fixture, expected):
     assert (decision.stage, decision.dispatch, decision.continuity) == expected
 
 
-def test_would_not_without_a_newer_draft_resumes_artifact():
+def test_would_not_without_a_newer_draft_revises_the_artifact():
+    # #919: no author is on record for this draft, so the revision is recommended fresh.
     decision = work.decide(state(AFFIRMED, ARTIFACT, WOULD_NOT), RULES)
     assert (decision.stage, decision.dispatch, decision.continuity) == (
-        "artifact", True, "resume",
+        "artifact", True, "fresh",
     )
 
 
@@ -8626,6 +8628,99 @@ def test_919_instalment_boundary_is_the_latest_merged_implementing_pull_request(
     fixture = work.read_state(_BoundaryTransport(pulls), "example/product", 12, CONFIG)
     assert fixture.instalment_boundary == f"2026-10-0{merged}T07:00:00Z"
     assert bool(fixture.ambiguous_prs) == (merged == 2)
+
+
+# #933 reviewer repairs: the revision's author decision and its recovery gate.
+
+THIRD_SESSION = "fedcba98-7654-3210-fedc-ba9876543210"
+
+
+def test_933_an_earlier_instalments_unreadable_return_cannot_block_the_revision(tmp_path, monkeypatch):
+    fixture, store = _instalment_fixture(tmp_path, monkeypatch)
+    dispatch_bundle(store, stage="artifact", name="old-unreadable.md", session=THIRD_SESSION,
+                    completed_at=_at(4, 30), returned=False)
+    work.decide(fixture, RULES)
+    author = work._artifact_author(fixture)
+    assert (author.status, author.session) == ("proved", SESSION)
+    assert not any(path.endswith("old-unreadable.md.run.json") for path in author.compared)
+
+
+def _stopped_before_draft_fixture(tmp_path, monkeypatch, *, completed, posted="D1"):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft(posted), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    dispatch_bundle(store, stage="artifact", name="author.md", session=OTHER_SESSION,
+                    completed_at=_at(1), launched_at=_at(0, 30), returned=_return_text("D1"))
+    # A later attempt with no session, launched before the draft was posted.
+    dispatch_bundle(store, stage="artifact", name="stopped.md", session=None, outcome="error",
+                    launched=True, launched_at=_at(1, 30), completed_at=_at(2) if completed else None)
+    return fixture
+
+
+def test_933_a_finished_stop_older_than_the_draft_neither_recovers_nor_blocks(tmp_path, monkeypatch):
+    fixture = _stopped_before_draft_fixture(tmp_path, monkeypatch, completed=True)
+    recommendation = work.decide(fixture, RULES)
+    # The read-only recommendation no longer names the old stop, nor offers a restart.
+    assert (recommendation.stage, recommendation.reason) == ("artifact", "cold-verdict-would-not")
+    assert recommendation.continuity == "resume"
+    assert work.work_recovery.latest_stopped(fixture, "artifact") is None
+    assert work.work_recovery.stopped_source(fixture, "artifact") is None
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+    assert work._artifact_author(fixture).session == OTHER_SESSION
+
+
+def test_933_an_unfinished_attempt_older_than_the_draft_still_returns_to_the_holder(tmp_path, monkeypatch):
+    # A hand-posted draft has no author on record, so only the live attempt can force resume.
+    fixture = _stopped_before_draft_fixture(tmp_path, monkeypatch, completed=False, posted="HAND")
+    stopped = work.work_recovery.latest_stopped(fixture, "artifact")
+    assert stopped is not None and stopped[1].endswith("stopped.md.run.json")
+    recommendation = work.decide(fixture, RULES)
+    assert work._artifact_author(fixture).status == "none"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+
+
+def test_933_a_legacy_schema_bundle_is_not_an_author_candidate(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    dispatch_bundle(store, stage="artifact", name="legacy.md", completed_at=_at(1),
+                    request_schema=1, returned=_return_text("D1"))
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.continuity == "fresh"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+    assert work._artifact_author(fixture).reason == "no-author-bundle-for-draft"
+
+
+def test_933_a_returned_turn_without_its_retained_return_is_unprovable(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    dispatch_bundle(store, stage="artifact", name="lost.md", completed_at=_at(1), returned=_return_text("D1"))
+    run_path = store / "artifact" / "lost.md.run.json"
+    run = json.loads(run_path.read_bytes())
+    run["result"]["source_output"] = None
+    run_path.write_bytes(json.dumps(run).encode())
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+    author = work._artifact_author(fixture)
+    assert (author.status, author.reason) == ("unprovable", "author-record-unreadable")
+    assert "lost.md.run.json" in author.detail
+
+
+def test_933_the_would_not_recommendation_resumes_only_a_proved_author(tmp_path, monkeypatch):
+    fixture, store = revision_fixture(
+        tmp_path, monkeypatch,
+        (AFFIRMED, _at(0)), (_draft("D1"), _at(3)), (_verdict("V1"), _at(4)),
+    )
+    assert work.decide(fixture, RULES).continuity == "fresh"
+    dispatch_bundle(store, stage="artifact", name="author.md", session=OTHER_SESSION,
+                    completed_at=_at(1), returned=_return_text("D1"))
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.continuity) == ("artifact", "resume")
+    assert decision.launch_settings["author"]["session"] == OTHER_SESSION
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
