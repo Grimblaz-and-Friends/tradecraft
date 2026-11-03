@@ -15,7 +15,7 @@ import dispatch_implementer as implementer
 import run_lifecycle as lifecycle
 import work
 from test_work import CONFIG, POLICY_PATH, PRODUCER, git, policy_repository, registry_row, repository
-from test_dispatch_implementer import ARTIFACT_BRIEF, artifact_text, native_artifact_result
+from test_dispatch_implementer import ARTIFACT_BRIEF, artifact_text, fixture_session, native_artifact_result
 
 SESSION = "0199a213-81c0-7800-8aa1-bbab2a035a53"
 
@@ -48,6 +48,8 @@ def entrance(tmp_path, monkeypatch):
         status = implementer.run_implementer(implementer.parser().parse_args(command[2:]))
         return subprocess.CompletedProcess(command, status)
     monkeypatch.setattr(work, "_recipient_run", launch)
+    # A fresh Claude author names its session (#906); the fixture answers as it.
+    monkeypatch.setattr(implementer, "new_session_id", lambda: fixture_session(scenario))
     def setup(vendor, custom=False, returned=None, *, fail=None, probe=False, identity=SESSION):
         setting = Path.home() / ".tradecraft/implementer-vendor"
         setting.parent.mkdir(parents=True, exist_ok=True)
