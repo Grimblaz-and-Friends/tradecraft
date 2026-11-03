@@ -38,3 +38,20 @@ def test_folder_comparison_separates_matches_mismatches_and_paths_a_truncated_tr
         "folder_blob_matches": 1, "folder_blob_mismatches": ["changed.py"],
         "folder_blob_unverified": ["omitted.py"],
     }
+
+
+def test_a_path_only_a_truncated_tree_omitted_is_unverified_and_never_a_mismatch(monkeypatch):
+    raw = deleted("same.py", "kept") + deleted("omitted.py", "gone")
+    summarised = [{"path": path, "deleted_lines": 1} for path in ("same.py", "omitted.py")]
+    trees = {
+        "repos/owner/repo/compare/b...h?per_page=1": {"merge_base_commit": {"sha": "m" * 40}},
+        "repos/owner/repo/git/trees/" + "m" * 40 + "?recursive=1": {"truncated": True, "tree": [
+            {"path": "same.py", "type": "blob", "sha": blob(b"kept\n")},
+        ]},
+    }
+    monkeypatch.setattr(measure.cr, "gh_json", lambda endpoint, **_kwargs: trees[endpoint])
+    result = measure.folder_blob_matches("owner/repo", "b", "h", raw, summarised)
+    assert result["tree_truncated"] is True
+    assert result["folder_blob_mismatches"] == []
+    assert result["folder_blob_unverified"] == ["omitted.py"]
+    assert result["folder_blob_matches"] == 1
