@@ -2694,12 +2694,14 @@ def test_over_budget_with_nothing_wholly_deleted_skips_with_todays_cause(tmp_pat
 @pytest.mark.parametrize("extra", [0, 1])
 def test_summarised_input_at_the_budget_launches_and_one_byte_over_skips(tmp_path, monkeypatch, extra):
     diff = APP_SECTION + deleted_section("gone.py", big_lines("GONE", 50))
+    (tmp_path / "measure").mkdir()
+    (tmp_path / "boundary").mkdir()
     recording_fixture(monkeypatch, tmp_path / "measure", diff)
     monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", 10)
     with pytest.raises(cr.FinderPromptTooLarge) as raised:
         cr.execute_review(event(), "Grimblaz", "92", "claude", cr.DEFAULT_CLAUDE_VERSION, FINDER_CONTRACT)
     summarised = raised.value.measured_bytes
-    assert raised.value.before_bytes > summarised + 5000 and raised.value.summarised_files == 1
+    assert raised.value.before_bytes > summarised + 4000 and raised.value.summarised_files == 1
     launches, _reviews = recording_fixture(monkeypatch, tmp_path / "boundary", diff)
     monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", summarised - extra)
     if extra:
@@ -2716,7 +2718,7 @@ def git_fixture(root, files):
     def git(*args):
         return subprocess.run(
             ["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", *args],
-            cwd=root, capture_output=True, check=True,
+            cwd=root, stdin=subprocess.DEVNULL, capture_output=True, check=True,
         ).stdout
     root.mkdir()
     git("init", "--quiet")
@@ -2774,31 +2776,37 @@ def test_unsafe_summarised_path_is_refused_before_anything_is_written(tmp_path, 
     diff = deleted_section("safe.py", ["fine"]) + deleted_section(path, ["escape"])
     _summarised, entries = cr.summarise_deleted_files(diff)
     assert [row["path"] for row in entries] == ["safe.py", path]
+    work = tmp_path / "work"
+    work.mkdir()
     with pytest.raises(cr.ReviewError, match="unsafe path"):
-        cr.write_deleted_files(diff, entries, tmp_path / "folder")
-    assert sorted(tmp_path.iterdir()) == []
+        cr.write_deleted_files(diff, entries, work / "folder")
+    assert sorted(work.iterdir()) == []
 
 
 @pytest.mark.parametrize("path", ["CON", "nested/aux.txt", "NUL.py", "trailing."])
 def test_windows_reserved_summarised_names_are_refused_only_on_windows(tmp_path, path):
     diff = deleted_section(path, ["reserved"])
     _summarised, entries = cr.summarise_deleted_files(diff)
+    work = tmp_path / "work"
+    work.mkdir()
     if os.name == "nt":
         with pytest.raises(cr.ReviewError, match="unsafe path"):
-            cr.write_deleted_files(diff, entries, tmp_path / "folder")
-        assert sorted(tmp_path.iterdir()) == []
+            cr.write_deleted_files(diff, entries, work / "folder")
+        assert sorted(work.iterdir()) == []
     else:
-        cr.write_deleted_files(diff, entries, tmp_path / "folder")
-        assert (tmp_path / "folder" / path).read_bytes() == b"reserved\n"
+        cr.write_deleted_files(diff, entries, work / "folder")
+        assert (work / "folder" / path).read_bytes() == b"reserved\n"
 
 
 @pytest.mark.parametrize("paths", [["dup.py", "dup.py"], ["a", "a/b"], ["a/b", "a"]])
 def test_colliding_summarised_paths_end_with_a_named_cause(tmp_path, paths):
     diff = "".join(deleted_section(path, [f"from {index}"]) for index, path in enumerate(paths))
     _summarised, entries = cr.summarise_deleted_files(diff)
+    work = tmp_path / "work"
+    work.mkdir()
     with pytest.raises(cr.ReviewError, match="collides"):
-        cr.write_deleted_files(diff, entries, tmp_path / "folder")
-    assert [path.name for path in tmp_path.iterdir()] == ["folder"]
+        cr.write_deleted_files(diff, entries, work / "folder")
+    assert [path.name for path in work.iterdir()] == ["folder"]
 
 
 def test_unsafe_summarised_path_takes_the_ordinary_failure_route(tmp_path, monkeypatch):

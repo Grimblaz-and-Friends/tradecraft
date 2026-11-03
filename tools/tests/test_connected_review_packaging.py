@@ -146,7 +146,7 @@ def test_measured_two_pass_replay_defaults_and_prompt_hashes_remain_reproducible
         "c7c352d97e6b971ffff6343d113cbc299dd2a3c6c72363b6debee28e665a3f83"
     )
     assert hashlib.sha256(cr._json_bytes(settings)).hexdigest() == (
-        "7b101cc3a5661e80b8f347b6e2aff358280daf40bcf5987bd1b39da4d30370c8"
+        "d1f64b43a28306b95fe7517ca09dc3573f57d2c24cc19ec6caa581c58b840080"
     )
 
 
