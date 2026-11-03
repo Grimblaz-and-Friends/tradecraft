@@ -51,6 +51,7 @@ from connected_review import is_review_job
 import dispatch_record as records
 from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
+import launch_bound
 import run_lifecycle as lifecycle
 import work_recovery
 import dispatch_implementer
@@ -130,7 +131,7 @@ SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
-    "builder-session", "model-override", "proof", "reach-reading",
+    "builder-session", "model-override", "proof", "reach-reading", "launch-account",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
@@ -215,6 +216,8 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
                        "surfaces": {"issue-comment"}},
     "reach-reading": {"required": {"head"}, "optional": set(),
                       "surfaces": {"issue-comment"}},
+    "launch-account": {"required": {"dispatch"}, "optional": set(),
+                       "surfaces": {"issue-comment"}},
     "builder-session": {"required": {"session"}, "optional": {"vendor"},
                         "surfaces": {"issue-comment"}},
     "floor": {"required": {"head", "status"}, "optional": set(),
@@ -1502,6 +1505,13 @@ def _marker_value_error(marker: Marker) -> str | None:
         try:
             build_reach.payload(marker.body)
         except build_reach.ReachError as exc:
+            return str(exc)
+    if marker.name == "launch-account":
+        if re.fullmatch(r"[0-9a-f]{32}", values.get("dispatch", "")) is None:
+            return "launch account dispatch is not a dispatch id"
+        try:
+            launch_account_payload(marker.body)
+        except ValueError as exc:
             return str(exc)
     if marker.name == "floor" and values.get("status") != "pass":
         return "floor status is invalid"
@@ -3514,7 +3524,8 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
         payload = {**payload, "reach": state.reach,
                    "version_obligation": state.version_obligation,
                    "proof_version_obligation": state.proof_version_obligation}
-        payload = {**payload, "implementer_environments": _implementer_environments(state)}
+        payload = {**payload, "implementer_environments": _implementer_environments(state),
+                   "launch_findings": _evaluate_launch_findings(state)}
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
@@ -3641,6 +3652,8 @@ def _implementer_environments(state):
                 "instructions": _instruction_report(observed),
                 "launch_controls": _launch_controls_report(request, run, attempt),
                 "stream_check": _stream_check_report(run, attempt),
+                "write_bound": _write_bound_report(request, run, attempt),
+                "launch_comparison": _launch_comparison_report(request, run, attempt),
                 "environment": observed})
     return {"status": "known", "attempts": values}
 
@@ -3774,6 +3787,140 @@ def _reach_refusal(state: WorkState, stage: str) -> Decision | None:
         "objects/read capability and retry. Read the builder's returned should-also-go notes alongside "
         "the report, including flag-free turns. Existing live/stopped recovery remains separate.",
         status="holder-owned")
+
+
+LAUNCH_ACCOUNT_PARTIES = frozenset({"owner", "plugin-update", "session", "builder-damage"})
+LAUNCH_ACCOUNT_FIELDS = frozenset({"id", "party", "basis", "session", "owner_report", "practice_issue"})
+LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposition", "use"})
+LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched"})
+PRACTICE_ISSUE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*\Z")
+
+
+def launch_account_payload(body: str) -> dict[str, object]:
+    """One exact fenced object naming each finding's party (#906)."""
+    blocks = re.findall(r"(?m)^```json[ \t]*\r?\n([\s\S]*?)^```[ \t]*\r?$", body)
+    if len(blocks) != 1:
+        raise ValueError("launch account needs exactly one fenced JSON object")
+    try:
+        value = json.loads(blocks[0])
+    except ValueError as exc:
+        raise ValueError("invalid launch account JSON: " + str(exc)) from exc
+    if (not isinstance(value, dict) or set(value) != {"schema_version", "findings"}
+            or type(value["schema_version"]) is not int or value["schema_version"] != 1
+            or not isinstance(value["findings"], list)):
+        raise ValueError("invalid launch account schema")
+    seen = set()
+    for entry in value["findings"]:
+        if not isinstance(entry, dict) or set(entry) - LAUNCH_ACCOUNT_FIELDS:
+            raise ValueError("launch account finding has an unknown field")
+        identity, party = entry.get("id"), entry.get("party")
+        if not isinstance(identity, str) or not identity or identity in seen:
+            raise ValueError("launch account finding ids must be unique and nonempty")
+        seen.add(identity)
+        if party not in LAUNCH_ACCOUNT_PARTIES:
+            raise ValueError("launch account party is unknown")
+        if not isinstance(entry.get("basis"), str) or not entry["basis"].strip():
+            raise ValueError("launch account finding has no basis")
+        required = {"session": ("session",),
+                    "builder-damage": ("owner_report", "practice_issue")}.get(party, ())
+        for name in required:
+            if not isinstance(entry.get(name), str) or not entry[name].strip():
+                raise ValueError(f"launch account {party} finding requires {name}")
+        if party == "builder-damage" and PRACTICE_ISSUE.fullmatch(entry["practice_issue"]) is None:
+            raise ValueError("launch account practice_issue must be owner/repo#n")
+    return value
+
+
+def _launch_accounts(state: WorkState) -> list[Marker]:
+    return [marker for marker in _state_markers(state) if marker.name == "launch-account"
+            and marker.author.lower() in state.config.marker_producers
+            and marker.surface == "issue-comment"
+            and _attribute_error(marker) is None and _marker_value_error(marker) is None]
+
+
+def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
+    """Each writing launch's comparison, and whether the holder has accounted for it."""
+    try:
+        rows = lifecycle.launch_bundles(state.record_root or records.default_record_root(),
+                                        f"{state.repo}#{state.issue_number}", LAUNCH_FINDING_STAGES)
+        accounts = _launch_accounts(state)
+    except Exception as exc:
+        return {"schema_version": 1, "status": "unproved",
+                "reason": f"{type(exc).__name__}: {exc}", "bundles": []}
+    bundles = []
+    for _order, bundle, request, run in rows:
+        if state.instalment is not None and request.get("instalment") not in {None, state.instalment}:
+            continue
+        entry = {"bundle": bundle, "dispatch_id": request.get("dispatch_id"),
+                 "stage": request.get("stage")}
+        if not isinstance(request.get("write_bound"), dict):
+            bundles.append({**entry, "state": "not-recorded", "status": launch_bound.NOT_RECORDED})
+            continue
+        comparison = run.get("launch_comparison")
+        if not isinstance(comparison, dict):
+            findings = [{"id": "unrecorded", "item": "comparison", "path": "",
+                         "change": "unrecorded",
+                         "reason": "the request has a write-bound baseline but the run record has no comparison"}]
+            status = "unrecorded"
+        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES:
+            bundles.append({**entry, "state": "clear", "findings": [],
+                            "attributed": comparison.get("attributed") or [], "account": None})
+            continue
+        else:
+            findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
+            status = "account-required"
+        ids = {finding.get("id") for finding in findings}
+        account = None
+        for marker in accounts:
+            if marker.attributes.get("dispatch") != request.get("dispatch_id"):
+                continue
+            named = {finding["id"] for finding in launch_account_payload(marker.body)["findings"]}
+            if named == ids:
+                account = {"source": f"{marker.surface}:{marker.source_id}", "author": marker.author}
+        bundles.append({**entry, "state": "accounted" if account else status, "findings": findings,
+                        "attributed": (comparison or {}).get("attributed") or [], "account": account})
+    held = [value for value in bundles if value["state"] in {"account-required", "unrecorded"}]
+    return {"schema_version": 1, "status": "held" if held else "clear", "bundles": bundles}
+
+
+def _launch_account_refusal(state: WorkState, stage: str) -> Decision | None:
+    report = _evaluate_launch_findings(state)
+    if report["status"] == "clear":
+        return None
+    if report["status"] == "unproved":
+        detail = f"Before {stage}, launch findings could not be read: {report['reason']}."
+    else:
+        owed = [{"bundle": value["bundle"], "dispatch_id": value["dispatch_id"], "state": value["state"],
+                 "findings": [{key: finding.get(key) for key in ("id", "item", "path", "change")}
+                              for finding in value["findings"]]}
+                for value in report["bundles"] if value["state"] in {"account-required", "unrecorded"}]
+        detail = (f"Before {stage}, the holder owes a launch-account for each launch comparison finding "
+                  + json.dumps(owed, ensure_ascii=True, sort_keys=True)
+                  + ". Name every finding's party; builder damage names where the owner was told "
+                  "and the practice's product-incident filing.")
+    return Decision("launch-account", False, None, "launch-findings-unaccounted", detail,
+                    status="holder-owned")
+
+
+def _write_bound_report(request, run, attempt):
+    """What bound a Claude author or builder launch held (#906)."""
+    if (attempt.get("vendor") or (request.get("requested") or {}).get("vendor")) != "claude":
+        return None
+    bound = request.get("write_bound")
+    if isinstance(bound, dict):
+        return {"status": "recorded", **bound}
+    return {"status": _unrecorded_status(run, attempt).replace("#887", "#906")}
+
+
+def _launch_comparison_report(request, run, attempt):
+    if (attempt.get("vendor") or (request.get("requested") or {}).get("vendor")) != "claude":
+        return None
+    comparison = run.get("launch_comparison")
+    if isinstance(comparison, dict):
+        return comparison
+    if isinstance(request.get("write_bound"), dict) and run.get("lifecycle") == "completed":
+        return {"status": "unrecorded"}
+    return {"status": _unrecorded_status(run, attempt).replace("#887", "#906")}
 
 
 def _evaluate_raw_output(state: WorkState, rules: dict[str, object], source: str) -> None:
@@ -4585,6 +4732,11 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
 
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None, status: str | None = None) -> Decision:
+        if stage not in {"terminal", "ambiguous-pr", "merged-pull-request"}:
+            # A launch comparison finding holds every next stage (#906).
+            refusal = _launch_account_refusal(state, stage)
+            if refusal is not None:
+                return _reported_decision(state, refusal)
         if stage in {"ready-reviewers", "panel", "use", "proof", "release-report"}:
             for assessment in (state.version_obligation, state.proof_version_obligation):
                 if _version_needs_builder(assessment):
@@ -6780,7 +6932,9 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
                 "loose_files_imported": False}
         plan["permission_boundary"] = (
             "workspace-write with automatic approval review; copy is the recipient root"
-            if vendor == "codex" else "Claude auto permission mode; copy is the recipient root; no OS write sandbox")
+            if vendor == "codex" else "Claude auto permission mode; copy is the recipient root; "
+            "file tools confined to the copy and session scratchpad by a launch path check; covered "
+            "items compared before and after; shell commands have no OS fence")
     return plan
 
 
@@ -8107,6 +8261,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         _evaluate_raw_output(state, rules, str(use_rules_path or "selected change-proof policy"))
     if state.validated_markers is None:
         validate_marker_claims(state)
+    refusal = _launch_account_refusal(state, decision.stage)
+    if refusal is not None:
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
     if draft_comment is not None and decision.stage != "cold-seat":
         raise WorkError("--draft-comment applies only to cold-seat")
     if decision.stage == "cold-seat" and dispatch_path is None:
@@ -8866,7 +9024,9 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         "remain unavailable after remote removal. "
                         + (copy_record["recovery"]["message"] + " " if copy_record.get("recovery") else "")
                         + ("Codex uses workspace-write with automatic approval review.\n" if selected_vendor == "codex"
-                           else "Claude starts here with no OS write sandbox.\n")
+                           else "Claude starts here. Its file tools write only in this copy and its "
+                           "session scratchpad; shell commands have no OS fence, and the launch "
+                           "compares covered items before and after.\n")
                     ).encode("utf-8") if artifact_run else b"")
                     context.write_bytes(preamble + handover_context + copy_context + window)
                     command.extend(("--context", str(context)))
