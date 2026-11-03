@@ -120,7 +120,7 @@ def test_ac3_link_inside_the_tree_pointing_outside_is_refused(bound):
     try:
         if os.name == "nt":
             subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(bound["other"])],
-                           check=True, capture_output=True)
+                           check=True, stdin=subprocess.DEVNULL, capture_output=True)
         else:
             link.symlink_to(bound["other"], target_is_directory=True)
     except (OSError, subprocess.CalledProcessError) as exc:

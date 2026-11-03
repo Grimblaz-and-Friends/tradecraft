@@ -631,8 +631,8 @@ def test_public_author_edits_only_its_copy_for_both_routes_and_vendors(entrance,
         assert "sandbox_workspace_write.exclude_slash_tmp=true" in native_command
         assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in native_command
     else:
-        assert "no OS write sandbox" in request["requested"]["permission_boundary"]
-        assert "no OS write sandbox" in plan["permission_boundary"]
+        assert "shell commands have no OS fence" in request["requested"]["permission_boundary"]
+        assert "file tools confined to the copy" in plan["permission_boundary"]
     assert "--output" in commands[0]
     assert str(path) == trees._read(copy["lifecycle_record"])["bundle"]
 
