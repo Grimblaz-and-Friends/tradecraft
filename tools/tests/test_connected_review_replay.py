@@ -1112,3 +1112,173 @@ def test_each_replay_case_starts_on_the_key_and_falls_back_like_the_reviewer(tmp
     assert [case["credential"]["finder:coverage"]["switch_reply"] for case in result["cases"]] == [
         "monthly spend cap reached", "credit balance too low",
     ]
+
+
+# The replay can apply the live reviewer's over-budget summary when asked (#902).
+
+DELETED_DIFF = (
+    "diff --git a/only-1.py b/only-1.py\n--- a/only-1.py\n+++ b/only-1.py\n@@ -1 +1 @@\n-old\n+new\n"
+    "diff --git a/gone.py b/gone.py\ndeleted file mode 100644\nindex 1111111..0000000\n"
+    "--- a/gone.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-first\r\n-second\n"
+)
+
+
+def deletion_export(root: Path) -> Path:
+    export = build_export(root, cases=1)
+    manifest = replay.read_object(export / "manifest.json")
+    case = manifest["cases"][0]
+    (export / case["diff"]).write_bytes(DELETED_DIFF.encode("utf-8"))
+    case["diff_sha256"] = replay.file_digest(export / case["diff"])
+    replay.write_object(export / "manifest.json", manifest)
+    return export
+
+
+def summary_run(tmp_path, monkeypatch, *, read=None, single_pass=True, **options):
+    export = deletion_export(tmp_path / "export")
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_bytes(b"finder")
+    checker.write_bytes(b"checker")
+    prepare_run(monkeypatch)
+    launches = []
+
+    def run(_executable, run_root, snapshot, prompt, schema, _credential, *, effort, **kwargs):
+        folder = kwargs.get("readable")
+        target = (read or (lambda _snapshot, folder: folder / "gone.py"))(snapshot, folder or run_root.parent / "deleted-at-base")
+        launches.append({
+            "schema": schema, "prompt": prompt, "readable": folder,
+            "content": (folder / "gone.py").read_bytes() if folder else None,
+        })
+        trace = [{"tool": "Read", "input": {"file_path": str(target)}}]
+        if schema is replay.cr.FINDER_SCHEMA:
+            return {"candidates": []}, {}, trace
+        return {"decisions": []}, {}, trace
+
+    monkeypatch.setattr(replay.cr, "run_pass", run)
+    result = replay.run_replay(
+        export, tmp_path / "results.json", finder, None if single_pass else checker, "claude",
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=single_pass, **options,
+    )
+    return result, launches
+
+
+@pytest.mark.parametrize("single_pass", [True, False])
+def test_replay_summary_reads_its_case_folder_in_bounds(tmp_path, monkeypatch, single_pass):
+    result, launches = summary_run(
+        tmp_path, monkeypatch, single_pass=single_pass,
+        summarise_deleted_files=True, summary_threshold_bytes=10,
+    )
+    case = result["cases"][0]
+    assert case["status"] == "completed" and case["outside_reads"] == [] and result["complete"]
+    assert case["summarised_deleted_files"] == [
+        {"path": "gone.py", "reason": "deleted-summarised", "deleted_lines": 2},
+    ]
+    assert len(launches) == (1 if single_pass else 2)
+    for launch in launches:
+        assert launch["readable"].name == "deleted-at-base"
+        assert launch["content"] == b"first\r\nsecond\n"
+        assert "-first" not in launch["prompt"] and "<summarised_deleted_files>" in launch["prompt"]
+    finder_launch = launches[0]
+    assert case["finder_input_utf8_bytes"] == {
+        name: len(replay.cr.pass_input_bytes(finder_launch["prompt"])) for name, _focus in replay.cr.FINDER_PASSES
+    }
+    before = case["finder_input_utf8_bytes_before_summary"]
+    assert set(before) == set(case["finder_input_utf8_bytes"]) and before != case["finder_input_utf8_bytes"]
+
+
+def test_replay_folder_is_out_of_bounds_for_a_case_that_did_not_summarise(tmp_path, monkeypatch):
+    result, launches = summary_run(
+        tmp_path, monkeypatch, summarise_deleted_files=True, summary_threshold_bytes=10_000_000,
+    )
+    case = result["cases"][0]
+    assert launches[0]["readable"] is None and "<summarised_deleted_files>" not in launches[0]["prompt"]
+    assert case["status"] == "invalid-leak" and case["outside_reads"][0].endswith("gone.py")
+    assert "summarised_deleted_files" not in case and "finder_input_utf8_bytes_before_summary" not in case
+
+
+def test_replay_summary_still_counts_prohibited_reads_as_leaks(tmp_path, monkeypatch):
+    result, _launches = summary_run(
+        tmp_path, monkeypatch, summarise_deleted_files=True, summary_threshold_bytes=10,
+        read=lambda _snapshot, folder: folder.parent.parent / "prohibited" / "answer-key.txt",
+    )
+    case = result["cases"][0]
+    assert case["status"] == "invalid-leak" and case["outside_reads"][0].endswith("answer-key.txt")
+
+
+def test_replay_without_the_option_never_summarises(tmp_path, monkeypatch):
+    monkeypatch.setattr(replay.cr, "MAX_FINDER_PROMPT_BYTES", 10)
+    result, launches = summary_run(tmp_path, monkeypatch, read=lambda snapshot, _folder: snapshot / "only-1.py")
+    case = result["cases"][0]
+    assert case["status"] == "completed" and launches[0]["readable"] is None
+    assert "-first" in launches[0]["prompt"]
+    assert set(case) == {
+        "case_id", "head", "base", "excluded_files", "finder_input_utf8_bytes", "status", "survivors",
+        "finder_usage", "finder_trace", "outside_reads", "canaries", "credential",
+    }
+    assert "overrides" not in result["reviewer"] or "summarise_deleted_files" not in result["reviewer"]["overrides"]
+
+
+def test_outside_reads_allow_only_the_named_summary_folder(tmp_path):
+    case = tmp_path / "case"
+    snapshot, inputs, folder = case / "snapshot", case / "input", case / "deleted-at-base"
+    for directory in (snapshot, inputs, folder, tmp_path / "prohibited"):
+        directory.mkdir(parents=True)
+    trace = [
+        {"tool": "Read", "input": {"file_path": str(folder / "gone.py")}},
+        {"tool": "Grep", "input": {"path": str(folder)}},
+        {"tool": "Read", "input": {"file_path": str(tmp_path / "prohibited" / "answer-key.txt")}},
+    ]
+    canary = str((tmp_path / "prohibited" / "answer-key.txt").resolve())
+    assert replay._outside_trace_reads(trace, snapshot, inputs, case / "finder", folder) == [canary]
+    assert replay._outside_trace_reads(trace, snapshot, inputs, case / "finder") == sorted([
+        str((folder / "gone.py").resolve()), str(folder.resolve()), canary,
+    ])
+
+
+def test_summary_option_and_threshold_are_reviewer_identity(tmp_path):
+    export = build_export(tmp_path / "export", cases=1)
+    manifest = replay.validate_export(export)
+    finder = tmp_path / "finder.md"
+    finder.write_bytes(b"finder")
+    plain = replay.reviewer_record(finder, None, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True)
+    default = replay.reviewer_record(finder, None, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True,
+                                     summarise_deleted_files=True)
+    lowered = replay.reviewer_record(finder, None, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True,
+                                     summarise_deleted_files=True, summary_threshold_bytes=10)
+    assert default["overrides"]["summary_threshold_bytes"] == replay.cr.MAX_FINDER_PROMPT_BYTES
+    assert lowered["overrides"] == {"single_pass": True, "summarise_deleted_files": True, "summary_threshold_bytes": 10}
+    for stored, current in [(plain, default), (default, lowered), (lowered, plain)]:
+        results = {"repository": "owner/repo", "manifest_cases": [{"case_id": "pr-1", "head": "1" * 40, "base": BASE}],
+                   "reviewer": stored}
+        path = tmp_path / "old-results.json"
+        replay.write_object(path, results)
+        with pytest.raises(replay.ReplayError, match="overrides"):
+            replay._resume_cases(path, manifest, current)
+
+
+def test_run_parser_accepts_the_summary_option_and_refuses_a_bare_threshold(tmp_path):
+    args = replay.parser().parse_args([
+        "run", "--export", "e", "--output", "o", "--finder-prompt", "f", "--checker-prompt", "c",
+        "--revision", HEAD, "--single-pass", "--summarise-deleted-files", "--summary-threshold-bytes", "10",
+    ])
+    assert args.summarise_deleted_files is True and args.summary_threshold_bytes == 10
+    with pytest.raises(replay.ReplayError, match="requires --summarise-deleted-files"):
+        replay.run_replay(build_export(tmp_path / "export", cases=1), tmp_path / "results.json", tmp_path / "unused",
+                          None, "claude", replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True,
+                          summary_threshold_bytes=10)
+
+
+def test_policy_two_results_cannot_resume_under_policy_three(tmp_path):
+    export = build_export(tmp_path / "export", cases=1)
+    finder = tmp_path / "finder.md"
+    finder.write_bytes(b"finder")
+    current = replay.reviewer_record(finder, None, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True)
+    assert current["coverage_policy_version"] == 3
+    stored = {key: value for key, value in current.items() if key != "over_budget_summary"}
+    stored["coverage_policy_version"] = 2
+    results = {"repository": "owner/repo", "manifest_cases": [{"case_id": "pr-1", "head": "1" * 40, "base": BASE}],
+               "reviewer": stored}
+    path = tmp_path / "old-results.json"
+    replay.write_object(path, results)
+    with pytest.raises(replay.ReplayError, match="coverage_policy_version, over_budget_summary"):
+        replay._resume_cases(path, replay.validate_export(export), current)

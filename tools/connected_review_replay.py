@@ -213,6 +213,8 @@ def reviewer_record(
     checker_effort: str | None = None,
     preload_changed_files: bool = False,
     preload_budget_bytes: int = cr.DEFAULT_PRELOAD_BUDGET_BYTES,
+    summarise_deleted_files: bool = False,
+    summary_threshold_bytes: int | None = None,
 ) -> dict[str, Any]:
     settings = cr.reviewer_settings(
         version,
@@ -233,6 +235,7 @@ def reviewer_record(
         or finder_effort is not None
         or checker_effort is not None
         or preload_changed_files
+        or summarise_deleted_files
     ):
         record.update({
             "pass_structure": "single-pass" if single_pass else "finder-checker",
@@ -243,6 +246,10 @@ def reviewer_record(
                 **({"finder_effort": finder_effort} if finder_effort is not None else {}),
                 **({"checker_effort": checker_effort} if checker_effort is not None else {}),
                 **({"preload_changed_files": True} if preload_changed_files else {}),
+                **({
+                    "summarise_deleted_files": True,
+                    "summary_threshold_bytes": _summary_threshold(summary_threshold_bytes),
+                } if summarise_deleted_files else {}),
             },
         })
     return record
@@ -328,12 +335,22 @@ def _resume_cases(
     return completed, resumed, case_harnesses
 
 
+def _summary_threshold(value: int | None) -> int:
+    return cr.MAX_FINDER_PROMPT_BYTES if value is None else value
+
+
 def _validate_run_options(
     checker_prompt: Path | None,
     single_pass: bool,
     finder_effort: str | None,
     checker_effort: str | None,
+    summarise_deleted_files: bool = False,
+    summary_threshold_bytes: int | None = None,
 ) -> None:
+    if summary_threshold_bytes is not None and not summarise_deleted_files:
+        raise ReplayError("--summary-threshold-bytes requires --summarise-deleted-files")
+    if summary_threshold_bytes is not None and summary_threshold_bytes < 0:
+        raise ReplayError("--summary-threshold-bytes cannot be negative")
     if finder_effort is not None and finder_effort not in EFFORT_LEVELS:
         raise ReplayError(f"unsupported finder effort: {finder_effort}")
     if checker_effort is not None and checker_effort not in EFFORT_LEVELS:
@@ -356,10 +373,13 @@ def _run_finders_at_effort(
     effort: str,
     preloaded_changed_files: dict[str, Any] | None,
     exclusions: list[dict[str, str]] | None = None,
+    *,
+    summarised: list[dict[str, Any]] | None = None,
+    readable: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     return cr.run_finders(
         executable, run_root, snapshot, instructions, diff, rules, lines, credentials, preloaded_changed_files,
-        effort=effort, exclusions=exclusions,
+        effort=effort, exclusions=exclusions, summarised=summarised, readable=readable,
     )
 
 
@@ -375,15 +395,18 @@ def _run_finders_for_replay(
     effort: str | None,
     preloaded_changed_files: dict[str, Any] | None,
     exclusions: list[dict[str, str]] | None = None,
+    *,
+    summarised: list[dict[str, Any]] | None = None,
+    readable: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     if effort is None:
         return cr.run_finders(
             executable, run_root, snapshot, instructions, diff, rules, lines, credentials,
-            preloaded_changed_files, exclusions=exclusions,
+            preloaded_changed_files, exclusions=exclusions, summarised=summarised, readable=readable,
         )
     return _run_finders_at_effort(
         executable, run_root, snapshot, instructions, diff, rules, lines, credentials, effort,
-        preloaded_changed_files, exclusions,
+        preloaded_changed_files, exclusions, summarised=summarised, readable=readable,
     )
 
 
@@ -400,10 +423,13 @@ def _run_checkers_at_effort(
     effort: str,
     preloaded_changed_files: dict[str, Any] | None,
     exclusions: list[dict[str, str]] | None = None,
+    *,
+    summarised: list[dict[str, Any]] | None = None,
+    readable: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     return cr.run_checkers(
         executable, run_root, snapshot, instructions, diff, rules, candidates, lines, credentials, preloaded_changed_files,
-        effort=effort, exclusions=exclusions,
+        effort=effort, exclusions=exclusions, summarised=summarised, readable=readable,
     )
 
 
@@ -420,15 +446,20 @@ def _run_checkers_for_replay(
     effort: str | None,
     preloaded_changed_files: dict[str, Any] | None,
     exclusions: list[dict[str, str]] | None = None,
+    *,
+    summarised: list[dict[str, Any]] | None = None,
+    readable: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     if effort is None:
         return cr.run_checkers(
             executable, run_root, snapshot, instructions, diff, rules,
             candidates, lines, credentials, preloaded_changed_files, exclusions=exclusions,
+            summarised=summarised, readable=readable,
         )
     return _run_checkers_at_effort(
         executable, run_root, snapshot, instructions, diff, rules,
         candidates, lines, credentials, effort, preloaded_changed_files, exclusions,
+        summarised=summarised, readable=readable,
     )
 
 
@@ -447,8 +478,13 @@ def run_replay(
     checker_effort: str | None = None,
     preload_changed_files: bool = False,
     preload_budget_bytes: int = cr.DEFAULT_PRELOAD_BUDGET_BYTES,
+    summarise_deleted_files: bool = False,
+    summary_threshold_bytes: int | None = None,
 ) -> dict[str, Any]:
-    _validate_run_options(checker_prompt, single_pass, finder_effort, checker_effort)
+    _validate_run_options(
+        checker_prompt, single_pass, finder_effort, checker_effort,
+        summarise_deleted_files, summary_threshold_bytes,
+    )
     manifest = validate_export(export_root, require_policy=True)
     finder_text = finder_prompt.read_text(encoding="utf-8")
     checker_text = (
@@ -461,6 +497,8 @@ def run_replay(
         checker_effort=checker_effort,
         preload_changed_files=preload_changed_files,
         preload_budget_bytes=preload_budget_bytes,
+        summarise_deleted_files=summarise_deleted_files,
+        summary_threshold_bytes=summary_threshold_bytes,
     )
     completed: dict[str, dict[str, Any]] = {}
     resumed_cases: list[str] = []
@@ -544,14 +582,44 @@ def run_replay(
                     )
                     if preload_changed_files else None
                 )
+                prompts = cr.finder_prompts(
+                    finder_text, snapshot, diff_text, rules_text, preloaded, exclusions,
+                )
+                summarised = None
+                readable = None
+                if (
+                    summarise_deleted_files
+                    and cr.largest_input_bytes(prompts) > _summary_threshold(summary_threshold_bytes)
+                ):
+                    # The live reviewer's over-budget summary, at this run's threshold;
+                    # replay still refuses no size.
+                    summarised_diff, entries = cr.summarise_deleted_files(diff_text)
+                    if entries:
+                        summarised = entries
+                        readable = case_root / cr.DELETED_FOLDER_NAME
+                        cr.write_deleted_files(
+                            diff_path.read_bytes().decode("utf-8", errors="replace"), entries, readable,
+                        )
+                        case_result["summarised_deleted_files"] = cr.summary_exclusions(entries)
+                        case_result["finder_input_utf8_bytes_before_summary"] = {
+                            name: len(cr.pass_input_bytes(prompt)) for name, prompt in prompts
+                        }
+                        diff_text = summarised_diff
+                        if preload_changed_files:
+                            preloaded = cr.preload_changed_file_data(
+                                snapshot, diff_text, preload_budget_bytes,
+                            )
+                        prompts = cr.finder_prompts(
+                            finder_text, snapshot, diff_text, rules_text, preloaded, exclusions,
+                            summarised=summarised, readable=readable,
+                        )
                 case_result["finder_input_utf8_bytes"] = {
-                    name: len(cr.pass_input_bytes(prompt)) for name, prompt in cr.finder_prompts(
-                        finder_text, snapshot, diff_text, rules_text, preloaded, exclusions,
-                    )
+                    name: len(cr.pass_input_bytes(prompt)) for name, prompt in prompts
                 }
                 candidates, finder_usage, finder_trace = _run_finders_for_replay(
                     executable, case_root, snapshot, finder_text, diff_text,
                     rules_text, lines, credentials, finder_effort, preloaded, exclusions,
+                    summarised=summarised, readable=readable,
                 )
                 if single_pass:
                     survivors = cr.deduplicate_root_causes(candidates)
@@ -562,18 +630,18 @@ def run_replay(
                     survivors, checker_usage, checker_trace = _run_checkers_for_replay(
                         executable, case_root, snapshot, checker_text, diff_text,
                         rules_text, candidates, lines, credentials, checker_effort,
-                        preloaded, exclusions,
+                        preloaded, exclusions, summarised=summarised, readable=readable,
                     )
                 finder_leaks = []
                 for name, trace in finder_trace.items():
                     finder_leaks.extend(_outside_trace_reads(
-                        trace, snapshot, input_dir, case_root / f"finder-{name}",
+                        trace, snapshot, input_dir, case_root / f"finder-{name}", readable,
                     ))
                 checker_leaks = []
                 if checker_trace is not None:
                     for name, trace in checker_trace.items():
                         checker_leaks.extend(_outside_trace_reads(
-                            trace, snapshot, input_dir, case_root / f"checker-{name}",
+                            trace, snapshot, input_dir, case_root / f"checker-{name}", readable,
                         ))
                 leaks = sorted(set(finder_leaks + checker_leaks))
                 completed_result = {
@@ -627,9 +695,11 @@ def _outside_trace_reads(
     snapshot: Path,
     inputs: Path,
     pass_root: Path,
+    readable: Path | None = None,
 ) -> list[str]:
     outside = []
-    allowed = (snapshot.resolve(), inputs.resolve())
+    # A case's summary folder is in bounds only for the case that summarised.
+    allowed = (snapshot.resolve(), inputs.resolve(), *(() if readable is None else (readable.resolve(),)))
     for event in trace:
         tool = event.get("tool")
         event_input = event.get("input")
@@ -822,6 +892,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--finder-effort", choices=EFFORT_LEVELS)
     run.add_argument("--checker-effort", choices=EFFORT_LEVELS)
     run.add_argument("--preload-changed-files", action="store_true")
+    run.add_argument("--summarise-deleted-files", action="store_true")
+    run.add_argument("--summary-threshold-bytes", type=int)
     grade = commands.add_parser("grade")
     grade.add_argument("--results", required=True, type=Path)
     grade.add_argument("--answer-key", required=True, type=Path)
@@ -845,6 +917,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 finder_effort=args.finder_effort,
                 checker_effort=args.checker_effort,
                 preload_changed_files=args.preload_changed_files,
+                summarise_deleted_files=args.summarise_deleted_files,
+                summary_threshold_bytes=args.summary_threshold_bytes,
             )
         else:
             result = grade_replay(args.results, args.answer_key, args.decisions)
