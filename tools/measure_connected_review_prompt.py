@@ -45,14 +45,18 @@ def folder_blob_matches(
     with tempfile.TemporaryDirectory(prefix="connected-review-measure-") as temporary:
         folder = Path(temporary) / cr.DELETED_FOLDER_NAME
         cr.write_deleted_files(raw.decode("utf-8", errors="surrogateescape"), summarised, folder)
+        # A path a truncated tree omitted was never compared, so it is unverified, not a mismatch.
+        unverified = [entry["path"] for entry in summarised if entry["path"] not in blobs]
         mismatched = [
             entry["path"] for entry in summarised
-            if blobs.get(entry["path"]) != _blob_sha(folder.joinpath(*str(entry["path"]).split("/")).read_bytes())
+            if entry["path"] in blobs
+            and blobs[entry["path"]] != _blob_sha(folder.joinpath(*str(entry["path"]).split("/")).read_bytes())
         ]
     return {
         "merge_base": merge_base, "tree_truncated": bool(tree.get("truncated")),
-        "folder_files": len(summarised), "folder_blob_matches": len(summarised) - len(mismatched),
-        "folder_blob_mismatches": mismatched,
+        "folder_files": len(summarised),
+        "folder_blob_matches": len(summarised) - len(mismatched) - len(unverified),
+        "folder_blob_mismatches": mismatched, "folder_blob_unverified": unverified,
     }
 
 
