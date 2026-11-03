@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+import launch_bound
 from seat_process import run_process
 
 TRADECRAFT_ID = "tradecraft@tradecraft"
@@ -79,13 +80,17 @@ def foreign_ids(entries, vendor):
     return foreign, allowed
 
 
-def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=None):
+def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=None, write_guard=None):
     child = dict(os.environ if env is None else env)
     # An explicit process value wins over the user settings' env block. Set it
     # before discovery and retain it for the child; a settings-only override
     # cannot turn off a value inherited from the parent process.
     child[FUNCTION_HOOKS] = "0"
     child[ADDITIONAL_CLAUDE_MD] = "1"
+    if write_guard is not None:
+        # The builder has no memory store (#906); the file-tool guard refuses a
+        # memory write regardless, because the store is outside its tree.
+        child[launch_bound.MEMORY_SWITCH] = "1"
     if not verified_root(plugin_root):
         raise PreparationError("explicit tradecraft plugin directory failed identity verification")
     entries = discover("claude", executable, cwd, deadline, env=child)
@@ -141,18 +146,31 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
     # also disable the launcher's own tradecraft skills.
     ids.discard("tradecraft@inline")
     override = Path(temporary) / "claude-settings.json"
-    data = (json.dumps({"enabledPlugins": {identity: False for identity in sorted(ids)}},
-                       ensure_ascii=True) + "\n").encode("utf-8")
+    settings = {"enabledPlugins": {identity: False for identity in sorted(ids)}}
+    guard = None
+    if write_guard is not None:
+        try:
+            guard = launch_bound.prepare_guard(Path(temporary), Path(write_guard["root"]),
+                                               write_guard["session"], child, deadline)
+        except launch_bound.BoundError as exc:
+            raise PreparationError(str(exc)) from exc
+        settings["hooks"] = guard["hooks"]
+    data = (json.dumps(settings, ensure_ascii=True) + "\n").encode("utf-8")
     override.write_bytes(data)
     if os.name != "nt":
         override.chmod(0o600)
-    return {"disabled_plugin_ids": sorted(ids), "allowed_plugins": [
+    intent = {"disabled_plugin_ids": sorted(ids), "allowed_plugins": [
         *allowed, {"id": "tradecraft@inline", "path": str(plugin_root)}],
         "discovery_sources": ["claude plugin list --json", *map(str, paths), *skipped],
         "override_sha256": hashlib.sha256(data).hexdigest(),
         "function_hooks_requested": "disabled by child process environment override",
         "tree_instructions_requested": "loaded from --add-dir by child process environment override",
-        "settings_path": str(override)}, child
+        "settings_path": str(override)}
+    if guard is not None:
+        intent["write_guard"] = {"config_path": guard["config_path"], "log": guard["log"],
+                                 "self_test": guard["self_test"], "config": guard["config"]}
+        intent["memory_requested"] = launch_bound.memory_record()["requested"]
+    return intent, child
 
 
 def codex_prepare(executable, cwd, deadline, *, env=None):

@@ -2481,6 +2481,13 @@ def _composition_error(request: dict[str, object], record: Marker) -> str | None
                 or hashlib.sha256(notice.encode("utf-8")).hexdigest() != controls.get("notice_sha256")):
             return "retained launch notice is missing or differs from its digest"
         effective += b"\n\n" + notice.encode("utf-8")
+        # An author or builder launch then states its write bound (#906).
+        bound = controls.get("write_bound_notice")
+        if bound is not None or "write_bound_notice_sha256" in controls:
+            if (not isinstance(bound, str) or hashlib.sha256(bound.encode("utf-8")).hexdigest()
+                    != controls.get("write_bound_notice_sha256")):
+                return "retained write-bound notice is missing or differs from its digest"
+            effective += b"\n\n" + bound.encode("utf-8")
     digest = hashlib.sha256(effective).hexdigest()
     if digest != request.get("effective_input_sha256") or digest != evidence.get("effective_input_sha256"):
         return "composition evidence differs from retained effective input"

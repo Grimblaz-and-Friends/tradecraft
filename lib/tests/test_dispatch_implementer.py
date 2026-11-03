@@ -103,6 +103,17 @@ def supply_artifact_brief(args):
     args.lifecycle_input.write_bytes(json.dumps({"artifact_copy": copy}).encode())
 
 
+FIXTURE_SESSION = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+
+
+def fixture_session(scenario):
+    """The session a fixture's Claude stream answers as, else the default."""
+    import re
+    stdout = json.loads(scenario.read_bytes()).get("claude", {}).get("stdout", "")
+    found = re.search(r'"session_id":\s*"([0-9a-f-]{36})"', stdout if isinstance(stdout, str) else "")
+    return found[1] if found else FIXTURE_SESSION
+
+
 @pytest.fixture
 def job(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
@@ -131,6 +142,8 @@ def job(tmp_path, monkeypatch):
     monkeypatch.setattr(implementer.policy, "discover", lambda vendor, *_a, **_k:
         json.loads(scenario.read_bytes()).get(vendor, {}).get("plugin_list", []))
     monkeypatch.setattr(implementer.native_codex, "read_config", lambda *_a, **_k: {})
+    # A fresh Claude launch names its session (#906); fixtures answer as it.
+    monkeypatch.setattr(implementer, "new_session_id", lambda: fixture_session(scenario))
     with ExitStack() as stack:
         args.artifact_stack = stack
         yield args, scenario
@@ -466,6 +479,9 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
     ]
     if resume:
         expected.extend(("--resume", session))
+    else:
+        # A fresh launch always names its session, for its scratchpad (#906).
+        expected.extend(("--session-id", args.session_id))
     assert observed["argv"] == expected
     assert observed["pytest_addopts"] == inherited
     assert observed["additional_claude_md"] == "1"
@@ -1594,6 +1610,8 @@ def test_artifact_byte_bound_keeps_exact_return_and_generated_context(
     if vendor == "claude":
         # The launcher's #887 notice closes the bytes the child receives.
         effective_input += b"\n\n" + request["launch_controls"]["notice"].encode("utf-8")
+        # Then its write-bound notice (#906).
+        effective_input += b"\n\n" + request["launch_controls"]["write_bound_notice"].encode("utf-8")
     assert base64.b64decode(captured["stdin"]) == effective_input
     assert request["effective_input_sha256"] == hashlib.sha256(effective_input).hexdigest()
     assert request["context"]["sha256"] == hashlib.sha256(effective_context).hexdigest()
@@ -1897,7 +1915,10 @@ def test_887_R1_1_R2_1_R4_1_every_claude_route_is_protected_and_recorded(job, mo
     assert controls["disallowed_tools"] == ["Monitor", "ScheduleWakeup", "CronCreate", "Workflow"]
     assert "--disallowedTools=Monitor,ScheduleWakeup,CronCreate,Workflow" in captured["argv"]
     sent = base64.b64decode(captured["stdin"])
-    assert sent.endswith(b"\n\n" + controls["notice"].encode("utf-8"))
+    assert sent.endswith(b"\n\n" + controls["notice"].encode("utf-8") + b"\n\n"
+                         + controls["write_bound_notice"].encode("utf-8"))
+    assert controls["write_bound_notice_sha256"] == hashlib.sha256(
+        controls["write_bound_notice"].encode("utf-8")).hexdigest()
     assert request["effective_input_sha256"] == hashlib.sha256(sent).hexdigest()
     assert request["prompt_composition"]["effective_input_sha256"] == hashlib.sha256(sent).hexdigest()
     assert record(args)["attempts"][0]["stream_check"]["status"] == "clean"

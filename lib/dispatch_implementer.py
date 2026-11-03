@@ -34,8 +34,9 @@ import dispatch_record as records
 import artifact_tree
 from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TOOLS,
                                 claude_launch_controls, claude_launch_env, claude_launch_notice,
-                                claude_stream_check, claude_terminal, stream_check_reason,
-                                stream_check_record)
+                                claude_stream_check, claude_terminal, claude_write_bound_notice,
+                                stream_check_reason, stream_check_record)
+import launch_bound
 import launch_settings
 import run_lifecycle as lifecycle
 from codex_pytest import implementer_pytest_overrides
@@ -63,6 +64,13 @@ PROFILES = {
 DEFAULT_MODEL = PROFILES["implementer"]["codex"][0]
 DEFAULT_EFFORT = "xhigh"
 SESSION = re.compile(r"(?im)^session id:\s*([0-9a-f]{8}-[0-9a-f-]{27,})\s*$")
+# Each snapshot of the launch comparison (#906) may take this long; the after
+# snapshot is further capped by the cleanup reserve.
+COMPARISON_SECONDS = 120
+
+
+def new_session_id() -> str:
+    return str(uuid.uuid4())
 
 
 class ImplementerError(RuntimeError):
@@ -199,6 +207,20 @@ def _claude_result(raw: bytes, check: dict | None = None) -> tuple[bool, bytes, 
     if not isinstance(message, str):
         return False, b"", session, "claude result lacks final text"
     return True, message.encode("utf-8"), session, ""
+
+
+def _finish_comparison(comparison, error, deadline) -> dict[str, object]:
+    """The after-snapshot; one that cannot run is held as uncompared (#906)."""
+    if comparison is None:
+        return launch_bound.unrecorded(error or "no comparison was prepared")
+    try:
+        seconds = deadline.probe(COMPARISON_SECONDS, cleanup=True)
+    except TimeoutError as exc:
+        return launch_bound.unrecorded(f"after-snapshot had no cleanup window: {exc}")
+    try:
+        return comparison.finish(seconds)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        return launch_bound.unrecorded(f"comparison failed: {type(exc).__name__}: {exc}")
 
 
 def _handover_phase(path: Path, session: str, phase: str) -> None:
@@ -527,6 +549,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     shim_plan = (instruction_shim_plan(root, records.git_directory(root))
                  if args.vendor == "claude" and executable is not None and unavailable_reason is None
                  else [])
+    guarded = args.vendor == "claude" and executable is not None and unavailable_reason is None
+    if guarded and not args.resume and not args.session_id:
+        # The session scratchpad is derived from the session id, so a fresh
+        # launch always names its own (#906).
+        args.session_id = new_session_id()
     dispatch_id = uuid.uuid4().hex
     output.parent.mkdir(parents=True, exist_ok=True)
     continuity = "resume" if args.resume else "fresh"
@@ -542,7 +569,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 try:
                     if args.vendor == "claude":
                         intent, child_env = policy.claude_prepare(executable, root, deadline, temporary,
-                            Path(__file__).resolve().parent.parent, env=child_env)
+                            Path(__file__).resolve().parent.parent, env=child_env,
+                            write_guard={"root": root, "session": args.resume or args.session_id})
                         args.launch_settings_path = intent["settings_path"]
                     else:
                         intent = policy.codex_prepare(executable, root, deadline, env=child_env)
@@ -576,7 +604,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 permission_boundary=(
                     "workspace-write with native on-request/auto_review"
                     if args.vendor == "codex" else
-                    "Claude auto permission mode; user settings only; no OS write sandbox"
+                    launch_bound.IMPLEMENTER_BOUNDARY
                 ),
                 root=root, requested_session_id=args.resume, command=command,
                 retry_of=args.retry_of,
@@ -618,8 +646,30 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 effective_prompt = effective_prompt + b"\n\n" + notice
                 composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
                 child_env = claude_launch_env(child_env, allocation)
+                guard = intent["write_guard"]["config"]
+                bound_notice = claude_write_bound_notice(guard["root"], launch_bound.allowed_scratchpad(guard))
+                effective_prompt = effective_prompt + b"\n\n" + bound_notice
+                composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
                 request["launch_controls"] = claude_launch_controls(
-                    allocation, notice, disallowed=CLAUDE_DISALLOWED_TOOLS)
+                    allocation, notice, disallowed=CLAUDE_DISALLOWED_TOOLS,
+                    write_bound_notice=bound_notice)
+                write_guard_log = Path(intent["write_guard"]["log"])
+                comparison_error = None
+                try:
+                    comparison = launch_bound.Comparison(
+                        root=root, env=child_env, launcher_plugin=Path(__file__).resolve().parent.parent,
+                        own_output=output, own_request=request_path,
+                        holder_session_id=args.holder_session_id, dispatch_id=dispatch_id)
+                except (OSError, ValueError, TypeError) as exc:
+                    comparison, comparison_error = None, f"coverage could not be planned: {exc}"
+                request["write_bound"] = {
+                    "file_tools": launch_bound.file_tools_record(
+                        intent["write_guard"], intent["override_sha256"]),
+                    "memory": launch_bound.memory_record(),
+                    "comparison": ({"coverage": comparison.planned()} if comparison is not None
+                                   else {"coverage": [], "unavailable_reason": comparison_error}),
+                    "shell": launch_bound.SHELL,
+                }
             if args.stage != "artifact":
                 request.setdefault("budget_lineage", hashlib.sha256(
                     (args.work + str(root) + str(args.lineage_branch)).encode("utf-8")).hexdigest())
@@ -732,6 +782,14 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     f"{failure}", file=sys.stderr,
                 )
                 return 1
+            if "write_bound" in request:
+                if comparison is not None:
+                    try:
+                        seconds = deadline.probe(COMPARISON_SECONDS)
+                    except TimeoutError:
+                        deadline.remaining()  # An exhausted window is not a recorded comparison.
+                        seconds = 0
+                    comparison.take_before(seconds)
             verdict: bytes | None = None
             source_ready = False
             publication_error: OSError | None = None
@@ -843,6 +901,13 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     outlived = check["status"] == "work_outlived_return"
                     complete, message, session_id, failure_reason = _claude_result(result.stdout, check)
                     session_source = "claude JSON result.session_id" if session_id else ""
+                    if "write_bound" in request and attempt["launched"]:
+                        record["write_guard"], guard_failure = launch_bound.guard_outcome(
+                            result.stdout, write_guard_log)
+                        if guard_failure:
+                            # A refused or unproved write fails the turn like a denial.
+                            complete = False
+                            reason = "; ".join(value for value in (reason, guard_failure) if value)
                     if outlived:
                         pass
                     elif result.returncode != 0:
@@ -946,6 +1011,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)
+                    if "write_bound" in request:
+                        record["launch_comparison"] = _finish_comparison(comparison, comparison_error, deadline)
                     if args.stage != "artifact":
                         try:
                             record["stop_snapshot"] = lifecycle.content_snapshot(root, timeout=deadline.probe(cleanup=True))
