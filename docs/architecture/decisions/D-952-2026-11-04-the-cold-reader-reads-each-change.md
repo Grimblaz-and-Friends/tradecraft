@@ -1,4 +1,4 @@
-# D-0 — The cold reader reads each change for its reasons
+# D-952 — The cold reader reads each change for its reasons
 
 **Purpose:** record why instalment 2 of #942 builds the cold reader the way it does, and that it ends [D-944](D-944-2026-11-03-code-carries-its-reasons.md)'s interim. **Audience:** a future session changing the `cold-reader` stage, the `cold-reading` marker, what the reader may hold, or when a change's reading is current. **Success:** that reader can recover what was chosen over what without the issue.
 
@@ -16,18 +16,28 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **C2. The entrance derives the reader's inputs only along row 4's list.** It follows `path#anchor` pointers from changed files to Markdown files that exist at the head, and from each pointed section only the links inside it. A file a changed file merely mentions isn't carried, so an unresolvable pointer reaches the reader as a dead end rather than being patched by whoever built the tree. The entrance can't tell a decision record by its path, so another link inside a pointed section is carried too; the holder's pointer check catches that malformed section.
 - **C3. One `cold-reading` marker with `open` and `clean`, the holder's review riding in the `open` comment,** because the mechanical lane manufactures no `holder-reading` marker and row 5 requires that lane covered.
 - **C4. A reading is current by blob, per changed path and per dependency; a reread is per file.** Blob identity is what the entrance can compare. Counting the pointed document's and listed records' blobs rereads a flagged file whose fix landed only in its document. A merge from the base that touches none of them owes no reread.
-- **C5. Every implementing pull request is read, with no classification of what counts as code,** because a path classifier is configuration every adopter would owe.
+- **C5. No classification of what counts as code: every path in a gated change's change set is read,** because a path classifier is configuration every adopter would owe. Which pull requests the gate reaches is narrowed below, to those a builder built.
 - **C6. The cold classification's defaults, Claude Opus 5.5 at `xhigh`,** keeping [D-795](D-795-2026-09-29-seat-defaults-follow-owner-rulings.md)'s seat rulings and matching the setting the brief's estimate assumed.
 - **C7. No round cap.** Row 4 fixes every flag. A returning flag takes the artifact rule's three-way naming, and a fork takes the existing owner door.
 - **C8. The stage is `cold-reader` and the marker `cold-reading`,** after the brief's own name for the seat.
 - **C9. Decision records a change adds may carry its issue and pull-request numbers in the reader's tree.** Row 4 lists them as inputs; the reader has no network tool, so their links are dead to it, and the occurrences are recorded as residue.
 - **C10. The account's why answer opens with `Can tell: yes|no`, and only a reading of the whole current change clears a `no`.** The entrance can then hold `clean` on row 3's test mechanically, and a reread of a few fixed files answers only for those files.
 
-## Made while building
+## Made while building, and accepted by the holder
 
-- **The gate is due once a builder turn exists for the change, as reach is.** A pull request with no recorded or observed builder turn has nothing the entrance can attribute a reading to.
-- **Suites about other stages run past the gate through one opt-in test fixture,** so the gate's own tests exercise it and the rest of the suite keeps testing what it was written for.
+- **The gate is due only once a builder turn exists for the change, the rule reach uses.** A change no builder built has no builder to resume for the fixes a reading routes, so there is nothing for the gate to hold it for. This departs from the artifact's "every implementing pull request": a pull request opened by hand, with no recorded or observed builder turn, is not gated.
+- **Suites about other stages run past the gate through one opt-in test fixture,** `cold_reading_gate` in `lib/tests/conftest.py`. Their fixtures carry synthetic heads with no Git objects behind them, so the real gate would hold every one as unverifiable; the gate's own tests are marked `cold_reading` and run it against a real repository and retained bundles.
+- **The gate itself raises the holder-owned `cold-reading-post-owed` step and sets aside an invalid `clean`.** A reading whose account no `open` comment carries yet is the holder's to post before the builder can be resumed with it, and a `clean` can be judged only where coverage, flags and the builder's turn are computed, which is the gate, not marker validation. A `clean` posted after the latest `open` is listed invalid on every hold the gate returns; one posted before it closed an older reading and is left alone.
+- **A bundle the gate can't read reports `cold-reading-unverifiable`, naming it, rather than aborting.** A reading or builder bundle with an unsupported record schema makes the gate holder-owned and an `open` marker that depends on it invalid, so neither marker validation nor the decision stops on one bad record.
 - **The diff travels inline below a size bound and as one file in the reader's root above it,** so a large change's prompt stays readable.
+
+## Codex's network, probed
+
+The artifact asked the builder to confirm what Codex's read-only sandbox does about network before relying on it. One low-effort turn ran with the cold-reader launch's own flags, `codex exec --strict-config --ignore-user-config --ephemeral --sandbox read-only --disable apps -c apps._default.enabled=false -c windows.sandbox="elevated" -c model_reasoning_effort="low" --skip-git-repo-check`, on Codex CLI 0.166.0-alpha.5.1 under Windows, and was asked to run `curl -sS -m 15 -o NUL -w "%{http_code}" https://example.com`. Inside the sandbox it returned `000curl: (7) Failed to connect to example.com port 443 after 28 ms: Could not connect to server`, exit 1; the same fetch outside the sandbox returned `200`. Network is not reachable from the read-only sandbox, so the cold-reader launch passes no further configuration for it, and its permission boundary keeps recording `sandbox=read-only`.
+
+## No design-document pointer in this repository
+
+`code-reasons.md` owes a design-document section for code a change adds, and `lib/cold_reader.py` is such code. In tradecraft, though, the root doctrine forbids shipped `lib/` from referencing repo-only material, and a design section's in-force list would have to link the repo-only decision entries. The charter has repository-specific doctrine win locally where the two conflict, so here the module takes no pointer: its lasting reasons live in this entry, and the module carries one-line reasons where a newcomer would ask. Where tradecraft's own design document lives, and how its shipped code reaches it across the wall, is tradecraft's row 10 catch-up.
 
 ## Deferred
 

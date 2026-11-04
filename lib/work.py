@@ -1721,6 +1721,9 @@ def _cold_judgment(state: WorkState, marker: Marker) -> dict[str, object]:
 
 
 def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
+    if marker.name == "cold-reading":
+        # The gate reads every reading from its store, so a reading can't skip its bundle.
+        return _cold_reading_marker_error(state, marker)
     if state.record_root is None:
         return None
     if marker.name == "artifact" and marker.attributes.get("status") == "draft":
@@ -1742,8 +1745,6 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
             if (run.get("outcome") in {"invalid_artifact_return", "work_outlived_return"}
                     or isinstance(validation, dict) and validation.get("status") == "fail"):
                 return f"latest artifact dispatch has a failed return: {path}"
-    if marker.name == "cold-reading":
-        return _cold_reading_marker_error(state, marker)
     stages = {
         "builder-session": {"build"},
         "floor": {"floor"},
@@ -4770,9 +4771,11 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
 
 def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
     """Tie an `open` reading to the seat return it quotes whole; a hand-corrected account fails."""
-    if state.record_root is None:
-        return None
-    readings = [reading for reading in _cold_readings(state)
+    try:
+        found = _cold_readings(state)
+    except WorkError as exc:
+        return f"cold-reading unverifiable: {exc}"
+    readings = [reading for reading in found
                 if (_time(reading["completed_at"]) or datetime.max.replace(tzinfo=timezone.utc))
                 <= (_time(marker.timestamp) or datetime.max.replace(tzinfo=timezone.utc))]
     if marker.attributes["status"] == "open":
@@ -4838,6 +4841,20 @@ def _cold_reading_plan(state: WorkState, sha: str) -> dict[str, object]:
             "assessment": cold_reader.assess(readings, present)}
 
 
+def _cold_reading_unverifiable(sha: str, problem: object) -> Decision:
+    return Decision("cold-reading-unverifiable", False, None, "cold-reading-unverifiable",
+                    f"The cold reading cannot be judged at head {sha}: {problem}. Restore the named "
+                    "bundle or fetch the pull request's head and base into the holder root, and retry.",
+                    status="holder-owned")
+
+
+def _set_aside(state: WorkState, markers: list[Marker], reason: str) -> None:
+    for marker in markers:
+        claim = marker.as_dict()
+        claim["reason"] = reason
+        state.invalid_marker_claims.append(claim)
+
+
 def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     """Hold readiness until a current, clean cold reading covers the change."""
     if not _cold_reading_due(state):
@@ -4845,9 +4862,7 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     try:
         plan = _cold_reading_plan(state, sha)
     except (cold_reader.ColdReaderError, WorkError, OSError) as exc:
-        return Decision("cold-reading-unverifiable", False, None, "cold-reading-unverifiable",
-                        f"The cold reading cannot be judged at head {sha}: {exc}. Fetch the pull "
-                        "request's head and base into the holder root and retry.", status="holder-owned")
+        return _cold_reading_unverifiable(sha, exc)
     readings, assessment = plan["readings"], plan["assessment"]
     if not readings:
         return Decision("cold-reader", True, "fresh", "cold-reading-absent",
@@ -4867,34 +4882,40 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
             "staffing_status=... -->, and beneath it, under \"Holder's review against the brief\", each "
             "misreading and the route for each flag and any `Can tell: no`.", status="holder-owned")
     review = opened[latest["id"]]
-    turn = _builder_turn_after(state, review)
-    if turn is None:
-        return Decision("build", True, "resume", "cold-reading-review-owed",
-                        _marker_setting_source(review))
-    whole = sorted(plan["present"]["change_set"])
-    if assessment["standing_no"]:
-        return Decision("cold-reader", True, "fresh", "cold-reading-why-owed",
-                        json.dumps({"covered": whole}))
-    if assessment["stale"]:
-        return Decision("cold-reader", True, "fresh", "cold-reading-stale",
-                        json.dumps({"covered": assessment["stale"]}))
-    problems = []
-    if assessment["flags"]:
-        problems.append("a flag stands: " + json.dumps(assessment["flags"], ensure_ascii=True))
+    # A clean posted before the latest open closes an older reading, so only later ones are judged.
     closing = [marker for marker in markers if marker.attributes["status"] == "clean"
                and _source_order(marker) > _source_order(review)]
-    if closing and not problems and closing[-1].attributes["head"] == sha and (
-            _time(turn[0]) is not None and _time(closing[-1].timestamp) is not None
-            and _time(turn[0]) <= _time(closing[-1].timestamp)):
+    try:
+        turn = _builder_turn_after(state, review)
+    except (WorkError, OSError) as exc:
+        return _cold_reading_unverifiable(sha, exc)
+    if turn is None:
+        _set_aside(state, closing, "cold-reading clean before a builder turn received its open reading")
+        return Decision("build", True, "resume", "cold-reading-review-owed",
+                        _marker_setting_source(review))
+    if assessment["standing_no"]:
+        _set_aside(state, closing, "cold-reading clean while a Can tell: no stands")
+        return Decision("cold-reader", True, "fresh", "cold-reading-why-owed",
+                        json.dumps({"covered": sorted(plan["present"]["change_set"])}))
+    if assessment["stale"]:
+        _set_aside(state, closing, "cold-reading clean over a stale or uncovered path")
+        return Decision("cold-reader", True, "fresh", "cold-reading-stale",
+                        json.dumps({"covered": assessment["stale"]}))
+    if assessment["flags"]:
+        problem = "a flag stands: " + json.dumps(assessment["flags"], ensure_ascii=True)
+        _set_aside(state, closing, "cold-reading clean while " + problem)
+        return Decision("cold-reading-close", False, None, "cold-reading-close",
+                        "Route a repair to the resumed builder: " + problem, status="holder-owned")
+    reviewed = _time(turn[0])
+    valid = [marker for marker in closing if marker.attributes["head"] == sha
+             and reviewed is not None and _time(marker.timestamp) is not None
+             and reviewed <= _time(marker.timestamp)]
+    _set_aside(state, [marker for marker in closing if marker not in valid],
+               "cold-reading clean is not at the current head after the builder's review")
+    if valid:
         return None
-    for marker in closing:
-        claim = marker.as_dict()
-        claim["reason"] = ("cold-reading clean while " + "; ".join(problems) if problems else
-                           "cold-reading clean is not at the current head after the builder's review")
-        state.invalid_marker_claims.append(claim)
     return Decision(
         "cold-reading-close", False, None, "cold-reading-close",
-        ("Route a repair to the resumed builder: " + "; ".join(problems)) if problems else
         f"Post <!-- tradecraft:cold-reading:v1 head={sha} status=clean "
         "staffing_status=... --> quoting the builder's review in one line, unless a misreading "
         "still stands.", status="holder-owned")

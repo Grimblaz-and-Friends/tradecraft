@@ -1,4 +1,5 @@
 """The cold reader's tree, prompt, account form and currency judgement."""
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -233,3 +234,401 @@ def test_an_open_reading_counts_only_with_the_seat_return_unaltered(repository):
     edited = state(marker + account.replace("restates the code", "restates code") + review)
     assert not [m for m in edited.markers if m.name == "cold-reading"]
     assert any(claim["name"] == "cold-reading" for claim in edited.invalid_marker_claims)
+
+
+# The gate, read through `decide` against a real repository and retained bundles.
+
+import test_work  # noqa: E402
+
+CLEAN = ACCOUNT.replace("a.py:2 {dash} what-comment {dash} the second line restates the code", "none")
+SPLIT = datetime(2026, 11, 4, 10, tzinfo=timezone.utc)
+
+
+def flagged(path, tell="yes"):
+    return ACCOUNT.replace("a.py:2", path + ":1").format(dash=cold_reader.EM_DASH, tell=tell)
+
+
+def clean(tell="yes"):
+    return CLEAN.format(dash=cold_reader.EM_DASH, tell=tell)
+
+
+class Change:
+    """One implementing pull request whose reading the gate judges."""
+
+    def __init__(self, tmp_path, monkeypatch, brief=test_work.MECHANICAL, config=test_work.CONFIG):
+        self.tmp, self.config, self.brief = tmp_path, config, brief
+        self.root = tmp_path / "source"
+        self.root.mkdir()
+        self.store = tmp_path / "store"
+        self.clock = SPLIT
+        self.comments = []
+        self.readings = 0
+        # The ledger comparison has its own suite; here it would read an unrelated store.
+        monkeypatch.setattr(work, "_governing_terms_decision", lambda _state: None)
+        monkeypatch.setattr(work, "_cold_reading_source", lambda _state: self.store)
+        git(self.root, "init", "-q", "-b", "main")
+        git(self.root, "config", "core.autocrlf", "false")
+        self.base = commit(self.root, {
+            "design/x.md": "# Design\n\n## S\n\nIn force: [D1](../decisions/D1.md).\n",
+            "decisions/D1.md": "# D1\n",
+        }, "base")
+        git(self.root, "checkout", "-q", "-b", "feature")
+        self.head = commit(self.root, {"a.py": "# Design: design/x.md#s\nA = 1\n",
+                                       "b.py": "# Design: design/missing.md#s\nB = 1\n"}, "change")
+        self.builder_turn("the first build")
+
+    def tick(self):
+        self.clock += timedelta(minutes=1)
+        return self.clock.isoformat()
+
+    def commit(self, files):
+        self.head = commit(self.root, files, "repair")
+        return self.head
+
+    def merge_base_change(self, files):
+        git(self.root, "checkout", "-q", "main")
+        self.base = commit(self.root, files, "base moves")
+        git(self.root, "checkout", "-q", "feature")
+        git(self.root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "merge", "-q", "--no-edit", "main")
+        self.head = git(self.root, "rev-parse", "HEAD")
+
+    def builder_turn(self, prompt):
+        name = "build-" + str(len(list(self.store.glob("build-*.run.json"))) if self.store.exists() else "build-0")
+        self.store.mkdir(parents=True, exist_ok=True)
+        launched = self.tick()
+        (self.store / f"{name}.dispatch.bin").write_text(prompt, encoding="utf-8")
+        (self.store / f"{name}.request.json").write_text(json.dumps({
+            "schema_version": work.records.SCHEMA_VERSION, "work": WORK, "stage": "build",
+            "launched_at": launched}), encoding="utf-8")
+        (self.store / f"{name}.run.json").write_text(json.dumps({
+            "schema_version": work.records.SCHEMA_VERSION, "outcome": "success",
+            "completed_at": self.tick()}), encoding="utf-8")
+        return name
+
+    def read(self, account, covered=None):
+        self.readings += 1
+        name = f"reading-{self.readings}"
+        cold_reader.build_tree(source=self.root, output=self.tmp / name, work=WORK,
+                               producer_version="0.206.0", base_tip=self.base, head=self.head,
+                               covered=covered, branch=BRANCH, numbers=[12])
+        bundle(self.store, name, account, self.tmp / name, completed=self.tick())
+        return account
+
+    def post(self, body):
+        self.comments.append({"id": len(self.comments) + 100, "body": body,
+                              "user": {"login": test_work.PRODUCER}, "created_at": self.tick()})
+        return body
+
+    def post_open(self, account):
+        return self.post(f"<!-- tradecraft:cold-reading:v1 head={self.head} status=open "
+                         "staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer -->\n\n"
+                         + account + "\n\n### Holder's review against the brief\n\nNo misreading.\n")
+
+    def review(self, opened):
+        return self.builder_turn("--- cold reading begin ---\n" + opened + "\n--- cold reading end ---")
+
+    def post_clean(self):
+        return self.post(f"<!-- tradecraft:cold-reading:v1 head={self.head} status=clean "
+                         "staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer -->\n"
+                         "The builder found no misreading.")
+
+    def reviewed(self, account, covered=None):
+        """A reading, its posted account and the builder's review of it."""
+        self.read(account, covered)
+        self.review(self.post_open(account))
+
+    def state(self, draft=True):
+        fixture = test_work.state(self.brief, pr=True, draft=draft, config=self.config)
+        fixture.issue_comments[0]["created_at"] = SPLIT.isoformat()
+        fixture.issue_comments.extend(self.comments)
+        fixture.issue_comments.append({"body": f"<!-- tradecraft:floor:v1 head={self.head} status=pass -->",
+                                       "user": {"login": test_work.PRODUCER}})
+        fixture.pr["head"].update(sha=self.head, ref=BRANCH)
+        fixture.pr["base"]["sha"] = self.base
+        fixture.holder_root = self.root
+        return fixture
+
+    def decide(self, draft=True):
+        fixture = self.state(draft)
+        decision = work.decide(fixture, test_work.RULES)
+        invalid = [claim for claim in fixture.invalid_marker_claims if claim["name"] == "cold-reading"]
+        return SimpleNamespace(stage=decision.stage, reason=decision.reason, detail=decision.detail,
+                               continuity=decision.continuity, invalid=invalid)
+
+
+def covered(decision):
+    return json.loads(decision.detail[:decision.detail.index("]}") + 2])["covered"]
+
+
+def settled(change):
+    fixture = test_work._source_fixture("would")
+    change.brief = fixture.issue_comments[0]["body"]
+    change.comments = [dict(comment, created_at=change.tick()) for comment in fixture.issue_comments[1:]]
+
+
+@pytest.fixture
+def change(tmp_path, monkeypatch):
+    return Change(tmp_path, monkeypatch)
+
+
+@pytest.mark.cold_reading
+def test_case_a_no_reading_owes_a_reader_of_the_whole_change(change):
+    decision = change.decide()
+    assert (decision.stage, decision.reason, decision.continuity) == ("cold-reader", "cold-reading-absent", "fresh")
+    assert covered(decision) == ["a.py", "b.py"]
+
+
+@pytest.mark.cold_reading
+def test_an_unposted_reading_is_the_holders_to_post(change):
+    change.read(clean())
+    assert change.decide().reason == "cold-reading-post-owed"
+
+
+@pytest.mark.cold_reading
+def test_case_b_an_open_reading_resumes_the_builder(change):
+    change.read(clean())
+    change.post_open(clean())
+    decision = change.decide()
+    assert (decision.stage, decision.continuity, decision.reason) == ("build", "resume", "cold-reading-review-owed")
+
+
+@pytest.mark.cold_reading
+def test_case_c_a_builder_commit_rereads_exactly_the_changed_file(change):
+    change.reviewed(clean())
+    change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
+    decision = change.decide()
+    assert (decision.stage, decision.reason, covered(decision)) == ("cold-reader", "cold-reading-stale", ["a.py"])
+
+
+@pytest.mark.cold_reading
+def test_case_d_a_catch_up_merge_owes_no_reread(change):
+    change.reviewed(clean())
+    change.merge_base_change({"elsewhere.md": "# Elsewhere\n"})
+    assert change.decide().reason == "cold-reading-close"
+
+
+@pytest.mark.cold_reading
+def test_case_e_clean_without_a_builder_turn_is_invalid_and_held(change):
+    change.read(clean())
+    change.post_open(clean())
+    change.post_clean()
+    decision = change.decide()
+    assert decision.reason == "cold-reading-review-owed" and len(decision.invalid) == 1
+
+
+@pytest.mark.cold_reading
+def test_case_f_a_valid_clean_reading_reaches_readiness(change):
+    change.reviewed(clean())
+    assert change.decide().reason == "cold-reading-close"
+    change.post_clean()
+    decision = change.decide()
+    assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+
+
+@pytest.mark.cold_reading
+def test_case_g_a_reviewer_fix_after_readiness_is_read_again_before_proof(change):
+    change.reviewed(clean())
+    change.post_clean()
+    assert change.decide(draft=False).stage != "cold-reader"
+    change.commit({"b.py": "# Design: design/missing.md#s\nB = 2\n"})
+    decision = change.decide(draft=False)
+    assert (decision.stage, covered(decision)) == ("cold-reader", ["b.py"])
+
+
+@pytest.mark.cold_reading
+def test_case_h_a_fix_made_only_in_the_pointed_document_rereads_its_file(change):
+    change.reviewed(flagged("a.py"))
+    assert change.decide().reason == "cold-reading-close"
+    change.commit({"design/x.md": "# Design\n\n## S\n\nWhy A. In force: [D1](../decisions/D1.md).\n"})
+    decision = change.decide()
+    assert decision.stage == "cold-reader" and "a.py" in covered(decision)
+
+
+@pytest.mark.cold_reading
+def test_case_h_prime_creating_an_absent_pointer_target_rereads_its_file(change):
+    change.reviewed(clean())
+    change.commit({"design/missing.md": "# Missing\n\n## S\n\nNow here.\n"})
+    decision = change.decide()
+    assert decision.stage == "cold-reader" and "b.py" in covered(decision)
+
+
+@pytest.mark.cold_reading
+def test_case_i_cannot_tell_holds_a_clean_and_owes_a_whole_reread(change):
+    change.reviewed(clean(tell="no"))
+    change.post_clean()
+    decision = change.decide()
+    assert (decision.reason, covered(decision)) == ("cold-reading-why-owed", ["a.py", "b.py"])
+    assert len(decision.invalid) == 1
+
+
+@pytest.mark.cold_reading
+def test_case_i_prime_a_whole_reread_saying_yes_after_a_decision_record_clears_it(change):
+    change.reviewed(clean(tell="no"))
+    change.commit({"decisions/D2.md": "# D2\n\nWhy A and B exist.\n"})
+    change.reviewed(clean())
+    change.post_clean()
+    assert change.decide().stage == "ready-reviewers"
+
+
+@pytest.mark.cold_reading
+def test_case_j_a_flag_on_an_unchanged_dependency_holds_clean(change):
+    change.reviewed(flagged("design/x.md"))
+    change.post_clean()
+    decision = change.decide()
+    assert decision.reason == "cold-reading-close" and "flag stands" in decision.detail
+    assert len(decision.invalid) == 1
+    change.commit({"design/x.md": "# Design\n\n## S\n\nWhy A. In force: [D1](../decisions/D1.md).\n"})
+    decision = change.decide()
+    assert decision.stage == "cold-reader" and "a.py" in covered(decision)
+
+
+@pytest.mark.cold_reading
+def test_case_k_a_narrow_reread_saying_yes_cannot_clear_cannot_tell(change):
+    change.reviewed(clean(tell="no"))
+    change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
+    change.reviewed(clean(), covered=["a.py"])
+    change.post_clean()
+    decision = change.decide()
+    assert (decision.reason, covered(decision)) == ("cold-reading-why-owed", ["a.py", "b.py"])
+    assert len(decision.invalid) == 1
+
+
+@pytest.mark.cold_reading
+def test_the_mechanical_lane_is_gated(change):
+    assert change.decide().stage == "cold-reader"
+
+
+@pytest.mark.cold_reading
+def test_an_adopter_with_no_configuration_for_it_is_gated(tmp_path, monkeypatch):
+    unconfigured = work.WorkConfig(marker_producers=frozenset({test_work.PRODUCER}))
+    assert Change(tmp_path, monkeypatch, config=unconfigured).decide().stage == "cold-reader"
+
+
+@pytest.mark.cold_reading
+def test_a_settled_artifact_lane_is_gated_and_resumes_its_builder(tmp_path, monkeypatch):
+    change = Change(tmp_path, monkeypatch, brief=test_work.AFFIRMED)
+    settled(change)
+    assert change.decide().stage == "cold-reader"
+    change.read(clean())
+    change.post_open(clean())
+    decision = change.decide()
+    assert (decision.stage, decision.continuity, decision.reason) == ("build", "resume", "cold-reading-review-owed")
+
+
+@pytest.mark.cold_reading
+@pytest.mark.parametrize("lane", ["mechanical", "settled"])
+def test_the_resumed_builder_prompt_carries_the_open_reading_whole(tmp_path, monkeypatch, lane):
+    change = Change(tmp_path, monkeypatch)
+    if lane == "settled":
+        settled(change)
+    change.read(flagged("a.py"))
+    opened = change.post_open(flagged("a.py"))
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    prompt = work._stage_prompt(fixture, work.Decision("build", True, "resume", "cold-reading-review-owed"),
+                                branch=BRANCH).decode("utf-8")
+    assert opened in prompt
+    for sentence in ("Review the account for the reasons you decided while building",
+                     "preferring the code", "write the decision record the change then owes",
+                     "Never edit or restate the account", "Return your review of it"):
+        assert sentence in prompt
+    change.review(opened)
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    assert work._owed_cold_reading(fixture) is None
+
+
+@pytest.mark.cold_reading
+def test_an_unsupported_reading_bundle_is_unverifiable_rather_than_fatal(change):
+    change.read(clean())
+    run = change.store / "reading-1.run.json"
+    run.write_text(json.dumps({**json.loads(run.read_text("utf-8")), "schema_version": -1}), encoding="utf-8")
+    change.post_open(clean())
+    decision = change.decide()
+    assert decision.reason == "cold-reading-unverifiable" and "reading-1.run.json" in decision.detail
+    assert any("unverifiable" in claim["reason"] for claim in decision.invalid)
+
+
+@pytest.mark.cold_reading
+def test_an_unsupported_builder_bundle_is_unverifiable_rather_than_fatal(change):
+    change.read(clean())
+    change.post_open(clean())
+    broken = change.store / (change.builder_turn("an unrelated turn") + ".request.json")
+    broken.write_text(json.dumps({**json.loads(broken.read_text("utf-8")), "schema_version": -1}),
+                      encoding="utf-8")
+    decision = change.decide()
+    assert decision.reason == "cold-reading-unverifiable" and broken.stem.split(".")[0] in decision.detail
+
+
+# The stage itself.
+
+def run_stage(change, monkeypatch, capsys, returned, builder="claude"):
+    captured = {}
+    output = change.tmp / ("seat-" + str(change.readings)) / "result.md"
+
+    def invoke(command, _deadline):
+        captured["command"] = command
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(returned, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(work, "_invoke_recipient", invoke)
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: (builder, "fixture build bundle"))
+    monkeypatch.setattr(work.records, "resolved_output", lambda *_a: output)
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    decision = work.Decision("cold-reader", True, work._named_continuity(
+        fixture, "cold-reader", work.decide(fixture, test_work.RULES)), "holder-named-stage")
+    capsys.readouterr()
+    code = work._execute_cold_reader(fixture, decision, dispatch_path=None, tree_metadata=None,
+                                     timeout_seconds=600, claude_path=None, codex_path=None)
+    report = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")][-1]
+    return code, captured["command"], decision, report
+
+
+def option(command, name):
+    return command[command.index(name) + 1]
+
+
+@pytest.mark.cold_reading
+def test_the_stage_launches_one_fresh_read_only_seat_for_a_first_reading_and_a_reread(change, monkeypatch, capsys):
+    code, command, decision, report = run_stage(change, monkeypatch, capsys, clean())
+    assert code == 0 and decision.continuity == "fresh" and report["whole"] is True
+    assert (option(command, "--stage"), option(command, "--classification"), option(command, "--requires")) == (
+        "cold-reader", "cold", "read")
+    assert command[1].endswith("dispatch_seat.py") and option(command, "--role") == "cold_reader"
+    assert not any("resume" in part or part == "--session" for part in command)
+    change.reviewed(clean())
+    change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
+    code, command, decision, report = run_stage(change, monkeypatch, capsys, clean())
+    assert decision.continuity == "fresh" and report["covered"] == ["a.py"] and report["whole"] is False
+    assert option(command, "--stage") == "cold-reader"
+
+
+@pytest.mark.cold_reading
+def test_the_stage_fails_a_malformed_return_and_names_what_is_missing(change, monkeypatch, capsys):
+    malformed = clean().replace("## Why this change was made\nCan tell: yes\n", "")
+    code, _command, _decision, report = run_stage(change, monkeypatch, capsys, malformed)
+    assert code == 1 and report["form"] == "fail"
+    assert "missing heading ## Why this change was made" in report["form_errors"]
+
+
+@pytest.mark.cold_reading
+@pytest.mark.parametrize(("builder", "reason"), [("claude", "owner-selected-claude-implementer"), ("codex", None)])
+def test_staffing_is_judged_against_the_builders_vendor(change, monkeypatch, capsys, builder, reason):
+    _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean(), builder=builder)
+    assert option(command, "--vendor") == "claude" and option(command, "--own-vendor") == builder
+    assert ("--same-vendor-reason" in command) == (reason is not None)
+    if reason:
+        assert option(command, "--same-vendor-reason") == reason
+
+
+def test_a_per_issue_override_names_the_cold_reader():
+    override = "<!-- tradecraft:model-override:v1 cold_reader=claude:override-model:high -->"
+    fixture = test_work.state(override)
+    work.validate_marker_claims(fixture)
+    settings = work._launch_settings(fixture, "cold-reader", "claude", "cold")
+    assert (settings.model, settings.effort) == ("override-model", "high")
+    default = work._launch_settings(test_work.state(), "cold-reader", "claude", "cold")
+    assert (default.model, default.effort) == ("claude-opus-5-5", "xhigh")
