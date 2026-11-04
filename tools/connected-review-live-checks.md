@@ -44,6 +44,12 @@ The reviewer's API-key coverage is proved by one live review, not here: soon aft
 
 In a fixture, a key whose organization has no funds exercises the fallback: the review completes on the token and its `Credential:` line names the key, then the token, with the reply that caused the switch. An invalid key ends the review with a `Review skipped: Claude API key authentication failed` notice and starts no token process.
 
+A paid replay takes its key from `--api-key-file PATH`, with the file saved outside every repository. Commands and comments name only that path, never the key. With the option, the replay ignores both credential variables, so a spent key ends the run rather than switching to a token, and it refuses to write or print any result that contains the key.
+
+## Size ladder
+
+Run `ladder-plan --export E --rungs …` first. It needs no credential and launches no model, and it prints each rung's measured bytes and padded-diff digest. `ladder` then refuses to spend anything unless the CLI reports the workflow's pinned version and its settings and finder prompt equal the live reviewer's. It runs the case's natural size twice and stops with `awaiting-matches` until `--matches` records a judgment for every survivor inside the defect key's anchors, and with `case-not-qualified` if either run misses the defect. It then runs every rung twice. It halts on a billing refusal (re-run after the credit renews), on a second void at one rung, and on an unrecognised outcome (re-run once after the owner confirms the Console shows credit). Re-running the same command resumes. Before release, run `ladder-verify --output-dir D` at the head the release report names, and quote its passing result there. `ladder-summary` writes the summary and prints its table; pass each as-merged replay as `--reference LABEL=RESULTS`. Raw results stay outside the repository.
+
 ## Record
 
 For each check record `pass`, `fail`, or `departure`, the workflow run and pull-request URLs, the exact reviewed head, and the retained API response or process trace. A check that cannot run because a token, runner, fixture repository or 24-hour observation window is unavailable is a departure with that reason, never a pass.
