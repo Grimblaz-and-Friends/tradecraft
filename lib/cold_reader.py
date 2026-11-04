@@ -30,7 +30,7 @@ POINTER = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+\.md)#([A-Za-z0-9_-]+)")
 LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
-# The dashes are built at run time so the module's constants stay ASCII.
+# Built at run time: string constants stay ASCII, since a platform encoding can garble captured output.
 EM_DASH, EN_DASH = chr(0x2014), chr(0x2013)
 FLAG_LINE = re.compile(
     r"^(?:[-*][ \t]+)?`?(?P<path>[^\s:`]+)(?::(?P<lines>[0-9]+(?:[-" + EN_DASH + r"][0-9]+)?))?`?"
@@ -86,7 +86,7 @@ def change_set(root: Path, base_tip: str, head: str) -> tuple[str, dict[str, str
 
 
 def slug(heading: str) -> str:
-    text = re.sub(r"[`*_\[\]()]", "", heading).strip().lower()
+    text = re.sub(r"[`*\[\]()]", "", heading).strip().lower()
     return re.sub(r"[^\w\- ]", "", text).replace(" ", "-")
 
 
@@ -221,6 +221,8 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
             recipient_tree._prove_neutral_repository(staged, source)
         except recipient_tree.RecipientTreeError as exc:
             raise ColdReaderError(str(exc)) from exc
+        # Counted, not refused: a decision record the change adds lawfully names them, and its links
+        # are dead to a reader with no network.
         residue = {}
         for name in sorted(claims):
             content = (staged / Path(*PurePosixPath(name).parts)).read_text("utf-8", errors="replace")

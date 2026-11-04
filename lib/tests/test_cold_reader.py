@@ -295,7 +295,8 @@ class Change:
         self.head = git(self.root, "rev-parse", "HEAD")
 
     def builder_turn(self, prompt):
-        name = "build-" + str(len(list(self.store.glob("build-*.run.json"))) if self.store.exists() else "build-0")
+        turns = len(list(self.store.glob("build-*.run.json"))) if self.store.exists() else 0
+        name = f"build-{turns}"
         self.store.mkdir(parents=True, exist_ok=True)
         launched = self.tick()
         (self.store / f"{name}.dispatch.bin").write_text(prompt, encoding="utf-8")
@@ -562,8 +563,6 @@ def test_an_unsupported_builder_bundle_is_unverifiable_rather_than_fatal(change)
     assert decision.reason == "cold-reading-unverifiable" and broken.stem.split(".")[0] in decision.detail
 
 
-# The stage itself.
-
 def run_stage(change, monkeypatch, capsys, returned, builder="claude"):
     captured = {}
     output = change.tmp / ("seat-" + str(change.readings)) / "result.md"
@@ -657,3 +656,42 @@ def test_an_undated_cold_reading_marker_is_set_aside(change):
     decision = change.decide()
     assert decision.reason == "cold-reading-post-owed"
     assert [claim["reason"] for claim in decision.invalid] == ["cold-reading marker has no posting time"]
+
+
+def test_an_underscored_anchor_reaches_its_section_and_records(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "config", "core.autocrlf", "false")
+    base = commit(root, {"design/x.md": "# Design\n\n## gate_rules\n\nIn force: [D1](../decisions/D1.md).\n",
+                         "decisions/D1.md": "# D1\n"}, "base")
+    head = commit(root, {"a.py": "# Design: design/x.md#gate_rules\n"}, "change")
+    entry = cold_reader.current(root, base, head)["coverage"]["a.py"]
+    assert entry["dependencies"][0]["records"][0]["path"] == "decisions/D1.md"
+
+
+@pytest.mark.cold_reading
+def test_a_damaged_reading_stops_the_builder_prompt_rather_than_leaving_it_out(change):
+    change.read(flagged("a.py"))
+    change.post_open(flagged("a.py"))
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    work.recipient_tree.metadata_path(change.tmp / "reading-1").unlink()
+    with pytest.raises(work.WorkError, match="reading-1.run.json"):
+        work._stage_prompt(fixture, work.Decision("build", True, "resume", "cold-reading-review-owed"),
+                           branch=BRANCH)
+
+
+@pytest.mark.cold_reading
+def test_the_stage_reports_a_damaged_reading_instead_of_raising(change, monkeypatch, capsys):
+    change.read(clean())
+    work.recipient_tree.metadata_path(change.tmp / "reading-1").unlink()
+    monkeypatch.setattr(work, "_invoke_recipient", lambda *_a: pytest.fail("no seat may launch"))
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    code = work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                                     dispatch_path=None, tree_metadata=None, timeout_seconds=600,
+                                     claude_path=None, codex_path=None)
+    report = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")][-1]
+    assert code == 0 and report["status"] == "refused" and report["reason"].startswith("cold-reading-unverifiable")
+    assert "reading-1.run.json" in report["detail"]

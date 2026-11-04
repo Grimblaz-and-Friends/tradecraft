@@ -4929,12 +4929,11 @@ def _owed_cold_reading(state: WorkState) -> Marker | None:
     """The posted `open` reading no builder turn has yet received."""
     if state.validated_markers is None:
         validate_marker_claims(state)
-    try:
-        for marker in reversed(state.markers):
-            if marker.name == "cold-reading" and marker.attributes.get("status") == "open":
-                return None if _builder_turn_after(state, marker) is not None else marker
-    except (OSError, WorkError):
-        return None
+    # Fails closed like the gate: a damaged reading stops the prompt rather than leaving it out.
+    _cold_readings(state)
+    for marker in reversed(state.markers):
+        if marker.name == "cold-reading" and marker.attributes.get("status") == "open":
+            return None if _builder_turn_after(state, marker) is not None else marker
     return None
 
 
@@ -4957,7 +4956,13 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
                           detail="A cold reading reads an open implementing pull request's head.")
         _emit_report(_reported_decision(state, refusal).as_dict(), state)
         return 0
-    plan = _cold_reading_plan(state, sha)
+    try:
+        plan = _cold_reading_plan(state, sha)
+    except (cold_reader.ColdReaderError, WorkError, OSError) as exc:
+        unverifiable = _cold_reading_unverifiable(sha, exc)
+        _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
+                     reason=unverifiable.reason, detail=unverifiable.detail)).as_dict(), state)
+        return 0
     gate = _cold_reading_decision(state, sha)
     covered = (json.loads(gate.detail)["covered"] if gate is not None and gate.stage == "cold-reader"
                else sorted(plan["present"]["change_set"]))
