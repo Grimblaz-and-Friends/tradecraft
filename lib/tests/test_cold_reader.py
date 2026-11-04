@@ -168,7 +168,7 @@ def test_assess_rereads_a_file_whose_pointed_document_changed():
 def test_assess_holds_a_flag_on_an_unchanged_dependency():
     first = reading("r1", {"a": entry("a1", [X])}, flags=["design/x.md"])
     result = cold_reader.assess([first], present(a=entry("a1", [X])))
-    assert result["covered"] and result["flags"]
+    assert not result["stale"] and result["flags"]
 
 
 def test_assess_only_a_whole_reading_clears_cannot_tell():
@@ -242,7 +242,8 @@ def test_an_open_reading_counts_only_with_the_seat_return_unaltered(repository):
 
 
 CLEAN = ACCOUNT.replace("a.py:2 {dash} what-comment {dash} the second line restates the code", "none")
-SPLIT = datetime(*map(int, DAY.split("-")), 10, tzinfo=timezone.utc)
+# The brief posts at the clock's start, so every comment and turn the harness adds orders after it.
+CLOCK_START = datetime(*map(int, DAY.split("-")), 10, tzinfo=timezone.utc)
 
 
 def flagged(path, tell="yes"):
@@ -261,7 +262,7 @@ class Change:
         self.root = tmp_path / "source"
         self.root.mkdir()
         self.store = tmp_path / "store"
-        self.clock = SPLIT
+        self.clock = CLOCK_START
         self.comments = []
         self.readings = 0
         # The ledger comparison has its own suite; here it would read an unrelated store.
@@ -342,7 +343,7 @@ class Change:
 
     def state(self, draft=True):
         fixture = test_work.state(self.brief, pr=True, draft=draft, config=self.config)
-        fixture.issue_comments[0]["created_at"] = SPLIT.isoformat()
+        fixture.issue_comments[0]["created_at"] = CLOCK_START.isoformat()
         fixture.issue_comments.extend(self.comments)
         fixture.issue_comments.append({"body": f"<!-- tradecraft:floor:v1 head={self.head} status=pass -->",
                                        "user": {"login": test_work.PRODUCER}})

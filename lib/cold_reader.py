@@ -264,13 +264,14 @@ def compose_prompt(metadata: dict, standard: str, diff_text: str | None) -> byte
     parts = [
         "You are the cold reader for one change. Perform this one reading and return your "
         "account in your final message. Dispatch nothing of your own. Your root is a detached "
-        "neutral commit holding only the changed files, the design documents they point to and "
-        "the decision records those sections list; any always-on text reaching you from "
-        "elsewhere is not your governing text. Links to an issue tracker or pull request are "
+        "neutral commit holding only the changed files, the design documents the files this "
+        "reading covers point to, and the files linked inside those pointed sections; any "
+        "always-on text reaching you from elsewhere is not your governing text. Links to an issue tracker or pull request are "
         "outside your material: do not follow them.",
         "## The standard the code is read against\n\n" + standard.strip(),
-        ("## The change's diff\n\n```diff\n" + diff_text.rstrip("\n") + "\n```") if diff_text is not None
-        else f"## The change's diff\n\nThe whole diff is the file `{DIFF_FILE}` at your root.",
+        ("## The diff of the files this reading covers\n\n```diff\n" + diff_text.rstrip("\n") + "\n```")
+        if diff_text is not None
+        else f"## The diff of the files this reading covers\n\nIt is the file `{DIFF_FILE}` at your root.",
     ]
     if not metadata.get("whole"):
         parts.append(
@@ -358,7 +359,6 @@ def assess(readings: list[dict], present: dict) -> dict:
             latest[path] = reading
     stale = sorted(path for path in changed
                    if path not in latest or latest[path]["coverage"][path] != present["coverage"][path])
-    uncovered = sorted(path for path in changed if path not in latest)
     reachable = set(changed).union(*(dependency_paths(entry) for entry in present["coverage"].values()))
     standing_flags, seen = [], set()
     for index, reading in enumerate(readings):
@@ -383,6 +383,5 @@ def assess(readings: list[dict], present: dict) -> dict:
     standing_no = bool(said_no) and not any(
         reading["account"]["can_tell"] is True and set(changed) <= set(reading["coverage"])
         for reading in readings[said_no[-1] + 1:])
-    return {"stale": stale, "uncovered": uncovered, "flags": standing_flags, "owed": sorted(owed),
-            "standing_no": standing_no, "covered": not stale}
+    return {"stale": stale, "flags": standing_flags, "owed": sorted(owed), "standing_no": standing_no}
 
