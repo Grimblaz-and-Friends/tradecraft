@@ -24,6 +24,46 @@ class ReplayError(RuntimeError):
 
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+KEY_IN_RESULTS = "results contained the API key; nothing was written"
+
+
+def read_api_key_file(path: Path) -> str:
+    """Read one API key from a file, naming only the path when it cannot be used."""
+    # A decode error quotes the offending bytes, so no exception text or chain may surface.
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise ReplayError(f"API key file is unreadable: {path}") from None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ReplayError(f"API key file is not UTF-8 text: {path}") from None
+    key = text.removeprefix("\ufeff").strip()
+    if not key:
+        raise ReplayError(f"API key file is empty: {path}")
+    if any(char.isspace() for char in key):
+        raise ReplayError(f"API key file holds more than one line or token: {path}")
+    return key
+
+
+def _credentials(api_key: str | None) -> cr.ReviewCredentials:
+    # A file key ignores the environment, so a spent key can never fall back to a token.
+    if api_key is not None:
+        return cr.ReviewCredentials(api_key, None)
+    return cr.review_credentials(os.environ)
+
+
+def refuse_secret(value: dict[str, Any], secret: str | None) -> None:
+    if secret is not None and (
+        cr._payload_contains_secret(value, secret)
+        or secret in json.dumps(value, ensure_ascii=True, sort_keys=True)
+    ):
+        raise ReplayError(KEY_IN_RESULTS)
+
+
+def write_results(path: Path, value: dict[str, Any], secret: str | None) -> None:
+    refuse_secret(value, secret)
+    write_object(path, value)
 
 
 def read_object(path: Path) -> dict[str, Any]:
@@ -480,6 +520,7 @@ def run_replay(
     preload_budget_bytes: int = cr.DEFAULT_PRELOAD_BUDGET_BYTES,
     summarise_deleted_files: bool = False,
     summary_threshold_bytes: int | None = None,
+    api_key: str | None = None,
 ) -> dict[str, Any]:
     _validate_run_options(
         checker_prompt, single_pass, finder_effort, checker_effort,
@@ -512,7 +553,7 @@ def run_replay(
     pending = [case for case in manifest["cases"] if case["id"] not in completed]
     if pending:
         try:
-            cr.review_credentials(os.environ)
+            _credentials(api_key)
         except cr.ReviewError as exc:
             raise ReplayError(str(exc)) from exc
         cr.verify_managed_settings()
@@ -529,6 +570,7 @@ def run_replay(
         "base_attribute_sources": {case["id"]: case["base_attributes_sha256"] for case in manifest["cases"]},
         "resumed_cases": resumed_cases,
         "case_harness_sha256": case_harnesses,
+        "credential_source": "environment" if api_key is None else "api-key-file",
         "complete": False,
         "cases": list(completed.values()),
     }
@@ -537,13 +579,13 @@ def run_replay(
         len(record["cases"]) == len(record["manifest_cases"])
         and all(case.get("status") == "completed" for case in record["cases"])
     )
-    write_object(output, record)
+    write_results(output, record, api_key)
     for case in pending:
         case_result: dict[str, Any] = {
             "case_id": case["id"], "head": case["head"], "base": case["base"],
         }
         # Each case starts on the key, as each live review does.
-        credentials = cr.review_credentials(os.environ)
+        credentials = _credentials(api_key)
         try:
             with tempfile.TemporaryDirectory(prefix="connected-review-replay-case-") as temporary:
                 temporary_root = Path(temporary)
@@ -668,7 +710,7 @@ def run_replay(
             len(record["cases"]) == len(record["manifest_cases"])
             and all(case.get("status") == "completed" for case in record["cases"])
         )
-        write_object(output, record)
+        write_results(output, record, api_key)
     return record
 
 
@@ -894,6 +936,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--preload-changed-files", action="store_true")
     run.add_argument("--summarise-deleted-files", action="store_true")
     run.add_argument("--summary-threshold-bytes", type=int)
+    run.add_argument("--api-key-file", type=Path)
     grade = commands.add_parser("grade")
     grade.add_argument("--results", required=True, type=Path)
     grade.add_argument("--answer-key", required=True, type=Path)
@@ -905,10 +948,13 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: Iterable[str] | None = None) -> int:
     utf8_stdio()
     args = parser().parse_args(argv)
+    secret = None
     try:
         if args.command == "export":
             result = export_replay(args.manifest, args.output)
         elif args.command == "run":
+            if args.api_key_file is not None:
+                secret = read_api_key_file(args.api_key_file)
             executable = cr.resolve_command("claude", args.claude)
             result = run_replay(
                 args.export, args.output, args.finder_prompt, args.checker_prompt,
@@ -919,10 +965,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                 preload_changed_files=args.preload_changed_files,
                 summarise_deleted_files=args.summarise_deleted_files,
                 summary_threshold_bytes=args.summary_threshold_bytes,
+                api_key=secret,
             )
         else:
             result = grade_replay(args.results, args.answer_key, args.decisions)
             write_object(args.output, result)
+        refuse_secret(result, secret)
         print(json.dumps(result, ensure_ascii=True, sort_keys=True))
         return 0
     except (ReplayError, cr.ReviewError, cr.CliError, OSError) as exc:

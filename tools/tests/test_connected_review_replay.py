@@ -1282,3 +1282,131 @@ def test_policy_two_results_cannot_resume_under_policy_three(tmp_path):
     replay.write_object(path, results)
     with pytest.raises(replay.ReplayError, match="coverage_policy_version, over_budget_summary"):
         replay._resume_cases(path, replay.validate_export(export), current)
+
+
+# The replay reads its API key from a named file and never echoes it (#902, row 5).
+
+SENTINEL_KEY = "sk-ant-sentinel-0123456789"
+
+
+def key_file(tmp_path, content: bytes = SENTINEL_KEY.encode("ascii") + b"\n") -> Path:
+    path = tmp_path / "secrets" / "replay.key"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def recording_cli(monkeypatch, outcomes):
+    """A fake CLI that records each launch's argv, stdin and credential values."""
+    launches = []
+    queue = list(outcomes)
+
+    def run(command, **kwargs):
+        environment = kwargs.get("environment") or {}
+        launches.append({
+            "argv": list(command),
+            "stdin": kwargs.get("input_bytes") or b"",
+            "credentials": {
+                name: environment[name]
+                for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN") if name in environment
+            },
+        })
+        outcome = queue.pop(0)
+        if isinstance(outcome, dict):
+            events = [{"type": "result", "is_error": False, "structured_output": outcome, "usage": {}}]
+            stdout = "\n".join(json.dumps(item) for item in events).encode()
+            return replay.cr.subprocess.CompletedProcess(command, 0, stdout, b"")
+        recorded = json.loads((FIXTURES / outcome).read_text(encoding="utf-8"))
+        stdout = "\n".join(json.dumps(item) for item in recorded["events"]).encode()
+        return replay.cr.subprocess.CompletedProcess(command, 1, stdout, recorded["stderr"].encode())
+
+    monkeypatch.setattr(replay.cr, "_run", run)
+    monkeypatch.setattr(replay.cr, "resolve_command", lambda _name, explicit=None: "claude")
+    return launches
+
+
+def key_file_main(tmp_path, key: Path, *extra: str) -> tuple[int, Path]:
+    export = tmp_path / "export"
+    if not export.exists():
+        build_export(export, cases=1)
+    finder = tmp_path / "finder.md"
+    finder.write_text("finder", encoding="utf-8")
+    output = tmp_path / "results.json"
+    code = replay.main([
+        "run", "--export", str(export), "--output", str(output), "--finder-prompt", str(finder),
+        "--checker-prompt", str(finder), "--revision", HEAD, "--single-pass", "--finder-effort", "high",
+        "--api-key-file", str(key), *extra,
+    ])
+    return code, output
+
+
+def test_key_file_reaches_only_the_child_environment(tmp_path, monkeypatch, capsys):
+    prepare_run(monkeypatch)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN")
+    launches = recording_cli(monkeypatch, [{"candidates": []}])
+    code, output = key_file_main(tmp_path, key_file(tmp_path, b"\xef\xbb\xbf  " + SENTINEL_KEY.encode() + b"\r\n"))
+    captured = capsys.readouterr()
+    assert code == 0, captured.out
+    assert [launch["credentials"] for launch in launches] == [{"ANTHROPIC_API_KEY": SENTINEL_KEY}]
+    assert all(SENTINEL_KEY not in " ".join(launch["argv"]) for launch in launches)
+    assert all(SENTINEL_KEY.encode() not in launch["stdin"] for launch in launches)
+    assert SENTINEL_KEY not in captured.out + captured.err
+    assert SENTINEL_KEY.encode() not in output.read_bytes()
+    record = replay.read_object(output)
+    assert record["credential_source"] == "api-key-file"
+    assert record["cases"][0]["credential"] == {"finder:coverage": {"credentials": ["api-key"]}}
+
+
+@pytest.mark.parametrize(("content", "problem"), [
+    (None, "unreadable"),
+    (SENTINEL_KEY.encode() + b"\xff\n", "not UTF-8 text"),
+    (b" \r\n\t", "empty"),
+    (SENTINEL_KEY.encode() + b"\n" + SENTINEL_KEY.encode() + b"\n", "more than one line or token"),
+    (SENTINEL_KEY.encode() + b" second\n", "more than one line or token"),
+])
+def test_unusable_key_file_stops_before_launch_naming_only_the_path(tmp_path, monkeypatch, capsys, content, problem):
+    prepare_run(monkeypatch)
+    launches = recording_cli(monkeypatch, [])
+    key = tmp_path / "secrets" / "missing.key" if content is None else key_file(tmp_path, content)
+    code, output = key_file_main(tmp_path, key)
+    captured = capsys.readouterr()
+    assert code == 1 and launches == [] and not output.exists()
+    cause = json.loads(captured.out)["cause"]
+    assert cause == f"API key file is {problem}: {key}" or cause == f"API key file holds {problem}: {key}"
+    assert SENTINEL_KEY not in captured.out + captured.err
+
+
+def test_key_file_ignores_environment_credentials_and_never_switches(tmp_path, monkeypatch, capsys):
+    prepare_run(monkeypatch)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "environment-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "environment-key")
+    launches = recording_cli(monkeypatch, ["connected_review_claude_key_credit_too_low.json"])
+    code, output = key_file_main(tmp_path, key_file(tmp_path))
+    capsys.readouterr()
+    assert code == 0
+    assert [launch["credentials"] for launch in launches] == [{"ANTHROPIC_API_KEY": SENTINEL_KEY}]
+    case = replay.read_object(output)["cases"][0]
+    assert case["status"] == "error" and case["error"].startswith("Claude API key budget spent (")
+    assert case["credential"] == {"finder:coverage": {"credentials": ["api-key"]}}
+
+
+def test_results_holding_the_key_are_refused_before_writing(tmp_path, monkeypatch, capsys):
+    prepare_run(monkeypatch)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN")
+    echoed = candidate("echo", f"the key {SENTINEL_KEY} is echoed")
+    del echoed["id"]
+    echoed["id"] = "1"
+    recording_cli(monkeypatch, [{"candidates": [echoed]}])
+    code, output = key_file_main(tmp_path, key_file(tmp_path))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert json.loads(captured.out)["cause"] == replay.KEY_IN_RESULTS
+    assert SENTINEL_KEY not in captured.out + captured.err
+    assert SENTINEL_KEY.encode() not in output.read_bytes()
+    assert replay.read_object(output)["cases"] == []
+
+
+def test_run_without_key_file_records_the_environment_as_its_source(tmp_path, monkeypatch):
+    prepare_run(monkeypatch)
+    replay_cli(monkeypatch, ["success"])
+    assert single_pass_replay(tmp_path, 1)["credential_source"] == "environment"
