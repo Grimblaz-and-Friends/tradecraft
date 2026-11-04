@@ -635,7 +635,8 @@ def test_a_per_issue_override_names_the_cold_reader():
     settings = work._launch_settings(fixture, "cold-reader", "claude", "cold")
     assert (settings.model, settings.effort) == ("override-model", "high")
     default = work._launch_settings(test_work.state(), "cold-reader", "claude", "cold")
-    assert (default.model, default.effort) == ("claude-opus-5-5", "xhigh")
+    assert (default.model, default.effort) == (dispatch_seat.DEFAULT_MODELS["claude"],
+                                               dispatch_seat.CLAUDE_EFFORTS["cold"])
 
 
 @pytest.mark.cold_reading
@@ -831,3 +832,10 @@ def test_a_reading_that_cant_be_judged_sets_aside_a_later_clean(change):
     assert decision.reason == "cold-reading-unverifiable"
     assert [claim["reason"] for claim in fixture.invalid_marker_claims if claim["name"] == "cold-reading"] == [
         "cold-reading clean while the reading can't be judged"]
+
+
+def test_a_flag_on_the_diff_file_is_refused_for_the_changed_file_it_shows():
+    account = flagged(cold_reader.DIFF_FILE)
+    message = "flag names the diff file rather than the changed file it shows: " + cold_reader.DIFF_FILE
+    assert cold_reader.form_errors(account) == [message]
+    assert cold_reader.form_errors(account, {"a.py", cold_reader.DIFF_FILE}) == [message]

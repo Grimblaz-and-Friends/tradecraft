@@ -30,6 +30,7 @@ HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 # Built at run time: string constants stay ASCII, since a platform encoding can garble captured output.
 EM_DASH, EN_DASH = chr(0x2014), chr(0x2013)
+# Lenient on dashes, bullets and backticks, so a reader's stray formatting doesn't refuse a whole account.
 FLAG_LINE = re.compile(
     r"^(?:[-*][ \t]+)?`?(?P<path>[^\s:`]+)(?::(?P<lines>[0-9]+(?:[-" + EN_DASH + r"][0-9]+)?))?`?"
     r"[ \t]+[" + EM_DASH + r"-][ \t]+(?P<kind>" + "|".join(FLAG_KINDS) + r")[ \t]+["
@@ -286,7 +287,8 @@ def compose_prompt(metadata: dict, standard: str, diff_text: str | None) -> byte
         + " text`, where KIND is one of "
         + ", ".join(f"`{kind}`" for kind in FLAG_KINDS) + ". A flag may name a carried file the "
         "change didn't alter, such as a design-document section missing an entry. With no flags, "
-        "write the single word `none`. Each flag names a file in your root.\n\n"
+        "write the single word `none`. Each flag names a file in your root, and a flag on the diff names "
+        "the changed file whose lines it shows.\n\n"
         "## Why this change was made\nIts first line is exactly `Can tell: yes` or `Can tell: no`. "
         "Then say which file the reason came from, or why you can't tell."
         + ("" if metadata.get("whole") else " Answer only for the paths this reread covers.")
@@ -316,11 +318,14 @@ def form_errors(text: str, carried: set[str] | None = None) -> list[str]:
     flags = [line for line in found.get("## Flags", []) if line.strip()]
     if "## Flags" in found and flags != ["none"]:
         errors.extend(f"malformed flag line: {line}" for line in flags if not FLAG_LINE.match(line))
+        named = [match.group("path").removeprefix("./") for match in map(FLAG_LINE.match, flags) if match]
+        # The diff file isn't part of the change, so a flag on it names nothing a later reading reaches.
+        errors.extend(f"flag names the diff file rather than the changed file it shows: {path}"
+                      for path in named if path == DIFF_FILE)
         # A flag on a file the reading never held could never be cleared by a later reading.
         if carried is not None:
-            errors.extend(f"flag names a path outside the reading's tree: {match.group('path')}"
-                          for match in map(FLAG_LINE.match, flags)
-                          if match and match.group("path").removeprefix("./") not in carried)
+            errors.extend(f"flag names a path outside the reading's tree: {path}"
+                          for path in named if path != DIFF_FILE and path not in carried)
         if not flags:
             errors.append("## Flags holds neither flag lines nor `none`")
     why = [line for line in found.get("## Why this change was made", []) if line.strip()]
@@ -350,7 +355,8 @@ def _reaches(reading: dict, path: str) -> bool:
 def assess(readings: list[dict], present: dict) -> dict:
     """Judge the current change set against readings ordered oldest first.
 
-    Each reading carries its metadata coverage, whether it was whole, and its parsed account.
+    Each reading carries its metadata coverage and its parsed account; wholeness is judged from that
+    coverage against the current change set.
     """
     changed = present["change_set"]
     latest: dict[str, dict] = {}
