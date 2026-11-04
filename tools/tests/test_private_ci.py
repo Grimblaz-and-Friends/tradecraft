@@ -930,7 +930,8 @@ def test_a5_the_declared_list_is_the_gate_and_the_reviewers_two_hosted_jobs():
     assert [(e["path"], e["job"]) for e in HOSTED] == [
         (GATE, "Change proof (required) / Change proof"),
         (REVIEW, "connected-review / prepare"),
-        (REVIEW, "connected-review / report")]
+        (REVIEW, "connected-review / report"),
+        (CI, "Deploy to GitHub Pages")]
 
 
 def october(actions: FakeActions) -> None:
@@ -960,7 +961,9 @@ def test_a8_quiet_on_octobers_declared_volumes(tmp_path):
     found = pw.watch(GitHubView(actions), tmp_path, NOW, repos=REPOS, hosted=HOSTED)
     assert found["minutes"] == 210 + 89 * 2  # each job rounded up to one minute
     assert found["alerts"] == [] and found["posted"] is None
-    assert all(entry["matched"] for entry in found["declared"])
+    # October's fixture runs no Pages deploy, so only that entry goes unmatched.
+    assert [(e["path"], e["job"]) for e in found["declared"] if not e["matched"]] == [
+        (CI, "Deploy to GitHub Pages")]
     assert actions.calls == []
 
 
