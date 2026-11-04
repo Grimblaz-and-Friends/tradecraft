@@ -739,8 +739,11 @@ def test_a_clean_before_the_latest_reading_is_posted_is_set_aside(change):
 def test_an_override_moves_the_reader_to_its_vendor_and_staffing_follows(change, monkeypatch, capsys,
                                                                           builder, reason):
     change.post("<!-- tradecraft:model-override:v1 cold_reader=codex:override-model:high -->")
+    plans = []
+    monkeypatch.setattr(work.setting_resolution, "print_plan", lambda plan, label: plans.append(plan))
     _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean(), builder=builder)
     assert option(command, "--vendor") == "codex" and option(command, "--codex-model") == "override-model"
+    assert plans[-1]["primary"]["vendor"] == "codex" and plans[-1]["fallback"]["vendor"] == builder
     assert ("--same-vendor-reason" in command) == (reason is not None)
     if reason:
         assert option(command, "--same-vendor-reason") == reason

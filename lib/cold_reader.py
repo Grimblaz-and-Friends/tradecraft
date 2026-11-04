@@ -126,7 +126,7 @@ def _section_records(document: str, text: str, anchor: str, tree: dict[str, str]
 
 
 def dependencies(root: Path, tree: dict[str, str], path: str) -> list[dict]:
-    """Follow a changed file's pointers, and each pointed section's in-force links, only."""
+    """Follow a changed file's pointers, and every relative link inside each pointed section, only."""
     oid = tree.get(path)
     text = _blob_text(root, oid) if oid else None
     if text is None:

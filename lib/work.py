@@ -5018,6 +5018,10 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     launch_plan = _launch_plan(state, decision, resolve_comparison=False)
     # The role's resolved vendor launches the seat, so an override moves it; staffing is judged against it.
     vendor, vendor_source = _seat_vendor(state, "cold-reader")
+    launch_plan["primary"] = launch_plan["vendors"][vendor]
+    launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+                               **dispatch_seat.fallback_plan(vendor, own_vendor, "read"),
+                               "comparison_vendor_source": own_source}
     # Claude on Claude is the owner's machine-wide implementer choice; Codex on Codex is his override here.
     same_vendor = {"claude": "owner-selected-claude-implementer",
                    "codex": "owner-selected-codex-cold-reader"}[vendor]
@@ -5033,10 +5037,6 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         *_seat_launch_arguments(state, "cold-reader", "cold", claude_path=claude_path,
                                 codex_path=codex_path, plan=launch_plan),
     ]
-    launch_plan["primary"] = launch_plan["vendors"][vendor]
-    launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
-                               **dispatch_seat.fallback_plan(vendor, own_vendor, "read"),
-                               "comparison_vendor_source": own_source}
     setting_resolution.print_plan(launch_plan, label="work")
     code = _invoke_recipient(command, deadline)
     try:
@@ -6097,6 +6097,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
                 "--- holder reading begin ---\n" + reading.body
                 + "\n--- holder reading end ---"
             )
+    # These stages all resume the one builder, so whichever turn runs next carries the reading and is its review.
     if decision.stage in {"build", "floor", "review-disposition"}:
         owed = _owed_cold_reading(state)
         if owed is not None:
