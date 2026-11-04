@@ -4731,7 +4731,7 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
     return f";ignored-product-incident-from={','.join(authors)}" if authors else ""
 
 
-# Design: lib/DESIGN.md#the-cold-reader
+# Design: lib/DESIGN.md#the-cold-reader (COLD_READING_REVIEW through _execute_cold_reader)
 
 COLD_READING_REVIEW = (
     "A cold reader who never saw the issue, the brief or the pull request read this change, and the "
@@ -4830,8 +4830,8 @@ def _builder_turn_after(state: WorkState, opened: Marker) -> tuple | None:
         prompt = Path(path).with_name(Path(path).name.removesuffix(".run.json") + ".dispatch.bin")
         try:
             text = prompt.read_bytes().decode("utf-8", errors="replace")
-        except OSError:
-            continue
+        except OSError as exc:
+            raise WorkError(f"builder bundle's frozen prompt cannot be read: {path}: {exc}") from exc
         if _return_match_length(account, text):
             return completed, path, request, run
     return None
@@ -4973,15 +4973,25 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         _emit_report(_reported_decision(state, refusal).as_dict(), state)
         return 0
     try:
-        plan = _cold_reading_plan(state, sha)
+        _cold_reading_plan(state, sha)
     except (cold_reader.ColdReaderError, WorkError, OSError) as exc:
         unverifiable = _cold_reading_unverifiable(sha, exc)
         _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
                      reason=unverifiable.reason, detail=unverifiable.detail)).as_dict(), state)
         return 0
+    effective_timeout = timeout_seconds if timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
+    if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+        raise WorkError("--timeout-seconds must be finite and positive")
     gate = _cold_reading_decision(state, sha)
-    covered = (json.loads(gate.detail)["covered"] if gate is not None and gate.stage == "cold-reader"
-               else sorted(plan["present"]["change_set"]))
+    # Only the gate knows which paths are owed a reading, so a run it didn't order would read the wrong ones.
+    if gate is None or gate.stage != "cold-reader":
+        refusal = replace(decision, dispatch=False, continuity=None, status="refused",
+                          reason="cold-reading-not-owed",
+                          detail="The gate owes no reading at this head; it recommends "
+                          + (f"{gate.stage} ({gate.reason})" if gate is not None else "no cold-reading step") + ".")
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
+    covered = json.loads(gate.detail)["covered"]
     work = f"{state.repo}#{state.issue_number}"
     place = _cold_reading_source(state).parent / "cold-reader" / uuid.uuid4().hex
     numbers = [state.issue_number] + ([state.pr["number"]] if isinstance(state.pr.get("number"), int) else [])
@@ -5005,9 +5015,6 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     own_vendor, own_source = _producer_vendor(
         state, RESUME_SOURCE_STAGES["build"], revision=sha, source_root=state.holder_root)
     output = records.resolved_output(None, work, "cold-reader")
-    effective_timeout = timeout_seconds if timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
-    if not math.isfinite(effective_timeout) or effective_timeout <= 0:
-        raise WorkError("--timeout-seconds must be finite and positive")
     deadline = lifecycle.current_deadline() or lifecycle.stage_deadline("cold-reader", effective_timeout)
     launch_plan = _launch_plan(state, decision, resolve_comparison=False)
     # The role's resolved vendor launches the seat, so an override moves it; staffing is judged against it.

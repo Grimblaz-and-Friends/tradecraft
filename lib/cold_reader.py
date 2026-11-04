@@ -1,11 +1,6 @@
 """Build the cold reader's isolated reading of a change, check its account, and judge currency.
 
 Design: lib/DESIGN.md#the-cold-reader
-
-The reader works from the changed files, the design-document sections they point to, and the
-decision records those sections list in force, because a reader who saw the brief can't show what
-the code alone explains. Nothing it holds names the change's branch; issue or pull-request numbers
-in a record the change adds are counted as residue.
 """
 from __future__ import annotations
 
@@ -89,8 +84,8 @@ def change_set(root: Path, base_tip: str, head: str) -> tuple[str, dict[str, str
 
 
 def slug(heading: str) -> str:
-    text = re.sub(r"[`*\[\]()]", "", heading).strip().lower()
-    return re.sub(r"[^\w\- ]", "", text).replace(" ", "-")
+    # GitHub's heading anchors: lowercased, punctuation but hyphens and underscores dropped, spaces as hyphens.
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
 
 
 def section(text: str, anchor: str) -> str | None:
@@ -342,8 +337,8 @@ def parse_account(text: str) -> dict:
 
 
 def _reaches(reading: dict, path: str) -> bool:
-    return (bool(reading.get("whole")) or path in reading["coverage"]
-            or any(path in dependency_paths(entry) for entry in reading["coverage"].values()))
+    return path in reading["coverage"] or any(
+        path in dependency_paths(entry) for entry in reading["coverage"].values())
 
 
 def assess(readings: list[dict], present: dict) -> dict:

@@ -1,4 +1,7 @@
-"""The cold reader's tree, prompt, account form and currency judgement."""
+"""The cold reader's tree, prompt, account form and currency judgement.
+
+Design: lib/DESIGN.md#the-cold-reader
+"""
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -18,8 +21,9 @@ import work  # noqa: E402
 
 BRANCH = "feature/fixture-branch"
 ISSUE_TITLE = "Distinctive issue title quokka"
-# Assembled from pieces so no added line carries a literal issue number or date for the history check.
-WORK = "example/product" + "#" + str(12)
+# Assembled at run time: the code-reasons standard keeps issue numbers and dates out of code as history.
+ISSUE = "#" + str(12)
+WORK = "example/product" + ISSUE
 DAY = "-".join(("2026", "11", "04"))
 
 
@@ -55,7 +59,7 @@ def repository(tmp_path):
     head = commit(root, {
         "a.py": "# Design: design/x.md#s\n# See design/y.md for more.\nPATH = \"notes/z.md\"\n",
         "b.py": "# Design: design/missing.md#s\n",
-        "decisions/D3.md": "# D3\n\nDecided in #" + "12" + ".\n",
+        "decisions/D3.md": "# D3\n\nDecided in " + ISSUE + ".\n",
     }, "change")
     return SimpleNamespace(root=root, base=base, head=head, tmp=tmp_path)
 
@@ -76,7 +80,7 @@ def test_tree_carries_only_changed_files_pointed_sections_and_their_in_force_rec
         assert not (tree / absent).exists()
     assert metadata["coverage"]["b.py"]["dependencies"][0]["blob"] == "absent"
     assert metadata["whole"] is True
-    assert metadata["residue"] == {"decisions/D3.md": {"#" + str(12): 1}}
+    assert metadata["residue"] == {"decisions/D3.md": {ISSUE: 1}}
     assert git(tree, "rev-list", "--count", "HEAD") == "1"
     assert git(tree, "remote") == ""
 
@@ -695,13 +699,16 @@ def test_the_stage_reports_a_damaged_reading_instead_of_raising(change, monkeypa
     assert "reading-1.run.json" in report["detail"]
 
 
-def test_a_flag_outside_a_readings_reach_stands_until_a_later_reading_reaches_it():
+def test_a_flag_stands_until_a_later_reading_reads_its_path_whole_or_not():
     outside = reading("r1", {"a": entry("a1")}, flags=["design/unwritten.md"])
     assert cold_reader.assess([outside], present(a=entry("a1")))["flags"]
     narrow = reading("r2", {"b": entry("b1")})
     assert cold_reader.assess([outside, narrow], present(a=entry("a1"), b=entry("b1")))["flags"]
     whole = {**reading("r3", {"a": entry("a1"), "b": entry("b1")}), "whole": True}
-    assert not cold_reader.assess([outside, narrow, whole], present(a=entry("a1"), b=entry("b1")))["flags"]
+    assert cold_reader.assess([outside, narrow, whole], present(a=entry("a1"), b=entry("b1")))["flags"]
+    reached = reading("r4", {"design/unwritten.md": entry("u1")})
+    changed = present(a=entry("a1"), b=entry("b1"), **{"design/unwritten.md": entry("u1")})
+    assert not cold_reader.assess([outside, narrow, whole, reached], changed)["flags"]
 
 
 def test_a_flag_on_a_shared_dependency_stands_once():
@@ -735,3 +742,38 @@ def test_the_design_section_the_new_code_points_at_names_its_decisions():
         assert "lib/DESIGN.md#the-cold-reader" in (lib / name).read_text("utf-8")
     body = cold_reader.section((lib / "DESIGN.md").read_text("utf-8"), "the-cold-reader")
     assert body is not None and "D-944" in body and "D-952" in body
+
+
+@pytest.mark.cold_reading
+def test_an_unreadable_builder_prompt_holds_the_gate_naming_its_bundle(change):
+    change.read(clean())
+    change.post_open(clean())
+    name = change.review("--- cold reading begin ---\nlost\n--- cold reading end ---")
+    (change.store / f"{name}.dispatch.bin").unlink()
+    decision = change.decide()
+    assert decision.reason == "cold-reading-unverifiable" and name in decision.detail
+
+
+@pytest.mark.cold_reading
+def test_a_run_the_gate_did_not_order_is_refused(change, monkeypatch, capsys):
+    change.read(clean())
+    monkeypatch.setattr(work, "_invoke_recipient", lambda *_a: pytest.fail("no seat may launch"))
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    code = work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                                     dispatch_path=None, tree_metadata=None, timeout_seconds=600,
+                                     claude_path=None, codex_path=None)
+    report = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")][-1]
+    assert code == 0 and report["reason"].startswith("cold-reading-not-owed")
+    assert "cold-reading-post-owed" in report["detail"]
+
+
+@pytest.mark.cold_reading
+def test_a_bad_timeout_is_refused_before_any_tree_is_built(change):
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    with pytest.raises(work.WorkError, match="timeout"):
+        work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                                  dispatch_path=None, tree_metadata=None, timeout_seconds=-1,
+                                  claude_path=None, codex_path=None)
+    assert not (change.tmp / "cold-reader").exists()
