@@ -83,8 +83,8 @@ def change_set(root: Path, base_tip: str, head: str) -> tuple[str, dict[str, str
     return base, dict(sorted(paths.items()))
 
 
-def slug(heading: str) -> str:
-    # GitHub's heading anchors: lowercased, punctuation but hyphens and underscores dropped, spaces as hyphens.
+def github_anchor(heading: str) -> str:
+    # Pointers are written against the anchors the document's renderer gives its headings.
     return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
 
 
@@ -101,7 +101,7 @@ def section(text: str, anchor: str) -> str | None:
         if match is None:
             continue
         depth = len(match.group(1))
-        if start is None and slug(match.group(2)) == anchor:
+        if start is None and github_anchor(match.group(2)) == anchor:
             start, level = number, depth
         elif start is not None and depth <= level:
             return "\n".join(lines[start:number])
@@ -220,8 +220,8 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
             recipient_tree._prove_neutral_repository(staged, source)
         except recipient_tree.RecipientTreeError as exc:
             raise ColdReaderError(str(exc)) from exc
-        # Counted, not refused: a decision record the change adds lawfully names them, and its links
-        # are dead to a reader with no network.
+        # Counted in every carried file, not refused: a decision record the change adds lawfully names
+        # them, and their links are dead to a reader with no network.
         residue = {}
         for name in sorted(claims):
             content = (staged / Path(*PurePosixPath(name).parts)).read_text("utf-8", errors="replace")
@@ -285,7 +285,7 @@ def compose_prompt(metadata: dict, standard: str, diff_text: str | None) -> byte
         + " text`, where KIND is one of "
         + ", ".join(f"`{kind}`" for kind in FLAG_KINDS) + ". A flag may name a carried file the "
         "change didn't alter, such as a design-document section missing an entry. With no flags, "
-        "write the single word `none`.\n\n"
+        "write the single word `none`. Each flag names a file in your root.\n\n"
         "## Why this change was made\nIts first line is exactly `Can tell: yes` or `Can tell: no`. "
         "Then say which file the reason came from, or why you can't tell."
         + ("" if metadata.get("whole") else " Answer only for the paths this reread covers.")
@@ -308,13 +308,18 @@ def _sections(text: str) -> dict[str, list[str]]:
     return found
 
 
-def form_errors(text: str) -> list[str]:
+def form_errors(text: str, carried: set[str] | None = None) -> list[str]:
     """Check only the account's form; everything else is the reader's judgement."""
     found = _sections(text)
     errors = [f"missing heading {heading}" for heading in HEADINGS if heading not in found]
     flags = [line for line in found.get("## Flags", []) if line.strip()]
     if "## Flags" in found and flags != ["none"]:
         errors.extend(f"malformed flag line: {line}" for line in flags if not FLAG_LINE.match(line))
+        # A flag on a file the reading never held could never be cleared by a later reading.
+        if carried is not None:
+            errors.extend(f"flag names a path outside the reading's tree: {match.group('path')}"
+                          for match in map(FLAG_LINE.match, flags)
+                          if match and match.group("path").removeprefix("./") not in carried)
         if not flags:
             errors.append("## Flags holds neither flag lines nor `none`")
     why = [line for line in found.get("## Why this change was made", []) if line.strip()]
@@ -354,21 +359,30 @@ def assess(readings: list[dict], present: dict) -> dict:
     stale = sorted(path for path in changed
                    if path not in latest or latest[path]["coverage"][path] != present["coverage"][path])
     uncovered = sorted(path for path in changed if path not in latest)
+    reachable = set(changed).union(*(dependency_paths(entry) for entry in present["coverage"].values()))
     standing_flags, seen = [], set()
     for index, reading in enumerate(readings):
         for flag in reading["account"]["flags"]:
             # Fails closed: only a later reading that reaches the flag's path can clear it.
             if any(_reaches(later, flag["path"]) for later in readings[index + 1:]):
                 continue
+            # Nothing in the change reaches it any more, so the reread of what changed answers for it.
+            if flag["path"] not in reachable:
+                continue
             key = (reading["id"], flag["path"], flag["kind"], flag["text"])
             if key not in seen:
                 seen.add(key)
                 standing_flags.append({**flag, "reading": reading["id"]})
+    # A flag answered without touching its file still needs a reading that reaches it to clear.
+    owed = set(stale)
+    for flag in standing_flags:
+        owed.update(path for path in changed if path == flag["path"]
+                    or flag["path"] in dependency_paths(present["coverage"][path]))
     said_no = [index for index, reading in enumerate(readings) if reading["account"]["can_tell"] is False]
     # A reread narrower than the change answers only for the files it read.
     standing_no = bool(said_no) and not any(
         reading["account"]["can_tell"] is True and set(changed) <= set(reading["coverage"])
         for reading in readings[said_no[-1] + 1:])
-    return {"stale": stale, "uncovered": uncovered, "flags": standing_flags,
+    return {"stale": stale, "uncovered": uncovered, "flags": standing_flags, "owed": sorted(owed),
             "standing_no": standing_no, "covered": not stale}
 

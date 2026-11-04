@@ -4764,7 +4764,7 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
         except (OSError, UnicodeError, cold_reader.ColdReaderError) as exc:
             raise WorkError(f"cold-reader bundle cannot be read: {path}: {exc}") from exc
         # The stage refused this return for its form, so it was never a reading.
-        if cold_reader.form_errors(returned):
+        if cold_reader.form_errors(returned, set(metadata["files"])):
             continue
         readings.append({"id": path, "completed_at": completed, "request": request, "run": run,
                          "return": returned, "coverage": metadata["coverage"],
@@ -4774,7 +4774,10 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
 
 
 def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
-    """Tie an `open` reading to the seat return it quotes whole; a hand-corrected account fails."""
+    """Tie an `open` reading to the seat return it quotes whole; a hand-corrected account fails.
+
+    Correcting the account would hide the gap the reading exists to find.
+    """
     try:
         found = _cold_readings(state)
     except WorkError as exc:
@@ -4805,7 +4808,7 @@ def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
 
 
 def _cold_reading_due(state: WorkState) -> bool:
-    """A reading is owed once a builder turn exists to read, as reach is."""
+    """A reading is owed once a builder turn exists: without one, no builder can be resumed for its fixes."""
     if any(marker.name == "builder-session" for marker in state.issue_markers):
         return True
     try:
@@ -4898,6 +4901,7 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     try:
         turn = _builder_turn_after(state, review)
     except (WorkError, OSError) as exc:
+        _set_aside(state, closing, "cold-reading clean while the builder's review can't be read")
         return _cold_reading_unverifiable(sha, exc)
     if turn is None:
         _set_aside(state, closing, "cold-reading clean before a builder turn received its open reading")
@@ -4907,15 +4911,13 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
         _set_aside(state, closing, "cold-reading clean while a Can tell: no stands")
         return Decision("cold-reader", True, "fresh", "cold-reading-why-owed",
                         json.dumps({"covered": sorted(plan["present"]["change_set"])}))
-    if assessment["stale"]:
-        _set_aside(state, closing, "cold-reading clean over a stale or uncovered path")
-        return Decision("cold-reader", True, "fresh", "cold-reading-stale",
-                        json.dumps({"covered": assessment["stale"]}))
-    if assessment["flags"]:
-        problem = "a flag stands: " + json.dumps(assessment["flags"], ensure_ascii=True)
-        _set_aside(state, closing, "cold-reading clean while " + problem)
-        return Decision("cold-reading-close", False, None, "cold-reading-close",
-                        "Route a repair to the resumed builder: " + problem, status="holder-owned")
+    if assessment["owed"]:
+        stale = bool(assessment["stale"])
+        _set_aside(state, closing, "cold-reading clean over a stale or uncovered path" if stale
+                   else "cold-reading clean while a flag stands")
+        return Decision("cold-reader", True, "fresh",
+                        "cold-reading-stale" if stale else "cold-reading-flag-reread",
+                        json.dumps({"covered": assessment["owed"]}))
     reviewed = _time(turn[0])
     valid = [marker for marker in closing if marker.attributes["head"] == sha
              and reviewed is not None and _time(marker.timestamp) is not None
@@ -4972,17 +4974,14 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
                           detail="A cold reading reads an open implementing pull request's head.")
         _emit_report(_reported_decision(state, refusal).as_dict(), state)
         return 0
-    try:
-        _cold_reading_plan(state, sha)
-    except (cold_reader.ColdReaderError, WorkError, OSError) as exc:
-        unverifiable = _cold_reading_unverifiable(sha, exc)
-        _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
-                     reason=unverifiable.reason, detail=unverifiable.detail)).as_dict(), state)
-        return 0
     effective_timeout = timeout_seconds if timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
     if not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise WorkError("--timeout-seconds must be finite and positive")
     gate = _cold_reading_decision(state, sha)
+    if gate is not None and gate.reason == "cold-reading-unverifiable":
+        _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
+                     reason=gate.reason, detail=gate.detail)).as_dict(), state)
+        return 0
     # Only the gate knows which paths are owed a reading, so a run it didn't order would read the wrong ones.
     if gate is None or gate.stage != "cold-reader":
         refusal = replace(decision, dispatch=False, continuity=None, status="refused",
@@ -5019,6 +5018,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     launch_plan = _launch_plan(state, decision, resolve_comparison=False)
     # The role's resolved vendor launches the seat, so an override moves it; staffing is judged against it.
     vendor, vendor_source = _seat_vendor(state, "cold-reader")
+    # Claude on Claude is the owner's machine-wide implementer choice; Codex on Codex is his override here.
     same_vendor = {"claude": "owner-selected-claude-implementer",
                    "codex": "owner-selected-codex-cold-reader"}[vendor]
     command = [
@@ -5044,7 +5044,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     except OSError:
         returned = None
     errors = (["the seat returned no account"] if returned is None
-              else cold_reader.form_errors(returned))
+              else cold_reader.form_errors(returned, set(metadata["files"])))
     _emit_report({
         "schema_version": 1, "work": work, "stage": "cold-reader", "bundle": str(output),
         "head": sha, "covered": covered, "whole": metadata["whole"], "residue": metadata["residue"],

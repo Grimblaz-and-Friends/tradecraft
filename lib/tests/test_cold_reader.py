@@ -20,8 +20,7 @@ import test_work  # noqa: E402
 import work  # noqa: E402
 
 BRANCH = "feature/fixture-branch"
-ISSUE_TITLE = "Distinctive issue title quokka"
-# Assembled at run time: the code-reasons standard keeps issue numbers and dates out of code as history.
+# Assembled at run time, so a search of the library for issue references or dates finds only real ones.
 ISSUE = "#" + str(12)
 WORK = "example/product" + ISSUE
 DAY = "-".join(("2026", "11", "04"))
@@ -92,7 +91,7 @@ def test_tree_naming_the_branch_is_refused_before_launch(repository):
         build(repository)
 
 
-def test_prompt_carries_the_standard_form_and_no_record_of_the_change(repository):
+def test_prompt_carries_the_standard_and_the_account_form(repository):
     metadata = cold_reader.load_metadata(build(repository))
     prompt = cold_reader.compose_prompt(metadata, "STANDARD TEXT", "diff body").decode("utf-8")
     for heading in cold_reader.HEADINGS:
@@ -100,7 +99,6 @@ def test_prompt_carries_the_standard_form_and_no_record_of_the_change(repository
     for kind in cold_reader.FLAG_KINDS:
         assert kind in prompt
     assert "Can tell: yes" in prompt and "STANDARD TEXT" in prompt and "At most 5" in prompt
-    assert BRANCH not in prompt and ISSUE_TITLE not in prompt
 
 
 def test_reread_prompt_names_its_covered_paths_for_reference_only(repository):
@@ -243,7 +241,7 @@ def test_an_open_reading_counts_only_with_the_seat_return_unaltered(repository):
 
 
 CLEAN = ACCOUNT.replace("a.py:2 {dash} what-comment {dash} the second line restates the code", "none")
-SPLIT = datetime(2026, 11, 4, 10, tzinfo=timezone.utc)
+SPLIT = datetime(*map(int, DAY.split("-")), 10, tzinfo=timezone.utc)
 
 
 def flagged(path, tell="yes"):
@@ -443,7 +441,7 @@ def test_a_reviewer_fix_after_readiness_is_read_again_before_proof(change):
 @pytest.mark.cold_reading
 def test_a_fix_made_only_in_the_pointed_document_rereads_its_file(change):
     change.reviewed(flagged("a.py"))
-    assert change.decide().reason == "cold-reading-close"
+    assert change.decide().reason == "cold-reading-flag-reread"
     change.commit({"design/x.md": "# Design\n\n## S\n\nWhy A. In force: [D1](../decisions/D1.md).\n"})
     decision = change.decide()
     assert decision.stage == "cold-reader" and "a.py" in covered(decision)
@@ -480,11 +478,13 @@ def test_a_flag_on_an_unchanged_dependency_holds_clean(change):
     change.reviewed(flagged("design/x.md"))
     change.post_clean()
     decision = change.decide()
-    assert decision.reason == "cold-reading-close" and "flag stands" in decision.detail
+    assert (decision.reason, covered(decision)) == ("cold-reading-flag-reread", ["a.py"])
     assert len(decision.invalid) == 1
     change.commit({"design/x.md": "# Design\n\n## S\n\nWhy A. In force: [D1](../decisions/D1.md).\n"})
     decision = change.decide()
     assert decision.stage == "cold-reader" and "a.py" in covered(decision)
+    change.reviewed(clean(), covered=covered(decision))
+    assert change.decide().reason == "cold-reading-close"
 
 
 @pytest.mark.cold_reading
@@ -700,15 +700,25 @@ def test_the_stage_reports_a_damaged_reading_instead_of_raising(change, monkeypa
 
 
 def test_a_flag_stands_until_a_later_reading_reads_its_path_whole_or_not():
-    outside = reading("r1", {"a": entry("a1")}, flags=["design/unwritten.md"])
-    assert cold_reader.assess([outside], present(a=entry("a1")))["flags"]
+    unwritten = {"pointer": "design/unwritten.md#s", "path": "design/unwritten.md", "blob": "absent",
+                 "records": []}
+    now = present(a=entry("a1", [unwritten]), b=entry("b1"))
+    flagged_reading = reading("r1", {"a": entry("a1", [unwritten]), "b": entry("b1")},
+                              flags=["design/unwritten.md"])
+    result = cold_reader.assess([flagged_reading], now)
+    assert result["flags"] and result["owed"] == ["a"]
     narrow = reading("r2", {"b": entry("b1")})
-    assert cold_reader.assess([outside, narrow], present(a=entry("a1"), b=entry("b1")))["flags"]
-    whole = {**reading("r3", {"a": entry("a1"), "b": entry("b1")}), "whole": True}
-    assert cold_reader.assess([outside, narrow, whole], present(a=entry("a1"), b=entry("b1")))["flags"]
-    reached = reading("r4", {"design/unwritten.md": entry("u1")})
-    changed = present(a=entry("a1"), b=entry("b1"), **{"design/unwritten.md": entry("u1")})
-    assert not cold_reader.assess([outside, narrow, whole, reached], changed)["flags"]
+    whole = {**reading("r3", {"b": entry("b1")}), "whole": True}
+    assert cold_reader.assess([flagged_reading, narrow, whole], now)["flags"]
+    reached = reading("r4", {"a": entry("a1", [unwritten])})
+    assert not cold_reader.assess([flagged_reading, narrow, whole, reached], now)["flags"]
+
+
+def test_a_flag_nothing_in_the_change_reaches_any_more_is_answered_by_the_reread():
+    first = reading("r1", {"a": entry("a1", [X])}, flags=["design/x.md"])
+    assert cold_reader.assess([first], present(a=entry("a1", [X])))["flags"]
+    result = cold_reader.assess([first], present(a=entry("a2")))
+    assert not result["flags"] and result["owed"] == ["a"]
 
 
 def test_a_flag_on_a_shared_dependency_stands_once():
@@ -777,3 +787,29 @@ def test_a_bad_timeout_is_refused_before_any_tree_is_built(change):
                                   dispatch_path=None, tree_metadata=None, timeout_seconds=-1,
                                   claude_path=None, codex_path=None)
     assert not (change.tmp / "cold-reader").exists()
+
+
+def test_a_flag_on_a_path_outside_the_tree_fails_the_form():
+    account = flagged("elsewhere.py")
+    assert cold_reader.form_errors(account) == []
+    assert cold_reader.form_errors(account, {"a.py"}) == [
+        "flag names a path outside the reading's tree: elsewhere.py"]
+
+
+@pytest.mark.cold_reading
+def test_a_reading_flagging_a_path_it_never_held_is_refused_and_run_again(change):
+    change.read(flagged("elsewhere.py"))
+    decision = change.decide()
+    assert (decision.reason, covered(decision)) == ("cold-reading-absent", ["a.py", "b.py"])
+    change.reviewed(clean())
+    assert change.decide().reason == "cold-reading-close"
+
+
+@pytest.mark.cold_reading
+def test_a_flag_answered_without_touching_its_file_is_reread_until_clear(change):
+    change.reviewed(flagged("a.py"))
+    change.commit({"b.py": "# Design: design/missing.md#s\nB = 2\n"})
+    decision = change.decide()
+    assert (decision.reason, covered(decision)) == ("cold-reading-stale", ["a.py", "b.py"])
+    change.reviewed(clean(), covered=covered(decision))
+    assert change.decide().reason == "cold-reading-close"

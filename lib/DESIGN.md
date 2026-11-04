@@ -6,10 +6,13 @@ The decision log stays in the practice's own repository and doesn't ship, so thi
 
 ## The cold reader
 
-**What it does now.** After each build, `run cold-reader` builds an isolated reading tree from the change set. The tree carries the changed files, the Markdown file each `path#anchor` pointer in them names, and the files linked inside that anchored section, verified against their committed blobs in one neutral detached commit. A tree that names the change's branch is refused before launch, and issue or pull-request numbers in a record the change adds are counted as residue. One fresh read-only seat reads the tree against the code-reasons standard and returns an account in a fixed form, and the stage checks only that form. The entrance's decision then holds readiness, use, proof and the release report until a current `clean` reading stands:
+**What it does now.** Once a builder turn exists for a change, `run cold-reader` builds an isolated reading tree from the change set. The tree carries every changed file, whatever kind of file it is, the Markdown file each `path#anchor` pointer in them names, and the files linked inside that anchored section, verified against their committed blobs in one neutral detached commit. A tree that names the change's branch is refused before launch, and issue or pull-request numbers in any carried file are counted as residue. One fresh read-only seat reads the tree against the code-reasons standard and returns an account in a fixed form. The stage checks only that form, including that each flag names a file the tree carries.
+
+The holder posts the account whole in one `open` comment with its own review against the brief beneath it, and the resumed builder reviews the account and makes its fixes. A later `clean` comment closes the reading. Until a current `clean` stands, the entrance's decision holds readiness, use, proof and the release report:
 
 - a reading is current per changed file, by the file's blob and the blobs of the document its pointer names and the records that section lists;
-- a flag stands until a later reading that read its path, or a document or record a path it read depends on, no longer raises it;
+- a flag stands until a later reading that read its path, or a document or record a path it read depends on, no longer raises it; once nothing in the change reaches its path, the reread of what changed answers for it;
+- after the builder's review, a reread covers every stale file and every changed file that a standing flag names or that points to the document it names;
 - a `Can tell: no` stands until a later reading of the whole change says `yes`;
 - a damaged record holds the gate as unverifiable rather than vanishing.
 
@@ -17,7 +20,11 @@ The decision log stays in the practice's own repository and doesn't ship, so thi
 
 - A reader who saw the brief can't show what the code alone explains, so the reader never sees the issue, brief, pull-request text or branch name.
 - The entrance, not the holder, chooses the inputs and composes the prompt, because whoever holds the brief could aim the reader through them.
+- The holder's review rides in the `open` comment because a change on the mechanical lane has no holder reading to carry it, and one marker with `open` and `clean` serves every lane alike.
+- The builder reviews each posted reading before it can close, because the builder holds the reasons it decided while building and is the one who fixes what the reading finds.
+- Every changed path is read, with no classifier deciding what counts as code, because a classifier would be configuration every adopting repository owes.
 - Blob identity is what the entrance can compare, and counting the pointed document's blobs rereads a file whose fix landed only in its document.
+- A flag must name a file the reading held, and a standing flag owes a reread of what reaches it, so that every flag has a way out through a reading the gate orders.
 - Every judgement fails closed, so a `clean` can't pass over a flag, a reading or a record the gate can't see.
 
 **Decisions in force:** D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons.
