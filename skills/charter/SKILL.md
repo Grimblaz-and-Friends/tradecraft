@@ -35,7 +35,7 @@ The implementation brief names the risk that might justify a **panel**, a separa
 
 Reusable methodology lives with the practice component that teaches it; repository-specific doctrine lives in that repository's root instructions and wins locally when the two conflict. Decision entries preserve historical rationale and inform later judgment without binding it; review evidence stays with its review. This separation keeps shipped guidance usable without requiring its reader to reconstruct the practice's private history.
 
-Code a change leaves explains itself to whoever opens it next: a one-line reason where a newcomer would ask why, a pointer to the maintained design document that names the decisions in force behind it, and no history. The `authoring` cell's code-reasons reference owns what each home carries, because a reason left only in an issue or brief is lost to the next reader once the change merges.
+Code a change leaves explains itself to whoever opens it next: a one-line reason where a newcomer would ask why, and no history; and where a design document covers the file, or the change adds the code, a pointer to the maintained design-document section that names the decisions in force behind it. The `authoring` cell's code-reasons reference owns what each home carries, because a reason left only in an issue or brief is lost to the next reader once the change merges.
 
 Raw run output, including measurement data, preview captures and inventories, is never committed; its summary is the whole retained record, keeping run evidence from swelling changes. The `authoring` cell's run-output reference owns recording and reproducing that evidence.
 

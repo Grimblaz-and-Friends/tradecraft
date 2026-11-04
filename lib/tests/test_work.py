@@ -6462,6 +6462,8 @@ def test_explicit_cold_seat_prompt_carries_artifact_brief_and_check_contract(tmp
     assert b"OTHER COMMENT MUST STAY OUT" not in prompt
     assert b"The bar is plausible" in prompt
     assert b"Trace both directions" in prompt
+    assert (b"Where a brief row names its checks, every named check must be carried by at least one "
+            b"criterion that fails where that check fails;") in prompt
     assert b"a named check no criterion carries is a failed point" in prompt
     assert b"This list is closed" in prompt
 
@@ -9853,6 +9855,7 @@ def test_C7_accounting_subject_uses_the_lawful_affirmed_pair(stage, risk, lane):
                                 floor_command="python check.py").decode()
     mechanical = (risk, lane) == ("ordinary", "mechanical")
     assert ("map each affirmed brief row" in prompt) is mechanical
+    assert ("map those named checks rather than your own reading of the row" in prompt) is mechanical
     assert ("map every artifact acceptance criterion" in prompt) is not mechanical
     assert build_reach.PRESERVATION in prompt
     for value in ("committed test carried by CI", "command or procedure", "tested revision",

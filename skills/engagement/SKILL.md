@@ -1,6 +1,6 @@
 ---
 name: engagement
-description: How a session and owner work together—which decisions are whose, the briefs and artifact that carry them, and how dispatched work is staffed, retained and read across changes. Use when deciding what a change is for or whose call it is; designing a change that owes an implementation brief; drafting, scoring, settling, recording or handing off a brief or artifact; putting or reporting a decision; dispatching or retaining an agent; recording or reading change paths; exchanging evidence with a doctrine-named coordinating session; delivering a review outcome or release report; handing work back after time away; or when the owner cannot be reached. Not for writing skills or governing documents.
+description: How a session and owner work together—which decisions are whose, the briefs and artifact carrying them, and how dispatched work is staffed, kept and read across changes. Use when deciding what a change is for or whose call it is; designing a change owing an implementation brief; drafting, scoring, settling, recording or handing off a brief or artifact; putting or reporting a decision; dispatching or retaining an agent; recording or reading change paths; routing evidence to or receiving it as a doctrine-named coordinating session; delivering a review outcome or release report; handing work back after time away; or when the owner is unreachable. Not for writing skills or governing documents.
 ---
 
 # engagement

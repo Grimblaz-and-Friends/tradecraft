@@ -54,9 +54,9 @@ A repair renews the duty. For a pull request already marked ready, obtain the re
 
 - for a reason missing where a newcomer would ask why, and for any comment that says what the code does, states a number that can change, or carries history;
 - that each changed file a design document covers opens with its pointer, the pointer resolves, the section's in-force list names the decisions the change added or superseded, and new code no document covered has a section opened for it and points at that section;
-- before composing the release report, that each affirmed row's lasting reason has its home in the design document or the decision record.
+- that each affirmed row's lasting reason has its home in the design document or the decision record.
 
-Each miss goes back to the builder as a prescribed repair, through the resumed builder above, before readiness.
+Each miss goes back to the builder as a prescribed repair, through the resumed builder above, before readiness. A miss found later, while composing the release report included, goes back the same way, and like any repair it renews readiness's duties.
 
 **The holder also makes the change's reading for its reasons:** it judges whether a change that writes no decision record decided nothing and is understood without its brief, from the changed code and the documents it points to alone, and it nominates a few excerpts worth learning from for the release report. A builder's statement that a change is only a fix does not settle the first. The holder records that judgement in the release report's collapsed section (`../references/the-release-report.md`).
 

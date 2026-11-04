@@ -5600,6 +5600,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             " At the end of every build or implementation repair (including reviewer disposition, "
             "use findings, or a floor turn changing implementation), map each affirmed brief row "
             "to a committed test carried by CI, a check you can run, or an owed fresh reader. "
+            "Where a row names its checks after `Checks:` in the owner's cell, map those named checks "
+            "rather than your own reading of the row; map a row that names none as before. "
             "Commit executable obligations as tests where feasible. Run each remaining builder-executable "
             "row and return its row number, command or procedure, tested revision, result and limitation. "
             "Return each owed fresh-reader row's number and exact affirmed row text, required capability "
