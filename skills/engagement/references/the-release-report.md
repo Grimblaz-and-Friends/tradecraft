@@ -23,5 +23,3 @@
 ## What it leaves where it is
 
 **The pull request body keeps its existing record and its `**Path departures:**` paragraph** (`change-paths.md`), because the report is the owner's surface and the body is the change's record.
-
-**The source-verification rule applies to the report unchanged** (`the-stretch.md`); an excerpt is a claim about the tree like any other.
