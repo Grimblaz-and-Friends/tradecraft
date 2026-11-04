@@ -11,7 +11,7 @@ A comment on #683 opening with `<!-- lab:private-ci-watch:v1 keys=... -->` carri
 1. Verify it from a tradecraft checkout with the owner's `gh`: `python tools/private_ci/watch.py status`. Its `alerts`, every alert this month's jobs raise, and its per-repository readings show what the watch sees now. Don't read `would_alert`: it drops keys already posted, so it is empty for the alert you are verifying.
 2. For each unlisted job, bring the owner one line:
    - its `runs-on:` changed to `private-ci`, made in that product through its own entrance on the `ordinary` / `mechanical` lane; or
-   - if the job is meant to stay hosted, one line added to `tools/private_ci/hosted.json` in tradecraft, on the same lane.
+   - if the job is meant to stay hosted, as a job that publishes outside its repository always is, one line added to `tools/private_ci/hosted.json` in tradecraft, on the same lane.
 3. For a pace alert, bring the move of the largest contributor the alert names.
 4. Mark the alert handled.
 
