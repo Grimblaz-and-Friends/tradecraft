@@ -5,6 +5,7 @@ Design: lib/DESIGN.md#the-cold-reader
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -754,7 +755,8 @@ def test_the_design_section_the_new_code_points_at_names_its_decisions():
     for name in ("cold_reader.py", "work.py"):
         assert "lib/DESIGN.md#the-cold-reader" in (lib / name).read_text("utf-8")
     body = cold_reader.section((lib / "DESIGN.md").read_text("utf-8"), "the-cold-reader")
-    assert body is not None and "D-944" in body and "D-952" in body
+    in_force = [line for line in (body or "").splitlines() if line.startswith("**Decisions in force:**")]
+    assert len(in_force) == 1 and re.search(r"\bD-[0-9]+\b", in_force[0])
 
 
 @pytest.mark.cold_reading
@@ -816,3 +818,15 @@ def test_a_flag_answered_without_touching_its_file_is_reread_until_clear(change)
     assert (decision.reason, covered(decision)) == ("cold-reading-stale", ["a.py", "b.py"])
     change.reviewed(clean(), covered=covered(decision))
     assert change.decide().reason == "cold-reading-close"
+
+
+@pytest.mark.cold_reading
+def test_a_reading_that_cant_be_judged_sets_aside_a_later_clean(change):
+    change.reviewed(clean())
+    change.post_clean()
+    fixture = change.state()
+    fixture.holder_root = change.tmp / "no-repository-here"
+    decision = work.decide(fixture, test_work.RULES)
+    assert decision.reason == "cold-reading-unverifiable"
+    assert [claim["reason"] for claim in fixture.invalid_marker_claims if claim["name"] == "cold-reading"] == [
+        "cold-reading clean while the reading can't be judged"]

@@ -4868,15 +4868,20 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     """Hold readiness until a current, clean cold reading covers the change."""
     if not _cold_reading_due(state):
         return None
+    markers = [marker for marker in state.markers if marker.name == "cold-reading"]
     try:
         plan = _cold_reading_plan(state, sha)
     except (cold_reader.ColdReaderError, WorkError, OSError) as exc:
+        opens = [marker for marker in markers if marker.attributes["status"] == "open"]
+        newest = max(opens, key=_source_order) if opens else None
+        _set_aside(state, [marker for marker in markers if marker.attributes["status"] == "clean"
+                           and (newest is None or _source_order(marker) > _source_order(newest))],
+                   "cold-reading clean while the reading can't be judged")
         return _cold_reading_unverifiable(sha, exc)
     readings, assessment = plan["readings"], plan["assessment"]
     if not readings:
         return Decision("cold-reader", True, "fresh", "cold-reading-absent",
                         json.dumps({"covered": sorted(plan["present"]["change_set"])}))
-    markers = [marker for marker in state.markers if marker.name == "cold-reading"]
     opened = {}
     for marker in markers:
         selected = state.selected_bundles.get((marker.source_order, marker.occurrence_order))
@@ -4992,6 +4997,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         return 0
     covered = json.loads(gate.detail)["covered"]
     work = f"{state.repo}#{state.issue_number}"
+    # The tree outlives the run: the gate reloads each reading's coverage from its metadata.
     place = _cold_reading_source(state).parent / "cold-reader" / uuid.uuid4().hex
     numbers = [state.issue_number] + ([state.pr["number"]] if isinstance(state.pr.get("number"), int) else [])
     try:
