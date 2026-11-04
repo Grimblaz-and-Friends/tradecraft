@@ -20,6 +20,8 @@ The holder posts the account whole in one `open` comment with its own review aga
 
 - A reader who saw the brief can't show what the code alone explains, so the reader never sees the issue, brief, pull-request text or branch name.
 - The entrance, not the holder, chooses the inputs and composes the prompt, because whoever holds the brief could aim the reader through them.
+- The tree follows only `path#anchor` pointers, never a file a changed file merely mentions, because that is the one route the code-reasons standard gives from code to its reasons, and a pointer that doesn't resolve then reaches the reader as the dead end it is rather than being patched by whoever built the tree.
+- Every link inside a pointed section is carried, not only its decision records, because the entrance can't tell a decision record by its path; a link to anything else there is a malformed section, which the holder's pointer check catches.
 - The holder's review rides in the `open` comment because a change on the mechanical lane has no holder reading to carry it, and one marker with `open` and `clean` serves every lane alike.
 - The builder reviews each posted reading before it can close, because the builder holds the reasons it decided while building and is the one who fixes what the reading finds.
 - Every changed path is read, with no classifier deciding what counts as code, because a classifier would be configuration every adopting repository owes.
