@@ -83,7 +83,7 @@ def isolated_machine_home(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def cold_reading_gate(request, monkeypatch):
-    # Suites about other stages run past the cold-reading gate; its own tests opt back in.
+    # Other suites drive synthetic heads with no Git objects behind them, which the real gate can't read.
     if request.node.get_closest_marker("cold_reading") is not None:
         return
     import work

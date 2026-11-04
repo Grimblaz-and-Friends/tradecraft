@@ -17,6 +17,7 @@ import work  # noqa: E402
 
 BRANCH = "feature/fixture-branch"
 ISSUE_TITLE = "Distinctive issue title quokka"
+# Assembled from pieces so no added line carries a literal issue number or date for the history check.
 WORK = "example/product" + "#" + str(12)
 DAY = "-".join(("2026", "11", "04"))
 
@@ -373,7 +374,7 @@ def change(tmp_path, monkeypatch):
 
 
 @pytest.mark.cold_reading
-def test_case_a_no_reading_owes_a_reader_of_the_whole_change(change):
+def test_no_reading_owes_a_reader_of_the_whole_change(change):
     decision = change.decide()
     assert (decision.stage, decision.reason, decision.continuity) == ("cold-reader", "cold-reading-absent", "fresh")
     assert covered(decision) == ["a.py", "b.py"]
@@ -386,7 +387,7 @@ def test_an_unposted_reading_is_the_holders_to_post(change):
 
 
 @pytest.mark.cold_reading
-def test_case_b_an_open_reading_resumes_the_builder(change):
+def test_an_open_reading_resumes_the_builder(change):
     change.read(clean())
     change.post_open(clean())
     decision = change.decide()
@@ -394,7 +395,7 @@ def test_case_b_an_open_reading_resumes_the_builder(change):
 
 
 @pytest.mark.cold_reading
-def test_case_c_a_builder_commit_rereads_exactly_the_changed_file(change):
+def test_a_builder_commit_rereads_exactly_the_changed_file(change):
     change.reviewed(clean())
     change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
     decision = change.decide()
@@ -402,14 +403,14 @@ def test_case_c_a_builder_commit_rereads_exactly_the_changed_file(change):
 
 
 @pytest.mark.cold_reading
-def test_case_d_a_catch_up_merge_owes_no_reread(change):
+def test_a_catch_up_merge_owes_no_reread(change):
     change.reviewed(clean())
     change.merge_base_change({"elsewhere.md": "# Elsewhere\n"})
     assert change.decide().reason == "cold-reading-close"
 
 
 @pytest.mark.cold_reading
-def test_case_e_clean_without_a_builder_turn_is_invalid_and_held(change):
+def test_clean_without_a_builder_turn_is_invalid_and_held(change):
     change.read(clean())
     change.post_open(clean())
     change.post_clean()
@@ -418,7 +419,7 @@ def test_case_e_clean_without_a_builder_turn_is_invalid_and_held(change):
 
 
 @pytest.mark.cold_reading
-def test_case_f_a_valid_clean_reading_reaches_readiness(change):
+def test_a_valid_clean_reading_reaches_readiness(change):
     change.reviewed(clean())
     assert change.decide().reason == "cold-reading-close"
     change.post_clean()
@@ -427,7 +428,7 @@ def test_case_f_a_valid_clean_reading_reaches_readiness(change):
 
 
 @pytest.mark.cold_reading
-def test_case_g_a_reviewer_fix_after_readiness_is_read_again_before_proof(change):
+def test_a_reviewer_fix_after_readiness_is_read_again_before_proof(change):
     change.reviewed(clean())
     change.post_clean()
     assert change.decide(draft=False).stage != "cold-reader"
@@ -437,7 +438,7 @@ def test_case_g_a_reviewer_fix_after_readiness_is_read_again_before_proof(change
 
 
 @pytest.mark.cold_reading
-def test_case_h_a_fix_made_only_in_the_pointed_document_rereads_its_file(change):
+def test_a_fix_made_only_in_the_pointed_document_rereads_its_file(change):
     change.reviewed(flagged("a.py"))
     assert change.decide().reason == "cold-reading-close"
     change.commit({"design/x.md": "# Design\n\n## S\n\nWhy A. In force: [D1](../decisions/D1.md).\n"})
@@ -446,7 +447,7 @@ def test_case_h_a_fix_made_only_in_the_pointed_document_rereads_its_file(change)
 
 
 @pytest.mark.cold_reading
-def test_case_h_prime_creating_an_absent_pointer_target_rereads_its_file(change):
+def test_creating_an_absent_pointer_target_rereads_its_file(change):
     change.reviewed(clean())
     change.commit({"design/missing.md": "# Missing\n\n## S\n\nNow here.\n"})
     decision = change.decide()
@@ -454,7 +455,7 @@ def test_case_h_prime_creating_an_absent_pointer_target_rereads_its_file(change)
 
 
 @pytest.mark.cold_reading
-def test_case_i_cannot_tell_holds_a_clean_and_owes_a_whole_reread(change):
+def test_cannot_tell_holds_a_clean_and_owes_a_whole_reread(change):
     change.reviewed(clean(tell="no"))
     change.post_clean()
     decision = change.decide()
@@ -463,7 +464,7 @@ def test_case_i_cannot_tell_holds_a_clean_and_owes_a_whole_reread(change):
 
 
 @pytest.mark.cold_reading
-def test_case_i_prime_a_whole_reread_saying_yes_after_a_decision_record_clears_it(change):
+def test_a_whole_reread_saying_yes_after_a_decision_record_clears_cannot_tell(change):
     change.reviewed(clean(tell="no"))
     change.commit({"decisions/D2.md": "# D2\n\nWhy A and B exist.\n"})
     change.reviewed(clean())
@@ -472,7 +473,7 @@ def test_case_i_prime_a_whole_reread_saying_yes_after_a_decision_record_clears_i
 
 
 @pytest.mark.cold_reading
-def test_case_j_a_flag_on_an_unchanged_dependency_holds_clean(change):
+def test_a_flag_on_an_unchanged_dependency_holds_clean(change):
     change.reviewed(flagged("design/x.md"))
     change.post_clean()
     decision = change.decide()
@@ -484,7 +485,7 @@ def test_case_j_a_flag_on_an_unchanged_dependency_holds_clean(change):
 
 
 @pytest.mark.cold_reading
-def test_case_k_a_narrow_reread_saying_yes_cannot_clear_cannot_tell(change):
+def test_a_narrow_reread_saying_yes_cannot_clear_cannot_tell(change):
     change.reviewed(clean(tell="no"))
     change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
     change.reviewed(clean(), covered=["a.py"])
@@ -632,3 +633,27 @@ def test_a_per_issue_override_names_the_cold_reader():
     assert (settings.model, settings.effort) == ("override-model", "high")
     default = work._launch_settings(test_work.state(), "cold-reader", "claude", "cold")
     assert (default.model, default.effort) == ("claude-opus-5-5", "xhigh")
+
+
+@pytest.mark.cold_reading
+def test_a_reading_whose_tree_metadata_is_lost_is_unverifiable_rather_than_absent(change):
+    change.read(clean())
+    work.recipient_tree.metadata_path(change.tmp / "reading-1").unlink()
+    decision = change.decide()
+    assert decision.reason == "cold-reading-unverifiable" and "reading-1.run.json" in decision.detail
+
+
+@pytest.mark.cold_reading
+def test_a_return_refused_for_its_form_was_never_a_reading(change):
+    change.read(clean().replace("## Flags\nnone\n", ""))
+    assert change.decide().reason == "cold-reading-absent"
+
+
+@pytest.mark.cold_reading
+def test_an_undated_cold_reading_marker_is_set_aside(change):
+    change.read(clean())
+    change.post_open(clean())
+    del change.comments[-1]["created_at"]
+    decision = change.decide()
+    assert decision.reason == "cold-reading-post-owed"
+    assert [claim["reason"] for claim in decision.invalid] == ["cold-reading marker has no posting time"]

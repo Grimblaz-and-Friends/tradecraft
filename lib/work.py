@@ -4753,13 +4753,15 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
             f"{state.repo}#{state.issue_number}", {"cold-reader"}, _cold_reading_source(state)):
         source = _retained_return_path((completed, path, request, run))
         root = request.get("root")
+        # A damaged record could hide the reading it holds, so it holds the gate instead of vanishing.
         if source is None or not isinstance(root, str):
-            continue
+            raise WorkError(f"cold-reader bundle lacks its retained return or reading root: {path}")
         try:
             returned = source.read_text("utf-8")
             metadata = cold_reader.load_metadata(recipient_tree.metadata_path(Path(root)))
-        except (OSError, UnicodeError, cold_reader.ColdReaderError):
-            continue
+        except (OSError, UnicodeError, cold_reader.ColdReaderError) as exc:
+            raise WorkError(f"cold-reader bundle cannot be read: {path}: {exc}") from exc
+        # The stage refused this return for its form, so it was never a reading.
         if cold_reader.form_errors(returned):
             continue
         readings.append({"id": path, "completed_at": completed, "request": request, "run": run,
@@ -4775,9 +4777,11 @@ def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
         found = _cold_readings(state)
     except WorkError as exc:
         return f"cold-reading unverifiable: {exc}"
-    readings = [reading for reading in found
-                if (_time(reading["completed_at"]) or datetime.max.replace(tzinfo=timezone.utc))
-                <= (_time(marker.timestamp) or datetime.max.replace(tzinfo=timezone.utc))]
+    posted = _time(marker.timestamp)
+    # Without its posting time a marker can't be ordered against the reading it claims.
+    if posted is None:
+        return "cold-reading marker has no posting time"
+    readings = [reading for reading in found if _time(reading["completed_at"]) <= posted]
     if marker.attributes["status"] == "open":
         readings = [reading for reading in readings
                     if _return_match_length(reading["return"], marker.body)]
@@ -4807,7 +4811,7 @@ def _cold_reading_due(state: WorkState) -> bool:
             _cold_reading_source(state), f"{state.repo}#{state.issue_number}",
             RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
     except (OSError, ValueError, WorkError):
-        return True
+        return True  # The gate fails closed: an unreadable inventory can't prove no builder ran.
     return any(not build_reach.never_launched(row[3]) for row in inventory)
 
 

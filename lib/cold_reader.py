@@ -1,7 +1,8 @@
 """Build the cold reader's isolated reading of a change, check its account, and judge currency.
 
 The reader works from the changed files, the design-document sections they point to, and the
-decision records those sections list in force — nothing that names the change's issue or brief.
+decision records those sections list in force — nothing that names the change's issue or brief,
+because a reader who saw the brief can't show what the code alone explains.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ MAX_NOMINATIONS = 5
 # Above this the diff travels as a file, so the prompt stays readable.
 INLINE_DIFF_CHARACTERS = 60_000
 DIFF_FILE = "CHANGE.diff"
+# Any token naming a Markdown section counts, since a pointer may open a comment, docstring or document.
 POINTER = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+\.md)#([A-Za-z0-9_-]+)")
 LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
@@ -355,7 +357,7 @@ def assess(readings: list[dict], present: dict) -> dict:
         standing_flags.extend({**flag, "reading": reading["id"]} for flag in reading["account"]["flags"]
                               if flag["path"] in watched)
     said_no = [index for index, reading in enumerate(readings) if reading["account"]["can_tell"] is False]
-    # Only a later reading of the whole current change can clear a `no`; a narrower reread can't.
+    # A reread narrower than the change answers only for the files it read.
     standing_no = bool(said_no) and not any(
         reading["account"]["can_tell"] is True and set(changed) <= set(reading["coverage"])
         for reading in readings[said_no[-1] + 1:])
