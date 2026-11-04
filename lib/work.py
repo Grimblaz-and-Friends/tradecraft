@@ -4731,6 +4731,8 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
     return f";ignored-product-incident-from={','.join(authors)}" if authors else ""
 
 
+# Design: lib/DESIGN.md#the-cold-reader
+
 COLD_READING_REVIEW = (
     "A cold reader who never saw the issue, the brief or the pull request read this change, and the "
     "holder posted its account below with the holder's review against the brief. Review the account "
@@ -4879,6 +4881,10 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
             opened[selected[1]] = marker
     latest = readings[-1]
     if latest["id"] not in opened:
+        newest = max(opened.values(), key=_source_order) if opened else None
+        _set_aside(state, [marker for marker in markers if marker.attributes["status"] == "clean"
+                           and (newest is None or _source_order(marker) > _source_order(newest))],
+                   "cold-reading clean before the latest reading was posted")
         return Decision(
             "cold-reading-post", False, None, "cold-reading-post-owed",
             f"Post the cold reader's account from {latest['id']} whole and verbatim in one comment "
@@ -4923,6 +4929,16 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
         f"Post <!-- tradecraft:cold-reading:v1 head={sha} status=clean "
         "staffing_status=... --> quoting the builder's review in one line, unless a misreading "
         "still stands.", status="holder-owned")
+
+
+def _seat_vendor(state: WorkState, role: str) -> tuple[str, str]:
+    """The vendor a judging role launches on: its latest per-issue override, else Claude."""
+    override = next((marker for marker in reversed(state.issue_markers)
+                     if marker.name == "model-override"), None)
+    value = override.attributes.get(MODEL_OVERRIDE_ROLES[role]) if override is not None else None
+    if value:
+        return value.split(":")[0], _marker_setting_source(override)
+    return "claude", f"work entrance {role} default"
 
 
 def _owed_cold_reading(state: WorkState) -> Marker | None:
@@ -4994,20 +5010,25 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         raise WorkError("--timeout-seconds must be finite and positive")
     deadline = lifecycle.current_deadline() or lifecycle.stage_deadline("cold-reader", effective_timeout)
     launch_plan = _launch_plan(state, decision, resolve_comparison=False)
+    # The role's resolved vendor launches the seat, so an override moves it; staffing is judged against it.
+    vendor, vendor_source = _seat_vendor(state, "cold-reader")
+    same_vendor = {"claude": "owner-selected-claude-implementer",
+                   "codex": "owner-selected-codex-cold-reader"}[vendor]
     command = [
         sys.executable, str(Path(__file__).resolve().parent / "dispatch_seat.py"),
         "--dispatch", str(prompt), "--root", str(place / "reading"),
         "--work", work, "--stage", "cold-reader", "--output", str(output),
-        "--settings-source", "work entrance cold-reader route", "--settings-scope", "cold-reader",
-        "--vendor", "claude", "--own-vendor", own_vendor, "--own-vendor-source", own_source,
+        "--settings-source", vendor_source, "--settings-scope", "cold-reader",
+        "--vendor", vendor, "--own-vendor", own_vendor, "--own-vendor-source", own_source,
         "--classification", "cold", "--requires", "read",
         "--timeout-seconds", f"{effective_timeout:g}",
-        *(["--same-vendor-reason", "owner-selected-claude-implementer"] if own_vendor == "claude" else []),
+        *(["--same-vendor-reason", same_vendor] if own_vendor == vendor else []),
         *_seat_launch_arguments(state, "cold-reader", "cold", claude_path=claude_path,
                                 codex_path=codex_path, plan=launch_plan),
     ]
+    launch_plan["primary"] = launch_plan["vendors"][vendor]
     launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
-                               **dispatch_seat.fallback_plan("claude", own_vendor, "read"),
+                               **dispatch_seat.fallback_plan(vendor, own_vendor, "read"),
                                "comparison_vendor_source": own_source}
     setting_resolution.print_plan(launch_plan, label="work")
     code = _invoke_recipient(command, deadline)

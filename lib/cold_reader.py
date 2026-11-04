@@ -1,8 +1,11 @@
 """Build the cold reader's isolated reading of a change, check its account, and judge currency.
 
+Design: lib/DESIGN.md#the-cold-reader
+
 The reader works from the changed files, the design-document sections they point to, and the
-decision records those sections list in force — nothing that names the change's issue or brief,
-because a reader who saw the brief can't show what the code alone explains.
+decision records those sections list in force, because a reader who saw the brief can't show what
+the code alone explains. Nothing it holds names the change's branch; issue or pull-request numbers
+in a record the change adds are counted as residue.
 """
 from __future__ import annotations
 
@@ -211,6 +214,7 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
             if not inline:
                 (staged / DIFF_FILE).write_bytes(diff)
                 claims[DIFF_FILE] = {"mode": "100644", "oid": recipient_tree._blob_oid(source, diff)}
+            # The entrance's branch names carry a unique token, so a match is the change naming itself.
             needle = branch.encode("utf-8")
             for name in sorted(claims):
                 if needle and needle in (staged / Path(*PurePosixPath(name).parts)).read_bytes():
@@ -337,6 +341,11 @@ def parse_account(text: str) -> dict:
     return {"flags": flags, "can_tell": None if tell is None else tell.group(1) == "yes"}
 
 
+def _reaches(reading: dict, path: str) -> bool:
+    return (bool(reading.get("whole")) or path in reading["coverage"]
+            or any(path in dependency_paths(entry) for entry in reading["coverage"].values()))
+
+
 def assess(readings: list[dict], present: dict) -> dict:
     """Judge the current change set against readings ordered oldest first.
 
@@ -350,14 +359,16 @@ def assess(readings: list[dict], present: dict) -> dict:
     stale = sorted(path for path in changed
                    if path not in latest or latest[path]["coverage"][path] != present["coverage"][path])
     uncovered = sorted(path for path in changed if path not in latest)
-    standing_flags = []
-    for path in changed:
-        reading = latest.get(path)
-        if reading is None:
-            continue
-        watched = {path} | dependency_paths(reading["coverage"][path])
-        standing_flags.extend({**flag, "reading": reading["id"]} for flag in reading["account"]["flags"]
-                              if flag["path"] in watched)
+    standing_flags, seen = [], set()
+    for index, reading in enumerate(readings):
+        for flag in reading["account"]["flags"]:
+            # Fails closed: only a later reading that reaches the flag's path can clear it.
+            if any(_reaches(later, flag["path"]) for later in readings[index + 1:]):
+                continue
+            key = (reading["id"], flag["path"], flag["kind"], flag["text"])
+            if key not in seen:
+                seen.add(key)
+                standing_flags.append({**flag, "reading": reading["id"]})
     said_no = [index for index, reading in enumerate(readings) if reading["account"]["can_tell"] is False]
     # A reread narrower than the change answers only for the files it read.
     standing_no = bool(said_no) and not any(

@@ -13,6 +13,7 @@ import cold_reader  # noqa: E402
 import dispatch_seat  # noqa: E402
 import launch_settings  # noqa: E402
 import recipient_tree  # noqa: E402
+import test_work  # noqa: E402
 import work  # noqa: E402
 
 BRANCH = "feature/fixture-branch"
@@ -237,10 +238,6 @@ def test_an_open_reading_counts_only_with_the_seat_return_unaltered(repository):
     assert any(claim["name"] == "cold-reading" for claim in edited.invalid_marker_claims)
 
 
-# The gate, read through `decide` against a real repository and retained bundles.
-
-import test_work  # noqa: E402
-
 CLEAN = ACCOUNT.replace("a.py:2 {dash} what-comment {dash} the second line restates the code", "none")
 SPLIT = datetime(2026, 11, 4, 10, tzinfo=timezone.utc)
 
@@ -360,10 +357,11 @@ class Change:
 
 
 def covered(decision):
-    return json.loads(decision.detail[:decision.detail.index("]}") + 2])["covered"]
+    return json.loads(decision.detail)["covered"]
 
 
 def settled(change):
+    # The "would" fixture carries a brief, a draft, its cold verdict, a settlement and holder readings.
     fixture = test_work._source_fixture("would")
     change.brief = fixture.issue_comments[0]["body"]
     change.comments = [dict(comment, created_at=change.tick()) for comment in fixture.issue_comments[1:]]
@@ -695,3 +693,45 @@ def test_the_stage_reports_a_damaged_reading_instead_of_raising(change, monkeypa
     report = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")][-1]
     assert code == 0 and report["status"] == "refused" and report["reason"].startswith("cold-reading-unverifiable")
     assert "reading-1.run.json" in report["detail"]
+
+
+def test_a_flag_outside_a_readings_reach_stands_until_a_later_reading_reaches_it():
+    outside = reading("r1", {"a": entry("a1")}, flags=["design/unwritten.md"])
+    assert cold_reader.assess([outside], present(a=entry("a1")))["flags"]
+    narrow = reading("r2", {"b": entry("b1")})
+    assert cold_reader.assess([outside, narrow], present(a=entry("a1"), b=entry("b1")))["flags"]
+    whole = {**reading("r3", {"a": entry("a1"), "b": entry("b1")}), "whole": True}
+    assert not cold_reader.assess([outside, narrow, whole], present(a=entry("a1"), b=entry("b1")))["flags"]
+
+
+def test_a_flag_on_a_shared_dependency_stands_once():
+    shared = reading("r1", {"a": entry("a1", [X]), "b": entry("b1", [X])}, flags=["design/x.md"])
+    assert len(cold_reader.assess([shared], present(a=entry("a1", [X]), b=entry("b1", [X])))["flags"]) == 1
+
+
+@pytest.mark.cold_reading
+def test_a_clean_before_the_latest_reading_is_posted_is_set_aside(change):
+    change.read(clean())
+    change.post_clean()
+    decision = change.decide()
+    assert decision.reason == "cold-reading-post-owed" and len(decision.invalid) == 1
+
+
+@pytest.mark.cold_reading
+@pytest.mark.parametrize(("builder", "reason"), [("codex", "owner-selected-codex-cold-reader"), ("claude", None)])
+def test_an_override_moves_the_reader_to_its_vendor_and_staffing_follows(change, monkeypatch, capsys,
+                                                                          builder, reason):
+    change.post("<!-- tradecraft:model-override:v1 cold_reader=codex:override-model:high -->")
+    _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean(), builder=builder)
+    assert option(command, "--vendor") == "codex" and option(command, "--codex-model") == "override-model"
+    assert ("--same-vendor-reason" in command) == (reason is not None)
+    if reason:
+        assert option(command, "--same-vendor-reason") == reason
+
+
+def test_the_design_section_the_new_code_points_at_names_its_decisions():
+    lib = Path(__file__).resolve().parents[1]
+    for name in ("cold_reader.py", "work.py"):
+        assert "lib/DESIGN.md#the-cold-reader" in (lib / name).read_text("utf-8")
+    body = cold_reader.section((lib / "DESIGN.md").read_text("utf-8"), "the-cold-reader")
+    assert body is not None and "D-944" in body and "D-952" in body
