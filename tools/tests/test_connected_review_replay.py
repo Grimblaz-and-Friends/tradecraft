@@ -1390,6 +1390,7 @@ def test_key_file_ignores_environment_credentials_and_never_switches(tmp_path, m
     case = replay.read_object(output)["cases"][0]
     assert case["status"] == "error" and case["error"].startswith("Claude API key budget spent (")
     assert case["credential"] == {"finder:coverage": {"credentials": ["api-key"]}}
+    assert replay.classify(case) == "void-billing"
 
 
 def test_results_holding_the_key_are_refused_before_writing(tmp_path, monkeypatch, capsys):
@@ -1875,3 +1876,15 @@ def test_ladder_summary_refuses_an_unjudged_anchored_survivor(tmp_path, monkeypa
     ladder(tmp_path, export, defect, matches)
     with pytest.raises(replay.ReplayError, match="150000-r1-a1 has no match record"):
         replay.ladder_summary(tmp_path / "ladder", matches, ROOT / "lib/rates.json")
+
+
+def test_a_rung_with_one_pass_and_one_miss_fails(tmp_path, monkeypatch):
+    export, defect, _launches = ladder_setup(tmp_path, monkeypatch, [found_rows()] * 3 + [[]] + [found_rows()] * 2)
+    rows = [("natural-r1-a1", "coverage:1", True), ("natural-r2-a1", "coverage:1", True)]
+    ladder(tmp_path, export, defect, match_file(tmp_path, rows))
+    rows += [("150000-r1-a1", "coverage:1", True), ("300000-r1-a1", "coverage:1", True),
+             ("300000-r2-a1", "coverage:1", True)]
+    summary = replay.ladder_summary(tmp_path / "ladder", match_file(tmp_path, rows), ROOT / "lib/rates.json")
+    assert [row["outcome"] for row in summary["rows"]] == ["passed", "failed", "passed"]
+    assert [run["found"] for run in summary["rows"][1]["runs"]] == [True, False]
+    assert summary["decision"] == "lowest-failed"
