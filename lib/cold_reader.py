@@ -1,0 +1,364 @@
+"""Build the cold reader's isolated reading of a change, check its account, and judge currency.
+
+The reader works from the changed files, the design-document sections they point to, and the
+decision records those sections list in force — nothing that names the change's issue or brief.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path, PurePosixPath
+import posixpath
+import re
+import tempfile
+
+import recipient_tree
+
+SCHEMA_VERSION = 1
+FLAG_KINDS = (
+    "cannot-tell", "missing-reason", "what-comment", "changeable-number", "history",
+    "dead-end-pointer", "in-force-missing",
+)
+HEADINGS = ("## Sections", "## Flags", "## Why this change was made", "## Worth a look")
+MAX_NOMINATIONS = 5
+# Above this the diff travels as a file, so the prompt stays readable.
+INLINE_DIFF_CHARACTERS = 60_000
+DIFF_FILE = "CHANGE.diff"
+POINTER = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+\.md)#([A-Za-z0-9_-]+)")
+LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
+FENCE = re.compile(r"^\s*(```|~~~)")
+# The dashes are built at run time so the module's constants stay ASCII.
+EM_DASH, EN_DASH = chr(0x2014), chr(0x2013)
+FLAG_LINE = re.compile(
+    r"^(?:[-*][ \t]+)?`?(?P<path>[^\s:`]+)(?::(?P<lines>[0-9]+(?:[-" + EN_DASH + r"][0-9]+)?))?`?"
+    r"[ \t]+[" + EM_DASH + r"-][ \t]+(?P<kind>" + "|".join(FLAG_KINDS) + r")[ \t]+["
+    + EM_DASH + r"-][ \t]+(?P<text>\S.*)$"
+)
+CAN_TELL = re.compile(r"^Can tell: (yes|no)$")
+
+
+class ColdReaderError(RuntimeError):
+    """The reading cannot be built or judged from committed bytes."""
+
+
+def _git(root: Path, *arguments: str) -> bytes:
+    try:
+        return recipient_tree._git(root, *arguments)
+    except recipient_tree.RecipientTreeError as exc:
+        raise ColdReaderError(str(exc)) from exc
+
+
+def _tree_map(root: Path, revision: str) -> dict[str, str]:
+    found = {}
+    for entry in _git(root, "ls-tree", "-r", "-z", revision).split(b"\0"):
+        header, separator, name = entry.partition(b"\t")
+        fields = header.split()
+        if separator and len(fields) == 3 and fields[1] == b"blob":
+            found[name.decode("utf-8")] = fields[2].decode("ascii")
+    return found
+
+
+def _blob_text(root: Path, oid: str) -> str | None:
+    try:
+        return _git(root, "cat-file", "blob", oid).decode("utf-8")
+    except UnicodeDecodeError:
+        return None  # A binary file carries no pointer.
+
+
+def change_set(root: Path, base_tip: str, head: str) -> tuple[str, dict[str, str]]:
+    """Return the merge base and each changed path's blob at head, or `deleted`."""
+    base = _git(root, "merge-base", base_tip, head).decode("ascii").strip()
+    raw = _git(root, "diff", "--name-status", "-z", "-M", base, head).split(b"\0")
+    tree = _tree_map(root, head)
+    paths: dict[str, str] = {}
+    index = 0
+    while index < len(raw) and raw[index]:
+        status = raw[index].decode("ascii")
+        # A rename or copy names its old path first; the change is read at its new one.
+        count = 2 if status[:1] in {"R", "C"} else 1
+        path = raw[index + count].decode("utf-8")
+        paths[path] = "deleted" if status.startswith("D") else tree.get(path, "deleted")
+        index += count + 1
+    return base, dict(sorted(paths.items()))
+
+
+def slug(heading: str) -> str:
+    text = re.sub(r"[`*_\[\]()]", "", heading).strip().lower()
+    return re.sub(r"[^\w\- ]", "", text).replace(" ", "-")
+
+
+def section(text: str, anchor: str) -> str | None:
+    """Return the anchored section, from its heading to the next heading as high or higher."""
+    lines = text.splitlines()
+    start = level = None
+    fenced = False
+    for number, line in enumerate(lines):
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        match = None if fenced else HEADING.match(line)
+        if match is None:
+            continue
+        depth = len(match.group(1))
+        if start is None and slug(match.group(2)) == anchor:
+            start, level = number, depth
+        elif start is not None and depth <= level:
+            return "\n".join(lines[start:number])
+    return None if start is None else "\n".join(lines[start:])
+
+
+def _section_records(document: str, text: str, anchor: str, tree: dict[str, str]) -> list[dict]:
+    body = section(text, anchor)
+    if body is None:
+        return []
+    records, seen = [], set()
+    for target in LINK.findall(body):
+        if "://" in target or target.startswith(("mailto:", "#")):
+            continue
+        relative = target.split("#", 1)[0]
+        resolved = (relative.lstrip("/") if relative.startswith("/") else
+                    posixpath.normpath(posixpath.join(posixpath.dirname(document), relative)))
+        if resolved in tree and resolved not in seen:
+            seen.add(resolved)
+            records.append({"path": resolved, "blob": tree[resolved]})
+    return records
+
+
+def dependencies(root: Path, tree: dict[str, str], path: str) -> list[dict]:
+    """Follow a changed file's pointers, and each pointed section's in-force links, only."""
+    oid = tree.get(path)
+    text = _blob_text(root, oid) if oid else None
+    if text is None:
+        return []
+    found, seen = [], set()
+    for target, anchor in POINTER.findall(text):
+        token = f"{target}#{anchor}"
+        if token in seen:
+            continue
+        seen.add(token)
+        if target not in tree:
+            found.append({"pointer": token, "path": target, "blob": "absent", "records": []})
+            continue
+        document = _blob_text(root, tree[target]) or ""
+        found.append({"pointer": token, "path": target, "blob": tree[target],
+                      "records": _section_records(target, document, anchor, tree)})
+    return found
+
+
+def coverage_entry(root: Path, tree: dict[str, str], path: str, blob: str) -> dict:
+    return {"blob": blob,
+            "dependencies": [] if blob == "deleted" else dependencies(root, tree, path)}
+
+
+def dependency_paths(entry: dict) -> set[str]:
+    paths = set()
+    for dependency in entry.get("dependencies", []):
+        paths.add(dependency["path"])
+        paths.update(record["path"] for record in dependency.get("records", []))
+    return paths
+
+
+def current(root: Path, base_tip: str, head: str) -> dict:
+    """The change set at head with every path's dependencies re-resolved there."""
+    base, changed = change_set(root, base_tip, head)
+    tree = _tree_map(root, head)
+    return {"base": base, "head": head, "change_set": changed,
+            "coverage": {path: coverage_entry(root, tree, path, blob) for path, blob in changed.items()}}
+
+
+def _digest(value: dict) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()
+
+
+def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
+               base_tip: str, head: str, covered: list[str] | None, branch: str,
+               numbers: list[int]) -> Path:
+    """Write the reading tree and its metadata beside it; refuse one that names the branch."""
+    source = source.expanduser().resolve()
+    output = output.expanduser().resolve()
+    if output.exists() or recipient_tree.metadata_path(output).exists():
+        raise ColdReaderError(f"refusing existing reading output: {output}")
+    if recipient_tree._inside(output, source):
+        raise ColdReaderError("reading output must be outside the source repository")
+    state = current(source, base_tip, head)
+    changed = state["change_set"]
+    if not changed:
+        raise ColdReaderError("the change set is empty; there is nothing to read")
+    selected = sorted(changed if covered is None else covered)
+    unknown = [path for path in selected if path not in changed]
+    if unknown:
+        raise ColdReaderError("covered paths are not in the change set: " + ", ".join(unknown))
+    coverage = {path: state["coverage"][path] for path in selected}
+    carried = {path for path, blob in changed.items() if blob != "deleted"}
+    for entry in coverage.values():
+        for dependency in entry["dependencies"]:
+            if dependency["blob"] != "absent":
+                carried.add(dependency["path"])
+            carried.update(record["path"] for record in dependency["records"])
+    files = recipient_tree._tree_files(source, head, sorted(carried))
+    diff = _git(source, "diff", "--no-color", "--no-ext-diff", state["base"], head, "--", *selected)
+    diff_text = diff.decode("utf-8", errors="replace")
+    inline = len(diff_text) <= INLINE_DIFF_CHARACTERS
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".tradecraft-reading-", dir=output.parent) as temporary:
+        staged = Path(temporary) / "reading"
+        staged.mkdir()
+        try:
+            claims = recipient_tree._extract_archive(source, head, files, staged, [])
+            if not inline:
+                (staged / DIFF_FILE).write_bytes(diff)
+                claims[DIFF_FILE] = {"mode": "100644", "oid": recipient_tree._blob_oid(source, diff)}
+            needle = branch.encode("utf-8")
+            for name in sorted(claims):
+                if needle and needle in (staged / Path(*PurePosixPath(name).parts)).read_bytes():
+                    raise ColdReaderError(f"carried file names the change's branch: {name}")
+            if needle and needle in diff:
+                raise ColdReaderError("the change's diff names its branch")
+            recipient_tree._initialize_neutral_repository(staged, dict(sorted(claims.items())))
+            recipient_tree._prove_neutral_repository(staged, source)
+        except recipient_tree.RecipientTreeError as exc:
+            raise ColdReaderError(str(exc)) from exc
+        residue = {}
+        for name in sorted(claims):
+            content = (staged / Path(*PurePosixPath(name).parts)).read_text("utf-8", errors="replace")
+            counts = {f"#{number}": len(re.findall(rf"#{number}(?![0-9])", content)) for number in numbers}
+            counts = {key: value for key, value in counts.items() if value}
+            if counts:
+                residue[name] = counts
+        staged.replace(output)
+    value = {
+        "schema_version": SCHEMA_VERSION, "work": work, "producer_version": producer_version,
+        "tree_root": str(output), "source_root": str(source), "base": state["base"], "head": head,
+        "change_set": changed, "coverage": coverage, "whole": set(selected) == set(changed),
+        "files": claims, "diff": "inline" if inline else DIFF_FILE, "residue": residue,
+        "verification": "raw-object-ids-match",
+    }
+    value["metadata_sha256"] = _digest(value)
+    recipient_tree.metadata_path(output).write_bytes(
+        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True).encode("ascii") + b"\n")
+    if inline:
+        recipient_tree.metadata_path(output).with_suffix(".diff").write_bytes(diff)
+    return recipient_tree.metadata_path(output)
+
+
+def load_metadata(path: Path) -> dict:
+    try:
+        value = json.loads(Path(path).read_bytes())
+    except (OSError, ValueError) as exc:
+        raise ColdReaderError(f"cannot read reading metadata: {path}") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
+        raise ColdReaderError("reading metadata has an unsupported shape")
+    claimed = value.pop("metadata_sha256", None)
+    if claimed != _digest(value):
+        raise ColdReaderError("reading metadata digest does not match")
+    value["metadata_sha256"] = claimed
+    return value
+
+
+def compose_prompt(metadata: dict, standard: str, diff_text: str | None) -> bytes:
+    covered = sorted(metadata["coverage"])
+    parts = [
+        "You are the cold reader for one change. Perform this one reading and return your "
+        "account in your final message. Dispatch nothing of your own. Your root is a detached "
+        "neutral commit holding only the changed files, the design documents they point to and "
+        "the decision records those sections list; any always-on text reaching you from "
+        "elsewhere is not your governing text. Links to an issue tracker or pull request are "
+        "outside your material: do not follow them.",
+        "## The standard the code is read against\n\n" + standard.strip(),
+        ("## The change's diff\n\n```diff\n" + diff_text.rstrip("\n") + "\n```") if diff_text is not None
+        else f"## The change's diff\n\nThe whole diff is the file `{DIFF_FILE}` at your root.",
+    ]
+    if not metadata.get("whole"):
+        parts.append(
+            "## What this reading covers\n\nThis is a reread. It covers only these paths; the other "
+            "files are there for reference only:\n\n" + "\n".join(f"- `{path}`" for path in covered))
+    parts.append(
+        "## Your account\n\nReturn exactly these four headings, in this order:\n\n"
+        "## Sections\nFor each changed section: its location (path and line range), what it is for, "
+        "why it is that way, and where you found the reason (a code line, a design-document section "
+        "or a decision record). Where you can't tell, say so.\n\n"
+        "## Flags\nOne line each, in the form `path:lines " + EM_DASH + " KIND " + EM_DASH
+        + " text`, where KIND is one of "
+        + ", ".join(f"`{kind}`" for kind in FLAG_KINDS) + ". A flag may name a carried file the "
+        "change didn't alter, such as a design-document section missing an entry. With no flags, "
+        "write the single word `none`.\n\n"
+        "## Why this change was made\nIts first line is exactly `Can tell: yes` or `Can tell: no`. "
+        "Then say which file the reason came from, or why you can't tell."
+        + ("" if metadata.get("whole") else " Answer only for the paths this reread covers.")
+        + "\n\n## Worth a look\nAt most " + str(MAX_NOMINATIONS) + " nominations, each a "
+        "`path:lines` range from the diff's added or changed lines, with one line on why it's "
+        "worth reading.")
+    return ("\n\n".join(parts) + "\n").encode("utf-8")
+
+
+def _sections(text: str) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    heading = None
+    for line in text.replace("\r\n", "\n").split("\n"):
+        stripped = line.rstrip()
+        if stripped in HEADINGS:
+            heading = stripped
+            found.setdefault(heading, [])
+        elif heading is not None:
+            found[heading].append(stripped)
+    return found
+
+
+def form_errors(text: str) -> list[str]:
+    """Check only the account's form; everything else is the reader's judgement."""
+    found = _sections(text)
+    errors = [f"missing heading {heading}" for heading in HEADINGS if heading not in found]
+    flags = [line for line in found.get("## Flags", []) if line.strip()]
+    if "## Flags" in found and flags != ["none"]:
+        errors.extend(f"malformed flag line: {line}" for line in flags if not FLAG_LINE.match(line))
+        if not flags:
+            errors.append("## Flags holds neither flag lines nor `none`")
+    why = [line for line in found.get("## Why this change was made", []) if line.strip()]
+    if "## Why this change was made" in found and (not why or not CAN_TELL.match(why[0])):
+        errors.append("## Why this change was made does not open with `Can tell: yes` or `Can tell: no`")
+    return errors
+
+
+def parse_account(text: str) -> dict:
+    found = _sections(text)
+    flags = []
+    for line in found.get("## Flags", []):
+        match = FLAG_LINE.match(line)
+        if match:
+            flags.append({"path": match.group("path").removeprefix("./"),
+                          "kind": match.group("kind"), "text": match.group("text")})
+    why = [line for line in found.get("## Why this change was made", []) if line.strip()]
+    tell = CAN_TELL.match(why[0]) if why else None
+    return {"flags": flags, "can_tell": None if tell is None else tell.group(1) == "yes"}
+
+
+def assess(readings: list[dict], present: dict) -> dict:
+    """Judge the current change set against readings ordered oldest first.
+
+    Each reading carries its metadata coverage, whether it was whole, and its parsed account.
+    """
+    changed = present["change_set"]
+    latest: dict[str, dict] = {}
+    for reading in readings:
+        for path in reading["coverage"]:
+            latest[path] = reading
+    stale = sorted(path for path in changed
+                   if path not in latest or latest[path]["coverage"][path] != present["coverage"][path])
+    uncovered = sorted(path for path in changed if path not in latest)
+    standing_flags = []
+    for path in changed:
+        reading = latest.get(path)
+        if reading is None:
+            continue
+        watched = {path} | dependency_paths(reading["coverage"][path])
+        standing_flags.extend({**flag, "reading": reading["id"]} for flag in reading["account"]["flags"]
+                              if flag["path"] in watched)
+    said_no = [index for index, reading in enumerate(readings) if reading["account"]["can_tell"] is False]
+    # Only a later reading of the whole current change can clear a `no`; a narrower reread can't.
+    standing_no = bool(said_no) and not any(
+        reading["account"]["can_tell"] is True and set(changed) <= set(reading["coverage"])
+        for reading in readings[said_no[-1] + 1:])
+    return {"stale": stale, "uncovered": uncovered, "flags": standing_flags,
+            "standing_no": standing_no, "covered": not stale}
+

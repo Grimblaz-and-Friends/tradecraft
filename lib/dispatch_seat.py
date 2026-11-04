@@ -452,11 +452,13 @@ def request_permission_boundary(args, root, windows_sandbox):
 def selected_role(args):
     role = getattr(args, "role", None)
     if role is None:
-        role = ({"use": "use_consumer", "cold-seat": "cold_seat"}.get(args.stage)
+        role = ({"use": "use_consumer", "cold-seat": "cold_seat",
+                 "cold-reader": "cold_reader"}.get(args.stage)
                 or {"ordinary": "ordinary_seat", "cold": "cold_seat",
                     "terminal": "terminal_seat"}[args.classification])
     required = {"ordinary_seat": "ordinary", "cold_seat": "cold",
-                "terminal_seat": "terminal", "use_consumer": "cold"}.get(role)
+                "terminal_seat": "terminal", "use_consumer": "cold",
+                "cold_reader": "cold"}.get(role)
     if required != args.classification:
         raise DispatchError(f"role {role} does not agree with classification {args.classification}")
     return role

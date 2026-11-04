@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 ROLES = ("artifact_author", "implementer", "ordinary_seat", "cold_seat",
-         "terminal_seat", "use_consumer")
+         "terminal_seat", "use_consumer", "cold_reader")
 VENDORS = ("codex", "claude")
 VALUE = re.compile(r"[^\s:]+\Z")
 

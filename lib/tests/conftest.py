@@ -17,6 +17,7 @@ def assert_no_new_artifact_copies(parent, before):
 
 
 def pytest_configure(config):
+    config.addinivalue_line("markers", "cold_reading: run with the cold-reading gate in force")
     if not hasattr(config, "workerinput"):
         # The coordinator checks after every worker stops, so another worker's
         # live allocation cannot be mistaken for a leftover. Never sweep copies.
@@ -78,3 +79,13 @@ def isolated_machine_home(tmp_path, monkeypatch):
     # Automatic holder capture must never read a test runner's parent session.
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def cold_reading_gate(request, monkeypatch):
+    # Suites about other stages run past the cold-reading gate; its own tests opt back in.
+    if request.node.get_closest_marker("cold_reading") is not None:
+        return
+    import work
+    monkeypatch.setattr(work, "_cold_reading_decision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(work, "_owed_cold_reading", lambda *_args, **_kwargs: None)
