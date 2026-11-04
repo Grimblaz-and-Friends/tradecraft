@@ -15,6 +15,11 @@
       "path": ".github/workflows/connected-review.yml",
       "job": "connected-review / report",
       "why": "the reviewer's report job (shared workflow at reviewer-stable)"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "job": "Deploy to GitHub Pages",
+      "why": "both products' public GitHub Pages deploys, which publish, so they stay hosted (#945)"
     }
   ]
 }
