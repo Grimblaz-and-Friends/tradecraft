@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -35,10 +37,10 @@ def read_api_key_file(path: Path) -> str:
     except OSError:
         raise ReplayError(f"API key file is unreadable: {path}") from None
     try:
-        text = raw.decode("utf-8")
+        # The -sig codec drops a leading byte-order mark an editor may have saved.
+        key = raw.decode("utf-8-sig").strip()
     except UnicodeDecodeError:
         raise ReplayError(f"API key file is not UTF-8 text: {path}") from None
-    key = text.removeprefix("\ufeff").strip()
     if not key:
         raise ReplayError(f"API key file is empty: {path}")
     if any(char.isspace() for char in key):
@@ -231,6 +233,252 @@ def validate_export(root: Path, *, require_policy: bool = False) -> dict[str, An
     return manifest
 
 
+# The padded known-defect ladder (#902, row 6) grows one case to a rung's size with
+# inert added files, so the finder's ceiling can be measured on a defect it should find.
+LIVE_FINDER_PROMPT = ROOT / "skills" / "connected-review" / "references" / "finder.md"
+REVIEWER_WORKFLOW = ROOT / ".github" / "workflows" / "connected-review-shared.yml"
+PADDING_DIRECTORY = "replay-padding"
+PADDING_FILE_BYTES = 64 * 1024
+PADDING_WINDOW_BYTES = 1_000
+DEFAULT_PAD_SEED = "tradecraft-902-ladder-v1"
+CASE_TEMPORARY_PREFIX = "connected-review-replay-case-"
+PADDING_VOCABULARY = (
+    "account", "address", "amount", "archive", "attempt", "balance", "batch", "binding",
+    "boundary", "branch", "buffer", "bundle", "cache", "calendar", "capacity", "catalog",
+    "channel", "checkpoint", "client", "column", "comment", "config", "counter", "cursor",
+    "customer", "dataset", "deadline", "default", "delivery", "detail", "device", "digest",
+    "document", "domain", "draft", "entry", "estimate", "event", "export", "feature",
+    "field", "filter", "folder", "format", "fragment", "gateway", "group", "handler",
+    "header", "history", "import", "index", "input", "inventory", "invoice", "item",
+    "journal", "label", "layer", "ledger", "limit", "listing", "locale", "marker",
+    "measure", "member", "message", "metric", "module", "notice", "number", "offset",
+    "option", "order", "output", "owner", "package", "page", "parcel", "payload",
+    "period", "policy", "portal", "preview", "profile", "project", "quota", "range",
+    "reader", "receipt", "record", "region", "release", "report", "request", "result",
+    "revision", "route", "schedule", "schema", "section", "segment", "session", "setting",
+    "shipment", "signal", "source", "status", "storage", "summary", "supplier", "table",
+    "target", "template", "ticket", "timeline", "token", "topic", "total", "tracker",
+    "update", "upload", "value", "vendor", "version", "window", "worker", "zone",
+)
+
+
+class PaddingRefused(ReplayError):
+    """Padding cannot place a case at its rung, so no model launches."""
+
+
+def _padding_choice(seed: str, file_index: int, counter: int, size: int) -> int:
+    # A hash, not `random`, keeps the bytes identical across Python versions.
+    digest = hashlib.sha256(f"{seed}:{file_index}:{counter}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % size
+
+
+@functools.lru_cache(maxsize=256)
+def padding_lines(seed: str, file_index: int) -> tuple[str, ...]:
+    """One padding file: a docstring, comments and literal constants, with no behaviour to report."""
+    lines = ['"""Replay padding: literal constants and comments only; nothing here runs."""', ""]
+    total = sum(len(line) + 1 for line in lines)
+    counter = 0
+    constant = 0
+
+    def draw(size: int) -> int:
+        nonlocal counter
+        counter += 1
+        return _padding_choice(seed, file_index, counter, size)
+
+    def words(count: int) -> list[str]:
+        return [PADDING_VOCABULARY[draw(len(PADDING_VOCABULARY))] for _ in range(count)]
+
+    while True:
+        kind = draw(3)
+        if kind == 0:
+            line = "# " + " ".join(words(6 + draw(7))).capitalize() + "."
+        else:
+            constant += 1
+            name = "_".join(words(3)).upper() + f"_{constant}"
+            value = '"' + " ".join(words(3 + draw(6))) + '"' if kind == 1 else str(draw(1_000_000))
+            line = f"{name} = {value}"
+        if total + len(line) + 1 > PADDING_FILE_BYTES:
+            return tuple(lines)
+        lines.append(line)
+        total += len(line) + 1
+
+
+def padding_path(file_index: int) -> str:
+    return f"{PADDING_DIRECTORY}/padding_{file_index:03d}.py"
+
+
+def padding_content(lines: tuple[str, ...]) -> bytes:
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def padding_section(path: str, lines: tuple[str, ...]) -> str:
+    """A standard new-file diff section for one padding file."""
+    content = padding_content(lines)
+    blob = hashlib.sha1(b"blob %d\x00" % len(content) + content).hexdigest()[:7]
+    count = "" if len(lines) == 1 else f",{len(lines)}"
+    return (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..{blob}\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1{count} @@\n"
+        + "".join(f"+{line}\n" for line in lines)
+    )
+
+
+def _padding_files(seed: str, files: int, last_lines: int | None = None) -> list[tuple[str, tuple[str, ...]]]:
+    chosen = [(padding_path(index), padding_lines(seed, index)) for index in range(1, files + 1)]
+    if chosen and last_lines is not None:
+        path, lines = chosen[-1]
+        chosen[-1] = (path, lines[:last_lines])
+    return [(path, lines) for path, lines in chosen if lines]
+
+
+def padded_diff(diff: str, files: list[tuple[str, tuple[str, ...]]]) -> str:
+    """Put the first half of the padding before the case's sections and the rest after them."""
+    # The case's own sections, and so its defect, sit mid-prompt whatever their paths.
+    if diff and not diff.endswith("\n"):
+        diff += "\n"
+    sections = re.split(r"(?m)(?=^diff --git )", diff)
+    preamble = sections.pop(0) if sections and not sections[0].startswith("diff --git ") else ""
+    padding = [padding_section(path, lines) for path, lines in files]
+    before = (len(padding) + 1) // 2
+    return preamble + "".join(padding[:before]) + "".join(sections) + "".join(padding[before:])
+
+
+def refuse_padding_collision(diff: str, snapshot: Path) -> None:
+    taken = [
+        path for path in cr.coverage_paths(diff)
+        if path == PADDING_DIRECTORY or path.startswith(PADDING_DIRECTORY + "/")
+    ]
+    if taken or (snapshot / PADDING_DIRECTORY).exists():
+        where = "diff" if taken else "snapshot"
+        raise PaddingRefused(f"padding path is already in the case's {where}: {PADDING_DIRECTORY}")
+
+
+def measure_finder_input(
+    diff: str, attributes: dict[str, Any], finder_text: str, snapshot: Path, rules: str,
+) -> int:
+    """The reviewer's own size: the largest composed finder input, through live selection."""
+    selected, exclusions, _lines = cr.select_coverage(diff, attributes)
+    for entry in exclusions:
+        if entry["path"].startswith(PADDING_DIRECTORY + "/"):
+            raise PaddingRefused(
+                f"padding path {entry['path']} is excluded from coverage as {entry['reason']}"
+            )
+    return cr.largest_input_bytes(cr.finder_prompts(finder_text, snapshot, selected, rules, None, exclusions))
+
+
+def pad_case(
+    diff: str,
+    attributes: dict[str, Any],
+    finder_text: str,
+    snapshot: Path,
+    rules: str,
+    target: int,
+    seed: str,
+) -> tuple[str, dict[str, Any], list[tuple[str, tuple[str, ...]]]]:
+    """Pad a raw diff until its largest finder input lies in [target - window, target]."""
+    def measure(files: list[tuple[str, tuple[str, ...]]]) -> tuple[str, int]:
+        candidate = padded_diff(diff, files)
+        return candidate, measure_finder_input(candidate, attributes, finder_text, snapshot, rules)
+
+    padded, natural = measure([])
+    if natural > target:
+        raise PaddingRefused(f"case is larger than the rung: {natural} > {target} UTF-8 bytes")
+    low = target - PADDING_WINDOW_BYTES
+    chosen: list[tuple[str, tuple[str, ...]]] = []
+    measured = natural
+    if natural < low:
+        # Whole files first: the fewest whose composed size reaches the rung.
+        each = len(padding_section(padding_path(1), padding_lines(seed, 1)).encode("utf-8"))
+        files = max(1, -(-(target - natural) // each))
+        sizes: dict[int, int] = {}
+
+        def whole(count: int) -> int:
+            if count not in sizes:
+                sizes[count] = natural if count == 0 else measure(_padding_files(seed, count))[1]
+            return sizes[count]
+
+        while whole(files) < target:
+            files += 1
+        while files > 1 and whole(files - 1) >= target:
+            files -= 1
+        # Then the last file's line count: the most lines that keep the size within the rung.
+        lowest, highest = 0, len(padding_lines(seed, files))
+        while lowest < highest:
+            middle = (lowest + highest + 1) // 2
+            if measure(_padding_files(seed, files, middle))[1] <= target:
+                lowest = middle
+            else:
+                highest = middle - 1
+        chosen = _padding_files(seed, files, lowest)
+        padded, measured = measure(chosen)
+        if not low <= measured <= target:
+            raise PaddingRefused(
+                f"rung {target} cannot be reached within {PADDING_WINDOW_BYTES} UTF-8 bytes; nearest is {measured}"
+            )
+    record = {
+        "target_bytes": target,
+        "seed": seed,
+        "files": len(chosen),
+        "lines": sum(len(lines) for _path, lines in chosen),
+        "measured_bytes": measured,
+        "padded_diff_sha256": hashlib.sha256(padded.encode("utf-8")).hexdigest(),
+    }
+    return padded, record, chosen
+
+
+def write_padding(snapshot: Path, files: list[tuple[str, tuple[str, ...]]]) -> None:
+    for path, lines in files:
+        target = snapshot.joinpath(*path.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(padding_content(lines))
+
+
+def parse_rungs(value: str) -> list[int]:
+    try:
+        rungs = [int(item) for item in value.split(",")]
+    except ValueError:
+        raise ReplayError(f"rungs must be comma-separated byte counts: {value}") from None
+    if not rungs or any(rung <= 0 for rung in rungs) or rungs != sorted(set(rungs)):
+        raise ReplayError("rungs must be positive and strictly ascending")
+    return rungs
+
+
+def single_case(manifest: dict[str, Any]) -> dict[str, Any]:
+    if len(manifest["cases"]) != 1:
+        raise ReplayError("a ladder export holds exactly one case")
+    return manifest["cases"][0]
+
+
+def ladder_plan(
+    export_root: Path, rungs: list[int], seed: str = DEFAULT_PAD_SEED,
+    finder_prompt: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Compose and measure the natural size and every rung; launches no model and needs no credential."""
+    manifest = validate_export(export_root, require_policy=True)
+    case = single_case(manifest)
+    finder_text = (finder_prompt or LIVE_FINDER_PROMPT).read_text(encoding="utf-8")
+    diff = (export_root / case["diff"]).read_text(encoding="utf-8", errors="replace")
+    rules = (export_root / case["rules"]).read_text(encoding="utf-8", errors="replace")
+    attributes = read_object(export_root / case["base_attributes"])
+    refuse_padding_collision(diff, export_root / case["snapshot"])
+    # A replay case's own snapshot path, whose length the prompt's size depends on.
+    with tempfile.TemporaryDirectory(prefix=CASE_TEMPORARY_PREFIX) as temporary:
+        snapshot = Path(temporary) / "case" / "snapshot"
+        rows: list[dict[str, Any]] = [{
+            "rung": "natural",
+            "measured_bytes": measure_finder_input(diff, attributes, finder_text, snapshot, rules),
+            "files": 0,
+            "lines": 0,
+            "padded_diff_sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
+        }]
+        for rung in rungs:
+            _padded, record, _files = pad_case(diff, attributes, finder_text, snapshot, rules, rung, seed)
+            rows.append({"rung": rung, **{
+                key: record[key] for key in ("measured_bytes", "files", "lines", "padded_diff_sha256")
+            }})
+    return rows
+
+
 def harness_digest() -> str:
     digest = hashlib.sha256()
     for name, path in (
@@ -255,6 +503,8 @@ def reviewer_record(
     preload_budget_bytes: int = cr.DEFAULT_PRELOAD_BUDGET_BYTES,
     summarise_deleted_files: bool = False,
     summary_threshold_bytes: int | None = None,
+    pad_to_bytes: int | None = None,
+    pad_seed: str | None = None,
 ) -> dict[str, Any]:
     settings = cr.reviewer_settings(
         version,
@@ -276,6 +526,7 @@ def reviewer_record(
         or checker_effort is not None
         or preload_changed_files
         or summarise_deleted_files
+        or pad_to_bytes is not None
     ):
         record.update({
             "pass_structure": "single-pass" if single_pass else "finder-checker",
@@ -290,6 +541,9 @@ def reviewer_record(
                     "summarise_deleted_files": True,
                     "summary_threshold_bytes": _summary_threshold(summary_threshold_bytes),
                 } if summarise_deleted_files else {}),
+                **({
+                    "pad_to_bytes": pad_to_bytes, "pad_seed": pad_seed or DEFAULT_PAD_SEED,
+                } if pad_to_bytes is not None else {}),
             },
         })
     return record
@@ -386,7 +640,20 @@ def _validate_run_options(
     checker_effort: str | None,
     summarise_deleted_files: bool = False,
     summary_threshold_bytes: int | None = None,
+    pad_to_bytes: int | None = None,
+    pad_seed: str | None = None,
+    preload_changed_files: bool = False,
 ) -> None:
+    if pad_seed is not None and pad_to_bytes is None:
+        raise ReplayError("--pad-seed requires --pad-to-bytes")
+    if pad_to_bytes is not None:
+        if pad_to_bytes <= 0:
+            raise ReplayError("--pad-to-bytes must be positive")
+        # A ladder rung measures the live reviewer, which neither summarises below the rung nor preloads.
+        if summarise_deleted_files:
+            raise ReplayError("--pad-to-bytes cannot be used with --summarise-deleted-files")
+        if preload_changed_files:
+            raise ReplayError("--pad-to-bytes cannot be used with --preload-changed-files")
     if summary_threshold_bytes is not None and not summarise_deleted_files:
         raise ReplayError("--summary-threshold-bytes requires --summarise-deleted-files")
     if summary_threshold_bytes is not None and summary_threshold_bytes < 0:
@@ -521,10 +788,13 @@ def run_replay(
     summarise_deleted_files: bool = False,
     summary_threshold_bytes: int | None = None,
     api_key: str | None = None,
+    pad_to_bytes: int | None = None,
+    pad_seed: str | None = None,
 ) -> dict[str, Any]:
     _validate_run_options(
         checker_prompt, single_pass, finder_effort, checker_effort,
         summarise_deleted_files, summary_threshold_bytes,
+        pad_to_bytes, pad_seed, preload_changed_files,
     )
     manifest = validate_export(export_root, require_policy=True)
     finder_text = finder_prompt.read_text(encoding="utf-8")
@@ -540,6 +810,8 @@ def run_replay(
         preload_budget_bytes=preload_budget_bytes,
         summarise_deleted_files=summarise_deleted_files,
         summary_threshold_bytes=summary_threshold_bytes,
+        pad_to_bytes=pad_to_bytes,
+        pad_seed=pad_seed,
     )
     completed: dict[str, dict[str, Any]] = {}
     resumed_cases: list[str] = []
@@ -587,7 +859,7 @@ def run_replay(
         # Each case starts on the key, as each live review does.
         credentials = _credentials(api_key)
         try:
-            with tempfile.TemporaryDirectory(prefix="connected-review-replay-case-") as temporary:
+            with tempfile.TemporaryDirectory(prefix=CASE_TEMPORARY_PREFIX) as temporary:
                 temporary_root = Path(temporary)
                 case_root = temporary_root / "case"
                 snapshot = case_root / "snapshot"
@@ -614,9 +886,16 @@ def run_replay(
                 shutil.copyfile(export_root / case["rules"], rules_path)
                 diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
                 rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
-                diff_text, exclusions, lines = cr.select_coverage(
-                    diff_text, read_object(export_root / case["base_attributes"]),
-                )
+                attributes = read_object(export_root / case["base_attributes"])
+                if pad_to_bytes is not None:
+                    # Padding joins the raw diff, so live selection and line anchors see it.
+                    refuse_padding_collision(diff_text, snapshot)
+                    diff_text, case_result["padding"], padding_files = pad_case(
+                        diff_text, attributes, finder_text, snapshot, rules_text,
+                        pad_to_bytes, pad_seed or DEFAULT_PAD_SEED,
+                    )
+                    write_padding(snapshot, padding_files)
+                diff_text, exclusions, lines = cr.select_coverage(diff_text, attributes)
                 case_result["excluded_files"] = exclusions
                 preloaded = (
                     cr.preload_changed_file_data(
@@ -700,6 +979,8 @@ def run_replay(
                         "checker_trace": checker_trace,
                     })
                 case_result.update(completed_result)
+        except PaddingRefused:
+            raise
         except (ReplayError, cr.ReviewError, OSError) as exc:
             case_result.update({"status": "error", "error": str(exc)})
         case_result["credential"] = credentials.record
@@ -937,6 +1218,12 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--summarise-deleted-files", action="store_true")
     run.add_argument("--summary-threshold-bytes", type=int)
     run.add_argument("--api-key-file", type=Path)
+    run.add_argument("--pad-to-bytes", type=int)
+    run.add_argument("--pad-seed")
+    plan = commands.add_parser("ladder-plan")
+    plan.add_argument("--export", required=True, type=Path)
+    plan.add_argument("--rungs", required=True)
+    plan.add_argument("--pad-seed", default=DEFAULT_PAD_SEED)
     grade = commands.add_parser("grade")
     grade.add_argument("--results", required=True, type=Path)
     grade.add_argument("--answer-key", required=True, type=Path)
@@ -966,7 +1253,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 summarise_deleted_files=args.summarise_deleted_files,
                 summary_threshold_bytes=args.summary_threshold_bytes,
                 api_key=secret,
+                pad_to_bytes=args.pad_to_bytes,
+                pad_seed=args.pad_seed,
             )
+        elif args.command == "ladder-plan":
+            result = {"rungs": ladder_plan(args.export, parse_rungs(args.rungs), args.pad_seed)}
         else:
             result = grade_replay(args.results, args.answer_key, args.decisions)
             write_object(args.output, result)

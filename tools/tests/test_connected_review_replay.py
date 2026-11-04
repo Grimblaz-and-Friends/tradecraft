@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import base64
 import copy
 import hashlib
 import io
@@ -1410,3 +1412,176 @@ def test_run_without_key_file_records_the_environment_as_its_source(tmp_path, mo
     prepare_run(monkeypatch)
     replay_cli(monkeypatch, ["success"])
     assert single_pass_replay(tmp_path, 1)["credential_source"] == "environment"
+
+
+# Padding grows one case to a rung in the reviewer's own bytes (#902, row 6).
+
+def generated_padding_material() -> dict:
+    content = b"replay-padding/** linguist-generated\n"
+    return {"schema_version": 1, "base": BASE, "files": [{
+        "path": ".gitattributes",
+        "content_base64": base64.b64encode(content).decode("ascii"),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "blob_sha": hashlib.sha1(b"blob %d\x00" % len(content) + content).hexdigest(),
+    }]}
+
+
+def rehash_case(export: Path, **changes) -> None:
+    manifest = replay.read_object(export / "manifest.json")
+    case = manifest["cases"][0]
+    for name, content in changes.items():
+        target = export / case[name]
+        if isinstance(content, dict):
+            replay.write_object(target, content)
+        else:
+            target.write_bytes(content)
+        case[f"{name}_sha256"] = replay.file_digest(target)
+    replay.write_object(export / "manifest.json", manifest)
+
+
+def padded_run(tmp_path, monkeypatch, target, *, export=None, read=None, **options):
+    export = export or build_export(tmp_path / "export", cases=1)
+    finder = tmp_path / "finder.md"
+    finder.write_bytes(b"finder")
+    prepare_run(monkeypatch)
+    launches = []
+
+    def run(_executable, run_root, snapshot, prompt, schema, _credential, *, effort, **_kwargs):
+        padding = snapshot / "replay-padding"
+        launches.append({
+            "prompt": prompt,
+            "padding": {path.name: path.read_bytes() for path in sorted(padding.glob("*.py"))},
+        })
+        target_path = (read or (lambda root: root / "padding_001.py"))(padding)
+        return {"candidates": []}, {}, [{"tool": "Read", "input": {"file_path": str(target_path)}}]
+
+    monkeypatch.setattr(replay.cr, "run_pass", run)
+    result = replay.run_replay(
+        export, tmp_path / "results.json", finder, None, "claude", replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+        single_pass=True, finder_effort="high", pad_to_bytes=target, **options,
+    )
+    return result, launches
+
+
+@pytest.mark.parametrize("target", [150_000, 333_333])
+def test_padded_run_sizes_the_composed_finder_input_inside_the_window(tmp_path, monkeypatch, target):
+    result, launches = padded_run(tmp_path, monkeypatch, target)
+    case = result["cases"][0]
+    sent = len(replay.cr.pass_input_bytes(launches[0]["prompt"]))
+    assert target - replay.PADDING_WINDOW_BYTES <= sent <= target
+    assert case["finder_input_utf8_bytes"] == {"coverage": sent}
+    assert case["padding"]["measured_bytes"] == sent and case["padding"]["target_bytes"] == target
+    assert case["padding"]["files"] == len(launches[0]["padding"]) >= 2
+    assert result["reviewer"]["overrides"]["pad_to_bytes"] == target
+    assert result["reviewer"]["overrides"]["pad_seed"] == replay.DEFAULT_PAD_SEED
+
+
+def test_padding_is_deterministic_by_seed(tmp_path):
+    export = build_export(tmp_path / "export", cases=1)
+    first = replay.ladder_plan(export, [150_000])
+    second = replay.ladder_plan(export, [150_000])
+    other = replay.ladder_plan(export, [150_000], "another-seed")
+    assert first == second
+    assert first[1]["padded_diff_sha256"] != other[1]["padded_diff_sha256"]
+    assert replay.padding_lines("s", 1) == replay.padding_lines("s", 1) != replay.padding_lines("s", 2)
+
+
+def test_padding_is_inert_literals_and_comments():
+    lines = replay.padding_lines(replay.DEFAULT_PAD_SEED, 1)
+    content = replay.padding_content(lines)
+    assert len(content) <= replay.PADDING_FILE_BYTES
+    tree = ast.parse(content)
+    assert isinstance(tree.body[0], ast.Expr)
+    assert all(isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) for node in tree.body[1:])
+    assert all(line.isascii() for line in lines)
+
+
+def test_generated_padding_is_refused_before_launch(tmp_path, monkeypatch):
+    export = build_export(tmp_path / "export", cases=1)
+    rehash_case(export, base_attributes=generated_padding_material())
+    monkeypatch.setattr(replay.cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("must not launch"))
+    with pytest.raises(replay.PaddingRefused, match="replay-padding/padding_001.py is excluded from coverage as generated"):
+        padded_run(tmp_path, monkeypatch, 150_000, export=export)
+    with pytest.raises(replay.PaddingRefused, match="excluded from coverage as generated"):
+        replay.ladder_plan(export, [150_000])
+
+
+def test_padding_refuses_the_deleted_file_summary_and_preload(tmp_path):
+    export = build_export(tmp_path / "export", cases=1)
+    for option in ("summarise_deleted_files", "preload_changed_files"):
+        with pytest.raises(replay.ReplayError, match="--pad-to-bytes cannot be used with"):
+            replay.run_replay(export, tmp_path / "results.json", tmp_path / "unused", None, "claude",
+                              replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True, pad_to_bytes=150_000,
+                              **{option: True})
+    with pytest.raises(replay.ReplayError, match="--pad-seed requires --pad-to-bytes"):
+        replay.run_replay(export, tmp_path / "results.json", tmp_path / "unused", None, "claude",
+                          replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True, pad_seed="seed")
+
+
+def test_padded_case_keeps_its_wholly_deleted_file_section(tmp_path, monkeypatch):
+    result, launches = padded_run(tmp_path, monkeypatch, 150_000, export=deletion_export(tmp_path / "export"))
+    case = result["cases"][0]
+    assert case["status"] == "completed" and "summarised_deleted_files" not in case
+    assert "-first" in launches[0]["prompt"] and "<summarised_deleted_files>" not in launches[0]["prompt"]
+
+
+def test_padding_surrounds_the_case_sections():
+    case = (
+        "diff --git a/one.py b/one.py\n--- a/one.py\n+++ b/one.py\n@@ -1 +1 @@\n-a\n+b\n"
+        "diff --git a/two.py b/two.py\n--- a/two.py\n+++ b/two.py\n@@ -1 +1 @@\n-a\n+b\n"
+    )
+    files = [(replay.padding_path(index), ("X = 1",)) for index in (1, 2, 3)]
+    order = [record["path"] for record in replay.cr._changed_file_records(replay.padded_diff(case, files))]
+    assert order == [
+        "replay-padding/padding_001.py", "replay-padding/padding_002.py", "one.py", "two.py",
+        "replay-padding/padding_003.py",
+    ]
+    assert replay.padded_diff(case, []) == case
+
+
+def test_padding_lands_in_the_copied_snapshot_only(tmp_path, monkeypatch):
+    export = build_export(tmp_path / "export", cases=1)
+    before = replay.tree_digest(export)
+    result, launches = padded_run(tmp_path, monkeypatch, 150_000, export=export)
+    case = result["cases"][0]
+    assert case["status"] == "completed" and case["outside_reads"] == []
+    written = launches[0]["padding"]
+    assert written["padding_001.py"] == replay.padding_content(replay.padding_lines(replay.DEFAULT_PAD_SEED, 1))
+    assert sum(content.count(b"\n") for content in written.values()) == case["padding"]["lines"]
+    assert replay.tree_digest(export) == before
+
+
+def test_padding_refuses_a_taken_path_and_an_oversized_case(tmp_path, monkeypatch):
+    export = build_export(tmp_path / "export", cases=1)
+    monkeypatch.setattr(replay.cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("must not launch"))
+    with pytest.raises(replay.PaddingRefused, match="case is larger than the rung"):
+        padded_run(tmp_path, monkeypatch, 100, export=export)
+    taken = export / "cases/pr-1/snapshot/replay-padding"
+    taken.mkdir()
+    (taken / "kept.py").write_text("x = 1\n", encoding="utf-8")
+    rehash_case(export)
+    manifest = replay.read_object(export / "manifest.json")
+    manifest["cases"][0]["snapshot_sha256"] = replay.tree_digest(export / "cases/pr-1/snapshot")
+    replay.write_object(export / "manifest.json", manifest)
+    with pytest.raises(replay.PaddingRefused, match="already in the case's snapshot"):
+        padded_run(tmp_path, monkeypatch, 150_000, export=export)
+
+
+def test_ladder_plan_needs_no_credential_and_launches_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(replay.cr, "_run", lambda *_args, **_kwargs: pytest.fail("must not launch"))
+    export = build_export(tmp_path / "export", cases=1)
+    assert replay.main(["ladder-plan", "--export", str(export), "--rungs", "150000,300000"]) == 0
+    rows = json.loads(capsys.readouterr().out)["rungs"]
+    assert [row["rung"] for row in rows] == ["natural", 150_000, 300_000]
+    assert rows[0]["files"] == 0 and rows[0]["measured_bytes"] < 150_000
+    for row in rows[1:]:
+        assert row["rung"] - replay.PADDING_WINDOW_BYTES <= row["measured_bytes"] <= row["rung"]
+        assert set(row) == {"rung", "measured_bytes", "files", "lines", "padded_diff_sha256"}
+
+
+def test_ladder_plan_refuses_unordered_rungs_and_several_cases(tmp_path):
+    with pytest.raises(replay.ReplayError, match="strictly ascending"):
+        replay.parse_rungs("300000,150000")
+    with pytest.raises(replay.ReplayError, match="exactly one case"):
+        replay.ladder_plan(build_export(tmp_path / "export", cases=2), [150_000])
