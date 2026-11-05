@@ -3,6 +3,7 @@
 Design: lib/DESIGN.md#the-cold-reader
 """
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -156,3 +157,16 @@ def test_a_repository_whose_git_converts_line_endings_still_builds_its_reading_t
     metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
     assert (tmp_path / "reading" / "a.py").read_bytes() == b"A = 1\nB = 2\n"
     assert sorted(metadata["files"]) == ["a.py", "notes.md"]
+
+
+def test_a_change_holding_a_symlink_is_refused_naming_it_rather_than_escaping_the_stage(tmp_path):
+    root, base, _head = source(tmp_path, {"README.md": "# Readme\n"}, {"a.py": "A = 1\n"})
+    # Staged by mode, so the test needs no symlink support from the platform.
+    target = subprocess.run(["git", "-C", str(root), "hash-object", "-w", "--stdin"], input=b"a.py",
+                            capture_output=True, check=True).stdout.decode("ascii").strip()
+    git(root, "update-index", "--add", "--cacheinfo", f"120000,{target},link.py")
+    git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-q", "-m", "link")
+    head = git(root, "rev-parse", "HEAD")
+    with pytest.raises(cold_reader.ColdReaderError, match="link.py"):
+        build(tmp_path, root, base, head)
+    assert not (tmp_path / "reading").exists()

@@ -43,7 +43,7 @@ FLAG_LINE = re.compile(
 NO_FLAGS = re.compile(r"^(?:[-*][ \t]+)?`?none\.?`?\.?$", re.IGNORECASE)
 CAN_TELL = re.compile(r"^Can tell: (yes|no)$")
 REVIEW_HEADING = "Holder's review against the brief"
-# Strict, unlike a flag line: a holder's line that doesn't parse must fail rather than accept nothing.
+# A mistyped acceptance must fail the `open`, so it never silently accepts nothing.
 ACCEPTANCE = re.compile(
     r"^(?:[-*][ \t]+)?Accepted:[ \t]+`?(?P<path>[^\s:`]+)(?::(?P<lines>[0-9]+(?:[-" + EN_DASH
     + r"][0-9]+)?))?`?[ \t]+[" + EM_DASH + r"-][ \t]+(?P<kind>" + "|".join(FLAG_KINDS) + r")[ \t]+["
@@ -270,7 +270,11 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
                 carried.add(dependency["path"])
             carried.update(record["path"] for record in dependency["records"])
     # An empty selection would list, and archive, the whole tree.
-    files = recipient_tree._tree_files(source, head, sorted(carried)) if carried else {}
+    try:
+        files = recipient_tree._tree_files(source, head, sorted(carried)) if carried else {}
+    except recipient_tree.RecipientTreeError as exc:
+        # A file the tree can't hold, such as a symlink, refuses the reading rather than escaping the stage.
+        raise ColdReaderError(str(exc)) from exc
     # A rename's old path joins the pathspec so the diff shows the edit as a rename, removed lines and all.
     moved = renames(source, state["base"], head)
     pathspec = sorted(set(selected) | {moved[path] for path in selected if path in moved})
