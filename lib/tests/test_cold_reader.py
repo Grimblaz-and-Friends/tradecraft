@@ -994,6 +994,46 @@ def test_a_builder_turn_that_returned_nothing_is_not_the_readings_review(change)
     assert change.decide().reason == "cold-reading-review-owed"
 
 
+@pytest.mark.cold_reading
+def test_a_launch_that_falls_back_onto_a_codex_builder_reaches_the_gate_as_a_reading_an_open_validates(
+        change, monkeypatch, capsys):
+    # The seam runs for real: the entrance's command, the seat's fallback and its record, then the gate.
+    scenario = change.tmp / "scenario.json"
+    scenario.write_text(json.dumps({"claude": {"message": "Not logged in"}, "codex": {"message": clean()}}),
+                        encoding="utf-8")
+    output = change.store / "seat-reading" / "result.md"
+    monkeypatch.setattr(dispatch_seat, "resolve_command", lambda vendor, _explicit: [
+        sys.executable, str(Path(__file__).resolve().parent / "seat_cli.py"), vendor, str(scenario)])
+    monkeypatch.setattr(dispatch_seat.records, "runtime_version", lambda *_: "fixture-cli 1.0")
+    monkeypatch.setattr(dispatch_seat, "is_windows", lambda: False)
+    monkeypatch.setattr(work, "_invoke_recipient",
+                        lambda command, _deadline: dispatch_seat.run_dispatch(dispatch_seat.parser().parse_args(command[2:])))
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "fixture build bundle"))
+    monkeypatch.setattr(work.records, "resolved_output", lambda *_a: output)
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    decision = work.Decision("cold-reader", True, "fresh", "holder-named-stage")
+    capsys.readouterr()
+    assert work._execute_cold_reader(fixture, decision, dispatch_path=None, tree_metadata=None,
+                                     timeout_seconds=600, claude_path=None, codex_path=None) == 0
+    run = json.loads(output.with_name("result.md.run.json").read_text("utf-8"))
+    assert (run["requested_vendor"], run["actual_vendor"], run["staffing_status"]) == ("claude", "codex", "degraded")
+    reason = run["staffing_qualification"]["same_vendor_reason"]
+    assert reason == "cold-reader-fell-back-to-builder-vendor"
+    request = json.loads(output.with_name("result.md.request.json").read_text("utf-8"))
+    assert (request["lineage_branch"], request["lineage_pull_request"]) == (BRANCH, fixture.pr["number"])
+    readings = work._cold_readings(change.state())
+    assert [reading["id"] for reading in readings] == [str(output.with_name("result.md.run.json"))]
+    returned = readings[0]["return"]
+    change.post(f"<!-- tradecraft:cold-reading:v1 head={change.head} status=open staffing_status=degraded "
+                f"same_vendor_reason={reason} -->\n\n" + returned + "\n")
+    # The seat completes on the real clock, so the comment is dated after it.
+    change.comments[-1]["created_at"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    opened = change.state()
+    work.validate_marker_claims(opened)
+    assert [m.attributes["status"] for m in opened.markers if m.name == "cold-reading"] == ["open"]
+
+
 def test_the_design_section_the_new_code_points_at_names_its_decisions():
     lib = Path(__file__).resolve().parents[1]
     for name in ("cold_reader.py", "work.py"):
