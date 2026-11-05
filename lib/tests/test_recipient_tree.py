@@ -231,7 +231,8 @@ def test_a_repository_whose_git_converts_line_endings_still_builds_a_consumer_tr
     git(root, "config", "core.autocrlf", "true")
     output = tmp_path / "consumer"
     recipient_tree.create_consumer_tree(
-        source=root.resolve(), output=output, work="acme/widget#7", producer_version="0.151.0",
+        source=root.resolve(), output=output, work="acme/widget" + "#" + str(7),
+        producer_version="0.151.0",
         mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"], front_page=None,
         root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
     )
