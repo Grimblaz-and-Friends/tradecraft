@@ -26,6 +26,10 @@ DIFF_FILE = "CHANGE.diff"
 # Any token naming a Markdown section counts, since a pointer may open a comment, docstring or document.
 POINTER = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+\.md)#([A-Za-z0-9_-]+)")
 LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+# A full `[text][id]` or collapsed `[text][]` reference, then a shortcut `[id]` that opens no other form.
+FULL_REFERENCE = re.compile(r"\[([^\]]*)\]\[([^\]]*)\]")
+SHORTCUT_REFERENCE = re.compile(r"(?<!\])\[([^\]]+)\](?![\[(:])")
+DEFINITION = re.compile(r"^ {0,3}\[([^\]]+)\]:[ \t]*<?([^\s>]+)>?")
 HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 # Built at run time: string constants stay ASCII, since a platform encoding can garble captured output.
@@ -36,6 +40,7 @@ FLAG_LINE = re.compile(
     r"[ \t]+[" + EM_DASH + r"-][ \t]+(?P<kind>" + "|".join(FLAG_KINDS) + r")[ \t]+["
     + EM_DASH + r"-][ \t]+(?P<text>\S.*)$"
 )
+NO_FLAGS = re.compile(r"^(?:[-*][ \t]+)?`?none\.?`?\.?$", re.IGNORECASE)
 CAN_TELL = re.compile(r"^Can tell: (yes|no)$")
 REVIEW_HEADING = "Holder's review against the brief"
 # Strict, unlike a flag line: a holder's line that doesn't parse must fail rather than accept nothing.
@@ -76,21 +81,34 @@ def _blob_text(root: Path, oid: str) -> str | None:
         return None  # A binary file carries no pointer.
 
 
-def change_set(root: Path, base_tip: str, head: str) -> tuple[str, dict[str, str]]:
-    """Return the merge base and each changed path's blob at head, or `deleted`."""
-    base = _git(root, "merge-base", base_tip, head).decode("ascii").strip()
+def _name_status(root: Path, base: str, head: str) -> list[tuple[str, str, str | None]]:
+    """Each changed entry's status, its path at head, and its old path when renamed or copied."""
     raw = _git(root, "diff", "--name-status", "-z", "-M", base, head).split(b"\0")
-    tree = _tree_map(root, head)
-    paths: dict[str, str] = {}
+    entries = []
     index = 0
     while index < len(raw) and raw[index]:
         status = raw[index].decode("ascii")
         # A rename or copy names its old path first; the change is read at its new one.
         count = 2 if status[:1] in {"R", "C"} else 1
-        path = raw[index + count].decode("utf-8")
-        paths[path] = "deleted" if status.startswith("D") else tree.get(path, "deleted")
+        old = raw[index + 1].decode("utf-8") if count == 2 else None
+        entries.append((status, raw[index + count].decode("utf-8"), old))
         index += count + 1
+    return entries
+
+
+def change_set(root: Path, base_tip: str, head: str) -> tuple[str, dict[str, str]]:
+    """Return the merge base and each changed path's blob at head, or `deleted`."""
+    base = _git(root, "merge-base", base_tip, head).decode("ascii").strip()
+    tree = _tree_map(root, head)
+    paths = {path: "deleted" if status.startswith("D") else tree.get(path, "deleted")
+             for status, path, _ in _name_status(root, base, head)}
     return base, dict(sorted(paths.items()))
+
+
+def renames(root: Path, base: str, head: str) -> dict[str, str]:
+    """Map each path renamed by the change to its path at the base."""
+    return {path: old for status, path, old in _name_status(root, base, head)
+            if status.startswith("R") and old is not None}
 
 
 def github_anchor(heading: str) -> str:
@@ -103,6 +121,7 @@ def section(text: str, anchor: str) -> str | None:
     lines = text.splitlines()
     start = level = None
     fenced = False
+    used: dict[str, int] = {}
     for number, line in enumerate(lines):
         if FENCE.match(line):
             fenced = not fenced
@@ -111,28 +130,69 @@ def section(text: str, anchor: str) -> str | None:
         if match is None:
             continue
         depth = len(match.group(1))
-        if start is None and github_anchor(match.group(2)) == anchor:
+        # The renderer numbers a repeated heading's anchor, so the second `Notes` is `notes-1`.
+        slug = github_anchor(match.group(2))
+        repeat = used.get(slug, 0)
+        used[slug] = repeat + 1
+        if start is None and (slug if not repeat else f"{slug}-{repeat}") == anchor:
             start, level = number, depth
         elif start is not None and depth <= level:
             return "\n".join(lines[start:number])
     return None if start is None else "\n".join(lines[start:])
 
 
+def _resolve(document: str, target: str) -> str:
+    """A link target's repository path, read relative to the document unless it opens with `/`."""
+    relative = target.split("#", 1)[0]
+    if relative.startswith("/"):
+        return posixpath.normpath(relative.lstrip("/"))
+    return posixpath.normpath(posixpath.join(posixpath.dirname(document), relative))
+
+
+def _definitions(text: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    fenced = False
+    for line in text.splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        match = None if fenced else DEFINITION.match(line)
+        if match:
+            # The first definition of a label wins, as it does when the document renders.
+            found.setdefault(_label(match.group(1)), match.group(2))
+    return found
+
+
+def _label(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
 def _section_records(document: str, text: str, anchor: str, tree: dict[str, str]) -> list[dict]:
     body = section(text, anchor)
     if body is None:
         return []
+    definitions = _definitions(text)
+    targets = LINK.findall(body)
+    for match in FULL_REFERENCE.finditer(body):
+        targets.append(definitions.get(_label(match.group(2) or match.group(1)), ""))
+    targets.extend(definitions.get(_label(label), "") for label in SHORTCUT_REFERENCE.findall(body))
     records, seen = [], set()
-    for target in LINK.findall(body):
-        if "://" in target or target.startswith(("mailto:", "#")):
+    for target in targets:
+        if not target or "://" in target or target.startswith(("mailto:", "#")):
             continue
-        relative = target.split("#", 1)[0]
-        resolved = (relative.lstrip("/") if relative.startswith("/") else
-                    posixpath.normpath(posixpath.join(posixpath.dirname(document), relative)))
+        resolved = _resolve(document, target)
         if resolved in tree and resolved not in seen:
             seen.add(resolved)
             records.append({"path": resolved, "blob": tree[resolved]})
     return records
+
+
+def _pointer_target(path: str, target: str, tree: dict[str, str]) -> str:
+    # A pointer is usually written from the repository root, but one opening with `./` or `../`, or
+    # found only beside its file, is read relative to the file the way a section's links are.
+    rooted, beside = posixpath.normpath(target), _resolve(path, target)
+    first, second = (beside, rooted) if target.startswith(("./", "../")) else (rooted, beside)
+    return first if first in tree or second not in tree else second
 
 
 def dependencies(root: Path, tree: dict[str, str], path: str) -> list[dict]:
@@ -147,6 +207,7 @@ def dependencies(root: Path, tree: dict[str, str], path: str) -> list[dict]:
         if token in seen:
             continue
         seen.add(token)
+        target = _pointer_target(path, target, tree)
         if target not in tree:
             found.append({"pointer": token, "path": target, "blob": "absent", "records": []})
             continue
@@ -208,16 +269,23 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
             if dependency["blob"] != "absent":
                 carried.add(dependency["path"])
             carried.update(record["path"] for record in dependency["records"])
-    files = recipient_tree._tree_files(source, head, sorted(carried))
-    diff = _git(source, "diff", "--no-color", "--no-ext-diff", state["base"], head, "--", *selected)
+    # An empty selection would list, and archive, the whole tree.
+    files = recipient_tree._tree_files(source, head, sorted(carried)) if carried else {}
+    # A rename's old path joins the pathspec so the diff shows the edit as a rename, removed lines and all.
+    moved = renames(source, state["base"], head)
+    pathspec = sorted(set(selected) | {moved[path] for path in selected if path in moved})
+    diff = _git(source, "diff", "--no-color", "--no-ext-diff", "-M", state["base"], head, "--", *pathspec)
     diff_text = diff.decode("utf-8", errors="replace")
-    inline = len(diff_text) <= INLINE_DIFF_CHARACTERS
+    # With nothing else to carry the diff travels as a file, since the neutral commit can't be empty.
+    inline = len(diff_text) <= INLINE_DIFF_CHARACTERS and bool(files)
+    if not inline and DIFF_FILE in files:
+        raise ColdReaderError(f"the change carries a root {DIFF_FILE}, which the generated diff would overwrite")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".tradecraft-reading-", dir=output.parent) as temporary:
         staged = Path(temporary) / "reading"
         staged.mkdir()
         try:
-            claims = recipient_tree._extract_archive(source, head, files, staged, [])
+            claims = recipient_tree._extract_archive(source, head, files, staged, []) if files else {}
             if not inline:
                 (staged / DIFF_FILE).write_bytes(diff)
                 claims[DIFF_FILE] = {"mode": "100644", "oid": recipient_tree._blob_oid(source, diff)}
@@ -322,12 +390,22 @@ def _sections(text: str) -> dict[str, list[str]]:
     return found
 
 
+def flaggable(metadata: dict) -> set[str]:
+    """The paths a flag may name: every carried file, and every covered path the change deleted."""
+    # A deleted file isn't carried, yet the diff shows its removed lines and a later reading covering it
+    # can clear a flag on it.
+    deleted = {path for path, entry in metadata["coverage"].items() if entry["blob"] == "deleted"}
+    return (set(metadata["files"]) - {DIFF_FILE}) | deleted
+
+
 def form_errors(text: str, carried: set[str] | None = None) -> list[str]:
     """Check only the account's form; everything else is the reader's judgement."""
     found = _sections(text)
     errors = [f"missing heading {heading}" for heading in HEADINGS if heading not in found]
+    if "## Sections" in found and not any(line.strip() for line in found["## Sections"]):
+        errors.append("## Sections holds nothing")
     flags = [line for line in found.get("## Flags", []) if line.strip()]
-    if "## Flags" in found and flags != ["none"]:
+    if "## Flags" in found and not (len(flags) == 1 and NO_FLAGS.match(flags[0].strip())):
         errors.extend(f"malformed flag line: {line}" for line in flags if not FLAG_LINE.match(line))
         named = [match.group("path").removeprefix("./") for match in map(FLAG_LINE.match, flags) if match]
         # The diff file isn't part of the change, so a flag on it names nothing a later reading reaches.
