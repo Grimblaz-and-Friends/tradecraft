@@ -4736,8 +4736,9 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
 COLD_READING_REVIEW = (
     "A cold reader who never saw the issue, the brief or the pull request read this change, and the "
     "holder posted its account below with the holder's review against the brief. Review the account "
-    "for the reasons you decided while building, and list each misreading. Fix every flag, every "
-    "misreading you list and every misreading the holder lists, in the code or in the design document "
+    "for the reasons you decided while building, and list each misreading. Fix every flag the holder "
+    "didn't accept, every misreading you list and every misreading the holder lists, in the code or in "
+    "the design document "
     "or decision record, preferring the code. Where the account says `Can tell: no`, write the "
     "decision record the change then owes, or, where it already writes one, make that record say why. "
     "Never edit or restate the account. Return your review of it."
@@ -4768,7 +4769,7 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
             continue
         readings.append({"id": path, "completed_at": completed, "request": request, "run": run,
                          "return": returned, "coverage": metadata["coverage"],
-                         "whole": bool(metadata.get("whole")),
+                         "whole": bool(metadata.get("whole")), "head": metadata.get("head"),
                          "account": cold_reader.parse_account(returned)})
     return readings
 
@@ -4795,6 +4796,10 @@ def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
     if not readings:
         return "no cold-reader return precedes this cold-reading marker"
     selected = readings[-1]
+    if marker.attributes["status"] == "open":
+        _accepted, errors = cold_reader.acceptances(marker.body, selected["account"]["flags"])
+        if errors:
+            return "cold-reading " + errors[0]
     state.selected_bundles[(marker.source_order, marker.occurrence_order)] = (
         selected["completed_at"], selected["id"], selected["request"], selected["run"])
     run = selected["run"]
@@ -4846,8 +4851,25 @@ def _cold_reading_plan(state: WorkState, sha: str) -> dict[str, object]:
         raise WorkError("the holder root or the pull request base is unavailable")
     present = cold_reader.current(state.holder_root, base, sha)
     readings = _cold_readings(state)
-    return {"present": present, "readings": readings,
+    opened = _opened_readings(state, readings)
+    for reading in readings:
+        marker = opened.get(reading["id"])
+        reading["accepted"] = ({} if marker is None
+                               else cold_reader.acceptances(marker.body, reading["account"]["flags"])[0])
+    return {"present": present, "readings": readings, "opened": opened,
             "assessment": cold_reader.assess(readings, present)}
+
+
+def _opened_readings(state: WorkState, readings: list[dict[str, object]]) -> dict[str, Marker]:
+    """Each reading's latest valid `open` comment, by reading."""
+    ids = {reading["id"] for reading in readings}
+    opened = {}
+    for marker in state.markers:
+        selected = state.selected_bundles.get((marker.source_order, marker.occurrence_order))
+        if (marker.name == "cold-reading" and marker.attributes["status"] == "open"
+                and selected is not None and selected[1] in ids):
+            opened[selected[1]] = marker
+    return opened
 
 
 def _cold_reading_unverifiable(sha: str, problem: object) -> Decision:
@@ -4884,11 +4906,7 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     if not readings:
         return Decision("cold-reader", True, "fresh", "cold-reading-absent",
                         json.dumps({"covered": sorted(plan["present"]["change_set"])}))
-    opened = {}
-    for marker in markers:
-        selected = state.selected_bundles.get((marker.source_order, marker.occurrence_order))
-        if marker.attributes["status"] == "open" and selected is not None:
-            opened[selected[1]] = marker
+    opened = plan["opened"]
     latest = readings[-1]
     if latest["id"] not in opened:
         newest = max(opened.values(), key=_source_order) if opened else None
@@ -4900,7 +4918,10 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
             f"Post the cold reader's account from {latest['id']} whole and verbatim in one comment "
             f"opening with <!-- tradecraft:cold-reading:v1 head={sha} status=open "
             "staffing_status=... -->, and beneath it, under \"Holder's review against the brief\", each "
-            "misreading and the route for each flag and any `Can tell: no`.", status="holder-owned")
+            "misreading, the route for each flag worth another round and any `Can tell: no`, and one "
+            f"`Accepted: path:lines {cold_reader.EM_DASH} KIND {cold_reader.EM_DASH} reason` line for "
+            "each flag you accept.",
+            status="holder-owned")
     review = opened[latest["id"]]
     # A clean posted before the latest open closes an older reading, so only later ones are judged.
     closing = [marker for marker in markers if marker.attributes["status"] == "clean"
@@ -4910,7 +4931,8 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     except (WorkError, OSError) as exc:
         _set_aside(state, closing, "cold-reading clean while the builder's review can't be read")
         return _cold_reading_unverifiable(sha, exc)
-    if turn is None:
+    # A reading the holder's acceptances leave with nothing standing or owed closes with no builder turn.
+    if turn is None and (assessment["standing_no"] or assessment["owed"]):
         _set_aside(state, closing, "cold-reading clean before a builder turn received its open reading")
         return Decision("build", True, "resume", "cold-reading-review-owed",
                         _marker_setting_source(review))
@@ -4925,7 +4947,7 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
         return Decision("cold-reader", True, "fresh",
                         "cold-reading-stale" if stale else "cold-reading-flag-reread",
                         json.dumps({"covered": assessment["owed"]}))
-    reviewed = _time(turn[0])
+    reviewed = _time(turn[0] if turn is not None else review.timestamp)
     valid = [marker for marker in closing if marker.attributes["head"] == sha
              and reviewed is not None and _time(marker.timestamp) is not None
              and reviewed <= _time(marker.timestamp)]
@@ -4936,8 +4958,9 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     return Decision(
         "cold-reading-close", False, None, "cold-reading-close",
         f"Post <!-- tradecraft:cold-reading:v1 head={sha} status=clean "
-        "staffing_status=... --> quoting the builder's review in one line, unless a misreading "
-        "still stands.", status="holder-owned")
+        "staffing_status=... --> quoting the builder's review in one line, or saying every flag was "
+        "accepted where no builder turn followed the reading, unless a misreading still stands.",
+        status="holder-owned")
 
 
 def _seat_vendor(state: WorkState, role: str) -> tuple[str, str]:
@@ -4963,6 +4986,39 @@ def _owed_cold_reading(state: WorkState) -> Marker | None:
         if marker.name == "cold-reading" and marker.attributes.get("status") == "open":
             return None if _builder_turn_after(state, marker) is not None else marker
     return None
+
+
+def _cold_reading_measures(state: WorkState) -> dict[str, object]:
+    """Each reading's flags, the holder's acceptances and the run's settings, for the release report.
+
+    The owner judges the holder's acceptances from this, so it is read from the records, not recounted.
+    """
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    try:
+        readings = _cold_readings(state)
+    except WorkError as exc:
+        return {"status": "unverifiable", "detail": str(exc), "readings": []}
+    opened = _opened_readings(state, readings)
+    rows = []
+    for reading in readings:
+        flags = reading["account"]["flags"]
+        marker = opened.get(reading["id"])
+        accepted = {} if marker is None else cold_reader.acceptances(marker.body, flags)[0]
+        attempt = next((item for item in reversed(reading["run"].get("attempts") or [])
+                        if isinstance(item, dict) and item.get("outcome") in SUCCESSFUL_BUNDLE_OUTCOMES), {})
+        rows.append({
+            "bundle": reading["id"], "head": reading["head"], "whole": reading["whole"],
+            "posted": marker is not None, "can_tell": reading["account"]["can_tell"],
+            "flags": [cold_reader.flag_line(flag) for flag in flags],
+            "accepted": [{"flag": cold_reader.flag_line(flags[position]), "reason": reason}
+                         for position, reason in sorted(accepted.items())],
+            "routed": [cold_reader.flag_line(flag) for position, flag in enumerate(flags)
+                       if position not in accepted],
+            "vendor": attempt.get("vendor"), "model": attempt.get("model"), "effort": attempt.get("effort"),
+            "duration_seconds": attempt.get("elapsed_seconds"),
+        })
+    return {"status": "read", "readings": rows}
 
 
 def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path: Path | None,
@@ -8947,6 +9003,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "required_gate": required_gate,
             "path_departures": path_departures,
             "holder_close": _release_holder_close(state),
+            "cold_readings": _cold_reading_measures(state),
         })
         _emit_report(payload, state)
         return 0

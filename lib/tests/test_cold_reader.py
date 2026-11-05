@@ -323,10 +323,10 @@ class Change:
                               "user": {"login": test_work.PRODUCER}, "created_at": self.tick()})
         return body
 
-    def post_open(self, account):
+    def post_open(self, account, review="No misreading."):
         return self.post(f"<!-- tradecraft:cold-reading:v1 head={self.head} status=open "
                          "staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer -->\n\n"
-                         + account + "\n\n### Holder's review against the brief\n\nNo misreading.\n")
+                         + account + "\n\n### Holder's review against the brief\n\n" + review + "\n")
 
     def review(self, opened):
         return self.builder_turn("--- cold reading begin ---\n" + opened + "\n--- cold reading end ---")
@@ -390,9 +390,9 @@ def test_an_unposted_reading_is_the_holders_to_post(change):
 
 
 @pytest.mark.cold_reading
-def test_an_open_reading_resumes_the_builder(change):
-    change.read(clean())
-    change.post_open(clean())
+def test_an_open_reading_with_a_routed_flag_resumes_the_builder(change):
+    change.read(flagged("a.py"))
+    change.post_open(flagged("a.py"))
     decision = change.decide()
     assert (decision.stage, decision.continuity, decision.reason) == ("build", "resume", "cold-reading-review-owed")
 
@@ -414,8 +414,8 @@ def test_a_catch_up_merge_owes_no_reread(change):
 
 @pytest.mark.cold_reading
 def test_clean_without_a_builder_turn_is_invalid_and_held(change):
-    change.read(clean())
-    change.post_open(clean())
+    change.read(flagged("a.py"))
+    change.post_open(flagged("a.py"))
     change.post_clean()
     decision = change.decide()
     assert decision.reason == "cold-reading-review-owed" and len(decision.invalid) == 1
@@ -428,6 +428,107 @@ def test_a_valid_clean_reading_reaches_readiness(change):
     change.post_clean()
     decision = change.decide()
     assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+
+
+def accept(location, reason="the reason is one line away", kind="what-comment"):
+    return f"Accepted: {location} {cold_reader.EM_DASH} {kind} {cold_reader.EM_DASH} {reason}"
+
+
+def two_flags(tell="yes"):
+    second = "b.py:1 {dash} missing-reason {dash} why the pointer names a missing document"
+    return ACCOUNT.replace("a.py:2 {dash} what-comment {dash} the second line restates the code",
+                           "a.py:1 {dash} what-comment {dash} the second line restates the code\n" + second
+                           ).format(dash=cold_reader.EM_DASH, tell=tell)
+
+
+def test_an_acceptance_line_names_one_flag_by_location_kind_and_if_needed_text():
+    dash = cold_reader.EM_DASH
+    flags = cold_reader.parse_account(two_flags())["flags"]
+    review = ("\n## Holder" + chr(0x2019) + "s review against the brief\n\n- "
+              + accept("b.py:1", "fine here", "missing-reason"))
+    assert cold_reader.acceptances("Accepted: a.py " + dash + " what-comment " + dash + " above the heading"
+                                   + review, flags) == ({1: "fine here"}, [])
+    assert cold_reader.acceptances(review.replace("b.py:1", "b.py"), flags)[0] == {1: "fine here"}
+    twins = [dict(flags[0], text="one - with a dash"), dict(flags[0], text="two")]
+    told = cold_reader.acceptances(
+        review.replace(accept("b.py:1", "fine here", "missing-reason"),
+                       accept("a.py:1", "one - with a dash " + dash + " it reads")), twins)
+    assert told == ({0: "it reads"}, [])
+    assert "more than one flag" in cold_reader.acceptances(
+        review.replace(accept("b.py:1", "fine here", "missing-reason"), accept("a.py:1")), twins)[1][0]
+    assert "malformed acceptance line" in cold_reader.acceptances(review + "\nAccepted: a.py:1", flags)[1][0]
+
+
+@pytest.mark.cold_reading
+def test_an_acceptance_matching_no_flag_sets_the_open_reading_aside_naming_its_line(change):
+    change.read(flagged("a.py"))
+    change.post_open(flagged("a.py"), accept("b.py:1"))
+    decision = change.decide()
+    assert decision.reason == "cold-reading-post-owed"
+    assert [claim["reason"] for claim in decision.invalid] == [
+        "cold-reading acceptance matches no flag in the account: " + accept("b.py:1")]
+
+
+def test_an_accepted_flag_neither_stands_nor_owes_a_reread():
+    present = {"change_set": {"a.py": "1"}, "coverage": {"a.py": {"blob": "1", "dependencies": []}}}
+    reading = {"id": "r1", "coverage": present["coverage"],
+               "account": cold_reader.parse_account(flagged("a.py"))}
+    assert cold_reader.assess([reading], present)["owed"] == ["a.py"]
+    reading["accepted"] = {0: "fine"}
+    assert cold_reader.assess([reading], present) == {"stale": [], "flags": [], "owed": [], "standing_no": False}
+
+
+@pytest.mark.cold_reading
+def test_every_flag_accepted_closes_the_reading_with_no_builder_turn(change):
+    change.read(flagged("a.py"))
+    change.post_open(flagged("a.py"), accept("a.py:1"))
+    assert change.decide().reason == "cold-reading-close"
+    change.post_clean()
+    decision = change.decide()
+    assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+
+
+@pytest.mark.cold_reading
+def test_a_can_tell_no_cannot_be_accepted(change):
+    change.read(flagged("a.py", tell="no"))
+    opened = change.post_open(flagged("a.py", tell="no"), accept("a.py:1"))
+    change.post_clean()
+    decision = change.decide()
+    assert decision.reason == "cold-reading-review-owed" and len(decision.invalid) == 1
+    change.review(opened)
+    decision = change.decide()
+    assert (decision.reason, covered(decision)) == ("cold-reading-why-owed", ["a.py", "b.py"])
+
+
+@pytest.mark.cold_reading
+def test_a_mixed_reading_routes_only_its_unaccepted_flags(change):
+    change.read(two_flags())
+    opened = change.post_open(two_flags(), accept("b.py:1", "the document is planned", "missing-reason"))
+    assert change.decide().reason == "cold-reading-review-owed"
+    change.review(opened)
+    decision = change.decide()
+    assert (decision.reason, covered(decision)) == ("cold-reading-flag-reread", ["a.py"])
+
+
+@pytest.mark.cold_reading
+def test_the_release_report_lists_each_readings_flags_acceptances_and_run(change):
+    change.read(two_flags())
+    run = change.store / "reading-1.run.json"
+    run.write_text(json.dumps({**json.loads(run.read_text("utf-8")), "attempts": [
+        {"vendor": "claude", "model": "claude-opus-5-5", "effort": "xhigh", "outcome": "success",
+         "elapsed_seconds": 331.2}]}), encoding="utf-8")
+    change.post_open(two_flags(), accept("b.py:1", "the document is planned", "missing-reason"))
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    measures = work._cold_reading_measures(fixture)
+    dash = cold_reader.EM_DASH
+    assert measures["status"] == "read" and len(measures["readings"]) == 1
+    row = measures["readings"][0]
+    assert (row["head"], row["whole"], row["posted"], row["can_tell"]) == (change.head, True, True, True)
+    assert row["accepted"] == [{"flag": f"b.py:1 {dash} missing-reason {dash} why the pointer names a "
+                                        "missing document", "reason": "the document is planned"}]
+    assert row["routed"] == [f"a.py:1 {dash} what-comment {dash} the second line restates the code"]
+    assert (row["model"], row["effort"], row["duration_seconds"]) == ("claude-opus-5-5", "xhigh", 331.2)
 
 
 @pytest.mark.cold_reading
@@ -516,8 +617,8 @@ def test_a_settled_artifact_lane_is_gated_and_resumes_its_builder(tmp_path, monk
     change = Change(tmp_path, monkeypatch, brief=test_work.AFFIRMED)
     settled(change)
     assert change.decide().stage == "cold-reader"
-    change.read(clean())
-    change.post_open(clean())
+    change.read(flagged("a.py"))
+    change.post_open(flagged("a.py"))
     decision = change.decide()
     assert (decision.stage, decision.continuity, decision.reason) == ("build", "resume", "cold-reading-review-owed")
 

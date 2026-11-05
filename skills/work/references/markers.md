@@ -201,11 +201,17 @@ A later bare line returns every role to default resolution:
 <!-- tradecraft:cold-reading:v1 head=SHA status=open|clean staffing_status=qualified|degraded [same_vendor_reason=REASON] -->
 ```
 
-**Producer, surface and moment:** a configured marker producer, on an issue or pull-request comment. The holder posts `open` after a `run cold-reader` return, at that reading's head, and `clean` once the builder has reviewed the latest reading. Staffing and its same-vendor reason are checked against the cold-reader bundle, not the marker text.
+**Producer, surface and moment:** a configured marker producer, on an issue or pull-request comment. The holder posts `open` after a `run cold-reader` return, at that reading's head, and `clean` once the builder has reviewed the latest reading, or at once when the holder accepted every flag that reading left standing. Staffing and its same-vendor reason are checked against the cold-reader bundle, not the marker text.
 
-**`open`** counts only when the bundle's retained return appears in the comment as a run of whole lines, outside markers and after normalising line endings and trailing whitespace, so an account corrected by hand is set aside as invalid. Beneath it, under "Holder's review against the brief", the holder lists each misreading and the route for each flag and any `Can tell: no`.
+**`open`** counts only when the bundle's retained return appears in the comment as a run of whole lines, outside markers and after normalising line endings and trailing whitespace, so an account corrected by hand is set aside as invalid. Beneath it, under a "Holder's review against the brief" heading, the holder lists each misreading, the route for each flag worth another round and any `Can tell: no`, and one acceptance line for each flag it accepts:
 
-**`clean`** counts only when a builder turn launched after the latest `open`, completed, and carried that comment in its frozen prompt; its head is the current head; every current change-set path's latest reading is current by its own blob and its dependencies' blobs and lists no flag on that path or its dependencies; and no `Can tell: no` stands. A `Can tell: no` stands until a later reading covering the whole current change set says `Can tell: yes`. A `clean` failing any of these is listed as invalid, and the change stays held.
+```text
+Accepted: path:lines — KIND — reason
+```
+
+The line names a flag in that reading's account by its path, the `:lines` it gives (which may be left out), and its kind, and gives a one-line reason; where two flags share all three, the flag's own text goes before the reason, `Accepted: path:lines — KIND — flag text — reason`. A line opening `Accepted:` beneath the heading that is malformed or names no single flag sets the `open` aside as invalid, naming that line, so a mistyped acceptance never silently accepts nothing. An accepted flag doesn't stand and owes no reread. A `Can tell: no` is not a flag and can't be accepted.
+
+**`clean`** counts only when a builder turn launched after the latest `open`, completed, and carried that comment in its frozen prompt, or when the holder's acceptances leave nothing standing or owed, in which case it need only be posted after that `open`; its head is the current head; every current change-set path's latest reading is current by its own blob and its dependencies' blobs and lists no unaccepted flag on that path or its dependencies; and no `Can tell: no` stands. A `Can tell: no` stands until a later reading covering the whole current change set says `Can tell: yes`. A `clean` failing any of these is listed as invalid, and the change stays held.
 
 ## `proof`
 

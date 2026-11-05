@@ -37,6 +37,15 @@ FLAG_LINE = re.compile(
     + EM_DASH + r"-][ \t]+(?P<text>\S.*)$"
 )
 CAN_TELL = re.compile(r"^Can tell: (yes|no)$")
+REVIEW_HEADING = "Holder's review against the brief"
+# Strict, unlike a flag line: a holder's line that doesn't parse must fail rather than accept nothing.
+ACCEPTANCE = re.compile(
+    r"^(?:[-*][ \t]+)?Accepted:[ \t]+`?(?P<path>[^\s:`]+)(?::(?P<lines>[0-9]+(?:[-" + EN_DASH
+    + r"][0-9]+)?))?`?[ \t]+[" + EM_DASH + r"-][ \t]+(?P<kind>" + "|".join(FLAG_KINDS) + r")[ \t]+["
+    + EM_DASH + r"-][ \t]+(?P<rest>\S.*)$"
+)
+ACCEPTANCE_START = re.compile(r"^(?:[-*][ \t]+)?Accepted:")
+SEPARATOR = re.compile(r"^[ \t]+[" + EM_DASH + r"-][ \t]+(?=\S)")
 
 
 class ColdReaderError(RuntimeError):
@@ -342,11 +351,60 @@ def parse_account(text: str) -> dict:
     for line in found.get("## Flags", []):
         match = FLAG_LINE.match(line)
         if match:
-            flags.append({"path": match.group("path").removeprefix("./"),
+            flags.append({"path": match.group("path").removeprefix("./"), "lines": match.group("lines"),
                           "kind": match.group("kind"), "text": match.group("text")})
     why = [line for line in found.get("## Why this change was made", []) if line.strip()]
     tell = CAN_TELL.match(why[0]) if why else None
     return {"flags": flags, "can_tell": None if tell is None else tell.group(1) == "yes"}
+
+
+def flag_line(flag: dict) -> str:
+    location = flag["path"] + (":" + flag["lines"] if flag.get("lines") else "")
+    return f"{location} {EM_DASH} {flag['kind']} {EM_DASH} {flag['text']}"
+
+
+def _same_lines(left: str | None, right: str | None) -> bool:
+    return (left or "").replace(EN_DASH, "-") == (right or "").replace(EN_DASH, "-")
+
+
+def acceptances(comment: str, flags: list[dict]) -> tuple[dict[int, str], list[str]]:
+    """Match the holder's acceptance lines, beneath its review heading, to the account's flags.
+
+    Returns each accepted flag's position with its reason, and an error naming each line that
+    doesn't name exactly one flag.
+    """
+    accepted, errors, in_review = {}, [], False
+    for line in comment.replace("\r\n", "\n").split("\n"):
+        stripped = line.strip()
+        if stripped.strip("#* :").replace(chr(0x2019), "'") == REVIEW_HEADING:
+            in_review = True
+            continue
+        if not in_review or not ACCEPTANCE_START.match(stripped):
+            continue
+        match = ACCEPTANCE.match(stripped)
+        if match is None:
+            errors.append(f"malformed acceptance line: {stripped}")
+            continue
+        path, rest = match.group("path").removeprefix("./"), match.group("rest")
+        candidates = [position for position, flag in enumerate(flags)
+                      if flag["path"] == path and flag["kind"] == match.group("kind")
+                      and (match.group("lines") is None or _same_lines(flag.get("lines"), match.group("lines")))]
+        reasons = {position: rest for position in candidates}
+        if len(candidates) > 1:
+            # Flags sharing a location and kind are told apart by the flag's text, written before the reason.
+            reasons = {}
+            for position in candidates:
+                text = flags[position]["text"]
+                separator = SEPARATOR.match(rest[len(text):]) if rest.startswith(text) else None
+                if separator:
+                    reasons[position] = rest[len(text) + separator.end():]
+        if len(reasons) != 1:
+            errors.append(("acceptance matches no flag in the account: " if not candidates
+                           else "acceptance matches more than one flag in the account; write the flag's "
+                           "text before the reason: ") + stripped)
+            continue
+        accepted.update(reasons)
+    return accepted, errors
 
 
 def _reaches(reading: dict, path: str) -> bool:
@@ -370,7 +428,10 @@ def assess(readings: list[dict], present: dict) -> dict:
     reachable = set(changed).union(*(dependency_paths(entry) for entry in present["coverage"].values()))
     standing_flags, seen = [], set()
     for index, reading in enumerate(readings):
-        for flag in reading["account"]["flags"]:
+        for position, flag in enumerate(reading["account"]["flags"]):
+            # The holder accepted it with a reason, which the owner judges from the release report.
+            if position in reading.get("accepted", {}):
+                continue
             # Fails closed: only a later reading that reaches the flag's path can clear it.
             if any(_reaches(later, flag["path"]) for later in readings[index + 1:]):
                 continue
