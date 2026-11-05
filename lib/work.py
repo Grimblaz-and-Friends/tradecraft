@@ -47,6 +47,7 @@ from source_claims import (
     _disposition,
 )
 import cold_draft
+import cold_reader
 from connected_review import is_review_job
 import dispatch_record as records
 from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
@@ -84,7 +85,7 @@ def _run_probe(command, **kwargs):
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
-    "review-disposition", "proof", "ready-reviewers", "release-report", "catch-up",
+    "review-disposition", "proof", "ready-reviewers", "release-report", "catch-up", "cold-reader",
 )
 DIRECT_COMMANDS = ("release", "adopt", "run", "tree")
 CLI_COMMANDS = DIRECT_COMMANDS
@@ -165,6 +166,7 @@ PROOF_MECHANISM_VERSION = "0.153.0"
 TRUTHFUL_ENTRANCE_VERSION = "0.154.0"
 VENDOR_IMPLEMENTER_VERSION = "0.159.0"
 REGISTERED_ROOT_VERSION = "0.149.0"
+COLD_READER_VERSION = "0.206.0"
 DEFAULT_STAGE_TIMEOUT_SECONDS = lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
 DEFAULT_BUILD_TIMEOUT_SECONDS = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS
 TOTAL_BUILD_BUDGET_SECONDS = lifecycle.TOTAL_BUILD_BUDGET_SECONDS
@@ -203,6 +205,7 @@ STAGE_SAFETY = {
         ("0.198.0", "merge-verdict readiness"),
     ),
     "catch-up": (("0.173.0", "holder-owned checked catch-up"),),
+    "cold-reader": ((COLD_READER_VERSION, "isolated cold reading of the change"),),
 }
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "affirmed-brief": {"required": set(), "optional": set(),
@@ -227,6 +230,9 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
             "surfaces": {"issue-comment", "pull-request-comment"}},
     "no-use": {"required": {"head"}, "optional": set(),
                "surfaces": {"issue-comment", "pull-request-comment"}},
+    "cold-reading": {"required": {"head", "status", "staffing_status"},
+                     "optional": {"same_vendor_reason"},
+                     "surfaces": {"issue-comment", "pull-request-comment"}},
     "proof": {"required": {"head"}, "optional": set(),
               "surfaces": {"pull-request-comment"}},
     "connected-reviewer": {"required": {"name", "status"}, "optional": set(),
@@ -241,7 +247,7 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
         "required": set(),
         "optional": {
             "artifact_author", "implementer", "ordinary_seat", "cold_seat", "terminal_seat",
-            "use_consumer",
+            "use_consumer", "cold_reader",
         },
         "surfaces": {"issue-comment"},
     },
@@ -253,6 +259,7 @@ MODEL_OVERRIDE_ROLES = {
     "cold-seat": "cold_seat",
     "terminal-seat": "terminal_seat",
     "use-consumer": "use_consumer",
+    "cold-reader": "cold_reader",
 }
 RESUME_SOURCE_STAGES = {
     "artifact": frozenset({"artifact"}),
@@ -1498,7 +1505,7 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "builder-session" and values.get("vendor", "codex") not in {
             "codex", "claude"}:
         return "builder session vendor is invalid"
-    if marker.name in {"floor", "use", "no-use", "proof", "reach-reading"} and HEAD_SHA.fullmatch(
+    if marker.name in {"floor", "use", "no-use", "proof", "reach-reading", "cold-reading"} and HEAD_SHA.fullmatch(
             values.get("head", "")) is None:
         return "marker head is not a full hexadecimal revision"
     if marker.name == "reach-reading":
@@ -1523,6 +1530,13 @@ def _marker_value_error(marker: Marker) -> str | None:
         same = values.get("same_vendor_reason")
         if (values.get("staffing_status") == "degraded") != bool(same):
             return "degraded use staffing requires one same-vendor reason"
+    if marker.name == "cold-reading":
+        if values.get("status") not in {"open", "clean"}:
+            return "cold-reading status is invalid"
+        if values.get("staffing_status") not in {"qualified", "degraded"}:
+            return "cold-reading staffing status is invalid"
+        if (values.get("staffing_status") == "degraded") != bool(values.get("same_vendor_reason")):
+            return "degraded cold-reading staffing requires one same-vendor reason"
     if marker.name == "no-use" and "Use: not required" not in marker.body:
         return "no-use marker lacks its required prose"
     if marker.name == "connected-reviewer" and (
@@ -1707,6 +1721,9 @@ def _cold_judgment(state: WorkState, marker: Marker) -> dict[str, object]:
 
 
 def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
+    if marker.name == "cold-reading":
+        # The gate reads every reading from its store, so a reading can't skip its bundle.
+        return _cold_reading_marker_error(state, marker)
     if state.record_root is None:
         return None
     if marker.name == "artifact" and marker.attributes.get("status") == "draft":
@@ -4714,6 +4731,498 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
     return f";ignored-product-incident-from={','.join(authors)}" if authors else ""
 
 
+# Design: lib/DESIGN.md#the-cold-reader (COLD_READING_REVIEW through _execute_cold_reader)
+
+COLD_READING_REVIEW = (
+    "A cold reader who never saw the issue, the brief or the pull request read this change, and the "
+    "holder posted its account below with the holder's review against the brief. Review the account "
+    "for the reasons you decided while building, and list each misreading. Fix every flag the holder "
+    "didn't accept, every misreading you list and every misreading the holder lists, in the code or in "
+    "the design document "
+    "or decision record, preferring the code. Where the account says `Can tell: no`, write the "
+    "decision record the change then owes, or, where it already writes one, make that record say why. "
+    "Never edit or restate the account. Return your review of it."
+)
+
+
+def _cold_reading_source(state: WorkState) -> Path:
+    return state.record_root or records.default_record_root().expanduser().resolve()
+
+
+def _cold_readings(state: WorkState) -> list[dict[str, object]]:
+    """Every reading of this pull request whose return passed its form check, oldest first."""
+    work = f"{state.repo}#{state.issue_number}"
+    store = _cold_reading_source(state)
+    damaged = _damaged_cold_reader_record(store, work)
+    if damaged is not None:
+        raise WorkError(f"cold-reader record cannot be parsed: {damaged}")
+    pr = state.pr or {}
+    number, branch = pr.get("number"), (pr.get("head") or {}).get("ref")
+    readings = []
+    for completed, path, request, run in _matching_bundles(work, {"cold-reader"}, store):
+        # Another pull request for the same issue has its own change, so its readings don't count here.
+        if "lineage_pull_request" in request or "lineage_branch" in request:
+            if request.get("lineage_pull_request") != number or request.get("lineage_branch") != branch:
+                continue
+        source = _retained_return_path((completed, path, request, run))
+        root = request.get("root")
+        # A damaged record could hide the reading it holds, so it holds the gate instead of vanishing.
+        if source is None or not isinstance(root, str):
+            raise WorkError(f"cold-reader bundle lacks its retained return or reading root: {path}")
+        try:
+            returned = source.read_text("utf-8")
+            metadata = cold_reader.load_metadata(recipient_tree.metadata_path(Path(root)))
+        except (OSError, UnicodeError, cold_reader.ColdReaderError) as exc:
+            raise WorkError(f"cold-reader bundle cannot be read: {path}: {exc}") from exc
+        # The stage refused this return for its form, so it was never a reading.
+        if cold_reader.form_errors(returned, cold_reader.flaggable(metadata)):
+            continue
+        # An entrance older than the lineage rule records none; such a reading counts only when this
+        # change's history holds the head it read.
+        if "lineage_branch" not in request and not _cold_reading_in_history(state, metadata.get("head"), path):
+            continue
+        readings.append({"id": path, "completed_at": completed, "request": request, "run": run,
+                         "return": returned, "coverage": metadata["coverage"],
+                         "whole": bool(metadata.get("whole")), "head": metadata.get("head"),
+                         "account": cold_reader.parse_account(returned)})
+    return readings
+
+
+def _damaged_cold_reader_record(store: Path, work: str) -> Path | None:
+    """A cold-reader run or request record that won't parse, so its reading can't be judged."""
+    if not store.is_dir():
+        return None
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", work).strip("-").lower()
+    for run_path in store.rglob("*.run.json"):
+        request_path = run_path.with_name(run_path.name.removesuffix(".run.json") + ".request.json")
+        run, request = _json_object(run_path), _json_object(request_path)
+        if run is not None and request is not None:
+            continue
+        if request is not None:
+            if request.get("stage") == "cold-reader" and str(request.get("work") or "").lower() == work.lower():
+                return run_path
+        elif "cold-reader" in run_path.parent.name.lower() and slug in run_path.parent.name.lower():
+            return request_path
+    return None
+
+
+def _cold_reading_in_history(state: WorkState, head: object, bundle: str) -> bool:
+    current = _head_sha(state)
+    if current is None:
+        return True  # With no pull request there is no change for another one's reading to stand in for.
+    if not isinstance(head, str) or state.holder_root is None:
+        raise WorkError(f"cannot place cold-reader bundle in this change's history: {bundle}")
+    result = _git(["merge-base", "--is-ancestor", head, current], state.holder_root)
+    if result.returncode not in {0, 1}:
+        raise WorkError(f"cannot place cold-reader bundle in this change's history: {bundle}: "
+                        f"{_git_failure(result)}")
+    return result.returncode == 0
+
+
+def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
+    """Tie an `open` reading to the seat return it quotes whole; a hand-corrected account fails.
+
+    Correcting the account would hide the gap the reading exists to find.
+    """
+    try:
+        found = _cold_readings(state)
+    except WorkError as exc:
+        return f"cold-reading unverifiable: {exc}"
+    posted = _time(marker.timestamp)
+    # Without its posting time a marker can't be ordered against the reading it claims.
+    if posted is None:
+        return "cold-reading marker has no posting time"
+    readings = [reading for reading in found if _time(reading["completed_at"]) <= posted]
+    if marker.attributes["status"] == "open":
+        readings = [reading for reading in readings
+                    if _return_match_length(reading["return"], marker.body)]
+        if not readings:
+            return "cold-reading account differs from every retained cold-reader return"
+    if not readings:
+        return "no cold-reader return precedes this cold-reading marker"
+    selected = readings[-1]
+    if marker.attributes["status"] == "open":
+        if marker.attributes["head"] != selected["head"]:
+            return "cold-reading open head differs from the head its reading read"
+        _accepted, errors = cold_reader.acceptances(marker.body, selected["account"]["flags"])
+        if errors:
+            return "cold-reading " + errors[0]
+    state.selected_bundles[(marker.source_order, marker.occurrence_order)] = (
+        selected["completed_at"], selected["id"], selected["request"], selected["run"])
+    run = selected["run"]
+    if run.get("staffing_status") != marker.attributes["staffing_status"]:
+        return "cold-reading staffing disagrees with its seat bundle"
+    qualification = run.get("staffing_qualification")
+    reason = qualification.get("same_vendor_reason") if isinstance(qualification, dict) else None
+    if marker.attributes.get("same_vendor_reason") != reason:
+        return "cold-reading same-vendor reason disagrees with its seat bundle"
+    return None
+
+
+def _cold_reading_due(state: WorkState) -> bool:
+    """A reading is owed once a builder turn exists: without one, no builder can be resumed for its fixes."""
+    if any(marker.name == "builder-session" for marker in state.issue_markers):
+        return True
+    try:
+        inventory = lifecycle.launch_bundles(
+            _cold_reading_source(state), f"{state.repo}#{state.issue_number}",
+            RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
+    except (OSError, ValueError, WorkError):
+        return True  # The gate fails closed: an unreadable inventory can't prove no builder ran.
+    return any(not build_reach.never_launched(row[3]) for row in inventory)
+
+
+def _builder_turn_after(state: WorkState, opened: Marker) -> tuple | None:
+    """The completed builder turn launched after `opened` whose frozen prompt carried it."""
+    posted = _time(opened.timestamp)
+    account = MARKER.sub("", opened.body)
+    for completed, path, request, run in reversed(_matching_bundles(
+            f"{state.repo}#{state.issue_number}", RESUME_SOURCE_STAGES["build"],
+            _cold_reading_source(state), outcomes=SUCCESSFUL_BUNDLE_OUTCOMES)):
+        # A turn that returned nothing never reviewed the reading, whatever its prompt carried.
+        returned = _retained_return_path((completed, path, request, run))
+        if returned is None or not returned.is_file():
+            continue
+        launched = _time(request.get("launched_at") or request.get("recorded_at"))
+        if posted is None or launched is None or launched <= posted:
+            continue
+        prompt = Path(path).with_name(Path(path).name.removesuffix(".run.json") + ".dispatch.bin")
+        try:
+            text = prompt.read_bytes().decode("utf-8", errors="replace")
+        except OSError as exc:
+            raise WorkError(f"builder bundle's frozen prompt cannot be read: {path}: {exc}") from exc
+        if _return_match_length(account, text):
+            return completed, path, request, run
+    return None
+
+
+def _cold_reading_plan(state: WorkState, sha: str) -> dict[str, object]:
+    base = ((state.pr or {}).get("base") or {}).get("sha")
+    if state.holder_root is None or not isinstance(base, str):
+        raise WorkError("the holder root or the pull request base is unavailable")
+    present = cold_reader.current(state.holder_root, base, sha)
+    readings = _cold_readings(state)
+    opened = _opened_readings(state, readings)
+    for reading in readings:
+        marker = opened.get(reading["id"])
+        reading["accepted"] = ({} if marker is None
+                               else cold_reader.acceptances(marker.body, reading["account"]["flags"])[0])
+    return {"present": present, "readings": readings, "opened": opened,
+            "assessment": cold_reader.assess(readings, present)}
+
+
+def _opened_readings(state: WorkState, readings: list[dict[str, object]]) -> dict[str, Marker]:
+    """Each reading's latest valid `open` comment, by reading."""
+    ids = {reading["id"] for reading in readings}
+    opened = {}
+    for marker in state.markers:
+        selected = state.selected_bundles.get((marker.source_order, marker.occurrence_order))
+        if (marker.name == "cold-reading" and marker.attributes["status"] == "open"
+                and selected is not None and selected[1] in ids):
+            opened[selected[1]] = marker
+    return opened
+
+
+def _cold_reading_unverifiable(sha: str, problem: object) -> Decision:
+    return Decision("cold-reading-unverifiable", False, None, "cold-reading-unverifiable",
+                    f"The cold reading cannot be judged at head {sha}: {problem}. Restore the named "
+                    "bundle or fetch the pull request's head and base into the holder root, and retry.",
+                    status="holder-owned")
+
+
+def _set_aside(state: WorkState, markers: list[Marker], reason: str) -> None:
+    # Only the gate works out coverage, flags and the builder's turn, so it, not marker validation,
+    # judges whether a `clean` stands.
+    for marker in markers:
+        claim = marker.as_dict()
+        claim["reason"] = reason
+        state.invalid_marker_claims.append(claim)
+
+
+def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
+    """Hold readiness until a current, clean cold reading covers the change."""
+    if not _cold_reading_due(state):
+        return None
+    markers = [marker for marker in state.markers if marker.name == "cold-reading"]
+    try:
+        plan = _cold_reading_plan(state, sha)
+    except (cold_reader.ColdReaderError, WorkError, OSError) as exc:
+        opens = [marker for marker in markers if marker.attributes["status"] == "open"]
+        newest = max(opens, key=_source_order) if opens else None
+        _set_aside(state, [marker for marker in markers if marker.attributes["status"] == "clean"
+                           and (newest is None or _source_order(marker) > _source_order(newest))],
+                   "cold-reading clean while the reading can't be judged")
+        return _cold_reading_unverifiable(sha, exc)
+    readings, assessment = plan["readings"], plan["assessment"]
+    if not readings:
+        return Decision("cold-reader", True, "fresh", "cold-reading-absent",
+                        json.dumps({"covered": sorted(plan["present"]["change_set"])}))
+    opened = plan["opened"]
+    latest = readings[-1]
+    if latest["id"] not in opened:
+        newest = max(opened.values(), key=_source_order) if opened else None
+        _set_aside(state, [marker for marker in markers if marker.attributes["status"] == "clean"
+                           and (newest is None or _source_order(marker) > _source_order(newest))],
+                   "cold-reading clean before the latest reading was posted")
+        return Decision(
+            "cold-reading-post", False, None, "cold-reading-post-owed",
+            f"Post the cold reader's account from {latest['id']} whole and verbatim in one comment "
+            f"opening with <!-- tradecraft:cold-reading:v1 head={sha} status=open "
+            "staffing_status=... -->, and beneath it, under \"Holder's review against the brief\", each "
+            "misreading, the route for each flag worth another round and any `Can tell: no`, and one "
+            f"`Accepted: path:lines {cold_reader.EM_DASH} KIND {cold_reader.EM_DASH} reason` line for "
+            "each flag you accept.",
+            status="holder-owned")
+    review = opened[latest["id"]]
+    # A clean posted before the latest open closes an older reading, so only later ones are judged.
+    closing = [marker for marker in markers if marker.attributes["status"] == "clean"
+               and _source_order(marker) > _source_order(review)]
+    try:
+        turn = _builder_turn_after(state, review)
+    except (WorkError, OSError) as exc:
+        _set_aside(state, closing, "cold-reading clean while the builder's review can't be read")
+        return _cold_reading_unverifiable(sha, exc)
+    latest_accepted = latest.get("accepted", {})
+    routed = latest["account"]["can_tell"] is False or any(
+        position not in latest_accepted for position in range(len(latest["account"]["flags"])))
+    # The builder is resumed only for what the latest `open` routed to it; anything else goes to its reread.
+    if turn is None and routed:
+        _set_aside(state, closing, "cold-reading clean before a builder turn received its open reading")
+        return Decision("build", True, "resume", "cold-reading-review-owed",
+                        _marker_setting_source(review))
+    if assessment["standing_no"]:
+        _set_aside(state, closing, "cold-reading clean while a Can tell: no stands")
+        return Decision("cold-reader", True, "fresh", "cold-reading-why-owed",
+                        json.dumps({"covered": sorted(plan["present"]["change_set"])}))
+    if assessment["owed"]:
+        stale = bool(assessment["stale"])
+        _set_aside(state, closing, "cold-reading clean over a stale or uncovered path" if stale
+                   else "cold-reading clean while a flag stands")
+        return Decision("cold-reader", True, "fresh",
+                        "cold-reading-stale" if stale else "cold-reading-flag-reread",
+                        json.dumps({"covered": assessment["owed"]}))
+    reviewed = _time(turn[0] if turn is not None else review.timestamp)
+    valid = [marker for marker in closing if marker.attributes["head"] == sha
+             and reviewed is not None and _time(marker.timestamp) is not None
+             and reviewed <= _time(marker.timestamp)]
+    _set_aside(state, [marker for marker in closing if marker not in valid],
+               "cold-reading clean is not at the current head after the builder's review")
+    if valid:
+        return None
+    return Decision(
+        "cold-reading-close", False, None, "cold-reading-close",
+        f"Post <!-- tradecraft:cold-reading:v1 head={sha} status=clean "
+        "staffing_status=... --> quoting the builder's review in one line, or saying every flag was "
+        "accepted where no builder turn followed the reading, unless a misreading still stands.",
+        status="holder-owned")
+
+
+def _seat_vendor(state: WorkState, role: str) -> tuple[str, str]:
+    """The vendor a judging role launches on: its latest per-issue override, else Claude."""
+    # Validation sets aside an override naming any vendor but Claude or Codex, so none reaches the launch.
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    override = next((marker for marker in reversed(state.issue_markers)
+                     if marker.name == "model-override"), None)
+    value = override.attributes.get(MODEL_OVERRIDE_ROLES[role]) if override is not None else None
+    if value:
+        return value.split(":")[0], _marker_setting_source(override)
+    return "claude", f"work entrance {role} default"
+
+
+COLD_READING_HELD_STAGES = frozenset({"ready-reviewers", "use", "proof", "release-report"})
+
+
+def _cold_reading_hold(state: WorkState, decision: Decision) -> Decision | None:
+    """A named stage the gate holds refuses without effect, since naming a stage skips `_decide`."""
+    sha = _head_sha(state)
+    if sha is None:
+        return None
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    gate = _cold_reading_decision(state, sha)
+    if gate is None:
+        return None
+    return replace(decision, dispatch=False, continuity=None, status="refused", reason="cold-reading-holds",
+                   detail=f"The cold reading holds this stage at head {sha}: run {gate.stage} "
+                   f"({gate.reason}) first. {gate.detail or ''}".rstrip())
+
+
+def _held_by_cold_reading(state: WorkState, stage: str) -> bool:
+    """Report the hold and say so; each held stage asks only after its own refusals, whose fixes come first."""
+    held = _cold_reading_hold(state, Decision(stage, False, None, "holder-named-stage"))
+    if held is not None:
+        _emit_report(_reported_decision(state, held).as_dict(), state)
+    return held is not None
+
+
+def _cold_reading_builder_vendor(state: WorkState, sha: str) -> tuple[str, str]:
+    """The builder's vendor from its bundle, else from the latest lawful `builder-session` marker."""
+    try:
+        return _producer_vendor(state, RESUME_SOURCE_STAGES["build"], revision=sha,
+                                source_root=state.holder_root)
+    except WorkError as exc:
+        if state.validated_markers is None:
+            validate_marker_claims(state)
+        session = next((marker for marker in reversed(state.issue_markers)
+                        if marker.name == "builder-session"
+                        and marker.attributes.get("vendor") in {"claude", "codex"}), None)
+        if session is None:
+            raise WorkError(f"no build bundle or builder-session marker proves the builder's vendor: {exc}") from exc
+        return session.attributes["vendor"], _marker_setting_source(session)
+
+
+def _owed_cold_reading(state: WorkState) -> Marker | None:
+    """The posted `open` reading no builder turn has yet received."""
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    # Fails closed like the gate: a damaged reading stops the prompt rather than leaving it out.
+    _cold_readings(state)
+    for marker in reversed(state.markers):
+        if marker.name == "cold-reading" and marker.attributes.get("status") == "open":
+            return None if _builder_turn_after(state, marker) is not None else marker
+    return None
+
+
+def _cold_reading_measures(state: WorkState) -> dict[str, object]:
+    """Each reading's flags, the holder's acceptances and the run's settings, for the release report.
+
+    The owner judges the holder's acceptances from this, so it is read from the records, not recounted.
+    """
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    try:
+        readings = _cold_readings(state)
+    except WorkError as exc:
+        return {"status": "unverifiable", "detail": str(exc), "readings": []}
+    opened = _opened_readings(state, readings)
+    rows = []
+    for reading in readings:
+        flags = reading["account"]["flags"]
+        marker = opened.get(reading["id"])
+        accepted = {} if marker is None else cold_reader.acceptances(marker.body, flags)[0]
+        attempt = next((item for item in reversed(reading["run"].get("attempts") or [])
+                        if isinstance(item, dict) and item.get("outcome") in SUCCESSFUL_BUNDLE_OUTCOMES), {})
+        rows.append({
+            "bundle": reading["id"], "head": reading["head"], "whole": reading["whole"],
+            "posted": marker is not None, "can_tell": reading["account"]["can_tell"],
+            "flags": [cold_reader.flag_line(flag) for flag in flags],
+            "accepted": [{"flag": cold_reader.flag_line(flags[position]), "reason": reason}
+                         for position, reason in sorted(accepted.items())],
+            "routed": [cold_reader.flag_line(flag) for position, flag in enumerate(flags)
+                       if position not in accepted],
+            "vendor": attempt.get("vendor"), "model": attempt.get("model"), "effort": attempt.get("effort"),
+            "duration_seconds": attempt.get("elapsed_seconds"),
+        })
+    return {"status": "read", "readings": rows}
+
+
+def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path: Path | None,
+                         tree_metadata: Path | None, timeout_seconds: float | None,
+                         claude_path: Path | None, codex_path: Path | None) -> int:
+    # The holder holds the brief, so a dispatch it wrote could aim the reader.
+    if dispatch_path is not None or tree_metadata is not None:
+        raise WorkError("run cold-reader composes its own prompt and tree; it accepts no "
+                        "--dispatch or --tree-metadata")
+    refused = _version_refusal(state, replace(decision, continuity=None), None)
+    if refused is not None:
+        _emit_report(_reported_decision(state, refused).as_dict(), state)
+        return 0
+    sha = _head_sha(state)
+    branch = ((state.pr or {}).get("head") or {}).get("ref")
+    if sha is None or not isinstance(branch, str):
+        refusal = replace(decision, dispatch=False, continuity=None, status="refused",
+                          reason="cold-reader-requires-pull-request",
+                          detail="A cold reading reads an open implementing pull request's head.")
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
+    effective_timeout = timeout_seconds if timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
+    if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+        raise WorkError("--timeout-seconds must be finite and positive")
+    gate = _cold_reading_decision(state, sha)
+    if gate is not None and gate.reason == "cold-reading-unverifiable":
+        _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
+                     reason=gate.reason, detail=gate.detail)).as_dict(), state)
+        return 0
+    # Only the gate knows which paths are owed a reading, so a run it didn't order would read the wrong ones.
+    if gate is None or gate.stage != "cold-reader":
+        refusal = replace(decision, dispatch=False, continuity=None, status="refused",
+                          reason="cold-reading-not-owed",
+                          detail="The gate owes no reading at this head; it recommends "
+                          + (f"{gate.stage} ({gate.reason})" if gate is not None else "no cold-reading step") + ".")
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
+    covered = json.loads(gate.detail)["covered"]
+    work = f"{state.repo}#{state.issue_number}"
+    # Staffing is judged against the builder, so a reading whose builder nothing proves never starts.
+    try:
+        own_vendor, own_source = _cold_reading_builder_vendor(state, sha)
+    except WorkError as exc:
+        _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
+                     reason="cold-reading-unverifiable", detail=str(exc))).as_dict(), state)
+        return 0
+    # The tree outlives the run: the gate reloads each reading's coverage from its metadata.
+    place = _cold_reading_source(state).parent / "cold-reader" / uuid.uuid4().hex
+    numbers = [state.issue_number] + ([state.pr["number"]] if isinstance(state.pr.get("number"), int) else [])
+    try:
+        metadata_path = cold_reader.build_tree(
+            source=state.holder_root, output=place / "reading", work=work,
+            producer_version=records.producer_version(), base_tip=state.pr["base"]["sha"],
+            head=sha, covered=covered, branch=branch, numbers=numbers)
+        metadata = cold_reader.load_metadata(metadata_path)
+    except cold_reader.ColdReaderError as exc:
+        refusal = replace(decision, dispatch=False, continuity=None, status="refused",
+                          reason="cold-reading-tree-refused", detail=str(exc))
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
+    diff = metadata_path.with_suffix(".diff")
+    standard = (Path(__file__).resolve().parent.parent / "skills" / "authoring" / "references"
+                / "code-reasons.md").read_text("utf-8")
+    prompt = place / "prompt.md"
+    prompt.write_bytes(cold_reader.compose_prompt(
+        metadata, standard, diff.read_text("utf-8", errors="replace") if metadata["diff"] == "inline" else None))
+    output = records.resolved_output(None, work, "cold-reader")
+    deadline = lifecycle.current_deadline() or lifecycle.stage_deadline("cold-reader", effective_timeout)
+    launch_plan = _launch_plan(state, decision, resolve_comparison=False)
+    # The role's resolved vendor launches the seat, so an override moves it; staffing is judged against it.
+    vendor, vendor_source = _seat_vendor(state, "cold-reader")
+    launch_plan["primary"] = launch_plan["vendors"][vendor]
+    launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+                               **dispatch_seat.fallback_plan(vendor, own_vendor, "read"),
+                               "comparison_vendor_source": own_source}
+    # A seat landing on the builder's vendor, as primary or by fallback, must record why, or no `open` can validate.
+    same_vendor = ("owner-selected-claude-implementer" if own_vendor == "claude"
+                   else "owner-selected-codex-cold-reader" if vendor == "codex"
+                   else "cold-reader-fell-back-to-builder-vendor")
+    command = [
+        sys.executable, str(Path(__file__).resolve().parent / "dispatch_seat.py"),
+        "--dispatch", str(prompt), "--root", str(place / "reading"),
+        "--work", work, "--stage", "cold-reader", "--output", str(output),
+        "--settings-source", vendor_source, "--settings-scope", "cold-reader",
+        "--vendor", vendor, "--own-vendor", own_vendor, "--own-vendor-source", own_source,
+        "--classification", "cold", "--requires", "read",
+        "--timeout-seconds", f"{effective_timeout:g}", "--same-vendor-reason", same_vendor,
+        "--lineage-branch", branch, *(["--lineage-pull-request", str(state.pr["number"])]
+                                      if isinstance(state.pr.get("number"), int) else []),
+        *_seat_launch_arguments(state, "cold-reader", "cold", claude_path=claude_path,
+                                codex_path=codex_path, plan=launch_plan),
+    ]
+    setting_resolution.print_plan(launch_plan, label="work")
+    code = _invoke_recipient(command, deadline)
+    try:
+        returned = output.read_text("utf-8")
+    except OSError:
+        returned = None
+    errors = (["the seat returned no account"] if returned is None
+              else cold_reader.form_errors(returned, cold_reader.flaggable(metadata)))
+    _emit_report({
+        "schema_version": 1, "work": work, "stage": "cold-reader", "bundle": str(output),
+        "head": sha, "covered": covered, "whole": metadata["whole"], "residue": metadata["residue"],
+        "form": "fail" if errors else "pass", "form_errors": errors,
+    }, state)
+    return code or (1 if errors else 0)
+
+
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     _evaluate_raw_output(state, rules, str((state.raw_output or {}).get("policy") or "selected change-proof policy"))
     if state.version_obligation is None:
@@ -4882,6 +5391,9 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
     if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
         return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
+    cold = _cold_reading_decision(state, sha)
+    if cold is not None:
+        return result(cold.stage, cold.dispatch, cold.continuity, cold.reason, cold.detail, cold.status)
     if bool(state.pr.get("draft")) or (state.synchronization or {}).get("merge_state") == "draft":
         return result("ready-reviewers", False, None, "floor-complete-pr-draft",
                       _draft_ready_detail(policy.mechanical))
@@ -5755,6 +6267,12 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
                 "--- holder reading begin ---\n" + reading.body
                 + "\n--- holder reading end ---"
             )
+    # These stages all resume the one builder, so whichever turn runs next carries the reading and is its review.
+    if decision.stage in {"build", "floor", "review-disposition"}:
+        owed = _owed_cold_reading(state)
+        if owed is not None:
+            sections.append(COLD_READING_REVIEW + "\n\n--- cold reading begin ---\n" + owed.body
+                            + "\n--- cold reading end ---")
     sections.append("Fetch current state only if this stage needs it:\n" + "\n".join(fetches))
     return ("\n\n".join(sections) + "\n").encode("utf-8")
 
@@ -6780,12 +7298,12 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
                  resolve_comparison: bool = True) -> dict[str, object] | None:
     """Plan a recipient using only reads; execution still proves its preconditions."""
     implementer = decision.stage in {"artifact", "build", "floor", "review-disposition"}
-    judging = decision.stage in {"cold-seat", "use"}
+    judging = decision.stage in {"cold-seat", "use", "cold-reader"}
     if not (implementer or judging) or (not decision.dispatch and decision.stage != "use"):
         return None
     bridge = setting_resolution.read_bridge()
     role = ("artifact_author" if decision.stage == "artifact" else "implementer") if implementer else (
-        "cold-seat" if decision.stage == "cold-seat" else "use-consumer")
+        decision.stage if decision.stage in {"cold-seat", "cold-reader"} else "use-consumer")
     plan = {"status": "resolved", "stage": decision.stage, "role": MODEL_OVERRIDE_ROLES[role],
             "continuity": decision.continuity or "fresh"}
     if decision.stage == "artifact":
@@ -6794,19 +7312,22 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
         settings = {vendor: _launch_settings(state, role, vendor, "cold", bridge=bridge).as_dict(
             vendor, f"work entrance {role} route" if vendor == "claude" else "availability fallback to comparison vendor"
         ) for vendor in dispatch_seat.VENDORS}
-        plan.update(primary=settings["claude"], vendors=settings)
+        # The reader launches on its role's resolved vendor, so the reported plan must name that one.
+        primary = _seat_vendor(state, "cold-reader")[0] if decision.stage == "cold-reader" else "claude"
+        plan.update(primary=settings[primary], vendors=settings)
         try:
             if not resolve_comparison or decision.stage == "use":
                 raise WorkError("comparison vendor awaits validated recipient tree")
             stages = frozenset({"artifact"}) if decision.stage == "cold-seat" else RESUME_SOURCE_STAGES["build"]
             own, own_source = _producer_vendor(state, stages)
-            fallback = {**settings[own], **dispatch_seat.fallback_plan("claude", own,
-                        "read" if decision.stage == "cold-seat" else "execute"),
+            fallback = {**settings[own], **dispatch_seat.fallback_plan(primary, own,
+                        "read" if decision.stage in {"cold-seat", "cold-reader"} else "execute"),
                         "comparison_vendor_source": own_source}
         except WorkError as exc:
-            eligibility = dispatch_seat.fallback_plan("claude", "codex",
-                          "read" if decision.stage == "cold-seat" else "execute")
-            fallback = {**settings["codex"], **eligibility,
+            other = "codex" if primary == "claude" else "claude"
+            eligibility = dispatch_seat.fallback_plan(primary, other,
+                          "read" if decision.stage in {"cold-seat", "cold-reader"} else "execute")
+            fallback = {**settings[other], **eligibility,
                         "eligible": None if eligibility["eligible"] else False,
                         "comparison_vendor": None, "comparison_vendor_source": None,
                         "comparison_vendor_unavailable_reason": str(exc)}
@@ -7955,6 +8476,8 @@ def _publish_current_proof(transport: GitHubREST, fresh: WorkState, root: Path,
     if sync is not None:
         _emit_report(_reported_decision(fresh, sync).as_dict(), fresh)
         return 0
+    if _held_by_cold_reading(fresh, "proof"):
+        return 0
     prepare_use_evidence(fresh, transport, effective_rules)
     if fresh.pr is not None and (fresh.version_obligation or {}).get("declaration") is not None:
         endpoint = f"repos/{fresh.repo}/pulls/{fresh.pr['number']}"
@@ -8056,6 +8579,8 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     sync = _synchronization_decision(live)
     if sync is not None:
         _emit_report(_reported_decision(live, sync).as_dict(), state)
+        return 0
+    if _held_by_cold_reading(state, "ready-reviewers"):
         return 0
     label = state.config.reviewer_label
     label_applied = False
@@ -8311,6 +8836,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         if transport is None or rules is None:
             raise WorkError("run catch-up requires the entrance GitHub and policy context")
         return _execute_catch_up(transport, state, root, instalment, holder_session_id, rules)
+    if decision.stage == "cold-reader":
+        return _execute_cold_reader(state, decision, dispatch_path=dispatch_path,
+                                    tree_metadata=tree_metadata, timeout_seconds=timeout_seconds,
+                                    claude_path=claude_path, codex_path=codex_path)
     if decision.stage in {"floor", "use", "review-disposition", "proof", "ready-reviewers"}:
         sync = _synchronization_decision(state)
         if sync is not None:
@@ -8500,6 +9029,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             _emit_report({**_reported_decision(fresh_sync, draft).as_dict(),
                           "required_gate": required_gate}, state)
             return 0
+        if _held_by_cold_reading(state, "release-report"):
+            return 0
         verdict = required_gate["verdict"]
         head = required_gate["head"] or "unknown-current-head"
         if verdict == "green":
@@ -8584,6 +9115,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "required_gate": required_gate,
             "path_departures": path_departures,
             "holder_close": _release_holder_close(state),
+            "cold_readings": _cold_reading_measures(state),
         })
         _emit_report(payload, state)
         return 0
@@ -8633,6 +9165,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             raise WorkError("use dispatch file must be outside the selected source root")
         if not dispatch.is_file() or not dispatch.read_bytes().strip():
             raise WorkError(f"use dispatch file is absent or empty: {dispatch}")
+        if _held_by_cold_reading(state, "use"):
+            return 0
         here = Path(__file__).resolve().parent
         own_vendor, own_vendor_source = _producer_vendor(
             state, RESUME_SOURCE_STAGES["build"],
@@ -9193,7 +9727,8 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
         return continuity
     if recommendation.stage == stage and recommendation.continuity is not None:
         return recommendation.continuity
-    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report", "catch-up"}:
+    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report", "catch-up",
+                 "cold-reader"}:
         return "fresh"
     if stage == "build":
         try:

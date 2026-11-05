@@ -215,3 +215,25 @@ def test_validation_refuses_untracked_and_ignored_entries(source, tmp_path, kind
 
     with pytest.raises(recipient_tree.RecipientTreeError, match="undeclared"):
         recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source)
+
+
+def test_a_repository_whose_git_converts_line_endings_still_builds_a_consumer_tree(tmp_path):
+    root = tmp_path / "plain"
+    root.mkdir()
+    git(root, "init")
+    for name, content in {"job/job.md": b"run the consumer\nsecond line\n", "skill/SKILL.md": b"surface\n"}.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    git(root, "add", "--all")
+    git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-m", "plain")
+    # No attributes, and a machine setting that converts line endings on checkout and archive.
+    git(root, "config", "core.autocrlf", "true")
+    output = tmp_path / "consumer"
+    recipient_tree.create_consumer_tree(
+        source=root.resolve(), output=output, work="acme/widget" + "#" + str(7),
+        producer_version="0.151.0",
+        mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"], front_page=None,
+        root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
+    )
+    assert (output / "job/job.md").read_bytes() == b"run the consumer\nsecond line\n"
