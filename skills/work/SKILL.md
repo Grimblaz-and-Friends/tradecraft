@@ -13,6 +13,7 @@ description: The read-only decision and explicit execution entrance for one prod
 - **After a builder turn or before readiness, proof or release reporting** → `references/reach.md`: measured authored removals, the holder's joint reading of the report and return, head-bound accounts, and historical-range settlement.
 - **Composing or consuming proof, preserving ancestor use, or preparing reviewers** → `references/proof.md`: the proof wire contract, public/declaration split, publication behavior and holder-owned commands.
 - **A launch-findings hold, or quoting a Claude launch's write bound** → `references/launch-findings.md`: what each writing launch is fenced from and compares, the hold, and the account.
+- **Setting a repository up for cloud builds, or reading a cloud attempt** → `references/cloud-builds.md`: the machine switch, the one-time setup, the practice pin, the report branch, follow-ups, and what a cloud attempt's record shows.
 - **Reading launch settings or writing a machine ruling** → `references/launch-settings.md`: resolved values, historical sessions, bridge schema, precedence and lapse.
 - **Implementing the independent proof consumer** → `references/proof-fixtures/README.md`: the positive document and semantic rejection cases shared with the gate.
 

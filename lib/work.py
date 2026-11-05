@@ -128,6 +128,20 @@ ISSUE_URL = re.compile(
 REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?\Z")
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
+# A Claude cloud session's id (#938 call 9); accepted on the cloud route only.
+CLOUD_SESSION_ID = re.compile(r"cse_[A-Za-z0-9]+\Z")
+
+
+def _session_shaped(session: object, request: object = None, *, vendor: object = None) -> bool:
+    """A resumable session id: a UUID, or a cloud session's id where the route is cloud."""
+    if not isinstance(session, str):
+        return False
+    if SESSION_ID.fullmatch(session):
+        return True
+    cloud = (isinstance(request, dict) and request.get("route") == "cloud") or vendor == "claude"
+    return cloud and CLOUD_SESSION_ID.fullmatch(session) is not None
+
+
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
@@ -1492,8 +1506,8 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "holder-reading" and values.get("result") not in {
             "no-amendment", "amended"}:
         return "holder reading result is invalid"
-    if marker.name == "builder-session" and SESSION_ID.fullmatch(
-            values.get("session", "")) is None:
+    if marker.name == "builder-session" and not _session_shaped(
+            values.get("session", ""), vendor=values.get("vendor")):
         return "builder session is not UUID-shaped"
     if marker.name == "builder-session" and values.get("vendor", "codex") not in {
             "codex", "claude"}:
@@ -2261,7 +2275,7 @@ def _bundle_sessions(request: dict[str, object], run: dict[str, object], *, nati
     for attempt in attempts if isinstance(attempts, list) else []:
         observed = attempt.get("observed") if isinstance(attempt, dict) else None
         session = observed.get("session_id") if isinstance(observed, dict) else None
-        if isinstance(session, str) and SESSION_ID.fullmatch(session):
+        if _session_shaped(session, request):
             sessions.append(session)
         if native and isinstance(observed, dict) and isinstance(observed.get("thread_ids"), list):
             sessions.extend(value for value in observed["thread_ids"]
@@ -2526,7 +2540,7 @@ def _validate_builder_turn(state: WorkState, turn: tuple, *, include_released: b
     # Session-bearing successes still owe the existing identity consistency check.
     if run.get("outcome") != "success_uncontinuable":
         session = lifecycle.recovery_session(request, run)
-        if SESSION_ID.fullmatch(session) is None:
+        if not _session_shaped(session, request):
             raise WorkError("builder session identity is invalid")
 
 
@@ -3654,6 +3668,7 @@ def _implementer_environments(state):
                 "stream_check": _stream_check_report(run, attempt),
                 "write_bound": _write_bound_report(request, run, attempt),
                 "launch_comparison": _launch_comparison_report(request, run, attempt),
+                **_cloud_report(request, attempt),
                 "environment": observed})
     return {"status": "known", "attempts": values}
 
@@ -3795,7 +3810,24 @@ LAUNCH_ACCOUNT_PARTIES = frozenset({"owner", "plugin-update", "session", "builde
                                     "none-found"})
 LAUNCH_ACCOUNT_FIELDS = frozenset({"id", "party", "basis", "session", "owner_report", "practice_issue"})
 LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposition", "use"})
-LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched"})
+# `cloud-not-run`: a cloud builder cannot reach this machine (#938 row 9).
+LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched", "cloud-not-run"})
+
+
+def _cloud_check_findings(run: dict) -> list[dict]:
+    """A failed cloud attempt check holds the next stage like a launch finding (#938 call 16)."""
+    findings = []
+    for attempt in run.get("attempts") or []:
+        cloud = attempt.get("cloud") if isinstance(attempt, dict) else None
+        checks = cloud.get("cloud_checks") if isinstance(cloud, dict) else None
+        for name, check in sorted((checks or {}).items()):
+            if isinstance(check, dict) and check.get("ok") is False:
+                detail = (check.get("faults") or check.get("commits_without_marker")
+                          or check.get("reason") or "failed")
+                findings.append({"id": f"cloud-check:{name}", "item": f"cloud_checks.{name}",
+                                 "path": str(cloud.get("report_branch") or ""), "change": "failed",
+                                 "reason": json.dumps(detail, ensure_ascii=True, sort_keys=True)})
+    return findings
 PRACTICE_ISSUE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*\Z")
 
 
@@ -3871,12 +3903,13 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
                          "change": "unrecorded",
                          "reason": "the request has a write-bound baseline but the run record has no comparison"}]
             status = "unrecorded"
-        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES:
+        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not _cloud_check_findings(run):
             bundles.append({**entry, "state": "clear", "findings": [],
                             "attributed": comparison.get("attributed") or [], "account": None})
             continue
         else:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
+            findings += _cloud_check_findings(run)
             status = "account-required"
         ids = {finding.get("id") for finding in findings}
         # An account counts only once its findings exist: after the run completed,
@@ -3916,6 +3949,27 @@ def _launch_account_refusal(state: WorkState, stage: str) -> Decision | None:
                   "and the practice's product-incident filing.")
     return Decision("launch-account", False, None, "launch-findings-unaccounted", detail,
                     status="holder-owned")
+
+
+def _cloud_report(request, attempt):
+    """A cloud attempt's route, profile mark, checks and practice drift (#938)."""
+    if request.get("route") != "cloud":
+        return {"route": "local"} if (attempt.get("vendor") == "claude") else {}
+    cloud = attempt.get("cloud") if isinstance(attempt.get("cloud"), dict) else {}
+    practice = (request.get("cloud") or {}).get("practice") or {}
+    profile = cloud.get("profile") if isinstance(cloud.get("profile"), dict) else {}
+    value = {"route": "cloud", "cloud_session": cloud.get("session_id"),
+             "cloud_profile": profile or None, "off_profile": profile.get("off_profile"),
+             "permission_mode": profile.get("permission_mode"),
+             "cloud_checks": cloud.get("cloud_checks"), "ledger_check": cloud.get("ledger_check"),
+             "attempt_fault": attempt.get("fault"),
+             "instructions_applied": request.get("instructions_applied"),
+             "instructions_loaded": cloud.get("instructions_loaded")}
+    if "session_loaded" in practice:
+        value["practice_drift"] = {"drift": practice.get("drift"),
+                                   "session_loaded": practice.get("session_loaded"),
+                                   "installed_at_send": practice.get("installed_at_send")}
+    return value
 
 
 def _write_bound_report(request, run, attempt):
@@ -6592,7 +6646,7 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
             session = lifecycle.recovery_session(request, run)
         except ValueError as exc:
             raise WorkError(f"stopped bundle {path}: {exc}") from exc
-        if not SESSION_ID.fullmatch(session):
+        if not _session_shaped(session, request):
             raise WorkError(f"stopped bundle {path}: invalid session identity")
         if stage == "artifact":
             try:
@@ -6741,7 +6795,8 @@ def resume_session(state: WorkState, stage: str, record_root: Path | None = None
     sessions = [marker.attributes.get("session") for marker in state.issue_markers
                 if marker.name == "builder-session" and marker.attributes.get("vendor")]
     return next((session for session in reversed(sessions)
-                 if isinstance(session, str) and SESSION_ID.fullmatch(session)), None)
+                 if _session_shaped(session, vendor="claude" if isinstance(session, str)
+                                    and session.startswith("cse_") else None)), None)
 
 
 def _session_settings(source: ResumeSource) -> dict[str, object]:

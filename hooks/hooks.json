@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$CLAUDE_CODE_REMOTE\" ] && exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/cloud.py\" stop || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$CLAUDE_CODE_REMOTE\" ] && exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/cloud.py\" prompt || true"
+          }
+        ]
+      }
+    ]
+  }
+}

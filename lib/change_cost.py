@@ -570,7 +570,16 @@ def _price(item: _Attempt, rates: list[dict]) -> dict:
         reasons.append("actual vendor is unavailable")
         vendor = dispatch.get("requested_vendor")
     resume = dispatch.get("continuity") == "resume"
-    if resume and vendor == "claude":
+    if usage.get("source") == "cloud-stop-hook":
+        # A cloud attempt's tokens are its delta of the session's running total,
+        # priced only when the hook's ledger checks out (#938 call 10).
+        ledger = _mapping(usage.get("ledger_check"))
+        if vendor != "claude" or usage.get("scope") != "session-delta":
+            reasons.append("cloud usage is not a Claude session delta")
+        elif ledger.get("ok") is not True:
+            reasons.append("cloud usage ledger disagrees: " + "; ".join(
+                str(fault) for fault in ledger.get("faults") or ["no ledger check recorded"]))
+    elif resume and vendor == "claude":
         reasons.append("resumed Claude usage scope is not established")
     elif resume and vendor == "codex" and item.share is None:
         reasons.append("resumed Codex share has no usable preceding snapshot")

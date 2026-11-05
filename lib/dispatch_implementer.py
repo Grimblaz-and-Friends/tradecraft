@@ -32,6 +32,7 @@ import uuid
 
 import dispatch_record as records
 import artifact_tree
+import cloud_build
 from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TOOLS,
                                 claude_launch_controls, claude_launch_env, claude_launch_notice,
                                 claude_stream_check, claude_terminal, claude_write_bound_notice,
@@ -379,6 +380,24 @@ def validate_artifact_return(expected: str, returned: str | bytes) -> dict[str, 
     }
 
 
+def _cloud_route(args: argparse.Namespace) -> tuple[dict | None, str, str | None] | None:
+    """The cloud route for a set-up repository's Claude launch, or None for local (#938 row 2).
+
+    A follow-up goes wherever its session runs: a ``cse_`` session is a cloud
+    session, and a UUID session started locally is resumed locally.
+    """
+    if args.resume:
+        if cloud_build.CLOUD_SESSION.fullmatch(args.resume):
+            return None, f"recorded cloud session {args.resume}", None
+        return None
+    try:
+        entry, source = cloud_build.route_for(args.work)
+    except cloud_build.CloudError as exc:
+        # A broken switch never quietly means local.
+        return None, f"record {cloud_build.record_path()}", str(exc)
+    return None if entry is None else (entry, source, None)
+
+
 def run_implementer(args: argparse.Namespace) -> int:
     if args.timeout_seconds is None:
         args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
@@ -519,6 +538,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         output = records.resolved_output(args.output, args.work, args.stage)
     records.require_output_outside_root(output, root)
     args.output = output
+    if args.vendor == "claude":
+        route = _cloud_route(args)
+        if route is not None:
+            entry, route_source, refusal = route
+            return cloud_build.run(
+                args, deadline, entry=entry, route_source=route_source,
+                effective_prompt=effective_prompt, prompt=prompt, context=context,
+                artifact_brief=artifact_brief, metadata=metadata, composition=composition,
+                settings_sources={"vendor": args.vendor_source, "model": settings.model_source,
+                                  "effort": settings.effort_source},
+                validate=validate_artifact_return, preset_failure=refusal)
     request_path = records.sidecar(output, ".request.json")
     record_path = records.sidecar(output, ".run.json")
     input_path = records.sidecar(output, ".dispatch.bin")

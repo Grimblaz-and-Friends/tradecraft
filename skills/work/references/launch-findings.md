@@ -15,9 +15,13 @@ A checkout's comparison leaves out its `.git` and stops at any nested worktree o
 
 The request's `write_bound` states what applied: the guarded tools and allowed paths, the scratchpad form, the guard's self-test, the memory request and fallback, the planned coverage, and `shell: no OS fence`. The run record's `launch_comparison` carries each item's status and every finding with its `id`; an author's or builder's run record also carries `write_guard` (refusals, calls completed with no guard decision, and calls the runtime rejected before they ran). Quote that bound in the release report.
 
+**A cloud build is not compared.** A cloud builder runs on a remote machine and cannot reach this one, so its run record's comparison reads `cloud-not-run` with that reason, a clear status that holds nothing; a local build still runs its comparison. The work cell's cloud-builds reference owns the route.
+
 ## The hold
 
 Any bundle for this change whose comparison has findings, or whose request has a write-bound baseline but whose stopped launch left no comparison (`unrecorded`), holds every next stage, the holder-named `run <stage>` included. A launch still running owes no account: its report entry reads `running`, because its comparison is written when it stops, and the live-launch routing governs it meanwhile. The run itself is untouched: a finding never fails or discards it.
+
+**A failed cloud attempt check holds the same way.** A cloud attempt whose change-branch check, `[skip ci]` check or practice-check record failed carries a `cloud-check:<name>` finding, and its account names that id like any other. The report is still kept and posted.
 
 The hold releases when a trusted `launch-account` marker for that bundle's dispatch, posted after its findings exist, names exactly its finding ids (the `launch-account` contract in `markers.md`). An account posted before the run completed, or for an unrecorded comparison before the launch began, counts for nothing. Name each finding's party by what made the change, from what you know, never by default:
 
