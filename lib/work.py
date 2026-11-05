@@ -4858,6 +4858,8 @@ def _cold_reading_unverifiable(sha: str, problem: object) -> Decision:
 
 
 def _set_aside(state: WorkState, markers: list[Marker], reason: str) -> None:
+    # Only the gate works out coverage, flags and the builder's turn, so it, not marker validation,
+    # judges whether a `clean` stands.
     for marker in markers:
         claim = marker.as_dict()
         claim["reason"] = reason
@@ -4940,6 +4942,9 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
 
 def _seat_vendor(state: WorkState, role: str) -> tuple[str, str]:
     """The vendor a judging role launches on: its latest per-issue override, else Claude."""
+    # Validation sets aside an override naming any vendor but Claude or Codex, so none reaches the launch.
+    if state.validated_markers is None:
+        validate_marker_claims(state)
     override = next((marker for marker in reversed(state.issue_markers)
                      if marker.name == "model-override"), None)
     value = override.attributes.get(MODEL_OVERRIDE_ROLES[role]) if override is not None else None

@@ -752,6 +752,19 @@ def test_an_override_moves_the_reader_to_its_vendor_and_staffing_follows(change,
         assert option(command, "--same-vendor-reason") == reason
 
 
+@pytest.mark.cold_reading
+def test_an_override_naming_another_vendor_is_set_aside_and_the_reader_stays_on_claude(change, monkeypatch,
+                                                                                      capsys):
+    override = "<!-- tradecraft:model-override:v1 cold_reader=gemini:other-model:high -->"
+    unvalidated = test_work.state(override)
+    assert work._seat_vendor(unvalidated, "cold-reader")[0] == "claude"
+    assert [claim["reason"] for claim in unvalidated.invalid_marker_claims
+            if claim["name"] == "model-override"] == ["model override value is invalid"]
+    change.post(override)
+    _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean())
+    assert option(command, "--vendor") == "claude"
+
+
 def test_the_design_section_the_new_code_points_at_names_its_decisions():
     lib = Path(__file__).resolve().parents[1]
     for name in ("cold_reader.py", "work.py"):
