@@ -104,6 +104,17 @@ So a finished review above 600 KB can miss what the same reviewer catches at a n
 
 A re-measurement after a model or CLI change should try more than one case before the budget moves up.
 
+**A second defect in the case, and the owner's ruling.**
+- **The second defect.** #883 at `b59802e` held a second real P1 defect in the same function, now #953. The composed merge obligation drops a field-only version conflict from the builder's list and discards the classifier's merged bytes, so a builder can revert the base's change to another member. The Steward filed it after a two-arm probe confirmed it was still present at `5dad8cb`. The original lab review of #883 did not report it.
+- **The counts.** From 800 KB to 1.8 MB, five of the eight runs reported #953: `800000-r2`, `1000000-r1`, `1200000-r1`, `1200000-r2` and `1800000-r1`. The known defect was found in 4 of 4 runs at 600 KB and below, and in 1 of 8 above. So the drop tracks size, not a random choice between two equal defects.
+- **A looser rule gives the same decision.** Even counting any real defect as found, `800000-r1` returned no findings at all, so 800,000 still fails, and row 7 stops at the first failure.
+- **The owner's challenge.** The owner asked whether the second defect confounded the test, and whether the reviewer works up to 2 MB. 2 MB was never run: 1.8 MB finished, and 2.4 MB exceeded the context at about 1,116,899 tokens.
+- **His ruling.** After that answer, he ruled "Land 600,000" ([record](https://github.com/Grimblaz-and-Friends/tradecraft/issues/902#issuecomment-6649839222)).
+- **For whoever measures again:**
+  - before any run, screen each case for other real defects in the anchored code, or score a set of known defects fixed in advance;
+  - use more than one case and more than two runs per size;
+  - expect the hard context limit between 1.8 and 2.4 MB.
+
 **What this supersedes.** [D-841](D-841-2026-10-03-connected-review-input.md) set 600,000 by rounding down the larger input that one past review had completed. That single-run basis is superseded: the figure now rests on this measurement, which found it to be the largest size at which this case's defect is still found in both runs. The value is unchanged. Everything else in D-841, and D-943's over-budget summary, stands.
 
 **Departures.**
