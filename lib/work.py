@@ -4777,7 +4777,8 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
         # The stage refused this return for its form, so it was never a reading.
         if cold_reader.form_errors(returned, cold_reader.flaggable(metadata)):
             continue
-        # A reading recorded before lineage was, counts only if this change's history holds what it read.
+        # An entrance older than the lineage rule records none; such a reading counts only when this
+        # change's history holds the head it read.
         if "lineage_branch" not in request and not _cold_reading_in_history(state, metadata.get("head"), path):
             continue
         readings.append({"id": path, "completed_at": completed, "request": request, "run": run,

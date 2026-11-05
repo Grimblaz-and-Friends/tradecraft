@@ -127,7 +127,9 @@ def _required_files(source: Path, revision: str, requested: list[str],
 
 def _extract_archive(source: Path, revision: str, files: dict[str, dict[str, str]],
                      destination: Path, deny_texts: list[str]) -> dict[str, dict[str, str]]:
-    archive = _git(source, "archive", "--format=tar", revision, "--", *files)
+    # These settings convert line endings for a working tree; a recipient tree must hold the committed bytes.
+    archive = _git(source, "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                   "archive", "--format=tar", revision, "--", *files)
     extracted: set[str] = set()
     claims: dict[str, dict[str, str]] = {}
     with tarfile.open(fileobj=BytesIO(archive), mode="r:") as stream:

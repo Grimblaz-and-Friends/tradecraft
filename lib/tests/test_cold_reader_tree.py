@@ -146,3 +146,13 @@ def test_a_committed_root_change_diff_is_refused_when_the_diff_travels_as_a_file
         build(tmp_path, root, base, head)
     assert not (tmp_path / "reading").exists()
     assert not cold_reader.recipient_tree.metadata_path(tmp_path / "reading").exists()
+
+
+def test_a_repository_whose_git_converts_line_endings_still_builds_its_reading_tree(tmp_path):
+    root, base, head = source(tmp_path, {"README.md": "# Readme\n"},
+                              {"a.py": "A = 1\nB = 2\n", "notes.md": "# Notes\nline\n"})
+    # No attributes, and a machine setting that converts line endings on checkout and archive.
+    git(root, "config", "core.autocrlf", "true")
+    metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
+    assert (tmp_path / "reading" / "a.py").read_bytes() == b"A = 1\nB = 2\n"
+    assert sorted(metadata["files"]) == ["a.py", "notes.md"]
