@@ -81,9 +81,16 @@ def read_object(path: Path) -> dict[str, Any]:
 
 def write_object(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(
-        (json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    )
+    data = (json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    # A run killed mid-write must leave the previous file or none, never a torn one the ladder would count.
+    handle = tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False)
+    try:
+        with handle:
+            handle.write(data)
+        os.replace(handle.name, path)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
 
 
 def file_digest(path: Path) -> str:
@@ -444,6 +451,12 @@ def parse_rungs(value: str) -> list[int]:
     return rungs
 
 
+def refuse_blank_seed(seed: str) -> None:
+    # A blank seed would fall back to the default in a run, so the plan and the run could pad differently.
+    if not seed.strip():
+        raise ReplayError("--pad-seed cannot be empty")
+
+
 def single_case(manifest: dict[str, Any]) -> dict[str, Any]:
     if len(manifest["cases"]) != 1:
         raise ReplayError("a ladder export holds exactly one case")
@@ -455,6 +468,7 @@ def ladder_plan(
     finder_prompt: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Compose and measure the natural size and every rung; launches no model and needs no credential."""
+    refuse_blank_seed(seed)
     manifest = validate_export(export_root, require_policy=True)
     case = single_case(manifest)
     finder_text = (finder_prompt or LIVE_FINDER_PROMPT).read_text(encoding="utf-8")
@@ -647,6 +661,8 @@ def _validate_run_options(
 ) -> None:
     if pad_seed is not None and pad_to_bytes is None:
         raise ReplayError("--pad-seed requires --pad-to-bytes")
+    if pad_seed is not None:
+        refuse_blank_seed(pad_seed)
     if pad_to_bytes is not None:
         if pad_to_bytes <= 0:
             raise ReplayError("--pad-to-bytes must be positive")
@@ -844,6 +860,7 @@ def run_replay(
         "resumed_cases": resumed_cases,
         "case_harness_sha256": case_harnesses,
         "credential_source": "environment" if api_key is None else "api-key-file",
+        "export_manifest_sha256": file_digest(export_root / "manifest.json"),
         "complete": False,
         "cases": list(completed.values()),
     }
@@ -859,6 +876,7 @@ def run_replay(
         }
         # Each case starts on the key, as each live review does.
         credentials = _credentials(api_key)
+        finished_finder_usage: dict[str, Any] | None = None
         try:
             with tempfile.TemporaryDirectory(prefix=CASE_TEMPORARY_PREFIX) as temporary:
                 temporary_root = Path(temporary)
@@ -943,6 +961,7 @@ def run_replay(
                     rules_text, lines, credentials, finder_effort, preloaded, exclusions,
                     summarised=summarised, readable=readable,
                 )
+                finished_finder_usage = finder_usage
                 if single_pass:
                     survivors = cr.deduplicate_root_causes(candidates)
                     checker_usage = None
@@ -984,6 +1003,14 @@ def run_replay(
             raise
         except (ReplayError, cr.ReviewError, OSError) as exc:
             case_result.update({"status": "error", "error": str(exc)})
+            # A failed attempt was still paid for, so its usage stays with it.
+            usage = exc.usage if isinstance(exc, cr.ReviewError) else None
+            if finished_finder_usage is not None:
+                case_result["finder_usage"] = finished_finder_usage
+                if usage is not None:
+                    case_result["checker_usage"] = usage
+            elif usage is not None:
+                case_result["finder_usage"] = usage
         case_result["credential"] = credentials.record
         record["cases"].append(case_result)
         record["cases"].sort(key=lambda row: order[row["case_id"]])
@@ -1032,7 +1059,7 @@ def validate_defect_key(value: dict[str, Any]) -> dict[str, Any]:
         if (
             not isinstance(anchor, dict) or set(anchor) != {"path", "side", "line_start", "line_end"}
             or not isinstance(anchor["path"], str) or not anchor["path"]
-            or anchor["side"] not in {"LEFT", "RIGHT"}
+            or not isinstance(anchor["side"], str) or anchor["side"] not in {"LEFT", "RIGHT"}
             or not all(isinstance(anchor[key], int) and not isinstance(anchor[key], bool)
                        for key in ("line_start", "line_end"))
             or not 1 <= anchor["line_start"] <= anchor["line_end"]
@@ -1137,7 +1164,10 @@ def classify(case_result: dict[str, Any]) -> str:
 
 def decide(rungs: list[tuple[int, bool]]) -> str:
     """Row 7's rule: the largest rung with no failed rung at or below it."""
-    if not rungs or not rungs[0][1]:
+    # A failure at or below today's budget shows the budget itself unsound, which is the owner's call.
+    if not rungs or not rungs[0][1] or any(
+        not passed for rung, passed in rungs if rung <= cr.MAX_FINDER_PROMPT_BYTES
+    ):
         return "lowest-failed"
     largest = rungs[0][0]
     for rung, passed in rungs:
@@ -1149,6 +1179,8 @@ def decide(rungs: list[tuple[int, bool]]) -> str:
 
 
 LADDER_FINDER_EFFORT = "high"
+REVIEWER_RUNTIME = Path(cr.__file__)
+RUNTIME_REPO_PATH = "lib/connected_review.py"
 DEFAULT_RUNGS = (600_000, 1_200_000, 1_800_000, 2_400_000, 3_000_000)
 LIVE_MATCH_SETTINGS = (
     "model", "finder_effort", "pass_structure", "finder_passes", "finder_candidates_per_pass",
@@ -1173,6 +1205,7 @@ def live_reference() -> dict[str, Any]:
         "claude_cli_version": pin,
         **{name: live[name] for name in LIVE_MATCH_SETTINGS},
         "finder_prompt_sha256": file_digest(LIVE_FINDER_PROMPT),
+        "runtime_sha256": file_digest(REVIEWER_RUNTIME),
     }
 
 
@@ -1194,6 +1227,8 @@ def tree_revision() -> str:
 def live_match(executable: str | list[str], revision: str) -> dict[str, Any]:
     """Refuse before spending unless the ladder's runs are the live reviewer's."""
     reference = live_reference()
+    # The replay imports the same runtime the live reviewer runs, so only the settings can differ.
+    runtime = reference.pop("runtime_sha256")
     record = reviewer_record(
         LIVE_FINDER_PROMPT, None, reference["claude_cli_version"], revision,
         single_pass=True, finder_effort=LADDER_FINDER_EFFORT,
@@ -1206,25 +1241,108 @@ def live_match(executable: str | list[str], revision: str) -> dict[str, Any]:
         cr.verify_claude_version(executable, reference["claude_cli_version"])
     except cr.ReviewError as exc:
         raise ReplayError(str(exc)) from exc
-    return {**replayed, "harness_sha256": record["harness_sha256"]}
+    return {**replayed, "runtime_sha256": runtime, "harness_sha256": record["harness_sha256"]}
 
 
-def ladder_verify(output_dir: Path) -> list[str]:
+def _git(*args: str, failure: str) -> str:
+    try:
+        return cr._decode(cr._run(["git", "-C", str(ROOT), *args]).stdout).strip()
+    except cr.ReviewError as exc:
+        raise ReplayError(f"{failure}: {exc}") from exc
+
+
+def ladder_verify(output_dir: Path) -> dict[str, Any]:
     """Each difference between the ladder's recorded live match and this tree's live reviewer."""
-    recorded = read_object(output_dir / "ladder.json").get("live_match")
+    ladder = read_object(output_dir / "ladder.json")
+    recorded = ladder.get("live_match")
     if not isinstance(recorded, dict):
         raise ReplayError("ladder record has no live_match")
-    return _differences(recorded, live_reference())
+    current = live_reference()
+    runtime = current.pop("runtime_sha256")
+    differences = _differences(recorded, current)
+    if "runtime_sha256" in recorded:
+        basis = "recorded runtime_sha256 against this tree's file"
+        if recorded["runtime_sha256"] != runtime:
+            differences.append(f"runtime_sha256: ladder {recorded['runtime_sha256']}, live {runtime}")
+    else:
+        # A ladder recorded before the runtime's digest was kept is compared through its revision,
+        # by git blob so that a checkout's line endings cannot read as a change.
+        revision = ladder.get("revision")
+        if not isinstance(revision, str) or not revision:
+            raise ReplayError("ladder record names no revision to compare the reviewer runtime at")
+        basis = f"git blob of {RUNTIME_REPO_PATH} at the ladder's revision {revision} against this tree's file"
+        then = _git(
+            "rev-parse", f"{revision}:{RUNTIME_REPO_PATH}",
+            failure=f"cannot read {RUNTIME_REPO_PATH} at the ladder's revision {revision}; "
+                    "fetch that commit into this checkout and run ladder-verify again",
+        )
+        now = _git(
+            "hash-object", f"--path={RUNTIME_REPO_PATH}", str(REVIEWER_RUNTIME),
+            failure=f"cannot hash this tree's {RUNTIME_REPO_PATH}",
+        )
+        if then != now:
+            differences.append(f"runtime_sha256: ladder revision blob {then}, live blob {now}")
+    return {"differences": differences, "runtime_basis": basis}
 
 
-def _run_attempts(runs_dir: Path) -> list[dict[str, Any]]:
+def _refuse_foreign_run(path: Path, label: str, record: dict[str, Any], ladder: dict[str, Any]) -> None:
+    """Refuse a run file that records another case, reviewer or padding than the ladder's."""
+    # A refusal makes the holder look; skipping the file quietly would buy a paid re-run.
+    def refuse(field: str, recorded: Any, expected: Any) -> None:
+        raise ReplayError(
+            f"run file {path.name} records {field} {json.dumps(recorded, sort_keys=True)}, "
+            f"but the ladder holds {json.dumps(expected, sort_keys=True)}"
+        )
+
+    case = ladder["case"]
+    if record.get("repository") != ladder["repository"]:
+        refuse("repository", record.get("repository"), ladder["repository"])
+    expected_cases = [{"case_id": case["id"], "head": case["head"], "base": case["base"]}]
+    if record.get("manifest_cases") != expected_cases:
+        refuse("case", record.get("manifest_cases"), expected_cases)
+    # Runs recorded before the digest was kept are tied to the export by the case alone.
+    if "export_manifest_sha256" in record and record["export_manifest_sha256"] != ladder["export_manifest_sha256"]:
+        refuse("export_manifest_sha256", record["export_manifest_sha256"], ladder["export_manifest_sha256"])
+    reviewer = record.get("reviewer") if isinstance(record.get("reviewer"), dict) else {}
+    for field in ("claude_cli_version", *LIVE_MATCH_SETTINGS, "finder_prompt_sha256"):
+        if reviewer.get(field) != ladder["live_match"].get(field):
+            refuse(f"reviewer {field}", reviewer.get(field), ladder["live_match"].get(field))
+    overrides = reviewer.get("overrides") if isinstance(reviewer.get("overrides"), dict) else {}
+    cases = record.get("cases")
+    padding = cases[0].get("padding") if isinstance(cases, list) and cases and isinstance(cases[0], dict) else None
+    if label == "natural":
+        if "pad_to_bytes" in overrides or padding is not None:
+            refuse("padding", overrides.get("pad_to_bytes"), None)
+        return
+    target = int(label)
+    plan = {str(row.get("rung")): row for row in ladder["plan"]}
+    if target not in ladder["rungs"] or label not in plan:
+        refuse("rung", target, ladder["rungs"])
+    for field, recorded, expected in (
+        ("pad_to_bytes", overrides.get("pad_to_bytes"), target),
+        ("pad_seed", overrides.get("pad_seed"), ladder["pad_seed"]),
+    ):
+        if recorded != expected:
+            refuse(field, recorded, expected)
+    if padding is not None:
+        for field, expected in (
+            ("target_bytes", target), ("seed", ladder["pad_seed"]),
+            ("padded_diff_sha256", plan[label]["padded_diff_sha256"]),
+        ):
+            if padding.get(field) != expected:
+                refuse(f"padding {field}", padding.get(field), expected)
+
+
+def _run_attempts(runs_dir: Path, ladder: dict[str, Any]) -> list[dict[str, Any]]:
     """Every attempt on disk; one interrupted before its case finished counts as no attempt."""
     attempts = []
     for path in sorted(runs_dir.glob("*.json")) if runs_dir.is_dir() else []:
         match = RUN_FILE.match(path.stem)
         if match is None:
             raise ReplayError(f"unrecognised file among the ladder's runs: {path.name}")
-        cases = read_object(path).get("cases")
+        record = read_object(path)
+        _refuse_foreign_run(path, match["label"], record, ladder)
+        cases = record.get("cases")
         case_result = cases[0] if isinstance(cases, list) and cases else None
         attempts.append({
             "id": path.stem,
@@ -1321,11 +1439,11 @@ def run_ladder(
     for label, target in [("natural", None), *((str(rung), rung) for rung in rungs)]:
         for run in (1, 2):
             while True:
-                rung = _rung_runs(_run_attempts(runs_dir), label)
+                rung = _rung_runs(_run_attempts(runs_dir, identity), label)
                 if rung["counted"][run] is not None or len(rung["unrecognised"]) >= 2:
                     break
                 attempt = 1 + max(
-                    (row["attempt"] for row in _run_attempts(runs_dir)
+                    (row["attempt"] for row in _run_attempts(runs_dir, identity)
                      if row["label"] == label and row["run"] == run),
                     default=0,
                 )
@@ -1336,7 +1454,7 @@ def run_ladder(
                     pad_to_bytes=target, pad_seed=None if target is None else seed,
                 )
                 result_class = classify(record["cases"][0])
-                rung = _rung_runs(_run_attempts(runs_dir), label)
+                rung = _rung_runs(_run_attempts(runs_dir, identity), label)
                 halt = {"status": "halted", "run": run_id, "class": result_class,
                         "error": record["cases"][0].get("error")}
                 if result_class == "void-billing":
@@ -1346,7 +1464,7 @@ def run_ladder(
                 if result_class == "unrecognised" and len(rung["unrecognised"]) < 2:
                     return {**halt, "reason": "an unrecognised outcome is re-run once after the owner confirms credit"}
         if label == "natural":
-            rung = _rung_runs(_run_attempts(runs_dir), label)
+            rung = _rung_runs(_run_attempts(runs_dir, identity), label)
             found = [
                 False if row is None or row["class"] != "finished"
                 else run_found(row["id"], row["case"], anchors, matches)
@@ -1357,6 +1475,15 @@ def run_ladder(
             if None in found:
                 return {"status": "awaiting-matches", "survivors": _awaiting(label, rung, anchors)}
     return {"status": "complete", "output_dir": str(output_dir)}
+
+
+def refuse_unpriced_model(source: str, model: Any) -> None:
+    # The summary prices every run on the current model's card, so another model's runs would be mispriced.
+    if model != cr.DEFAULT_MODEL:
+        raise ReplayError(
+            f"{source} recorded model {json.dumps(model)}, but this tree prices only {cr.DEFAULT_MODEL}; "
+            f"summarise it from a tree whose DEFAULT_MODEL is that model, or price it by hand"
+        )
 
 
 def rate_card(rates_path: Path) -> dict[str, Any]:
@@ -1434,15 +1561,43 @@ def _per_byte(tokens: float, size: int) -> str:
     return f"{tokens / size:.4f}"
 
 
+def padding_density(
+    rung_rows: list[dict[str, Any]], reference_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Cache-creation tokens per byte at each finished size, and between each and the finished size before it."""
+    density = []
+    finished = []
+    for row in rung_rows:
+        writes = [run["tokens"]["cache_creation"] for run in row["runs"]
+                  if run["class"] == "finished" and run["tokens"] is not None]
+        if writes and row["measured_bytes"]:
+            finished.append((row["label"], row["measured_bytes"], sum(writes) / len(writes)))
+    for index, (label, size, writes) in enumerate(finished):
+        entry = {"label": label, "cache_creation_per_byte": _per_byte(writes, size)}
+        previous_label, previous_size, previous_writes = finished[index - 1] if index else (None, size, 0)
+        if previous_size != size:
+            entry["since"] = previous_label
+            entry["marginal_cache_creation_per_byte"] = _per_byte(writes - previous_writes, size - previous_size)
+        density.append(entry)
+    for row in reference_rows:
+        if row["tokens"] is not None and row["measured_bytes"]:
+            density.append({
+                "label": row["label"],
+                "cache_creation_per_byte": _per_byte(row["tokens"]["cache_creation"], row["measured_bytes"]),
+            })
+    return density
+
+
 def ladder_summary(
     output_dir: Path, matches_path: Path, rates_path: Path,
     references: list[tuple[str, Path]] | None = None,
 ) -> dict[str, Any]:
     """The results summary: each size's runs, their classes, tokens and cost, and row 7's decision."""
     ladder = read_object(output_dir / "ladder.json")
+    refuse_unpriced_model("the ladder", ladder["live_match"].get("model"))
     anchors = ladder["defect"]["anchors"]
     matches = read_matches(matches_path)
-    attempts = _run_attempts(output_dir / "runs")
+    attempts = _run_attempts(output_dir / "runs", ladder)
     check_match_records(matches, {
         row["id"]: row["case"] for row in attempts if row["class"] == "finished"
     }, anchors)
@@ -1492,6 +1647,8 @@ def ladder_summary(
         case_result = (record.get("cases") or [None])[0]
         if not isinstance(case_result, dict):
             raise ReplayError(f"reference results hold no case: {path}")
+        reviewer = record.get("reviewer") if isinstance(record.get("reviewer"), dict) else {}
+        refuse_unpriced_model(f"reference {label} ({path})", reviewer.get("model"))
         # Only sizes, outcome, tokens and cost: a private case's survivors are never quoted.
         cost, basis = usage_cost(case_result, card)
         total += cost or Decimal(0)
@@ -1504,26 +1661,7 @@ def ladder_summary(
             "cost_basis": basis,
             "results_sha256": file_digest(path),
         })
-    density = []
-    finished = []
-    for row in rung_rows:
-        writes = [run["tokens"]["cache_creation"] for run in row["runs"]
-                  if run["class"] == "finished" and run["tokens"] is not None]
-        if writes and row["measured_bytes"]:
-            finished.append((row["label"], row["measured_bytes"], sum(writes) / len(writes)))
-    for index, (label, size, writes) in enumerate(finished):
-        entry = {"label": label, "cache_creation_per_byte": _per_byte(writes, size)}
-        if index:
-            previous_label, previous_size, previous_writes = finished[index - 1]
-            entry["since"] = previous_label
-            entry["marginal_cache_creation_per_byte"] = _per_byte(writes - previous_writes, size - previous_size)
-        density.append(entry)
-    for row in reference_rows:
-        if row["tokens"] is not None and row["measured_bytes"]:
-            density.append({
-                "label": row["label"],
-                "cache_creation_per_byte": _per_byte(row["tokens"]["cache_creation"], row["measured_bytes"]),
-            })
+    density = padding_density(rung_rows, reference_rows)
     summary = {
         "schema_version": 1,
         "repository": ladder["repository"],
@@ -1876,11 +2014,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 seed=args.pad_seed, matches_path=args.matches,
             )
         elif args.command == "ladder-verify":
-            differences = ladder_verify(args.output_dir)
+            verified = ladder_verify(args.output_dir)
             print(json.dumps({
-                "status": "differs" if differences else "verified", "differences": differences,
+                "status": "differs" if verified["differences"] else "verified", **verified,
             }, ensure_ascii=True, sort_keys=True))
-            return 1 if differences else 0
+            return 1 if verified["differences"] else 0
         elif args.command == "ladder-summary":
             references = []
             for item in args.reference:

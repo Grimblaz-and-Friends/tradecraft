@@ -413,6 +413,9 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
         "case_id": "pr-2", "head": "2" * 40, "base": BASE,
         "status": "error", "error": "case-specific failure", "excluded_files": [],
         "finder_input_utf8_bytes": result["cases"][1]["finder_input_utf8_bytes"],
+        # The finders finished and were paid for before the checker failed.
+        "finder_usage": {"coverage": {"input_tokens": 1}},
+        "checker_usage": result["cases"][1]["checker_usage"],
         "credential": {
             "finder:coverage": {"credentials": ["subscription-token"]},
             "checker:batch-1": {"credentials": ["subscription-token"]},
@@ -1848,7 +1851,7 @@ def test_ladder_summary_reports_each_run_and_the_decision(tmp_path, monkeypatch,
     rows += [(f"{rung}-r{run}-a1", "coverage:1", True) for rung in LADDER_RUNGS for run in (1, 2)]
     matches = match_file(tmp_path, rows)
     reference = tmp_path / "reference.json"
-    write(reference, {"cases": [{"status": "completed", "survivors": [{"root_cause": "private"}],
+    write(reference, {"reviewer": {"model": replay.cr.DEFAULT_MODEL}, "cases": [{"status": "completed", "survivors": [{"root_cause": "private"}],
                                   "finder_input_utf8_bytes": {"coverage": 701_504},
                                   "finder_usage": {"coverage": {"input_tokens": 1, "cache_creation_input_tokens": 2,
                                                                 "cache_read_input_tokens": 3, "output_tokens": 4}}}]})
@@ -1888,3 +1891,196 @@ def test_a_rung_with_one_pass_and_one_miss_fails(tmp_path, monkeypatch):
     assert [row["outcome"] for row in summary["rows"]] == ["passed", "failed", "passed"]
     assert [run["found"] for run in summary["rows"][1]["runs"]] == [True, False]
     assert summary["decision"] == "lowest-failed"
+
+
+# #951's first review round: identity, the budget's own failure, and the summary's inputs (#902).
+
+def finished_ladder(tmp_path, monkeypatch):
+    export, defect, launches = ladder_setup(tmp_path, monkeypatch, [found_rows()] * 6)
+    rows = [("natural-r1-a1", "coverage:1", True), ("natural-r2-a1", "coverage:1", True)]
+    ladder(tmp_path, export, defect, match_file(tmp_path, rows))
+    rows += [(f"{rung}-r{run}-a1", "coverage:1", True) for rung in LADDER_RUNGS for run in (1, 2)]
+    return tmp_path / "ladder", match_file(tmp_path, rows)
+
+
+def foreign_copy(output: Path, source: str, target: str, change) -> Path:
+    record = replay.read_object(output / "runs" / f"{source}.json")
+    change(record)
+    path = output / "runs" / f"{target}.json"
+    replay.write_object(path, record)
+    return path
+
+
+def other_seed(record):
+    record["reviewer"]["overrides"]["pad_seed"] = "another-seed"
+    record["cases"][0]["padding"]["seed"] = "another-seed"
+
+
+def other_effort(record):
+    record["reviewer"]["finder_effort"] = "xhigh"
+
+
+def padded_natural(record):
+    record["reviewer"]["overrides"]["pad_to_bytes"] = 150_000
+
+
+def other_export(record):
+    record["export_manifest_sha256"] = "0" * 64
+
+
+@pytest.mark.parametrize(("source", "target", "change", "field"), [
+    ("150000-r1-a1", "150000-r1-a2", other_seed, "pad_seed"),
+    ("150000-r1-a1", "300000-r1-a2", lambda _record: None, "pad_to_bytes"),
+    ("150000-r1-a1", "150000-r2-a2", other_effort, "reviewer finder_effort"),
+    ("natural-r1-a1", "natural-r1-a2", padded_natural, "padding"),
+    ("150000-r1-a1", "150000-r1-a2", other_export, "export_manifest_sha256"),
+])
+def test_a_run_file_from_another_ladder_is_refused_naming_the_field(tmp_path, monkeypatch, source, target, change, field):
+    output, matches = finished_ladder(tmp_path, monkeypatch)
+    foreign_copy(output, source, target, change)
+    with pytest.raises(replay.ReplayError, match=f"run file {target}.json records {field} "):
+        replay.ladder_summary(output, matches, ROOT / "lib/rates.json")
+
+
+def test_a_run_recorded_before_the_export_digest_was_kept_still_counts(tmp_path, monkeypatch):
+    output, matches = finished_ladder(tmp_path, monkeypatch)
+    for path in (output / "runs").glob("*.json"):
+        record = replay.read_object(path)
+        assert record.pop("export_manifest_sha256") == replay.read_object(output / "ladder.json")["export_manifest_sha256"]
+        replay.write_object(path, record)
+    summary = replay.ladder_summary(output, matches, ROOT / "lib/rates.json")
+    assert summary["decision"] == "stays" and [row["outcome"] for row in summary["rows"]] == ["passed"] * 3
+
+
+@pytest.mark.parametrize(("rungs", "decision"), [
+    ([(300_000, True), (600_000, False)], "lowest-failed"),
+    ([(300_000, True), (600_000, True), (1_200_000, False)], "stays"),
+    ([(300_000, True), (600_000, True), (1_200_000, True)], "moves-to:1200000"),
+])
+def test_a_failure_at_or_below_the_budget_goes_to_the_owner(rungs, decision):
+    assert replay.decide(rungs) == decision
+
+
+def test_a_blank_seed_is_refused_by_the_plan_and_the_run(tmp_path):
+    export = build_export(tmp_path / "export", cases=1)
+    for seed in ("", "  "):
+        with pytest.raises(replay.ReplayError, match="--pad-seed cannot be empty"):
+            replay.ladder_plan(export, [150_000], seed)
+        with pytest.raises(replay.ReplayError, match="--pad-seed cannot be empty"):
+            replay.run_replay(export, tmp_path / "results.json", tmp_path / "unused", None, "claude",
+                              replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True,
+                              pad_to_bytes=150_000, pad_seed=seed)
+
+
+@pytest.mark.parametrize("side", [["RIGHT"], {"side": "RIGHT"}])
+def test_an_anchor_side_of_the_wrong_type_is_refused(side):
+    anchors = [{"path": "only-1.py", "side": side, "line_start": 1, "line_end": 2}]
+    with pytest.raises(replay.ReplayError, match="defect key anchor"):
+        replay.validate_defect_key(defect_key(anchors=anchors))
+
+
+def test_ladder_verify_names_a_changed_runtime(tmp_path, monkeypatch, capsys):
+    export, defect, _launches = ladder_setup(tmp_path, monkeypatch, [[], []])
+    ladder(tmp_path, export, defect)
+    runtime = tmp_path / "connected_review.py"
+    runtime.write_bytes(replay.REVIEWER_RUNTIME.read_bytes() + b"\n# changed\n")
+    monkeypatch.setattr(replay, "REVIEWER_RUNTIME", runtime)
+    assert replay.main(["ladder-verify", "--output-dir", str(tmp_path / "ladder")]) == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert [item.split(":")[0] for item in printed["differences"]] == ["runtime_sha256"]
+    assert printed["runtime_basis"].startswith("recorded runtime_sha256")
+
+
+def legacy_ladder(tmp_path, monkeypatch, revision):
+    real_run = replay.cr._run
+    export, defect, _launches = ladder_setup(tmp_path, monkeypatch, [[], []])
+    ladder(tmp_path, export, defect)
+    monkeypatch.setattr(replay.cr, "_run", real_run)
+    path = tmp_path / "ladder" / "ladder.json"
+    record = replay.read_object(path)
+    del record["live_match"]["runtime_sha256"]
+    record["revision"] = revision
+    replay.write_object(path, record)
+    return tmp_path / "ladder"
+
+
+def test_ladder_verify_compares_a_legacy_ladders_runtime_through_its_revision(tmp_path, monkeypatch):
+    revision = replay.tree_revision()
+    output = legacy_ladder(tmp_path, monkeypatch, revision)
+    verified = replay.ladder_verify(output)
+    assert verified["differences"] == []
+    assert verified["runtime_basis"] == (
+        f"git blob of lib/connected_review.py at the ladder's revision {revision} against this tree's file"
+    )
+    runtime = tmp_path / "connected_review.py"
+    runtime.write_bytes(replay.REVIEWER_RUNTIME.read_bytes() + b"\n# changed\n")
+    monkeypatch.setattr(replay, "REVIEWER_RUNTIME", runtime)
+    assert [item.split(":")[0] for item in replay.ladder_verify(output)["differences"]] == ["runtime_sha256"]
+
+
+def test_ladder_verify_refuses_a_legacy_revision_it_cannot_read(tmp_path, monkeypatch):
+    output = legacy_ladder(tmp_path, monkeypatch, "0" * 40)
+    with pytest.raises(replay.ReplayError, match="cannot read lib/connected_review.py at the ladder's revision 0{40}"):
+        replay.ladder_verify(output)
+
+
+def test_results_are_replaced_whole_or_not_at_all(tmp_path, monkeypatch):
+    path = tmp_path / "runs" / "natural-r1-a1.json"
+    replay.write_object(path, {"first": 1})
+
+    def refuse(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(replay.os, "replace", refuse)
+    with pytest.raises(OSError, match="disk full"):
+        replay.write_object(path, {"second": 2})
+    assert replay.read_object(path) == {"first": 1}
+    assert sorted(item.name for item in path.parent.iterdir()) == ["natural-r1-a1.json"]
+
+
+def test_a_failed_attempt_keeps_the_usage_it_was_charged(tmp_path, monkeypatch):
+    prepare_run(monkeypatch)
+    charged = {"input_tokens": 7, "cache_creation_input_tokens": 70, "cache_read_input_tokens": 0, "output_tokens": 0}
+
+    def fail(*_args, **_kwargs):
+        raise replay.cr.ReviewError("Claude API key command failed: result=Prompt is too long", usage=charged)
+
+    monkeypatch.setattr(replay.cr, "run_pass", fail)
+    case = single_pass_replay(tmp_path, 1)["cases"][0]
+    assert replay.classify(case) == "not-finished"
+    assert case["finder_usage"] == {"coverage": charged}
+    assert replay.usage_tokens(case) == {"input": 7, "cache_creation": 70, "cache_read": 0, "output": 0}
+
+
+def density_row(label, size, writes):
+    return {"label": label, "measured_bytes": size, "runs": [
+        {"class": "finished", "tokens": {"cache_creation": writes}},
+    ]}
+
+
+def test_density_skips_a_marginal_between_equal_sizes():
+    rows = [density_row("150000", 1_000, 500), density_row("150001", 1_000, 600), density_row("300000", 2_000, 900)]
+    density = replay.padding_density(rows, [])
+    assert density[1] == {"label": "150001", "cache_creation_per_byte": "0.6000"}
+    assert density[2]["since"] == "150001" and density[2]["marginal_cache_creation_per_byte"] == "0.3000"
+
+
+def test_summary_refuses_a_model_it_does_not_price(tmp_path, monkeypatch):
+    output, matches = finished_ladder(tmp_path, monkeypatch)
+    reference = tmp_path / "reference.json"
+    write(reference, {"cases": [{"status": "completed"}]})
+    with pytest.raises(replay.ReplayError, match='reference #557 .* recorded model null, but this tree prices only'):
+        replay.ladder_summary(output, matches, ROOT / "lib/rates.json", [("#557", reference)])
+    record = replay.read_object(output / "ladder.json")
+    record["live_match"]["model"] = "claude-other"
+    replay.write_object(output / "ladder.json", record)
+    with pytest.raises(replay.ReplayError, match='the ladder recorded model "claude-other"'):
+        replay.ladder_summary(output, matches, ROOT / "lib/rates.json")
+
+
+def test_one_judgment_alone_does_not_find_the_defect(tmp_path):
+    path = tmp_path / "ladder-matches.json"
+    write(path, {"matches": [{"run": "natural-r1-a1", "survivor_id": "coverage:1", "root_cause_same": True,
+                              "wrong_result_same": False, "reason": "same cause, another outcome"}]})
+    case = {"survivors": [survivor("coverage:1")]}
+    assert replay.run_found("natural-r1-a1", case, defect_key()["anchors"], replay.read_matches(path)) is False
