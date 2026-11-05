@@ -5047,6 +5047,14 @@ def _cold_reading_hold(state: WorkState, decision: Decision) -> Decision | None:
                    f"({gate.reason}) first. {gate.detail or ''}".rstrip())
 
 
+def _held_by_cold_reading(state: WorkState, stage: str) -> bool:
+    """Report the hold and say so; each held stage asks only after its own refusals, whose fixes come first."""
+    held = _cold_reading_hold(state, Decision(stage, False, None, "holder-named-stage"))
+    if held is not None:
+        _emit_report(_reported_decision(state, held).as_dict(), state)
+    return held is not None
+
+
 def _cold_reading_builder_vendor(state: WorkState, sha: str) -> tuple[str, str]:
     """The builder's vendor from its bundle, else from the latest lawful `builder-session` marker."""
     try:
@@ -8467,6 +8475,8 @@ def _publish_current_proof(transport: GitHubREST, fresh: WorkState, root: Path,
     if sync is not None:
         _emit_report(_reported_decision(fresh, sync).as_dict(), fresh)
         return 0
+    if _held_by_cold_reading(fresh, "proof"):
+        return 0
     prepare_use_evidence(fresh, transport, effective_rules)
     if fresh.pr is not None and (fresh.version_obligation or {}).get("declaration") is not None:
         endpoint = f"repos/{fresh.repo}/pulls/{fresh.pr['number']}"
@@ -8568,6 +8578,8 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     sync = _synchronization_decision(live)
     if sync is not None:
         _emit_report(_reported_decision(live, sync).as_dict(), state)
+        return 0
+    if _held_by_cold_reading(state, "ready-reviewers"):
         return 0
     label = state.config.reviewer_label
     label_applied = False
@@ -8827,11 +8839,6 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         return _execute_cold_reader(state, decision, dispatch_path=dispatch_path,
                                     tree_metadata=tree_metadata, timeout_seconds=timeout_seconds,
                                     claude_path=claude_path, codex_path=codex_path)
-    if decision.stage in COLD_READING_HELD_STAGES:
-        held = _cold_reading_hold(state, decision)
-        if held is not None:
-            _emit_report(_reported_decision(state, held).as_dict(), state)
-            return 0
     if decision.stage in {"floor", "use", "review-disposition", "proof", "ready-reviewers"}:
         sync = _synchronization_decision(state)
         if sync is not None:
@@ -9021,6 +9028,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             _emit_report({**_reported_decision(fresh_sync, draft).as_dict(),
                           "required_gate": required_gate}, state)
             return 0
+        if _held_by_cold_reading(state, "release-report"):
+            return 0
         verdict = required_gate["verdict"]
         head = required_gate["head"] or "unknown-current-head"
         if verdict == "green":
@@ -9155,6 +9164,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             raise WorkError("use dispatch file must be outside the selected source root")
         if not dispatch.is_file() or not dispatch.read_bytes().strip():
             raise WorkError(f"use dispatch file is absent or empty: {dispatch}")
+        if _held_by_cold_reading(state, "use"):
+            return 0
         here = Path(__file__).resolve().parent
         own_vendor, own_vendor_source = _producer_vendor(
             state, RESUME_SOURCE_STAGES["build"],

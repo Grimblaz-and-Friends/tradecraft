@@ -18,7 +18,7 @@ The holder posts the account whole in one `open` comment with its own review aga
 - only this pull request's readings count: a reading records its branch and pull request, and one recorded without them counts only when this change's history holds the head it read;
 - the builder is resumed only for what the latest `open` routed to it, a flag left unaccepted or a `Can tell: no`, and only a turn that returned something counts as its review;
 - an `open` carries the head its reading read;
-- `run ready-reviewers`, `run use`, `run proof` and `run release-report` refuse while the gate holds, because naming a stage skips the decision the gate sits in.
+- `run ready-reviewers`, `run use`, `run proof` and `run release-report` refuse while the gate holds, because naming a stage skips the decision the gate sits in; each reports its own refusals first, since a repair those owe would stale the reading anyway.
 
 The reader launches on its role's vendor and records a same-vendor reason whenever it lands on the builder's vendor, fallback included, and it never starts until a build bundle or the builder's session marker proves which vendor built the change.
 

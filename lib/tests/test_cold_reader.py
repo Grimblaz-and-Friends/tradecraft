@@ -1002,8 +1002,11 @@ def test_a_launch_that_falls_back_onto_a_codex_builder_reaches_the_gate_as_a_rea
     scenario.write_text(json.dumps({"claude": {"message": "Not logged in"}, "codex": {"message": clean()}}),
                         encoding="utf-8")
     output = change.store / "seat-reading" / "result.md"
+    stand_in = Path(__file__).resolve().parent / "seat_cli.py"
+    # The entrance resolves each vendor before launch, so a machine without either CLI still reaches the stand-in.
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, _explicit=None: [f"--{vendor}", str(stand_in)])
     monkeypatch.setattr(dispatch_seat, "resolve_command", lambda vendor, _explicit: [
-        sys.executable, str(Path(__file__).resolve().parent / "seat_cli.py"), vendor, str(scenario)])
+        sys.executable, str(stand_in), vendor, str(scenario)])
     monkeypatch.setattr(dispatch_seat.records, "runtime_version", lambda *_: "fixture-cli 1.0")
     monkeypatch.setattr(dispatch_seat, "is_windows", lambda: False)
     monkeypatch.setattr(work, "_invoke_recipient",

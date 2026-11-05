@@ -55,7 +55,7 @@ Its owner cell now reads: "Judges the holder's calls from the release report. Fo
 
 The connected reviewers' findings at the amended head were ruled by the holder and fixed in one turn. Those that change what this record says:
 
-- **Named stages hold too.** `run ready-reviewers`, `run use`, `run proof` and `run release-report` refuse without effect while the gate returns a decision, because a named stage skips the decision the gate sits in.
+- **Named stages hold too.** `run ready-reviewers`, `run use`, `run proof` and `run release-report` refuse without effect while the gate returns a decision, because a named stage skips the decision the gate sits in. Each reports its own refusals first (version obligation, raw output, floor, synchronization, reach) and the hold after them, because a repair those owe would stale the reading anyway, so the refusal whose fix comes first is the one reported.
 - **Readings are scoped to their pull request.** A cold-reader request records its branch and pull request, and a reading recorded for another one doesn't count. Readings recorded before lineage was, this change's own, count only when this change's history holds the head they read. A cold-reader record that won't parse holds the gate as unverifiable.
 - **A fallback records its reason.** The seat is always given the same-vendor reason, so a reading that lands on the builder's vendor through fallback records the reason an `open` checks; a Claude reader falling back onto a Codex builder records `cold-reader-fell-back-to-builder-vendor`.
 - **The builder's vendor is proved before any tree is written,** from a build bundle or else the latest lawful `builder-session` marker, and a reading nothing proves is refused as unverifiable.
