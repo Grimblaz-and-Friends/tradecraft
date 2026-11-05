@@ -14,7 +14,8 @@ and can re-run the measurement without re-deriving its rules.
 - [6624134487](https://github.com/Grimblaz-and-Friends/tradecraft/issues/902#issuecomment-6624134487) accepted the first build and the builder's seven calls listed below;
 - [6649671441](https://github.com/Grimblaz-and-Friends/tradecraft/issues/902#issuecomment-6649671441) applied the `stays` branch;
 - [6649843583](https://github.com/Grimblaz-and-Friends/tradecraft/issues/902#issuecomment-6649843583) added the section on the case's second defect;
-- [6650342631](https://github.com/Grimblaz-and-Friends/tradecraft/issues/902#issuecomment-6650342631) added the per-run token table and corrected the limits' description of the case.
+- [6650342631](https://github.com/Grimblaz-and-Friends/tradecraft/issues/902#issuecomment-6650342631) added the per-run token table and corrected the limits' description of the case;
+- [6651355342](https://github.com/Grimblaz-and-Friends/tradecraft/issues/902#issuecomment-6651355342) took #951's first review round, whose fixes are described below.
 
 The lane is ordinary / connected. The brief names a budget set too high as the panel risk, and no panel was bought.
 
@@ -59,11 +60,11 @@ A second void of any kind at one rung halts the ladder. The billing class is che
 - The decision is the largest rung with no failed rung at or below it:
   - `moves-to:N` when that rung is above the current budget;
   - `stays` when it is not;
-  - `lowest-failed` when the lowest rung fails, which goes to the owner.
+  - `lowest-failed` when the lowest rung fails, or any rung at or below the current budget fails, whatever passed below it. This goes to the owner, because it shows today's budget itself unsound.
 
 **The runs are the live reviewer's.**
-- **Before spending:** `ladder` refuses unless the CLI reports the version `connected-review-shared.yml` pins, the replay's model, effort, pass structure, passes and candidates equal `live_reviewer_settings()`, and the finder prompt's digest equals the shipped `finder.md`. It records this as `live_match`, with the harness digest.
-- **At release:** `ladder-verify` recomputes the same values from whatever tree it runs in and names each difference. The holder runs it at the head the release report names.
+- **Before spending:** `ladder` refuses unless the CLI reports the version `connected-review-shared.yml` pins, the replay's model, effort, pass structure, passes and candidates equal `live_reviewer_settings()`, and the finder prompt's digest equals the shipped `finder.md`. It records this as `live_match`, with the harness digest and the reviewer runtime's own digest.
+- **At release:** `ladder-verify` recomputes the same values from whatever tree it runs in, including the runtime's digest, and names each difference. A ladder recorded before the runtime's digest was kept is compared by git blob at its recorded revision, and the output says which way it compared. The holder runs it at the head the release report names.
 - **Not checked:** the model the stream reports is not captured (the artifact's C4), because capturing it would change the live reviewer's posted usage.
 
 **What was measured.** The case was #883 at its lab-reviewed head `b59802e`, base `b63cd76`, run from tradecraft `dcce863`.
@@ -146,6 +147,7 @@ A re-measurement after a model or CLI change should try more than one case befor
 - **The refinement.** The settled artifact's C2 fixed the sizes at 0.6 MB steps. Once those had run and given `stays` with a gap between 0.6 and 1.2 MB, the owner answered "Refine" ([record](https://github.com/Grimblaz-and-Friends/tradecraft/issues/902#issuecomment-6649397934)), adding 800,000 and 1,000,000.
   - They were added after the planned results were seen, and ran last rather than in ascending order.
   - They ran in a second output folder seeded with copies of the 12 finished runs, which the driver never re-runs, so one summary covers every size.
+  - Since #951's first review round, a seeded run counts only if it records the ladder's case, export, reviewer settings and, for a padded run, its seed, rung and padded-diff digest. Any other file is refused by name with the field that differs, so a seeded folder cannot quietly mix in another ladder's runs.
   - Row 7's rule applied to them unchanged, and no affirmed row moved.
 - **The builder's calls,** accepted by the holder as inside the rows:
   - `ladder` pauses with `awaiting-matches` after the qualifying runs until condition (b) is recorded;
@@ -153,12 +155,14 @@ A re-measurement after a model or CLI change should try more than one case befor
   - void and unrecognised counts are per rung;
   - padding refuses preload as well as the summary;
   - the collision check refuses the whole `replay-padding` folder;
-  - `stays` is decided by the current budget;
+  - the decision is read against the current budget: `stays` when the largest passing rung is not above it, and, since #951's first review round, `lowest-failed` when any rung at or below it fails;
   - the padding record and the ladder record each gain a field (measured bytes, and the plan).
 
-**Demonstrators.** Implementation demonstrators are pinned to `dcce8638c18d31d907b34af272f9c8df4c37f554`, the revision the ladder ran from. In `tools/connected_review_replay.py`, they are:
+**Demonstrators.** Implementation demonstrators are pinned to `71af7d58b40e54e74a2fccb8ea0262a5de235510`, the code that ships. In `tools/connected_review_replay.py`, they are:
 - `read_api_key_file`, `refuse_secret`, `padding_lines`, `pad_case` and `ladder_plan`;
 - `validate_defect_key`, `run_found`, `classify` and `decide`;
-- `live_match`, `run_ladder`, `ladder_verify` and `ladder_summary`.
+- `live_match`, `run_ladder`, `_refuse_foreign_run`, `ladder_verify` and `ladder_summary`.
 
-They are tested by the #902 instalment-2 block in `tools/tests/test_connected_review_replay.py` at that revision. The holder's procedure is in `tools/connected-review-live-checks.md`, under "Size ladder".
+They are tested by the #902 instalment-2 block in `tools/tests/test_connected_review_replay.py` at that revision.
+
+The ladder itself ran from `dcce8638c18d31d907b34af272f9c8df4c37f554`. The fixes from #951's first review round changed none of the padding, its sizing or how a run is classified, so the posted results stand. The holder's procedure is in `tools/connected-review-live-checks.md`, under "Size ladder".
