@@ -960,3 +960,57 @@ def test_unresolved_vendor_handover_recovers_reserved_session_in_its_retained_co
     assert captured["cwd"] == str(failed_root) and captured["draft_before"] == b"unfinished draft\n".hex()
     resumed = bundles(store)[-1][2]
     assert resumed["requested"]["session_id"] == reserved and not failed_root.exists()
+
+
+def test_938_cloud_author_is_revised_in_its_own_session_through_the_entrance(entrance, monkeypatch, tmp_path):
+    """A set-up repository's artifact goes to the cloud, and its revision resumes that author (#938)."""
+    import cloud_build
+    from test_cloud_build import Fake, INSTALLED
+    holder, store, commands, setup = entrance
+    args, _, _ = setup("claude")
+    token = tmp_path / "product.token"
+    token.write_bytes(b"sk-ant-fixture\n")
+    switch = Path.home() / ".tradecraft" / "cloud-builds.json"
+    switch.write_text(json.dumps({"schema_version": 1, "practice": {"repository": "Grimblaz-and-Friends/tradecraft"},
+                                  "repositories": {"example/product": {
+                                      "routine_id": "trig_1", "token_file": str(token),
+                                      "setup_record": "s", "set_up_at": "x"}}}))
+    cache = tmp_path / "plugin-cache"
+    cache.mkdir()
+    (cache / "installed_plugins.json").write_text(json.dumps({"plugins": {"tradecraft@tradecraft": [{
+        "scope": "user", "installPath": "elsewhere", "version": "0.206.0", "gitCommitSha": INSTALLED}]}}))
+    monkeypatch.setenv("CLAUDE_CODE_PLUGIN_CACHE_DIR", str(cache))
+    fake = Fake(report=artifact_text().encode("utf-8"))
+    monkeypatch.setattr(cloud_build, "Transport", lambda: fake)
+
+    def no_local(*_a, **_k):
+        raise AssertionError("a set-up repository's author never starts locally")
+
+    monkeypatch.setattr(implementer, "run_process", no_local)
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    _, prior_path, first, first_run = bundles(store)[0]
+    assert first["route"] == "cloud" and first["cloud"]["session_id"] == "cse_ABC123"
+    assert first_run["outcome"] == "success" and len(fake.fired) == 1
+    assert f"checkout: commit {first['artifact_copy']['source_commit']}" in fake.fired[0][2]
+
+    (holder / "new.txt").write_bytes(b"new source commit")
+    git(holder, "add", "new.txt")
+    git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "holder update")
+    current = git(holder, "rev-parse", "HEAD").stdout.strip().decode()
+    fixture = work._read_policy_state(ArtifactTransport(), "example/product", 12, CONFIG, {"rules": []}, "fixture")
+    fixture.holder_root, fixture.record_root = holder, store
+    fixture.issue_comments.append({"id": 752, "body": "<!-- tradecraft:artifact:v1 status=draft -->\n" + artifact_text(),
+        "created_at": datetime.now(timezone.utc).isoformat(), "user": {"login": PRODUCER}})
+    fixture.validated_markers = None
+    fixture.artifact_phase = None
+    work.validate_marker_claims(fixture)
+    # The entrance's resume path proves the cloud bundle before it launches.
+    assert trees.validate_resume(first, first_run, prior_path) is not None
+    assert work.execute_stage(fixture, work.Decision("artifact", True, "resume", "cold-repair"),
+                              holder, None, "holder") == 0
+    _, _, revised, revised_run = bundles(store)[-1]
+    assert revised["route"] == "cloud" and revised["requested"]["session_id"] == "cse_ABC123"
+    assert revised["cloud"]["session_id"] == "cse_ABC123" and len(fake.fired) == 1
+    argv = fake.cli_calls[-1][0]
+    assert argv[3:5] == ["--cloud", "cse_ABC123"] and f"checkout: commit {current}" in argv[2]
+    assert revised_run["outcome"] == "success"

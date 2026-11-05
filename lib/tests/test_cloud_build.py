@@ -52,7 +52,7 @@ class Fake(cloud.Transport):
             return 200, {"object": {"sha": self.change_tip}}
         if "/git/ref/heads/claude/" in path:
             return 200, {"object": {"sha": "d" * 40}}
-        if path.startswith(f"repos/{REPO}/commits/"):
+        if path.split("/")[3:4] == ["commits"]:
             return (200, {}) if self.holder_on_remote else (422, {})
         if method == "GET" and "/git/commits/" in path:
             return 200, {"tree": {"sha": "t" * 40}}

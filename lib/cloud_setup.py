@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
+import uuid
 
 import cloud_build as cloud
 from winio import utf8_stdio
@@ -36,64 +37,92 @@ def refuse_practice(repo: str, practice: str) -> None:
         raise SetupError(cloud.PRACTICE_OWN_REFUSAL)
 
 
+def _source(repository: str, revision: str | None = None, excludes: list[str] | None = None) -> dict:
+    value: dict[str, object] = {"url": f"https://github.com/{repository}"}
+    if revision is not None:
+        value["revision"] = revision
+    if excludes is not None:
+        value["sparse_checkout_exclude_patterns"] = list(excludes)
+    return {"git_repository": value}
+
+
 def create_body(repo: str, environment: str, practice: str, branch: str) -> dict[str, object]:
+    """The routine as the API stores it: no schedule, no connectors, two sources."""
     refuse_practice(repo, practice)
+    prompt = cloud.ROUTINE_PROMPT.format(practice_name=cloud.practice_name(practice))
     return {
         "name": f"tradecraft builder: {repo}",
-        "environment_id": environment,
-        "prompt": cloud.ROUTINE_PROMPT.format(practice_name=cloud.practice_name(practice)),
-        "sources": [{"repository": repo},
-                    {"repository": practice, "revision": branch,
-                     "sparse_checkout_exclude_patterns": list(EXCLUDES)}],
+        "cron_expression": "",
         "clear_mcp_connections": True,
-        "disallowed_tools": ["PushNotification"],
+        "job_config": {"ccr": {
+            "environment_id": environment,
+            "events": [{"data": {
+                "message": {"content": prompt, "role": "user"}, "parent_tool_use_id": None,
+                "session_id": "", "type": "user",
+                "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tradecraft-builder:{repo}"))}}],
+            "session_context": {
+                "sources": [_source(repo), _source(practice, branch, EXCLUDES)],
+                "disallowed_tools": ["PushNotification"],
+            },
+        }},
     }
 
 
-def _connectors(readback: dict) -> list:
-    for key in ("mcp_connections", "connectors"):
-        value = readback.get(key)
-        if value:
-            return value if isinstance(value, list) else [value]
-    return []
+def _get(value: object, *path: object) -> object:
+    for key in path:
+        if isinstance(key, int):
+            value = value[key] if isinstance(value, list) and len(value) > key else None
+        else:
+            value = value.get(key) if isinstance(value, dict) else None
+    return value
 
 
-def _trigger(readback: dict) -> bool:
-    triggers = readback.get("triggers") or readback.get("api_triggers") or []
-    if isinstance(readback.get("api_trigger"), dict):
-        return True
-    return any(isinstance(row, dict) and str(row.get("type", "api")).lower() in {"api", "api_trigger"}
-               for row in triggers if isinstance(triggers, list))
+def _sources(value: object) -> list[dict] | None:
+    """Each source's url, revision and exclusions, whichever of the two forms it reads in."""
+    if not isinstance(value, list):
+        return None
+    result = []
+    for row in value:
+        row = row.get("git_repository", row) if isinstance(row, dict) else {}
+        result.append({"url": row.get("url"), "revision": row.get("revision") or None,
+                       "sparse_checkout_exclude_patterns": sorted(row.get("sparse_checkout_exclude_patterns") or [])})
+    return result
 
 
 def compare(sent: dict, readback: dict, *, phase: str, token_file: str | None) -> list[str]:
-    """Every difference between the sent body and the read-back, by field."""
+    """Every difference between the sent body and the read-back, by field.
+
+    The read-back paths are those a `RemoteTrigger get` returned on 2026-11-05;
+    no field shows the API trigger, so the first launch proves it (AC-1.1, AC-2.2).
+    """
     faults = []
-    for key, value in sent.items():
-        if key == "clear_mcp_connections":
-            found = _connectors(readback)
-            if found:
-                faults.append(f"connectors: sent none, read back {json.dumps(found)[:200]}")
-            continue
-        if key == "disallowed_tools":
-            got = readback.get(key) or []
-            if not isinstance(got, list) or "PushNotification" not in got:
-                faults.append(f"disallowed_tools: sent {value}, read back {got}")
-            continue
-        if readback.get(key) != value:
-            faults.append(f"{key}: sent {json.dumps(value)[:200]}, read back "
-                          f"{json.dumps(readback.get(key))[:200]}")
+    context = ("job_config", "ccr", "session_context")
+
+    def differ(field, want, got):
+        if want != got:
+            faults.append(f"{field}: sent {json.dumps(want)[:200]}, read back {json.dumps(got)[:200]}")
+
+    differ("name", sent["name"], readback.get("name"))
+    if readback.get("mcp_connections") or _get(readback, "session_request", "config", "mcp_servers"):
+        faults.append("connectors: sent none, read back " + json.dumps(
+            readback.get("mcp_connections") or _get(readback, "session_request", "config", "mcp_servers"))[:200])
     for key in ("cron_expression", "run_once_at"):
         if readback.get(key):
             faults.append(f"{key}: sent none, read back {readback[key]}")
+    differ("environment_id", _get(sent, "job_config", "ccr", "environment_id"),
+           _get(readback, "job_config", "ccr", "environment_id"))
+    differ("prompt", _get(sent, "job_config", "ccr", "events", 0, "data", "message", "content"),
+           _get(readback, "job_config", "ccr", "events", 0, "data", "message", "content"))
+    differ("sources", _sources(_get(sent, *context, "sources")), _sources(_get(readback, *context, "sources")))
+    tools = _get(readback, *context, "disallowed_tools")
+    if not isinstance(tools, list) or "PushNotification" not in tools:
+        faults.append(f"disallowed_tools: sent ['PushNotification'], read back {tools}")
     if phase == "complete":
-        if readback.get("model") != cloud.PROFILE_MODEL:
-            faults.append(f"model: required {cloud.PROFILE_MODEL}, read back {readback.get('model')}")
-        if readback.get("effort_level") != cloud.PROFILE_EFFORT:
-            faults.append(f"effort_level: required {cloud.PROFILE_EFFORT}, read back "
-                          f"{readback.get('effort_level')}")
-        if not _trigger(readback):
-            faults.append("trigger: required an API trigger, read back none")
+        model, effort = _get(readback, *context, "model"), _get(readback, *context, "effort_level")
+        if model != cloud.PROFILE_MODEL:
+            faults.append(f"model: required {cloud.PROFILE_MODEL}, read back {model}")
+        if effort != cloud.PROFILE_EFFORT:
+            faults.append(f"effort_level: required {cloud.PROFILE_EFFORT}, read back {effort}")
         if token_file is None:
             faults.append("token_file: required at complete")
         else:
@@ -126,9 +155,11 @@ def ensure_pin(transport, practice: str, branch: str, commit: str) -> str:
 def verify(args, *, home: Path | None = None, transport=None, plugin: Path | None = None,
            install_path: Path | None = None) -> int:
     sent = create_body(args.repo, args.environment, args.practice_repo, args.practice_branch)
-    readback = json.loads(Path(args.readback).read_text("utf-8"))
-    if isinstance(readback, dict) and isinstance(readback.get("trigger"), dict):
-        readback = readback["trigger"]
+    text = Path(args.readback).read_text("utf-8")
+    # A saved `RemoteTrigger get` response opens with its status line.
+    readback = json.loads(text[text.index("{"):] if text.lstrip().startswith("HTTP") else text)
+    if isinstance(readback, dict) and isinstance(readback.get("data"), list) and len(readback["data"]) == 1:
+        readback = readback["data"][0]
     faults = compare(sent, readback, phase=args.phase, token_file=args.token_file)
     home = home or Path.home()
     owner, name = args.repo.split("/", 1)

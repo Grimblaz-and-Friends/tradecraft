@@ -15,12 +15,34 @@ REPO, PRACTICE, INSTALLED = "Owner/product", "Grimblaz-and-Friends/tradecraft", 
 
 
 def readback(**changes):
-    value = setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")
-    value.pop("clear_mcp_connections")
-    value.update(id="trig_1", model="claude-opus-5-5", effort_level="high", mcp_connections=[],
-                 triggers=[{"type": "api"}])
-    value.update(changes)
+    """A read-back in the shape `RemoteTrigger get` returned on 2026-11-05."""
+    sent = setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")
+    ccr = json.loads(json.dumps(sent["job_config"]["ccr"]))
+    ccr["session_context"].update(model="claude-opus-5-5", effort_level="high",
+                                  allowed_tools=["preset:default", "Bash"])
+    flat = [{"type": "git_repository", "sparse_checkout_paths": [],
+             "sparse_checkout_exclude_patterns": [], **row["git_repository"]}
+            for row in ccr["session_context"]["sources"]]
+    value = {"id": "trig_1", "name": sent["name"], "cron_expression": "", "mcp_connections": [],
+             "api_token_hint": "", "enabled": True, "job_config": {"ccr": ccr},
+             "session_request": {"config": {"mcp_servers": [], "model": "claude-opus-5-5",
+                                            "effort_level": "high", "disallowed_tools": ["PushNotification"],
+                                            "sources": flat}}}
+    for path, item in changes.items():
+        target = value
+        keys = path.split(".")
+        for key in keys[:-1]:
+            target = target[int(key)] if key.isdigit() else target[key]
+        last = keys[-1]
+        if item is DROP:
+            target.pop(last)
+        else:
+            target[last] = item
     return value
+
+
+DROP = object()
+CONTEXT = "job_config.ccr.session_context"
 
 
 class Pins:
@@ -47,9 +69,9 @@ def machine(tmp_path):
     return {"home": tmp_path / "home", "plugin": plugin, "install": install, "token": token, "tmp": tmp_path}
 
 
-def verify(machine, value, *, phase="complete", pins=None):
+def verify(machine, value, *, phase="complete", pins=None, saved_tool_output=False):
     path = machine["tmp"] / "readback.json"
-    path.write_text(json.dumps(value))
+    path.write_text(("HTTP 200\n" if saved_tool_output else "") + json.dumps(value))
     args = argparse.Namespace(repo=REPO, environment="env_1", practice_repo=PRACTICE,
                               practice_branch="cloud-practice", readback=str(path), phase=phase,
                               token_file=str(machine["token"]), routine_id=None)
@@ -59,11 +81,16 @@ def verify(machine, value, *, phase="complete", pins=None):
 
 def test_ac_3_1_body_carries_what_row_3_requires():
     body = setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")
-    assert body["clear_mcp_connections"] is True and "PushNotification" in body["disallowed_tools"]
-    assert "cron_expression" not in body and "run_once_at" not in body
-    assert body["sources"][1] == {"repository": PRACTICE, "revision": "cloud-practice",
-                                  "sparse_checkout_exclude_patterns": ["/CLAUDE.md", "/AGENTS.md", "/.claude/"]}
-    assert "/home/user/tradecraft/hooks/cloud.py check" in body["prompt"]
+    context = body["job_config"]["ccr"]["session_context"]
+    assert body["clear_mcp_connections"] is True and context["disallowed_tools"] == ["PushNotification"]
+    assert body["cron_expression"] == "" and "run_once_at" not in body
+    assert context["sources"] == [
+        {"git_repository": {"url": f"https://github.com/{REPO}"}},
+        {"git_repository": {"url": f"https://github.com/{PRACTICE}", "revision": "cloud-practice",
+                            "sparse_checkout_exclude_patterns": ["/CLAUDE.md", "/AGENTS.md", "/.claude/"]}}]
+    prompt = body["job_config"]["ccr"]["events"][0]["data"]["message"]["content"]
+    assert "/home/user/tradecraft/hooks/cloud.py check" in prompt
+    assert body == setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")  # stable to re-verify
 
 
 def test_ac_3_1_and_5_5_a_clean_complete_writes_the_entry_and_creates_the_pin(machine, capsys):
@@ -76,18 +103,23 @@ def test_ac_3_1_and_5_5_a_clean_complete_writes_the_entry_and_creates_the_pin(ma
     kept = json.loads((machine["home"] / ".tradecraft" / "cloud-setup" / "Owner__product.json").read_text())
     assert kept["diff"] == [] and kept["readback"]["mcp_connections"] == []
     existing = Pins(True)
-    assert verify(machine, readback(), pins=existing) == 0 and existing.writes == []
+    assert verify(machine, readback(), pins=existing, saved_tool_output=True) == 0 and existing.writes == []
     assert "sk-ant-secret" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("change, field", [
     ({"mcp_connections": [{"name": "slack"}]}, "connectors"),
+    ({"session_request.config.mcp_servers": [{"name": "slack"}]}, "connectors"),
     ({"cron_expression": "0 * * * *"}, "cron_expression"),
-    ({"disallowed_tools": []}, "disallowed_tools"),
-    ({"effort_level": "medium"}, "effort_level"),
-    ({"model": "claude-sonnet-5"}, "model"),
-    ({"triggers": []}, "trigger"),
-    ({"sources": [{"repository": REPO}, {"repository": PRACTICE, "revision": "cloud-practice"}]}, "sources"),
+    ({CONTEXT + ".disallowed_tools": []}, "disallowed_tools"),
+    ({CONTEXT + ".effort_level": "medium"}, "effort_level"),
+    ({CONTEXT + ".effort_level": DROP}, "effort_level"),
+    ({CONTEXT + ".model": "claude-sonnet-5"}, "model"),
+    ({CONTEXT + ".sources.1.git_repository.sparse_checkout_exclude_patterns": DROP}, "sources"),
+    ({CONTEXT + ".sources.1.git_repository.revision": "main"}, "sources"),
+    ({CONTEXT + ".sources": [{"git_repository": {"url": f"https://github.com/{REPO}"}}]}, "sources"),
+    ({"job_config.ccr.environment_id": "env_2"}, "environment_id"),
+    ({"job_config.ccr.events.0.data.message.content": "changed"}, "prompt"),
 ])
 def test_ac_3_2_any_differing_field_fails_and_writes_no_entry(machine, capsys, change, field):
     assert verify(machine, readback(**change)) == 1

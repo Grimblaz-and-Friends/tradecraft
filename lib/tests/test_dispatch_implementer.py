@@ -2085,3 +2085,76 @@ def test_906_recovery_evidence_is_recorded_before_the_comparison_takes_the_clean
     assert order[-2:] == ["snapshot", "comparison"]
     assert logged["stop_snapshot"]["digest"]
     assert logged["launch_comparison"]["findings"][0]["id"] == "unrecorded"
+
+
+# ---- the cloud route's switch (#938) ------------------------------------------
+
+def _cloud_record(home, repository):
+    path = home / ".tradecraft" / "cloud-builds.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 1,
+                                "practice": {"repository": "Grimblaz-and-Friends/tradecraft"},
+                                "repositories": {repository: {
+                                    "routine_id": "trig_1", "token_file": str(home / "t.token"),
+                                    "setup_record": "s", "set_up_at": "2026-11-05T00:00:00Z"}}}))
+    return path
+
+
+def _comparable(args):
+    """The request and the child's command, without the values every launch renews."""
+    import re
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    text = json.dumps({"request": request, "argv": seen(args)["argv"]}, sort_keys=True)
+    text = text.replace(json.dumps(str(args.output.parent))[1:-1], "<bundle>")
+    text = re.sub(r"[0-9a-f]{32}", "<id>", text)
+    text = re.sub(r"\d{4}-\d\d-\d\dT[0-9:.+]+(?:Z|[+-]\d\d:\d\d)?", "<time>", text)
+    value = json.loads(text)
+    value["request"].pop("launch_snapshot", None)
+    value["request"].pop("progress_baseline", None)
+    # The remaining window measured at launch, a clock reading like a timestamp.
+    value["request"].pop("recipient_allocation_seconds", None)
+    return value
+
+
+def test_ac_2_3_a_codex_launch_is_unchanged_by_the_cloud_record(job, monkeypatch):
+    import copy
+    base, _ = job
+    base.work = "Owner/product#592"
+    configure(job, {"stdout": success_events(), "message": "built"})
+    runs = []
+    for present in (False, True):
+        if present:
+            _cloud_record(Path.home(), "Owner/product")
+        args = copy.copy(base)
+        args.output = base.output.parent.parent / f"records-{present}" / "result.md"
+        assert implementer.run_implementer(args) == 0
+        assert json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())[
+            "requested"]["vendor"] == "codex"
+        runs.append(_comparable(args))
+    assert runs[0] == runs[1]
+
+
+def test_ac_2_1_an_entry_sends_a_claude_launch_to_the_cloud_and_starts_nothing_local(job, monkeypatch):
+    args, _ = job
+    args.work, args.vendor = "Owner/product#592", "claude"
+    record = _cloud_record(Path.home(), "Owner/product")
+    calls = {}
+
+    def cloud_run(run_args, _deadline, **kwargs):
+        calls.update(kwargs, work=run_args.work)
+        return 0
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("a cloud launch must not start or resolve a local builder")
+
+    monkeypatch.setattr(implementer.cloud_build, "run", cloud_run)
+    monkeypatch.setattr(implementer, "run_process", forbidden)
+    monkeypatch.setattr(implementer, "resolve_command", forbidden)
+    monkeypatch.setattr(implementer.policy, "claude_prepare", forbidden)
+    assert implementer.run_implementer(args) == 0
+    assert calls["entry"]["routine_id"] == "trig_1" and calls["preset_failure"] is None
+    assert calls["route_source"] == f"record {record} entry Owner/product"
+    record.write_text("{")
+    calls.clear()
+    assert implementer.run_implementer(args) == 0
+    assert calls["entry"] is None and "malformed" in calls["preset_failure"]
