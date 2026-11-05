@@ -51,9 +51,9 @@ def repository(tmp_path):
     git(root, "init", "-q")
     git(root, "config", "core.autocrlf", "false")
     base = commit(root, {
-        "design/x.md": "# Design\n\n## S\n\nIn force: [D1](../decisions/D1.md).\n\n"
+        "design/x.md": "# Design\n\n## S\n\nIn force: [D1](../decisions/D1.md). See [g](../notes/guide.md).\n\n"
                        "## Other\n\n[D2](../decisions/D2.md) and [w](../other/w.md).\n",
-        "design/y.md": "# Y\n", "notes/z.md": "# Z\n",
+        "design/y.md": "# Y\n", "notes/z.md": "# Z\n", "notes/guide.md": "# Guide\n",
         "decisions/D1.md": "# D1\n", "decisions/D2.md": "# D2\n", "other/w.md": "# W\n",
     }, "base")
     head = commit(root, {
@@ -71,10 +71,10 @@ def build(repository, covered=None, name="reading", branch=BRANCH):
         covered=covered, branch=branch, numbers=[12, 7])
 
 
-def test_tree_carries_only_changed_files_pointed_sections_and_their_in_force_records(repository):
+def test_tree_carries_only_changed_files_pointed_sections_and_every_link_inside_them(repository):
     metadata = cold_reader.load_metadata(build(repository))
     assert sorted(metadata["files"]) == ["a.py", "b.py", "decisions/D1.md", "decisions/D3.md",
-                                        "design/x.md"]
+                                        "design/x.md", "notes/guide.md"]
     tree = repository.tmp / "reading"
     for absent in ("design/y.md", "notes/z.md", "decisions/D2.md", "other/w.md"):
         assert not (tree / absent).exists()

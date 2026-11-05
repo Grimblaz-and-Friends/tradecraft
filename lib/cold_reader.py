@@ -191,6 +191,8 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
     if unknown:
         raise ColdReaderError("covered paths are not in the change set: " + ", ".join(unknown))
     coverage = {path: state["coverage"][path] for path in selected}
+    # A reread carries every changed file so the reader can follow code across files; a flag it raises on
+    # one it didn't cover still stands, and the gate owes that file a reread.
     carried = {path for path, blob in changed.items() if blob != "deleted"}
     for entry in coverage.values():
         for dependency in entry["dependencies"]:
