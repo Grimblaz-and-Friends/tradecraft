@@ -1,6 +1,6 @@
 # Private CI on the owner's laptop (lab-only)
 
-**Purpose:** the four private product repositories' CI runs on a locked-down Linux runner inside WSL2 on BLAZ-TOP, so no private-repository job spends paid Actions minutes. Only the required gate and the reviewer's prepare and report jobs stay hosted, inside the free 3,000 minutes, and a daily watch says when that remainder grows (#929). **Audience:** the owner who installs it, the holder who walks the install with him and files the carriers, and the Steward who receives the watch's alerts. **Success:** the install proves row 1's isolation from inside a real job, both instances run product jobs, and each product moves by a carrier that changes little more than `runs-on:`.
+**Purpose:** the four private product repositories' CI runs on a locked-down Linux runner inside WSL2 on BLAZ-TOP, so no private-repository job spends paid Actions minutes. Only the required gate, the reviewer's prepare and report jobs, and the two public GitHub Pages deploys stay hosted, inside the free 3,000 minutes, and a daily watch says when that remainder grows (#929, #945). **Audience:** the owner who installs it, the holder who walks the install with him and files the carriers, and the Steward who receives the watch's alerts. **Success:** the install proves row 1's isolation from inside a real job, both instances run product jobs, and each product moves by a carrier that changes little more than `runs-on:`.
 
 Nothing here ships in the plugin. The tests are `tools/tests/test_private_ci.py`, which CI collects.
 
@@ -10,6 +10,7 @@ Nothing here ships in the plugin. The tests are `tools/tests/test_private_ci.py`
 - **Nothing a job runs can reach your Windows files, programs or local-only services** (row 1). The distribution mounts no Windows drive, interop and the Windows `PATH` are off, WSLg and GPU passthrough are off (C4), networking stays on WSL's default NAT, and `ci-runner` has no root route: no sudoers entry, a locked root password, no root-granting group, and no_new_privs on every process it runs: `NoNewPrivileges=true` on both services, and `--no-new-privs` on every process the setup starts as the account. Neither the keepalive nor the distribution's default user is `ci-runner` (both are root), so the account has no login session and no user manager, and `verify` fails if it has either, or linger. WSL's routes into Windows (the GPU paravirtualization device `/dev/dxg`, `/usr/lib/wsl` and `/mnt/wslg`) are hidden for the whole distribution at every boot, before any runner or account process starts, so no process of the account can open them through any view of the filesystem. The check tries them through every other process of the account as well, and fails if one reaches them. Under NAT a job can still open a connection to a Windows service listening on a non-loopback address, as anything on your network could, subject to Windows Firewall; nothing here tests that, and row 1 doesn't claim it. WSL's defaults would otherwise hand a job your files with your Windows permissions and let it launch Windows programs as you. `guiApplications=false` is a global `.wslconfig` setting: it also applies to any distribution you add later.
 - **The reviewer's review job stays on the Windows runner** (row 3). It asks for any `self-hosted` runner, and the Linux instances carry no `self-hosted` label, so it can't land there; the Windows runner lacks `private-ci`, so product CI can't land on it. Moving the review job is #930.
 - **At most half the laptop** (row 5): WSL is capped at 8 threads and 12 GB, and the two instances share that.
+- **The runner keeps state between jobs.** Both instances run as one account with one home, and neither is ephemeral, so a job can leave files a later job uses, and a pull request's code runs here before anyone reviews it. That's accepted for jobs that only check: every job is started by the owner or a session on his credentials, each repository's only collaborator is the owner, and forking is off (#929). A job that publishes outside its repository, such as a GitHub Pages deploy, runs hosted instead, where each job starts on a clean machine, and builds what it publishes itself (#945).
 - **While the laptop is off or asleep**, product checks wait in GitHub's queue. The hosted gate still runs and shows what's waiting. A job left queued past 24 hours is dropped by GitHub, and the watch task re-runs it at your next logon. A job running when Windows sleeps is lost; re-run it by hand.
 
 ## What's here
@@ -45,10 +46,12 @@ Everything else the setup runs (`wsl.exe`, `schtasks.exe`, `tasklist.exe` and Wi
 3. From a tradecraft checkout at the head, run `python tools/private_ci/setup.py install`. Type the token only into its prompt, and answer any Windows prompt. It ends by running `verify`.
 4. In Settings → Actions → Runners, read each runner's labels and tell the holder: `blaz-top-wsl-1` and `blaz-top-wsl-2` should show only `private-ci`, and `BLAZ-TOP` should not show `private-ci` (C19).
 5. Run `python tools/private_ci/setup.py probe`.
-6. Simulate a reboot: run `wsl --shutdown`, then `schtasks /Run /TN tradecraft-lab-private-ci-start`, then run `python tools/private_ci/setup.py probe --after-restart`. You needn't wait: after its outside-in checks, the probe waits up to 5 minutes for both runners to reconnect to GitHub (GitHub holds a stopped runner's old session for a minute or two), and reports how long each took.
+6. Simulate a reboot: run `wsl --shutdown`, then `schtasks /Run /TN tradecraft-lab-private-ci-start`, then run `python tools/private_ci/setup.py probe --after-restart`. You needn't wait: after its outside-in checks, the probe waits up to 5 minutes for both runners to reconnect to GitHub (GitHub holds a stopped runner's old session for a few minutes; this install's took 126 and 186 seconds), and reports how long each took.
 7. After 30 idle minutes, run `python tools/private_ci/setup.py probe --require-idle 30`.
 
 The holder records each probe's JSON summary, with your group and label reports, in the release report. `install` refuses to change a `.wslconfig` setting you chose (`networkingMode`, `processors`, `memory` or `guiApplications` set to something else); it names the key, and you decide.
+
+Close any `wsl -u ci-runner` shell you opened by hand before running `verify` or a probe: while it's open, both fail.
 
 ## Re-running after a change
 
@@ -70,7 +73,7 @@ The branch stays after merge so a later re-check (and #930's) is one push. Delet
 
 ## Moving a job
 
-Moving a job between hosted and local is one `runs-on:` value: `private-ci` to run it here, `ubuntu-latest` to send it back. It's made in that product through its own entrance on the `ordinary` / `mechanical` lane. A job meant to stay hosted is instead one line added to `hosted.json`, in tradecraft, on the same lane.
+Moving a job between hosted and local is one `runs-on:` value: `private-ci` to run it here, `ubuntu-latest` to send it back. It's made in that product through its own entrance on the `ordinary` / `mechanical` lane. A job meant to stay hosted is instead one line added to `hosted.json`, in tradecraft, on the same lane. A job that publishes outside its repository, such as a GitHub Pages deploy, is one of those, never moved here (#945).
 
 ## The watch
 
@@ -99,7 +102,7 @@ Each product moves in its own carrier change after #929 merges (row 8). This sec
 
 **Each carrier's diff.**
 
-- Every job in that product's own workflows gets `runs-on: private-ci`. The `connected-review.yml` caller and the gate are excluded, because neither moves.
+- Every job in that product's own workflows gets `runs-on: private-ci`, except a job that publishes outside its repository (#945). The `connected-review.yml` caller and the gate are excluded, because neither moves.
   - **The gate** is the organization's required change-proof workflow, `.github/workflows/self-change-proof.yml`, which the ruleset runs. It isn't a file in any product's tree, so no carrier touches it.
   - A product's own job with "gate" in its name, such as Verra's `residue-gate` in `ci-ready.yml`, is that product's job and moves like any other.
 - **Organizations-of-Verra** also drops `--with-deps` from `e2e.yml` :30 (`npx playwright install --with-deps chromium` becomes `npx playwright install chromium`) and removes the cache-hit step at :33 (`npx playwright install-deps chromium`).
