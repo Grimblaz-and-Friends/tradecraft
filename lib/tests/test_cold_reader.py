@@ -304,9 +304,10 @@ class Change:
         (self.store / f"{name}.request.json").write_text(json.dumps({
             "schema_version": work.records.SCHEMA_VERSION, "work": WORK, "stage": "build",
             "launched_at": launched}), encoding="utf-8")
+        (self.store / f"{name}.source.bin").write_text("The builder's review.", encoding="utf-8")
         (self.store / f"{name}.run.json").write_text(json.dumps({
             "schema_version": work.records.SCHEMA_VERSION, "outcome": "success",
-            "completed_at": self.tick()}), encoding="utf-8")
+            "completed_at": self.tick(), "result": {"source_output": f"{name}.source.bin"}}), encoding="utf-8")
         return name
 
     def read(self, account, covered=None):
@@ -720,13 +721,13 @@ def test_the_stage_fails_a_malformed_return_and_names_what_is_missing(change, mo
 
 
 @pytest.mark.cold_reading
-@pytest.mark.parametrize(("builder", "reason"), [("claude", "owner-selected-claude-implementer"), ("codex", None)])
+@pytest.mark.parametrize(("builder", "reason"), [("claude", "owner-selected-claude-implementer"),
+                                                ("codex", "cold-reader-fell-back-to-builder-vendor")])
 def test_staffing_is_judged_against_the_builders_vendor(change, monkeypatch, capsys, builder, reason):
     _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean(), builder=builder)
     assert option(command, "--vendor") == "claude" and option(command, "--own-vendor") == builder
-    assert ("--same-vendor-reason" in command) == (reason is not None)
-    if reason:
-        assert option(command, "--same-vendor-reason") == reason
+    # The reason is always passed; the seat records it only when it lands on the builder's vendor.
+    assert option(command, "--same-vendor-reason") == reason
 
 
 def test_a_per_issue_override_names_the_cold_reader():
@@ -839,7 +840,8 @@ def test_a_clean_before_the_latest_reading_is_posted_is_set_aside(change):
 
 
 @pytest.mark.cold_reading
-@pytest.mark.parametrize(("builder", "reason"), [("codex", "owner-selected-codex-cold-reader"), ("claude", None)])
+@pytest.mark.parametrize(("builder", "reason"), [("codex", "owner-selected-codex-cold-reader"),
+                                                ("claude", "owner-selected-claude-implementer")])
 def test_an_override_moves_the_reader_to_its_vendor_and_staffing_follows(change, monkeypatch, capsys,
                                                                           builder, reason):
     change.post("<!-- tradecraft:model-override:v1 cold_reader=codex:override-model:high -->")
@@ -848,9 +850,12 @@ def test_an_override_moves_the_reader_to_its_vendor_and_staffing_follows(change,
     _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean(), builder=builder)
     assert option(command, "--vendor") == "codex" and option(command, "--codex-model") == "override-model"
     assert plans[-1]["primary"]["vendor"] == "codex" and plans[-1]["fallback"]["vendor"] == builder
-    assert ("--same-vendor-reason" in command) == (reason is not None)
-    if reason:
-        assert option(command, "--same-vendor-reason") == reason
+    assert option(command, "--same-vendor-reason") == reason
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    reported = work._launch_plan(fixture, work.Decision("cold-reader", True, "fresh", "cold-reading-absent"),
+                                 resolve_comparison=False)
+    assert reported["primary"]["vendor"] == "codex"
 
 
 @pytest.mark.cold_reading
@@ -864,6 +869,129 @@ def test_an_override_naming_another_vendor_is_set_aside_and_the_reader_stays_on_
     change.post(override)
     _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean())
     assert option(command, "--vendor") == "claude"
+
+
+@pytest.mark.cold_reading
+@pytest.mark.parametrize("stage", ["ready-reviewers", "use", "proof", "release-report"])
+def test_a_named_stage_the_gate_holds_refuses_without_effect(change, stage):
+    assert stage in work.COLD_READING_HELD_STAGES
+    fixture = change.state()
+    held = work._cold_reading_hold(fixture, work.Decision(stage, False, None, "holder-named-stage"))
+    assert (held.status, held.reason, held.dispatch) == ("refused", "cold-reading-holds", False)
+    assert "cold-reader (cold-reading-absent)" in held.detail
+    change.read(clean())
+    change.post_open(clean())
+    change.post_clean()
+    assert work._cold_reading_hold(change.state(), work.Decision(stage, False, None, "holder-named-stage")) is None
+
+
+def lineage(change, name, **values):
+    request = change.store / f"{name}.request.json"
+    request.write_text(json.dumps({**json.loads(request.read_text("utf-8")), **values}), encoding="utf-8")
+
+
+@pytest.mark.cold_reading
+def test_a_reading_of_another_pull_request_does_not_count(change):
+    change.read(clean())
+    lineage(change, "reading-1", lineage_branch="feature/other", lineage_pull_request=999)
+    assert change.decide().reason == "cold-reading-absent"
+    lineage(change, "reading-1", lineage_branch=BRANCH, lineage_pull_request=change.state().pr["number"])
+    assert change.decide().reason == "cold-reading-post-owed"
+
+
+@pytest.mark.cold_reading
+def test_a_reading_recorded_without_lineage_counts_when_this_change_holds_its_head(change):
+    # Shaped like the readings recorded before lineage was: no lineage keys on the request.
+    change.read(clean())
+    assert "lineage_branch" not in json.loads((change.store / "reading-1.request.json").read_text("utf-8"))
+    assert change.decide().reason == "cold-reading-post-owed"
+    git(change.root, "checkout", "-q", "--detach", change.base)
+    change.head = commit(change.root, {"a.py": "# Design: design/x.md#s\nA = 9\n"}, "elsewhere")
+    assert change.decide().reason == "cold-reading-absent"
+
+
+@pytest.mark.cold_reading
+def test_an_unparseable_cold_reader_record_is_unverifiable_rather_than_absent(change):
+    change.read(clean())
+    (change.store / "reading-1.run.json").write_text("{not json", encoding="utf-8")
+    decision = change.decide()
+    assert decision.reason == "cold-reading-unverifiable" and "reading-1.run.json" in decision.detail
+
+
+@pytest.mark.cold_reading
+def test_a_fallback_onto_the_builders_vendor_records_the_reason_an_open_checks(change, monkeypatch, capsys):
+    _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean(), builder="codex")
+    reason = option(command, "--same-vendor-reason")
+    run = change.store / "reading-1.run.json"
+    if not run.exists():
+        change.read(clean())
+    # What the seat records when Claude is unavailable and it falls back onto the Codex builder.
+    run.write_text(json.dumps({**json.loads(run.read_text("utf-8")), "staffing_status": "degraded",
+                               "staffing_qualification": {"same_vendor_reason": reason}}), encoding="utf-8")
+    change.post(f"<!-- tradecraft:cold-reading:v1 head={change.head} status=open staffing_status=degraded "
+                f"same_vendor_reason={reason} -->\n\n" + clean() + "\n")
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    assert [m.attributes["status"] for m in fixture.markers if m.name == "cold-reading"] == ["open"]
+
+
+@pytest.mark.cold_reading
+def test_the_builders_vendor_comes_from_its_session_marker_when_no_bundle_proves_it(change, monkeypatch):
+    def unproved(*_args, **_kwargs):
+        raise work.WorkError("no implementation bundle proves the producer vendor")
+    monkeypatch.setattr(work, "_producer_vendor", unproved)
+    with pytest.raises(work.WorkError, match="builder-session"):
+        work._cold_reading_builder_vendor(change.state(), change.head)
+    change.post("<!-- tradecraft:builder-session:v1 session=11111111-2222-3333-4444-555555555555 vendor=codex -->")
+    assert work._cold_reading_builder_vendor(change.state(), change.head)[0] == "codex"
+
+
+@pytest.mark.cold_reading
+def test_a_reader_whose_builder_nothing_proves_is_refused_before_any_tree(change, monkeypatch, capsys):
+    def unproved(*_args, **_kwargs):
+        raise work.WorkError("no implementation bundle proves the producer vendor")
+    monkeypatch.setattr(work, "_producer_vendor", unproved)
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    decision = work.Decision("cold-reader", True, "fresh", "holder-named-stage")
+    capsys.readouterr()
+    assert work._execute_cold_reader(fixture, decision, dispatch_path=None, tree_metadata=None,
+                                     timeout_seconds=600, claude_path=None, codex_path=None) == 0
+    report = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")][-1]
+    assert report["reason"] == "cold-reading-unverifiable"
+    assert not (change.store.parent / "cold-reader").exists()
+
+
+@pytest.mark.cold_reading
+def test_a_push_after_an_accepted_close_goes_straight_to_its_reread(change):
+    change.read(flagged("a.py"))
+    change.post_open(flagged("a.py"), accept("a.py:1"))
+    change.post_clean()
+    change.commit({"a.py": "# Design: design/x.md#s\nA = 3\n"})
+    decision = change.decide()
+    assert (decision.reason, covered(decision)) == ("cold-reading-stale", ["a.py"])
+
+
+@pytest.mark.cold_reading
+def test_an_open_must_carry_its_readings_head(change):
+    change.read(clean())
+    reading_head = change.head
+    change.commit({"elsewhere.md": "# Elsewhere\n"})
+    change.post_open(clean())
+    decision = change.decide()
+    assert decision.reason == "cold-reading-post-owed"
+    assert [claim["reason"] for claim in decision.invalid] == [
+        "cold-reading open head differs from the head its reading read"]
+    assert reading_head != change.head
+
+
+@pytest.mark.cold_reading
+def test_a_builder_turn_that_returned_nothing_is_not_the_readings_review(change):
+    change.read(flagged("a.py"))
+    opened = change.post_open(flagged("a.py"))
+    name = change.review(opened)
+    (change.store / f"{name}.source.bin").unlink()
+    assert change.decide().reason == "cold-reading-review-owed"
 
 
 def test_the_design_section_the_new_code_points_at_names_its_decisions():
@@ -944,8 +1072,8 @@ def test_a_reading_that_cant_be_judged_sets_aside_a_later_clean(change):
     fixture.holder_root = change.tmp / "no-repository-here"
     decision = work.decide(fixture, test_work.RULES)
     assert decision.reason == "cold-reading-unverifiable"
-    assert [claim["reason"] for claim in fixture.invalid_marker_claims if claim["name"] == "cold-reading"] == [
-        "cold-reading clean while the reading can't be judged"]
+    assert not [marker for marker in fixture.markers if marker.name == "cold-reading"]
+    assert len([claim for claim in fixture.invalid_marker_claims if claim["name"] == "cold-reading"]) >= 2
 
 
 def test_a_flag_on_the_diff_file_is_refused_for_the_changed_file_it_shows():

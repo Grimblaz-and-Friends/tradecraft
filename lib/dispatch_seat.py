@@ -618,6 +618,9 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
             }
         request["comparison_vendor"] = args.own_vendor
         request["comparison_vendor_source"] = args.own_vendor_source or "caller-selected"
+        if args.lineage_branch is not None or args.lineage_pull_request is not None:
+            request["lineage_branch"] = args.lineage_branch
+            request["lineage_pull_request"] = args.lineage_pull_request
         request["caller_limit_seconds"] = args.timeout_seconds
         request["recipient_allocation_seconds"] = deadline.remaining()
         claude_notice = None
@@ -970,6 +973,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--settings-scope", required=True,
                      help="stages and vendor reached by the issue choice or named default")
     cli.add_argument("--retry-of", help="dispatch id of an earlier whole-invocation retry")
+    cli.add_argument("--lineage-branch", help="implementing branch the judged change lives on")
+    cli.add_argument("--lineage-pull-request", type=int, help="implementing pull request judged")
     cli.add_argument(
         "--same-vendor-reason",
         help="stage-local reason a degraded same-vendor return may satisfy this cross-vendor stage",

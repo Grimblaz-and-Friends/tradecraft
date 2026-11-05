@@ -4750,10 +4750,20 @@ def _cold_reading_source(state: WorkState) -> Path:
 
 
 def _cold_readings(state: WorkState) -> list[dict[str, object]]:
-    """Every reading whose return passed its form check, oldest first."""
+    """Every reading of this pull request whose return passed its form check, oldest first."""
+    work = f"{state.repo}#{state.issue_number}"
+    store = _cold_reading_source(state)
+    damaged = _damaged_cold_reader_record(store, work)
+    if damaged is not None:
+        raise WorkError(f"cold-reader record cannot be parsed: {damaged}")
+    pr = state.pr or {}
+    number, branch = pr.get("number"), (pr.get("head") or {}).get("ref")
     readings = []
-    for completed, path, request, run in _matching_bundles(
-            f"{state.repo}#{state.issue_number}", {"cold-reader"}, _cold_reading_source(state)):
+    for completed, path, request, run in _matching_bundles(work, {"cold-reader"}, store):
+        # Another pull request for the same issue has its own change, so its readings don't count here.
+        if "lineage_pull_request" in request or "lineage_branch" in request:
+            if request.get("lineage_pull_request") != number or request.get("lineage_branch") != branch:
+                continue
         source = _retained_return_path((completed, path, request, run))
         root = request.get("root")
         # A damaged record could hide the reading it holds, so it holds the gate instead of vanishing.
@@ -4765,13 +4775,47 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
         except (OSError, UnicodeError, cold_reader.ColdReaderError) as exc:
             raise WorkError(f"cold-reader bundle cannot be read: {path}: {exc}") from exc
         # The stage refused this return for its form, so it was never a reading.
-        if cold_reader.form_errors(returned, set(metadata["files"])):
+        if cold_reader.form_errors(returned, cold_reader.flaggable(metadata)):
+            continue
+        # A reading recorded before lineage was, counts only if this change's history holds what it read.
+        if "lineage_branch" not in request and not _cold_reading_in_history(state, metadata.get("head"), path):
             continue
         readings.append({"id": path, "completed_at": completed, "request": request, "run": run,
                          "return": returned, "coverage": metadata["coverage"],
                          "whole": bool(metadata.get("whole")), "head": metadata.get("head"),
                          "account": cold_reader.parse_account(returned)})
     return readings
+
+
+def _damaged_cold_reader_record(store: Path, work: str) -> Path | None:
+    """A cold-reader run or request record that won't parse, so its reading can't be judged."""
+    if not store.is_dir():
+        return None
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", work).strip("-").lower()
+    for run_path in store.rglob("*.run.json"):
+        request_path = run_path.with_name(run_path.name.removesuffix(".run.json") + ".request.json")
+        run, request = _json_object(run_path), _json_object(request_path)
+        if run is not None and request is not None:
+            continue
+        if request is not None:
+            if request.get("stage") == "cold-reader" and str(request.get("work") or "").lower() == work.lower():
+                return run_path
+        elif "cold-reader" in run_path.parent.name.lower() and slug in run_path.parent.name.lower():
+            return request_path
+    return None
+
+
+def _cold_reading_in_history(state: WorkState, head: object, bundle: str) -> bool:
+    current = _head_sha(state)
+    if current is None:
+        return True  # With no pull request there is no change for another one's reading to stand in for.
+    if not isinstance(head, str) or state.holder_root is None:
+        raise WorkError(f"cannot place cold-reader bundle in this change's history: {bundle}")
+    result = _git(["merge-base", "--is-ancestor", head, current], state.holder_root)
+    if result.returncode not in {0, 1}:
+        raise WorkError(f"cannot place cold-reader bundle in this change's history: {bundle}: "
+                        f"{_git_failure(result)}")
+    return result.returncode == 0
 
 
 def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
@@ -4797,6 +4841,8 @@ def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
         return "no cold-reader return precedes this cold-reading marker"
     selected = readings[-1]
     if marker.attributes["status"] == "open":
+        if marker.attributes["head"] != selected["head"]:
+            return "cold-reading open head differs from the head its reading read"
         _accepted, errors = cold_reader.acceptances(marker.body, selected["account"]["flags"])
         if errors:
             return "cold-reading " + errors[0]
@@ -4831,7 +4877,11 @@ def _builder_turn_after(state: WorkState, opened: Marker) -> tuple | None:
     account = MARKER.sub("", opened.body)
     for completed, path, request, run in reversed(_matching_bundles(
             f"{state.repo}#{state.issue_number}", RESUME_SOURCE_STAGES["build"],
-            _cold_reading_source(state), outcomes=RESUMABLE_BUNDLE_OUTCOMES)):
+            _cold_reading_source(state), outcomes=SUCCESSFUL_BUNDLE_OUTCOMES)):
+        # A turn that returned nothing never reviewed the reading, whatever its prompt carried.
+        returned = _retained_return_path((completed, path, request, run))
+        if returned is None or not returned.is_file():
+            continue
         launched = _time(request.get("launched_at") or request.get("recorded_at"))
         if posted is None or launched is None or launched <= posted:
             continue
@@ -4931,8 +4981,11 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     except (WorkError, OSError) as exc:
         _set_aside(state, closing, "cold-reading clean while the builder's review can't be read")
         return _cold_reading_unverifiable(sha, exc)
-    # A reading the holder's acceptances leave with nothing standing or owed closes with no builder turn.
-    if turn is None and (assessment["standing_no"] or assessment["owed"]):
+    latest_accepted = latest.get("accepted", {})
+    routed = latest["account"]["can_tell"] is False or any(
+        position not in latest_accepted for position in range(len(latest["account"]["flags"])))
+    # The builder is resumed only for what the latest `open` routed to it; anything else goes to its reread.
+    if turn is None and routed:
         _set_aside(state, closing, "cold-reading clean before a builder turn received its open reading")
         return Decision("build", True, "resume", "cold-reading-review-owed",
                         _marker_setting_source(review))
@@ -4974,6 +5027,40 @@ def _seat_vendor(state: WorkState, role: str) -> tuple[str, str]:
     if value:
         return value.split(":")[0], _marker_setting_source(override)
     return "claude", f"work entrance {role} default"
+
+
+COLD_READING_HELD_STAGES = frozenset({"ready-reviewers", "use", "proof", "release-report"})
+
+
+def _cold_reading_hold(state: WorkState, decision: Decision) -> Decision | None:
+    """A named stage the gate holds refuses without effect, since naming a stage skips `_decide`."""
+    sha = _head_sha(state)
+    if sha is None:
+        return None
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    gate = _cold_reading_decision(state, sha)
+    if gate is None:
+        return None
+    return replace(decision, dispatch=False, continuity=None, status="refused", reason="cold-reading-holds",
+                   detail=f"The cold reading holds this stage at head {sha}: run {gate.stage} "
+                   f"({gate.reason}) first. {gate.detail or ''}".rstrip())
+
+
+def _cold_reading_builder_vendor(state: WorkState, sha: str) -> tuple[str, str]:
+    """The builder's vendor from its bundle, else from the latest lawful `builder-session` marker."""
+    try:
+        return _producer_vendor(state, RESUME_SOURCE_STAGES["build"], revision=sha,
+                                source_root=state.holder_root)
+    except WorkError as exc:
+        if state.validated_markers is None:
+            validate_marker_claims(state)
+        session = next((marker for marker in reversed(state.issue_markers)
+                        if marker.name == "builder-session"
+                        and marker.attributes.get("vendor") in {"claude", "codex"}), None)
+        if session is None:
+            raise WorkError(f"no build bundle or builder-session marker proves the builder's vendor: {exc}") from exc
+        return session.attributes["vendor"], _marker_setting_source(session)
 
 
 def _owed_cold_reading(state: WorkState) -> Marker | None:
@@ -5058,6 +5145,13 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         return 0
     covered = json.loads(gate.detail)["covered"]
     work = f"{state.repo}#{state.issue_number}"
+    # Staffing is judged against the builder, so a reading whose builder nothing proves never starts.
+    try:
+        own_vendor, own_source = _cold_reading_builder_vendor(state, sha)
+    except WorkError as exc:
+        _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
+                     reason="cold-reading-unverifiable", detail=str(exc))).as_dict(), state)
+        return 0
     # The tree outlives the run: the gate reloads each reading's coverage from its metadata.
     place = _cold_reading_source(state).parent / "cold-reader" / uuid.uuid4().hex
     numbers = [state.issue_number] + ([state.pr["number"]] if isinstance(state.pr.get("number"), int) else [])
@@ -5078,8 +5172,6 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     prompt = place / "prompt.md"
     prompt.write_bytes(cold_reader.compose_prompt(
         metadata, standard, diff.read_text("utf-8", errors="replace") if metadata["diff"] == "inline" else None))
-    own_vendor, own_source = _producer_vendor(
-        state, RESUME_SOURCE_STAGES["build"], revision=sha, source_root=state.holder_root)
     output = records.resolved_output(None, work, "cold-reader")
     deadline = lifecycle.current_deadline() or lifecycle.stage_deadline("cold-reader", effective_timeout)
     launch_plan = _launch_plan(state, decision, resolve_comparison=False)
@@ -5089,9 +5181,10 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
                                **dispatch_seat.fallback_plan(vendor, own_vendor, "read"),
                                "comparison_vendor_source": own_source}
-    # Claude on Claude is the owner's machine-wide implementer choice; Codex on Codex is his override here.
-    same_vendor = {"claude": "owner-selected-claude-implementer",
-                   "codex": "owner-selected-codex-cold-reader"}[vendor]
+    # A seat landing on the builder's vendor, as primary or by fallback, must record why, or no `open` can validate.
+    same_vendor = ("owner-selected-claude-implementer" if own_vendor == "claude"
+                   else "owner-selected-codex-cold-reader" if vendor == "codex"
+                   else "cold-reader-fell-back-to-builder-vendor")
     command = [
         sys.executable, str(Path(__file__).resolve().parent / "dispatch_seat.py"),
         "--dispatch", str(prompt), "--root", str(place / "reading"),
@@ -5099,8 +5192,9 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         "--settings-source", vendor_source, "--settings-scope", "cold-reader",
         "--vendor", vendor, "--own-vendor", own_vendor, "--own-vendor-source", own_source,
         "--classification", "cold", "--requires", "read",
-        "--timeout-seconds", f"{effective_timeout:g}",
-        *(["--same-vendor-reason", same_vendor] if own_vendor == vendor else []),
+        "--timeout-seconds", f"{effective_timeout:g}", "--same-vendor-reason", same_vendor,
+        "--lineage-branch", branch, *(["--lineage-pull-request", str(state.pr["number"])]
+                                      if isinstance(state.pr.get("number"), int) else []),
         *_seat_launch_arguments(state, "cold-reader", "cold", claude_path=claude_path,
                                 codex_path=codex_path, plan=launch_plan),
     ]
@@ -5111,7 +5205,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     except OSError:
         returned = None
     errors = (["the seat returned no account"] if returned is None
-              else cold_reader.form_errors(returned, set(metadata["files"])))
+              else cold_reader.form_errors(returned, cold_reader.flaggable(metadata)))
     _emit_report({
         "schema_version": 1, "work": work, "stage": "cold-reader", "bundle": str(output),
         "head": sha, "covered": covered, "whole": metadata["whole"], "residue": metadata["residue"],
@@ -7209,19 +7303,22 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
         settings = {vendor: _launch_settings(state, role, vendor, "cold", bridge=bridge).as_dict(
             vendor, f"work entrance {role} route" if vendor == "claude" else "availability fallback to comparison vendor"
         ) for vendor in dispatch_seat.VENDORS}
-        plan.update(primary=settings["claude"], vendors=settings)
+        # The reader launches on its role's resolved vendor, so the reported plan must name that one.
+        primary = _seat_vendor(state, "cold-reader")[0] if decision.stage == "cold-reader" else "claude"
+        plan.update(primary=settings[primary], vendors=settings)
         try:
             if not resolve_comparison or decision.stage == "use":
                 raise WorkError("comparison vendor awaits validated recipient tree")
             stages = frozenset({"artifact"}) if decision.stage == "cold-seat" else RESUME_SOURCE_STAGES["build"]
             own, own_source = _producer_vendor(state, stages)
-            fallback = {**settings[own], **dispatch_seat.fallback_plan("claude", own,
+            fallback = {**settings[own], **dispatch_seat.fallback_plan(primary, own,
                         "read" if decision.stage in {"cold-seat", "cold-reader"} else "execute"),
                         "comparison_vendor_source": own_source}
         except WorkError as exc:
-            eligibility = dispatch_seat.fallback_plan("claude", "codex",
+            other = "codex" if primary == "claude" else "claude"
+            eligibility = dispatch_seat.fallback_plan(primary, other,
                           "read" if decision.stage in {"cold-seat", "cold-reader"} else "execute")
-            fallback = {**settings["codex"], **eligibility,
+            fallback = {**settings[other], **eligibility,
                         "eligible": None if eligibility["eligible"] else False,
                         "comparison_vendor": None, "comparison_vendor_source": None,
                         "comparison_vendor_unavailable_reason": str(exc)}
@@ -8730,6 +8827,11 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         return _execute_cold_reader(state, decision, dispatch_path=dispatch_path,
                                     tree_metadata=tree_metadata, timeout_seconds=timeout_seconds,
                                     claude_path=claude_path, codex_path=codex_path)
+    if decision.stage in COLD_READING_HELD_STAGES:
+        held = _cold_reading_hold(state, decision)
+        if held is not None:
+            _emit_report(_reported_decision(state, held).as_dict(), state)
+            return 0
     if decision.stage in {"floor", "use", "review-disposition", "proof", "ready-reviewers"}:
         sync = _synchronization_decision(state)
         if sync is not None:
