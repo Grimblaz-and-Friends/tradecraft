@@ -366,7 +366,7 @@ def test_default_effort_is_marked():
                     {"models": ["claude-sonnet-5"], "efforts": ["high"]}):
         assert cloud.cloud_profile({"profile": profile})["off_profile"] is True
     assert cloud.cloud_profile({"profile": {"models": ["claude-opus-5-5"], "efforts": []}})["effort"] \
-        == cloud.NO_EFFORT_LABEL
+        == "medium (Opus 5.5 default; no effort key in transcript)"
 
 
 def test_build_plus_repair_is_one_running_total_priced_as_known(machine):
@@ -1000,3 +1000,51 @@ def test_the_wait_never_sleeps_past_the_allocation(machine, monkeypatch):
     _code, _request, run, _output = launch(machine, fake, polls=50, timeout_seconds=45)
     assert run["outcome"] == "interrupted"
     assert sum(slept) <= 45 + 1e-9  # the caller's deadline still had time; the allocation ended the wait
+
+
+class Pushed(Fake):
+    """A remote that rejects a push which isn't a fast-forward, and a local tree with its own tip."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.local, self.diverged = TIP, False
+
+    def github(self, method, path, body=None):
+        if f"/compare/{AFTER}..." in path:
+            return 200, {"status": "identical", "commits": []}
+        return super().github(method, path, body)
+
+    def git(self, root, *arguments):
+        self.calls.append(("git", arguments, None))
+        if arguments[0] == "merge":
+            if self.diverged:
+                return 1, "fatal: Not possible to fast-forward, aborting."
+            self.local = self.change_tip
+        if arguments[0] == "push" and self.local != self.change_tip:
+            return 1, "! [rejected] HEAD -> tradecraft/77-x (fetch first)"
+        return 0, ""
+
+    def cli(self, argv, env):
+        tip = self.change_tip
+        result = super().cli(argv, env)
+        if argv[1:3] == ["auth", "status"]:
+            self.change_tip = tip  # a login check moves no branch
+        return result
+
+
+@pytest.mark.parametrize("diverged", [False, True])
+def test_a_follow_up_after_an_interrupted_build_that_pushed_levels_the_tree_first(machine, monkeypatch, diverged):
+    fake = Pushed()
+    monkeypatch.setattr(cloud.records, "git_revision", lambda _root: fake.local)
+    _code, _request, run, _output = launch(machine, fake, polls=0)
+    assert run["outcome"] == "interrupted" and fake.change_tip == AFTER and fake.local == TIP
+    fake.diverged = diverged
+    sends = len(fake.cli_calls)
+    _code, request, run, _output = launch(machine, fake, resume="cse_ABC123")
+    if diverged:
+        assert run["outcome"] == "refused" and TIP in run["attempts"][0]["reason"]
+        assert AFTER in run["attempts"][0]["reason"]
+        assert len(fake.cli_calls) == sends + 1  # the login check only; nothing was sent
+    else:
+        assert request["cloud"]["local_fast_forward"] == {"from": TIP, "to": AFTER}
+        assert request["cloud"]["change_branch"]["tip_at_fire"] == AFTER

@@ -64,8 +64,9 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 CLOUD_SESSION = re.compile(r"cse_[A-Za-z0-9]+\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
-# A run whose transcript names no effort can't be shown to have run at the profile.
-NO_EFFORT_LABEL = "none recorded: the transcript names no effort"
+# A transcript with no effort key ran at the model's default, which for Opus 5.5 is medium; it can't
+# be shown to have run at the profile, so it is marked off-profile.
+NO_EFFORT_LABEL = "medium (Opus 5.5 default; no effort key in transcript)"
 FIRE_URL = "https://api.anthropic.com/v1/claude_code/routines/{routine}/fire"
 FIRE_HEADERS = {"anthropic-beta": "experimental-cc-routine-2026-04-01",
                 "anthropic-version": "2023-06-01"}
@@ -930,6 +931,10 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                 if not args.lineage_branch:
                     raise CloudError("a cloud build needs the registered implementation branch")
                 local = records.git_revision(root)
+                if follow_up:
+                    # An earlier turn may have pushed after the launcher stopped waiting, so the tree is
+                    # brought level with the branch before it is published.
+                    local = _level_local_tree(transport, root, repo, args.lineage_branch, local, cloud)
                 code, text = transport.git(root, "push", transport.remote(root),
                                            f"HEAD:refs/heads/{args.lineage_branch}")
                 if code:
@@ -1092,6 +1097,21 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         return 0
     print(f"implementer: cloud attempt {run_record['outcome']}: {attempt['reason']}", file=sys.stderr)
     return 1
+
+
+def _level_local_tree(transport: Transport, root: Path, repo: str, branch: str, local: str | None,
+                      cloud: dict) -> str | None:
+    """Fast-forward the local tree to the change branch, refusing when the two have diverged."""
+    code, text = transport.git(root, "fetch", transport.remote(root), branch)
+    if code:
+        raise CloudError(f"cannot fetch {branch} before the follow-up: {text[:300]}")
+    code, text = transport.git(root, "merge", "--ff-only", "FETCH_HEAD")
+    if code:
+        raise CloudRefusal(f"the local tree at {local} and {branch} at {remote_tip(transport, repo, branch)} "
+                           f"on {repo} have diverged; reconcile them, then send the follow-up again")
+    after = records.git_revision(root)
+    cloud["local_fast_forward"] = {"from": local, "to": after}
+    return after
 
 
 def _rewrite(stream, data: bytes) -> None:

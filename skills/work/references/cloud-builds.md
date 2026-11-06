@@ -53,7 +53,7 @@ A revision or repair goes as a follow-up message into the session it continues, 
 The entrance's implementer environments show, per cloud attempt:
 
 - `route` and the session id;
-- `cloud_profile` and `off_profile`: a main session not wholly on the profile `cloud_setup.py profile` prints is marked, and so is one whose transcript records no effort, since nothing shows it ran at the profile's effort. Ask the owner to correct the routine's editor settings;
+- `cloud_profile` and `off_profile`: a main session not wholly on the profile `cloud_setup.py profile` prints is marked, and so is one whose transcript records no effort, recorded as `medium (Opus 5.5 default; no effort key in transcript)`, since nothing shows it ran at the profile's effort. Ask the owner to correct the routine's editor settings;
 - `permission_mode`, which a builder should hold as `auto`;
 - `cloud_checks`: the change-branch check (a build's run advanced the change branch from its fire-time tip), the `[skip ci]` check, the practice-check record, and the `environment` check (the session ran with the cloud environment's background and command-ceiling settings). A failure holds the next stage as a launch finding does;
 - `ledger_check`: the hook's ledger re-checked without the transcript. A failure makes the attempt's cost unknown with its faults and shows as an attempt fault; it changes nothing else;
