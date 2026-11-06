@@ -399,7 +399,7 @@ def test_follow_up_after_an_update_keeps_the_loaded_commit(machine):
     code, request, _run, _output = launch(machine, fake, stage="floor", resume="cse_ABC123")
     practice = request["cloud"]["practice"]
     assert practice == {"session_loaded": INSTALLED, "installed_at_send": "2" * 40, "drift": True,
-                        "commit": INSTALLED}
+                        "commit": INSTALLED, "repository": PRACTICE}
     assert not any(method == "PATCH" or "/compare/" + OLD_PIN in path for method, path, _b in fake.calls[calls_before:])
     assert f"practice-commit: {INSTALLED}" in fake.cli_calls[-1][0][2]
 
@@ -896,6 +896,38 @@ def test_a_handed_over_cloud_session_is_linked_to_its_reservation(machine):
     assert reservation["replacement_session"] == "cse_ABC123" and reservation["phase"] == "running"
     assert request["handover"]["state"] == str(state_path)
     assert request["handover"]["replacement_session"] == "cse_ABC123"
+
+
+def test_an_interrupted_relink_keeps_the_session_the_fire_returned(machine, monkeypatch):
+    import run_lifecycle
+    state_path = machine["tmp"] / "handover.json"
+    state_path.write_text(json.dumps({"schema_version": 1, "from_bundle": "codex/result.md.run.json",
+                                      "to_vendor": "claude", "phase": "reserved",
+                                      "replacement_session": "01234567-89ab-cdef-0123-456789abcdef"}))
+
+    def interrupted(*_a):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cloud, "_relink_handover", interrupted)
+    output = machine["records"] / "relink" / "result.md"
+    args = argparse.Namespace(
+        root=machine["root"], output=output, work=f"{REPO}#77", stage="build", resume=None,
+        settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
+        retry_of=None, holder_session_id=None, lineage_branch="tradecraft/77-x",
+        lineage_pull_request=None, timeout_seconds=600, artifact_brief_source="brief", artifact_brief=None,
+        handover_from="codex/result.md.run.json", handover_state=state_path)
+    with pytest.raises(KeyboardInterrupt):
+        cloud.run(args, Deadline(5), entry=machine["entry"], route_source="test", effective_prompt=b"t",
+                  prompt=b"t", context=b"", artifact_brief=b"", metadata={}, composition={"origin": "holder"},
+                  settings_sources={"vendor": "v", "model": "m", "effort": "e"},
+                  validate=lambda *_: {"status": "pass"}, transport=Fake(), record_root=machine["records"],
+                  plugin=machine["plugin"], install_path=machine["install"])
+    request = json.loads((output.parent / "result.md.request.json").read_text())
+    run = json.loads((output.parent / "result.md.run.json").read_text())
+    assert request["cloud"]["session_id"] == "cse_ABC123"
+    assert request["handover"]["replacement_session"] == "cse_ABC123"
+    with pytest.raises(ValueError, match="unresolved"):
+        run_lifecycle.recovery_session(request, run)
 
 
 def test_only_the_tree_releases_the_local_tree_hold(tmp_path, monkeypatch):

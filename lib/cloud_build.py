@@ -979,6 +979,9 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                 cloud["fire_state"] = "answered"
                 if request.get("handover"):
                     request["handover"]["replacement_session"] = session
+                # The session the fire started is durable before anything else can be interrupted.
+                _rewrite(streams[request_path], records.json_bytes(request))
+                if request.get("handover"):
                     if handover_state:
                         try:
                             _relink_handover(Path(handover_state), session)
