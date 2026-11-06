@@ -267,6 +267,34 @@ def test_the_guarded_command_is_silent_outside_the_cloud(tmp_path, shell):
         assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
 
 
+@pytest.mark.parametrize("shell", ["pwsh", "powershell"])
+def test_the_hook_is_silent_where_codex_runs_it_through_powershell(tmp_path, shell):
+    # Codex loads the same hooks/hooks.json and runs a hook through PowerShell on Windows, ignoring
+    # the "shell" field; the command opens a PowerShell block comment that bash never reaches.
+    import shutil
+    resolved = shutil.which(shell)
+    if not resolved:
+        pytest.skip(f"no {shell} on this machine")
+    env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_REMOTE"}
+    for hook in hook_commands():
+        command = hook["command"].replace("${" + "CLAUDE_PLUGIN_ROOT}", str(tmp_path / "absent"))
+        result = subprocess.run([resolved, "-NoProfile", "-NonInteractive", "-Command", command],
+                                stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=120)
+        assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
+
+
+def test_the_guard_still_starts_the_hook_in_the_cloud(tmp_path):
+    resolved = posix_shell("bash")
+    if not resolved:
+        pytest.skip("no bash from Git for Windows on this machine" if os.name == "nt" else "no bash")
+    env = {**os.environ, "CLAUDE_CODE_REMOTE": "1"}
+    for hook in hook_commands():
+        command = hook["command"].replace("exec python3", "echo started")
+        result = subprocess.run([resolved, "-c", command], stdin=subprocess.DEVNULL, capture_output=True,
+                                env=env, timeout=60)
+        assert result.returncode == 0 and result.stdout.startswith(b"started ")
+
+
 def test_only_a_line_opening_header_counts_and_the_last_wins():
     saved = cloud_build.ROUTINE_PROMPT.format(practice_name="tradecraft")
     payload = "<routine-fire-payload>" + header(branch="claude/tradecraft-report-77-build-real") + "</routine-fire-payload>"
