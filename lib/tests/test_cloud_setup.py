@@ -26,7 +26,7 @@ def readback(**changes):
     value = {"id": "trig_1", "name": sent["name"], "cron_expression": "", "mcp_connections": [],
              "api_token_hint": "", "enabled": True, "job_config": {"ccr": ccr},
              "session_request": {"config": {"mcp_servers": [], "model": "claude-opus-5-5",
-                                            "effort_level": "high", "disallowed_tools": ["PushNotification"],
+                                            "effort_level": "high", "disallowed_tools": list(cloud.ROUTINE_DISALLOWED_TOOLS),
                                             "sources": flat}}}
     for path, item in changes.items():
         target = value
@@ -82,7 +82,8 @@ def verify(machine, value, *, phase="complete", pins=None, saved_tool_output=Fal
 def test_body_carries_what_setup_requires():
     body = setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")
     context = body["job_config"]["ccr"]["session_context"]
-    assert body["clear_mcp_connections"] is True and context["disallowed_tools"] == ["PushNotification"]
+    assert body["clear_mcp_connections"] is True
+    assert context["disallowed_tools"] == ["PushNotification", "Monitor", "ScheduleWakeup", "CronCreate", "Workflow"]
     assert body["cron_expression"] == "" and "run_once_at" not in body
     assert context["sources"] == [
         {"git_repository": {"url": f"https://github.com/{REPO}"}},
@@ -93,7 +94,7 @@ def test_body_carries_what_setup_requires():
     assert body == setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")  # stable to re-verify
 
 
-def test_and_5_5_a_clean_complete_writes_the_entry_and_creates_the_pin(machine, capsys):
+def test_a_clean_complete_writes_the_entry_and_creates_the_pin(machine, capsys):
     pins = Pins(False)
     assert verify(machine, readback(), pins=pins) == 0
     record = cloud.read_record(cloud.record_path(machine["home"]))
@@ -112,6 +113,7 @@ def test_and_5_5_a_clean_complete_writes_the_entry_and_creates_the_pin(machine, 
     ({"session_request.config.mcp_servers": [{"name": "slack"}]}, "connectors"),
     ({"cron_expression": "0 * * * *"}, "cron_expression"),
     ({CONTEXT + ".disallowed_tools": []}, "disallowed_tools"),
+    ({CONTEXT + ".disallowed_tools": ["PushNotification"]}, "disallowed_tools"),
     ({CONTEXT + ".effort_level": "medium"}, "effort_level"),
     ({CONTEXT + ".effort_level": DROP}, "effort_level"),
     ({CONTEXT + ".model": "claude-sonnet-5"}, "model"),
@@ -132,3 +134,9 @@ def test_the_practice_repository_is_refused():
         with pytest.raises(setup.SetupError, match="practice's own repository"):
             setup.create_body(repo, "env", PRACTICE, "cloud-practice")
     assert setup.main(["body", "--repo", PRACTICE, "--environment", "env"]) == 1
+
+
+def test_profile_prints_the_launch_default_the_owner_sets(capsys):
+    assert setup.main(["profile"]) == 0
+    model, effort = cloud.builder_profile()
+    assert capsys.readouterr().out == f"model: {model}\neffort: {effort}\n"

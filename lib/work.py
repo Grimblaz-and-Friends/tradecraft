@@ -1522,7 +1522,7 @@ def _marker_value_error(marker: Marker) -> str | None:
         return "holder reading result is invalid"
     if marker.name == "builder-session" and not _session_shaped(
             values.get("session", ""), vendor=values.get("vendor")):
-        return "builder session is not UUID-shaped"
+        return "builder session is neither UUID-shaped nor a Claude cloud session id"
     if marker.name == "builder-session" and values.get("vendor", "codex") not in {
             "codex", "claude"}:
         return "builder session vendor is invalid"
@@ -3620,9 +3620,13 @@ def _launch_controls_report(request, run, attempt):
     """What a Claude launch applied (#887); an older record says it holds nothing."""
     if (attempt.get("vendor") or (request.get("requested") or {}).get("vendor")) != "claude":
         return None
+    if request.get("route") == "cloud":
+        # A cloud launch's controls live in its routine. Design: lib/DESIGN.md#the-cloud-route
+        return {"status": "not-applicable", "reason": cloud_build.ROUTINE_CONTROLS_REASON,
+                "disallowed_tools": list(cloud_build.ROUTINE_DISALLOWED_TOOLS)}
     controls = request.get("launch_controls")
     if not isinstance(controls, dict):
-        # Controls are written with the request, before launch, so only an
+        # Controls are written with the request, before a local launch, so only an
         # unlaunched attempt or an older launcher leaves them absent.
         return {"status": NOT_LAUNCHED if attempt.get("launched") is not True else NOT_RECORDED}
     return {"status": "recorded", **{key: controls.get(key) for key in (
@@ -3633,6 +3637,9 @@ def _launch_controls_report(request, run, attempt):
 def _stream_check_report(run, attempt):
     if attempt.get("vendor") != "claude":
         return None
+    if attempt.get("source_format") == "claude-cloud-routine":
+        # The cloud route reads the report branch, not a stream. Design: lib/DESIGN.md#the-cloud-route
+        return {"status": "not-applicable", "reason": "the cloud route reads no runtime stream"}
     check = attempt.get("stream_check")
     if not isinstance(check, dict):
         return {"status": _unrecorded_status(run, attempt)}

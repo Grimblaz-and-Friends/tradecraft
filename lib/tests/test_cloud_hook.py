@@ -82,7 +82,7 @@ def test_an_unreadable_listed_file_fails_check_e(session):
     usage = {key: counted[key] for key in ("files_present", "files_read", "files_unread",
                                            "totals_by_model", "ledger")}
     result = cloud_build.ledger_check(usage, None)
-    assert result["ok"] is False and any(fault.startswith("(e)") for fault in result["faults"])
+    assert result["ok"] is False and any(fault.startswith("unread files") for fault in result["faults"])
 
 
 def test_profile_reads_the_main_session_only(session):

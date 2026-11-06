@@ -6,6 +6,10 @@ Usage: python <plugin-root>/lib/cloud_setup.py body --repo OWNER/REPO --environm
        python <plugin-root>/lib/cloud_setup.py verify --repo OWNER/REPO --environment ENV_ID
            --readback FILE --phase created|complete [--token-file PATH] [--routine-id ID]
            [--practice-repo R] [--practice-branch B]
+       python <plugin-root>/lib/cloud_setup.py profile
+
+``profile`` prints the model and effort the owner sets in the routine's editor, from
+the launch default the cloud run is checked against, so the steps carry no copy.
 
 The holder creates and reads the routine with its RemoteTrigger tool; this
 script writes what is sent and makes "differs from what was sent" mechanical.
@@ -64,8 +68,7 @@ def create_body(repo: str, environment: str, practice: str, branch: str) -> dict
                 "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tradecraft-builder:{repo}"))}}],
             "session_context": {
                 "sources": [_source(repo), _source(practice, branch, EXCLUDES)],
-                # An unattended run has no one to notify, so it never pages the owner's phone.
-                "disallowed_tools": ["PushNotification"],
+                "disallowed_tools": list(cloud.ROUTINE_DISALLOWED_TOOLS),
             },
         }},
     }
@@ -118,8 +121,10 @@ def compare(sent: dict, readback: dict, *, phase: str, token_file: str | None) -
            _get(readback, "job_config", "ccr", "events", 0, "data", "message", "content"))
     differ("sources", _sources(_get(sent, *context, "sources")), _sources(_get(readback, *context, "sources")))
     tools = _get(readback, *context, "disallowed_tools")
-    if not isinstance(tools, list) or "PushNotification" not in tools:
-        faults.append(f"disallowed_tools: sent ['PushNotification'], read back {tools}")
+    missing = [tool for tool in cloud.ROUTINE_DISALLOWED_TOOLS
+               if not isinstance(tools, list) or tool not in tools]
+    if missing:
+        faults.append(f"disallowed_tools: sent {list(cloud.ROUTINE_DISALLOWED_TOOLS)}, read back {tools}")
     if phase == "complete":
         model, effort = _get(readback, *context, "model"), _get(readback, *context, "effort_level")
         want_model, want_effort = cloud.builder_profile()
@@ -205,6 +210,7 @@ def verify(args, *, home: Path | None = None, transport=None, plugin: Path | Non
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = result.add_subparsers(dest="command", required=True)
+    commands.add_parser("profile")
     for name in ("body", "verify"):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
@@ -223,6 +229,10 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     args = parser().parse_args(argv)
     try:
+        if args.command == "profile":
+            model, effort = cloud.builder_profile()
+            print(f"model: {model}\neffort: {effort}")
+            return 0
         if args.command == "body":
             print(json.dumps(create_body(args.repo, args.environment, args.practice_repo,
                                          args.practice_branch), indent=2))

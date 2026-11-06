@@ -10,6 +10,8 @@ A repository the owner sets up runs every Claude implementer launch (artifact, b
 
 **What this narrows.** [D-939](D-939-2026-11-03-claude-launch-writes-stay-in-their-tree.md) binds every Claude author and builder launch to its tree, with a launch-owned file-tool guard and a before-and-after comparison of the owner's machine. A cloud launch runs on a remote machine, so neither applies to it: its record says the comparison didn't run and why. Everything else in D-939 stands, and a local Claude launch keeps both.
 
+[D-924](D-924-2026-10-21-claude-launches-cannot-outlive-their-reply.md) gives every Claude launch two environment settings, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` and a `BASH_MAX_TIMEOUT_MS` of its allocation, and excludes `Monitor`, `ScheduleWakeup`, `CronCreate` and `Workflow`. A cloud session's environment belongs to its routine and is shared by every launch through it, so the two settings can't be set per launch. The routine disallows the four tools, `verify` checks them, and the finish signal comes from the `Stop` hook after the turn ends, so no scheduled work outlives the report the launcher reads. A local Claude launch keeps all of D-924.
+
 ## Why
 
 - **The route gives a builder that cannot reach the owner's machine** (value 1). So a failed fire stops the launch; a silent local fallback would undo the route's reason. For the same reason #906's before-and-after comparison is not run for a cloud build, and its record says why.

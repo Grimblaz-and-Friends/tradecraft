@@ -23,6 +23,8 @@ import urllib.error
 import urllib.request
 
 import dispatch_record as records
+from dispatch_lifecycle import CLAUDE_DISALLOWED_TOOLS
+import launch_bound
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
@@ -57,10 +59,17 @@ FIRE_URL = "https://api.anthropic.com/v1/claude_code/routines/{routine}/fire"
 FIRE_HEADERS = {"anthropic-beta": "experimental-cc-routine-2026-04-01",
                 "anthropic-version": "2023-06-01"}
 POLL_SECONDS = 30
+# Under GitHub's 65,536-character comment limit, leaving room for each part's label line.
 COMMENT_LIMIT = 60_000
 FIRE_TEXT_LIMIT = 65_536
-COMPARISON_REASON = ("not run: a cloud builder runs on a remote machine and cannot reach "
-                     "this one")
+COMPARISON_REASON = launch_bound.CLOUD_NOT_RUN_REASON
+# The tools that schedule work past a turn, as every Claude launch excludes them, and the
+# phone notification an unattended run has no one to receive. The routine carries them.
+ROUTINE_DISALLOWED_TOOLS = ("PushNotification", *CLAUDE_DISALLOWED_TOOLS)
+ROUTINE_CONTROLS_REASON = (
+    "not applicable: a cloud session's environment belongs to its routine, so the background-task "
+    "and command-ceiling settings can't be set per launch; the routine disallows "
+    + ", ".join(ROUTINE_DISALLOWED_TOOLS) + ", checked at setup")
 INSTRUCTIONS_APPLIED = ("product CLAUDE.md/AGENTS.md from the cloned repository; no repository's "
                         "committed hooks or permission rules apply, because the session starts "
                         "above its clones")
@@ -249,6 +258,8 @@ def installed_practice(root: Path, path: Path, *, refuse_older: bool = True) -> 
     if not isinstance(commit, str) or SHA.fullmatch(commit) is None:
         raise CloudRefusal(f"plugin install record {path}: gitCommitSha is not 40 hex characters")
     installed = chosen.get("version")
+    # The session loads the installed practice, so an older launcher would judge a builder
+    # working under rules newer than its own; reloading brings the holder level.
     if refuse_older and _version_key(version, "the launcher's plugin.json") < _version_key(installed, str(path)):
         raise CloudRefusal(
             f"this session's practice {version} is older than the installed {installed}; ask the owner "
@@ -333,7 +344,11 @@ def cloud_profile(usage: dict, profile: tuple[str, str] | None = None) -> dict[s
 
 def ledger_check(usage: dict, previous: list[dict] | None,
                  recorded_deltas: list[dict] | None = None) -> dict[str, object]:
-    """Checks (a)–(e) of the hook's reading, without the transcript, which the launcher can't read."""
+    """The hook's reading, re-checked without the transcript, which the launcher can't read.
+
+    Each fault names its check: ``sums``, ``repeated id``, ``earlier ledger``,
+    ``deltas`` or ``unread files``. Design: lib/DESIGN.md#the-cloud-route
+    """
     faults = []
     ledger = usage.get("ledger") if isinstance(usage.get("ledger"), list) else []
     totals = usage.get("totals_by_model") if isinstance(usage.get("totals_by_model"), dict) else {}
@@ -341,10 +356,10 @@ def ledger_check(usage: dict, previous: list[dict] | None,
     ids = set()
     for row in ledger:
         if not isinstance(row, dict):
-            faults.append("(a) a ledger row is not an object")
+            faults.append("sums: a ledger row is not an object")
             continue
         if row.get("id") in ids:
-            faults.append(f"(b) ledger id {row.get('id')} repeats")
+            faults.append(f"repeated id: ledger id {row.get('id')} repeats")
         ids.add(row.get("id"))
         model_sums = sums.setdefault(str(row.get("model")), {})
         for key in _hook().FIGURES:
@@ -352,12 +367,12 @@ def ledger_check(usage: dict, previous: list[dict] | None,
                 model_sums[key] = model_sums.get(key, 0) + row[key]
     if sums != {model: {key: value for key, value in figures.items()}
                 for model, figures in totals.items() if isinstance(figures, dict)}:
-        faults.append("(a) ledger sums differ from totals_by_model")
+        faults.append("sums: ledger sums differ from totals_by_model")
     if previous is not None:
         current = {row.get("id"): row for row in ledger if isinstance(row, dict)}
         for row in previous:
             if current.get(row.get("id")) != row:
-                faults.append(f"(c) earlier ledger row {row.get('id')} is missing or changed")
+                faults.append(f"earlier ledger: row {row.get('id')} is missing or changed")
                 break
     if recorded_deltas is not None:
         summed: dict[str, dict[str, int]] = {}
@@ -366,12 +381,12 @@ def ledger_check(usage: dict, previous: list[dict] | None,
                 for key, value in figures.items():
                     summed.setdefault(model, {})[key] = summed.setdefault(model, {}).get(key, 0) + value
         if _nonzero(summed) != _nonzero(totals):
-            faults.append("(d) recorded deltas do not sum to the running total")
+            faults.append("deltas: recorded deltas do not sum to the running total")
     unread = usage.get("files_unread") or []
     read = {row.get("file") for row in usage.get("files_read") or [] if isinstance(row, dict)}
     missing = [name for name in usage.get("files_present") or [] if name not in read]
     if unread or missing:
-        faults.append("(e) listed files went unread: "
+        faults.append("unread files: listed files went unread: "
                       + ", ".join([str(row.get("file") if isinstance(row, dict) else row) for row in unread]
                                   + [name for name in missing if name not in
                                      {row.get("file") for row in unread if isinstance(row, dict)}]))
@@ -888,9 +903,14 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                 run_record["outcome"] = attempt["outcome"]
             else:
                 growing.checkpoint()
-                published = _finish(args, transport, request, run_record, attempt, growing, deadline,
-                                    repo, branch, root, record_root, artifact_brief, validate, streams,
-                                    source_path)
+                try:
+                    published = _finish(args, transport, request, run_record, attempt, growing, deadline,
+                                        repo, branch, root, record_root, artifact_brief, validate, streams,
+                                        source_path)
+                except (CloudError, OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+                    attempt.update(outcome="error", reason=f"reading the finished run failed: {exc}; "
+                                   f"session {cloud.get('session_url')}; branch {branch} kept")
+                    run_record["outcome"] = "error"
         finally:
             run_record.setdefault("outcome", attempt["outcome"])
             if "observed" not in attempt:
@@ -936,17 +956,24 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     """Wait for the finish signal, read and check the branch, then post and delete it."""
     cloud = request["cloud"]
     record_cloud = attempt["cloud"]
+    last_error = None
     while True:
         try:
             left = deadline.remaining()
         except TimeoutError:
             attempt.update(outcome="interrupted",
                            reason=f"no report branch finish signal before the deadline; session "
-                                  f"{cloud.get('session_url')}; branch {branch} kept")
+                                  f"{cloud.get('session_url')}; branch {branch} kept"
+                                  + (f"; last read error: {last_error}" if last_error else ""))
             run_record["outcome"] = "interrupted"
             return None
-        files = {name: read_branch_file(transport, repo, branch, name)
-                 for name in ("report.md", "usage.json")}
+        try:
+            files = {name: read_branch_file(transport, repo, branch, name)
+                     for name in ("report.md", "usage.json")}
+        except (CloudError, OSError, subprocess.SubprocessError) as exc:
+            # A failed read says nothing about the run, which goes on; read again next poll.
+            last_error = str(exc)
+            files = {}
         if finished(files):
             break
         growing.tick()

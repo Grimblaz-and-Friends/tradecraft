@@ -690,12 +690,18 @@ def unrecorded(reason: str) -> dict[str, object]:
             "attributed": []}
 
 
+CLOUD_NOT_RUN_REASON = "not run: a cloud builder runs on a remote machine and cannot reach this one"
+
+
 def cloud_not_run() -> dict[str, object]:
-    """A cloud builder cannot reach this machine, so the comparison is not run."""
+    """A cloud builder cannot reach this machine, so the comparison is not run.
+
+    Design: lib/DESIGN.md#the-cloud-route
+    """
     return {"schema_version": SCHEMA_VERSION, "status": "cloud-not-run", "before_at": None,
             "after_at": now(), "elapsed_seconds": 0.0, "coverage": [], "findings": [],
             "attributed": [],
-            "reason": "not run: a cloud builder runs on a remote machine and cannot reach this one"}
+            "reason": CLOUD_NOT_RUN_REASON}
 
 
 def not_launched() -> dict[str, object]:

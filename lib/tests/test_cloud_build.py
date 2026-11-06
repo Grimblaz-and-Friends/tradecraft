@@ -38,7 +38,9 @@ class Fake(cloud.Transport):
         self.report, self.practice_ok, self.skip_ci, self.advance = report, practice_ok, skip_ci, advance
         self.holder_on_remote, self.usage_practice, self.fire_status = holder_on_remote, usage_practice, fire_status
         self.change_tip, self.cli_calls, self.comments, self.deleted = TIP, [], [], []
-        self.totals = {"claude-opus-5-5": {"input": 10, "output": 20, "cache_read": 30, "cache_creation": 0}}
+        self.ledger = [{"id": "m1", "model": "claude-opus-5-5", "file": "main",
+                        "input": 10, "output": 20, "cache_read": 30, "cache_creation": 0}]
+        self.read_errors = 0
 
     def github(self, method, path, body=None):
         self.calls.append((method, path, body))
@@ -68,6 +70,9 @@ class Fake(cloud.Transport):
             self.branch = body["ref"][len("refs/heads/"):]
             return 201, {}
         if "/contents/tradecraft-cloud/" in path:
+            if self.read_errors:
+                self.read_errors -= 1
+                return 502, "bad gateway"
             name = path.split("tradecraft-cloud/")[1].split("?")[0]
             if name not in self.files:
                 return 404, {}
@@ -94,8 +99,12 @@ class Fake(cloud.Transport):
         check = {"ok": True, "commit": INSTALLED} if self.practice_ok else {
             "ok": False, "expected": INSTALLED, "found": OLD_PIN, "excluded_present": []}
         report = self.report if self.practice_ok else f"PRACTICE MISMATCH expected {INSTALLED} found {OLD_PIN}\n".encode()
-        ledger = [{"id": "m1", "model": "claude-opus-5-5", "file": "main", **self.totals["claude-opus-5-5"]}]
-        usage = {"report_blob": cloud.git_blob_sha(report), "totals_by_model": self.totals, "ledger": ledger,
+        totals = {}
+        for row in self.ledger:
+            model = totals.setdefault(row["model"], {})
+            for key in ("input", "output", "cache_read", "cache_creation"):
+                model[key] = model.get(key, 0) + row[key]
+        usage = {"report_blob": cloud.git_blob_sha(report), "totals_by_model": totals, "ledger": self.ledger,
                  "files_present": ["main"], "files_read": [{"file": "main", "usage_entries": 1}],
                  "files_unread": [], "profile": {"models": ["claude-opus-5-5"], "efforts": ["high"]},
                  "permission_mode": {"values": ["auto"], "source": "hook-input"},
@@ -118,7 +127,8 @@ class Fake(cloud.Transport):
         self.change_tip = TIP  # the local tree followed the last attempt
         if argv[1:3] == ["auth", "status"]:
             return 0, json.dumps({"authMethod": self.auth}).encode()
-        self.totals = {"claude-opus-5-5": {"input": 15, "output": 40, "cache_read": 30, "cache_creation": 0}}
+        self.ledger = [*self.ledger, {"id": f"m{len(self.ledger) + 1}", "model": "claude-opus-5-5", "file": "main",
+                                      "input": 5, "output": 20, "cache_read": 0, "cache_creation": 0}]
         self._run()
         return 0, json.dumps({"ok": True, "session_id": argv[4], "url": "u"}).encode()
 
@@ -354,7 +364,7 @@ def test_default_effort_is_marked():
         == cloud.NO_EFFORT_LABEL
 
 
-def test_and_8_1_build_plus_repair_is_one_running_total(machine):
+def test_build_plus_repair_is_one_running_total_priced_as_known(machine):
     fake = Fake()
     launch(machine, fake)
     fake.auth = "claude.ai"
@@ -363,7 +373,12 @@ def test_and_8_1_build_plus_repair_is_one_running_total(machine):
     cloud_attempt = run["attempts"][0]["cloud"]
     assert cloud_attempt["delta"] == {"claude-opus-5-5": {"input": 5, "output": 20, "cache_read": 0,
                                                           "cache_creation": 0}}
-    assert cloud_attempt["ledger_check"]["ok"] is False  # the fake's ledger row changed figures: (c)
+    assert cloud_attempt["ledger_check"] == {"ok": True, "faults": []}
+    assert cloud_attempt["running_total"] == {"claude-opus-5-5": {"input": 15, "output": 40, "cache_read": 30,
+                                                                  "cache_creation": 0}}
+    price = change_cost._price(change_cost._Attempt(usage=run["attempts"][0]["usage"]),
+                               change_cost.load_rates(LIB / "rates.json"))
+    assert price["status"] == "known" and float(price["amount"]) > 0
     argv = fake.cli_calls[-1][0]
     assert argv[:2] == ["claude", "-p"] and argv[3:5] == ["--cloud", "cse_ABC123"]
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in fake.cli_calls[-1][1]
@@ -416,7 +431,7 @@ def test_pricing_needs_a_passing_ledger_and_a_rate_row():
                  "tokens": {"models": {model: {"input": 1000, "output": 1000, "cache_read": 0,
                                                "cache_creation": 0, "cache_write_5m": 0}}},
                  "source": "cloud-stop-hook", "scope": "session-delta",
-                 "ledger_check": {"ok": ok, "faults": [] if ok else ["(e) listed files went unread: x"]}}
+                 "ledger_check": {"ok": ok, "faults": [] if ok else ["unread files: listed files went unread: x"]}}
         return change_cost._Attempt(usage=usage)
 
     known = change_cost._price(item("claude-opus-5-5"), rates)
@@ -424,7 +439,7 @@ def test_pricing_needs_a_passing_ledger_and_a_rate_row():
     unknown = change_cost._price(item("claude-unrated-9"), rates)
     assert unknown["status"] == "unknown" and "amount" not in unknown
     ledger = change_cost._price(item("claude-opus-5-5", ok=False), rates)
-    assert ledger["status"] == "unknown" and "(e)" in json.dumps(ledger)
+    assert ledger["status"] == "unknown" and "unread files" in json.dumps(ledger)
 
 
 def test_cloud_not_run_is_clear_and_local_still_compares():
@@ -458,3 +473,30 @@ def test_the_saved_prompt_forbids_posting_and_messaging():
     prompt = cloud.ROUTINE_PROMPT
     assert "Never comment on the issue, never message another session" in prompt
     assert "[skip ci]" in prompt and "instructions.md" in prompt and "report.md" in prompt
+
+
+def test_a_temporary_read_error_is_retried_within_the_wait(machine):
+    fake = Fake()
+    fake.read_errors = 2
+    code, _request, run, _output = launch(machine, fake, polls=5)
+    assert code == 0 and run["outcome"] == "success"
+
+
+def test_a_wait_that_never_reads_the_branch_says_why(machine):
+    fake = Fake()
+    fake.read_errors = 1000
+    code, _request, run, _output = launch(machine, fake, polls=3)
+    assert run["outcome"] == "interrupted"
+    assert "last read error" in run["attempts"][0]["reason"] and "HTTP 502" in run["attempts"][0]["reason"]
+
+
+def test_a_cloud_attempt_reports_its_launch_controls_as_not_applicable():
+    import work
+    request, attempt = {"route": "cloud"}, {"vendor": "claude", "launched": True,
+                                            "source_format": "claude-cloud-routine"}
+    controls = work._launch_controls_report(request, {"lifecycle": "completed"}, attempt)
+    assert controls["status"] == "not-applicable" and "routine" in controls["reason"]
+    assert controls["disallowed_tools"] == ["PushNotification", "Monitor", "ScheduleWakeup", "CronCreate",
+                                            "Workflow"]
+    assert work._stream_check_report({"lifecycle": "completed"}, attempt)["status"] == "not-applicable"
+    assert work.launch_bound.cloud_not_run()["reason"] == cloud.COMPARISON_REASON

@@ -281,7 +281,9 @@ def record_practice(branch: ReportBranch, result: dict[str, object]) -> None:
     if result["ok"]:
         try:
             if existing and json.loads(existing).get("ok") is False:
-                return  # A recorded mismatch is never overwritten as passing.
+                # The prompt hook and the saved prompt's check both run; a pass after a mismatch
+                # would let the launcher read a stopped run as one that built.
+                return
         except ValueError:
             pass
         branch.commit({"practice-check.json": _json(result)},
