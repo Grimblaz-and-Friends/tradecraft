@@ -993,6 +993,17 @@ def test_cloud_author_is_revised_in_its_own_session_through_the_entrance(entranc
     assert first_run["outcome"] == "success" and len(fake.fired) == 1
     assert f"checkout: commit {first['artifact_copy']['source_commit']}" in fake.fired[0][2]
 
+    def assert_cloud_task(task):
+        # The task file on the report branch is what the cloud run reads; it describes the cloud.
+        assert "running as a Claude Code cloud session" in task
+        assert "read the product clone's root CLAUDE.md, or its AGENTS.md" in task
+        assert "/home/user/tradecraft" in task and "no write guard, launch comparison or memory" in task
+        for local in ("The shipped tradecraft plugin is at", "are already loaded", "native memory is switched off",
+                      "Strict MCP", "Artifact root:", "compares covered items"):
+            assert local not in task
+
+    assert_cloud_task(fake.dispatch.decode("utf-8"))
+
     (holder / "new.txt").write_bytes(b"new source commit")
     git(holder, "add", "new.txt")
     git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "holder update")
@@ -1014,3 +1025,4 @@ def test_cloud_author_is_revised_in_its_own_session_through_the_entrance(entranc
     argv = fake.cli_calls[-1][0]
     assert argv[3:5] == ["--cloud", "cse_ABC123"] and f"checkout: commit {current}" in argv[2]
     assert revised_run["outcome"] == "success"
+    assert_cloud_task(fake.dispatch.decode("utf-8"))

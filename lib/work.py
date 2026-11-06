@@ -3597,6 +3597,24 @@ def implementer_preamble(vendor: str, plugin_root: Path) -> bytes:
     ).encode("utf-8")
 
 
+def cloud_preamble(practice: str) -> bytes:
+    """The launcher context ahead of a cloud implementer's task, which runs on a remote machine.
+
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    ceiling = int(cloud_build.CLOUD_ENVIRONMENT["BASH_MAX_TIMEOUT_MS"]) // 1000
+    return (
+        "You are the implementer for this stage, running as a Claude Code cloud session. Before "
+        "acting, read the product clone's root CLAUDE.md, or its AGENTS.md where it has no CLAUDE.md, "
+        "and the files it imports; before editing a file, read any CLAUDE.md or AGENTS.md inside the "
+        "clone that applies to it. "
+        f"The shipped tradecraft practice is at {cloud_build.cloud_practice_path(practice)}. "
+        "This session runs on a remote machine that cannot reach the owner's: no write guard, launch "
+        "comparison or memory setting applies to it. Its environment switches background work off and "
+        f"lets one command run at most {ceiling} seconds, for every stage.\n"
+    ).encode("utf-8")
+
+
 def _instruction_report(observed):
     """Each instruction file a launch recorded, without its content."""
     categories = observed.get("categories") if isinstance(observed.get("categories"), dict) else {}
@@ -8237,31 +8255,34 @@ def _merge_version_decision(root: Path, start: str, pinned: str, spec: dict | No
             "value": value, "reason": reason}
 
 
-def _cloud_merge_script(state, stage, vendor, resumed=None) -> str | None:
-    """The persist script's path in a cloud run's practice clone, when the launch goes to the cloud.
+def _cloud_practice(state, stage, vendor, resumed=None) -> str | None:
+    """The practice repository a launch's cloud session runs from, or None for a local launch.
 
-    Design: lib/DESIGN.md#the-cloud-route
+    It routes as the launcher does. Design: lib/DESIGN.md#the-cloud-route
     """
-    if vendor != "claude" or stage not in cloud_build.CLOUD_STAGES:
+    if vendor != "claude":
         return None
     session = getattr(resumed, "session", None)
-    if session and not cloud_build.CLOUD_SESSION.fullmatch(session):
-        return None  # a locally started session resumes locally
-    if session:
+    if session and cloud_build.CLOUD_SESSION.fullmatch(session):
         # A cloud session resumes in the cloud whatever the switch now says, so its own record names
         # the practice clone it runs from.
         practice = ((getattr(resumed, "request", None) or {}).get("cloud") or {}).get("practice") or {}
         if isinstance(practice.get("repository"), str) and practice["repository"]:
-            return cloud_build.cloud_practice_path(practice["repository"],
-                                                   "skills", "persist-changes", "scripts", "persist.py")
+            return practice["repository"]
+    elif session or stage not in cloud_build.CLOUD_STAGES:
+        return None  # a locally started session resumes locally; other stages stay local
     try:
         entry, _source = cloud_build.route_for(f"{state.repo}#{state.issue_number}")
     except cloud_build.CloudError:
-        return None  # the launcher refuses a broken switch; the prompt keeps the local path
-    if entry is None:
-        return None
-    return cloud_build.cloud_practice_path(entry["practice"]["repository"],
-                                           "skills", "persist-changes", "scripts", "persist.py")
+        return None  # the launcher refuses a broken switch; the prompt keeps the local text
+    return None if entry is None else entry["practice"]["repository"]
+
+
+def _cloud_merge_script(state, stage, vendor, resumed=None) -> str | None:
+    """The persist script's path in a cloud run's practice clone, when the launch goes to the cloud."""
+    practice = _cloud_practice(state, stage, vendor, resumed)
+    return None if practice is None else cloud_build.cloud_practice_path(
+        practice, "skills", "persist-changes", "scripts", "persist.py")
 
 
 @dataclass(frozen=True)
@@ -9702,7 +9723,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     command.extend(("--retry-of", handover_retry_of))
                 if selected_vendor in {"claude", "codex"}:
                     context = Path(temporary) / "context.txt"
-                    preamble = implementer_preamble(selected_vendor, here.parent)
+                    cloud_practice = _cloud_practice(state, decision.stage, selected_vendor, resume_source)
+                    # A cloud run's task file describes the cloud; the local text stays as it was.
+                    preamble = (cloud_preamble(cloud_practice) if cloud_practice
+                                else implementer_preamble(selected_vendor, here.parent))
                     window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])
                               if recovery_info else
                               f"Available recipient time is at most {metadata['recipient_allocation_seconds']:g} seconds. Leave useful work in the tree if the window ends. Perform only the named stage.\n".encode("utf-8"))
@@ -9719,7 +9743,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                            else "Claude starts here. Its file tools write only in this copy and its "
                            "session scratchpad; shell commands have no OS fence, and the launch "
                            "compares covered items before and after.\n")
-                    ).encode("utf-8") if artifact_run else b"")
+                    ).encode("utf-8") if artifact_run and not cloud_practice else b"")
                     context.write_bytes(preamble + handover_context + copy_context + window)
                     command.extend(("--context", str(context)))
                 if handover_record is not None:

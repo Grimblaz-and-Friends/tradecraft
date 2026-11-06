@@ -30,13 +30,9 @@ import run_lifecycle as lifecycle
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
-# Where a multi-source cloud session clones its sources.
-CLOUD_HOME = "/home/user"
-
-
 def cloud_practice_path(practice: str, *parts: str) -> str:
     """A shipped practice file as the cloud run finds it, in the practice clone."""
-    return "/".join((CLOUD_HOME, practice_name(practice), *parts))
+    return "/".join((_hook().CLOUD_HOME, practice_name(practice), *parts))
 
 
 # A routine run may push to `claude/` branches without being told; report branches live there.
@@ -55,12 +51,14 @@ def _hook():
     return module
 
 
-_FROM_HOOK = {"HEADER": "HEADER", "FIGURES": "FIGURES", "EXCLUDED": "EXCLUDED"}
+_FROM_HOOK = {"HEADER": "HEADER", "FIGURES": "FIGURES", "EXCLUDED": "EXCLUDED", "CLOUD_HOME": "CLOUD_HOME"}
 
 
 def __getattr__(name: str):
     if name in _FROM_HOOK:
         return getattr(_hook(), _FROM_HOOK[name])
+    if name == "ROUTINE_PROMPT":
+        return _ROUTINE_PROMPT.replace("{cloud_home}", _hook().CLOUD_HOME)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 CLOUD_SESSION = re.compile(r"cse_[A-Za-z0-9]+\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -75,9 +73,7 @@ POLL_SECONDS = 30
 COMMENT_LIMIT = 60_000
 # The fire's text limit; a composed prompt is larger, so only the header is fired.
 FIRE_TEXT_LIMIT = 65_536
-# Background tasks off and a command ceiling, so no work outlives the reply the launcher reads; set
-# once on the cloud environment. The ceiling printed for setup is the shortest stage limit, so it
-# fits every stage; the check accepts any shorter one, so a later change to a limit isn't a failure.
+# Background tasks off and a command ceiling, so no work outlives the reply the launcher reads.
 CLOUD_ENVIRONMENT = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
                      "BASH_MAX_TIMEOUT_MS": str(int(min(
                          lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS, lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS) * 1000))}
@@ -94,15 +90,15 @@ INSTRUCTIONS_APPLIED = ("product CLAUDE.md/AGENTS.md from the cloned repository;
                         "above its clones")
 PRACTICE_OWN_REFUSAL = (
     "refused: the practice's own repository is not set up for cloud builds; its product and "
-    "practice clones would share /home/user/tradecraft and its committed guard would govern a "
+    "practice clones would share one clone folder and its committed guard would govern a "
     "single-source build, which is untested")
 
-ROUTINE_PROMPT = """You are a tradecraft cloud implementer run.
+_ROUTINE_PROMPT = """You are a tradecraft cloud implementer run.
 
 Act only when this run's message carries a `TRADECRAFT-CLOUD-RUN v1` payload. Otherwise reply "no payload; nothing done" and stop.
 
 With a payload, in this order:
-1. First run `python3 /home/user/{practice_name}/hooks/cloud.py check --expect <practice-commit> --report-branch <report-branch> --repository <repository>`, with the payload's values. If it fails, stop: do nothing else.
+1. First run `python3 {cloud_home}/{practice_name}/hooks/cloud.py check --expect <practice-commit> --report-branch <report-branch> --repository <repository>`, with the payload's values. If it fails, stop: do nothing else.
 2. In the clone of <repository>, fetch <report-branch> and read the file the payload names as `task-file` on that branch. That file is your task.
 3. Check out what `checkout` names: the branch, or the commit (detached) for an artifact.
 4. Do the task.

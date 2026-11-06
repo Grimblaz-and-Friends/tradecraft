@@ -222,9 +222,14 @@ def _git(clone: Path, *arguments: str, env: dict | None = None, data: bytes | No
     return result.stdout.decode("utf-8", "replace").strip()
 
 
+# Where a multi-source cloud session clones its sources.
+CLOUD_HOME = "/home/user"
+
+
 def clone_for(repository: str) -> Path:
     """The product clone a multi-source session lands beside the practice."""
-    base = Path(os.environ.get("TRADECRAFT_CLOUD_HOME") or "/home/user")
+    # TRADECRAFT_CLOUD_HOME is the tests' seam for the clone root; nothing in the cloud sets it.
+    base = Path(os.environ.get("TRADECRAFT_CLOUD_HOME") or CLOUD_HOME)
     return base / repository.split("/")[-1]
 
 
