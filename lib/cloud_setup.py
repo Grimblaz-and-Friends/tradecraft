@@ -204,6 +204,8 @@ def verify(args, *, home: Path | None = None, transport=None, plugin: Path | Non
         print(f"setup FAILED: practice: record names {record['practice']}, setup names "
               f"{args.practice_repo}@{args.practice_branch}", file=sys.stderr)
         return 1
+    for key in [key for key in record["repositories"] if key.lower() == args.repo.lower()]:
+        del record["repositories"][key]  # one entry per repository, whatever its case
     record["repositories"][args.repo] = {
         "routine_id": routine, "token_file": str(Path(args.token_file).resolve()),
         "setup_record": str(setup_path), "set_up_at": datetime.now(timezone.utc).isoformat()}

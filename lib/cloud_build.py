@@ -179,7 +179,11 @@ def route_for(work: str, path: Path | None = None) -> tuple[dict | None, str]:
         repository = repository_of(work)
     except CloudError:
         return None, f"no entry: work {work!r} names no repository"
-    entry = record["repositories"].get(repository)
+    # GitHub names repositories without regard to case, so the switch matches them that way too.
+    keys = [key for key in record["repositories"] if key.lower() == repository.lower()]
+    if len(keys) > 1:
+        raise CloudRefusal(f"cloud record {path} names {repository} more than once: {', '.join(keys)}")
+    entry = record["repositories"][keys[0]] if keys else None
     if entry is None:
         return None, f"no entry: {repository} not in {path}"
     return {"repository": repository, "practice": dict(record["practice"]), **entry}, (
@@ -437,6 +441,11 @@ def change_branch_check(tip_at_fire: str | None, tip_after: str | None, commits:
     value = {"tip_at_fire": tip_at_fire, "tip_after": tip_after, "commits": commits,
              "compare_status": status}
     if repair:
+        # A disposition can rightly make no commit, but one that moves the branch must build on it.
+        moved = tip_after is not None and tip_after != tip_at_fire
+        if moved and status != "ahead":
+            return {**value, "ok": False, "checked": True,
+                    "faults": ["tip_after does not descend from tip_at_fire"]}
         return {**value, "ok": True, "checked": False,
                 "reason": "a disposition can rightly make no commit"}
     faults = []
@@ -447,6 +456,14 @@ def change_branch_check(tip_at_fire: str | None, tip_after: str | None, commits:
     if status not in {"ahead", "identical"} or (status == "identical" and tip_after != tip_at_fire):
         faults.append("tip_after does not descend from tip_at_fire")
     return {**value, "ok": not faults, "checked": True, "faults": faults}
+
+
+def permission_check(usage: dict) -> dict[str, object]:
+    """The session ran in auto mode, as a builder must."""
+    mode = usage.get("permission_mode") if isinstance(usage.get("permission_mode"), dict) else {}
+    values = mode.get("values") or ["unknown"]
+    return {"ok": values == ["auto"], "values": values,
+            "faults": [] if values == ["auto"] else [f"permission mode {values}, expected ['auto']"]}
 
 
 def environment_check(usage: dict) -> dict[str, object]:
@@ -671,7 +688,9 @@ def loaded_commit(attempts: list[tuple[dict, dict]], session: str) -> tuple[dict
     commit = ((request.get("cloud") or {}).get("practice") or {}).get("commit")
     attempt = (run.get("attempts") or [{}])[0]
     checked = ((attempt.get("cloud") or {}).get("practice_check") or {}).get("commit")
-    if not isinstance(commit, str) or SHA.fullmatch(commit) is None or checked != commit:
+    # An attempt interrupted before its finish signal recorded no check; its session loaded the
+    # commit it was fired with, which the run's own check then confirms on the follow-up.
+    if not isinstance(commit, str) or SHA.fullmatch(commit) is None or checked not in {None, commit}:
         raise CloudError(f"cloud session {session}: the starting attempt's practice commit is missing "
                          "or disagrees with its recorded practice check")
     return request, commit
@@ -704,6 +723,8 @@ def followup_env() -> dict:
 
 # ---- one cloud attempt -------------------------------------------------------
 
+# The stages the cloud route carries: the artifact, the build and the build's repairs.
+CLOUD_STAGES = frozenset({"artifact", "build", "review-disposition", "floor"})
 # The stages that can rightly make no commit: a disposition or a floor turn may change nothing.
 # A resumed build is still a build, so its change branch is checked.
 REPAIR_STAGES = frozenset({"review-disposition", "floor"})
@@ -1028,11 +1049,14 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     mismatch = isinstance(check, dict) and check.get("ok") is False
     if mismatch:
         # A run stopped by a practice mismatch did nothing, so its record shows only the mismatch.
+        # It reads as recorded, not failed: the outcome already stops the stage, and the hold
+        # would otherwise ask for an account of a run that built nothing.
         checks = {"practice": {"ok": True, "reason": "practice mismatch recorded"}}
     else:
         checks = {"practice": practice_record_check(check, usage),
                   "skip_ci": skip_ci_check(branch_commits(transport, repo, cloud["dispatch_commit"], tip)),
-                  "environment": environment_check(usage)}
+                  "environment": environment_check(usage),
+                  "permission_mode": permission_check(usage)}
     if args.stage != "artifact" and not mismatch:
         after = remote_tip(transport, repo, args.lineage_branch)
         status, value = transport.github(
@@ -1079,6 +1103,9 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
         if not code:
             code, text = transport.git(root, "merge", "--ff-only", "FETCH_HEAD")
         record_cloud["local_tree"] = {"status": "error" if code else "fast-forwarded", "detail": text[:300]}
+        # The use stage builds its consumer tree from the local tree's HEAD, so a tree that didn't
+        # follow the returned branch holds the next stage until it does; the report is still kept.
+        checks["local_tree"] = {"ok": not code, "reason": text[:300] if code else ""}
         if code:
             run_record["error"] = f"local tree did not follow the cloud branch: {text[:300]}"
     try:

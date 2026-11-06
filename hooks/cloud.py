@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -33,11 +34,20 @@ class HookError(RuntimeError):
 
 
 def parse_header(text: str) -> dict[str, str] | None:
-    """The run's fields from the first header in ``text``, or None."""
+    """The run's fields from the last header that begins a line in ``text``, or None.
+
+    The saved prompt names the header inside a sentence and may arrive in the same message as
+    the fire payload, which a wrapping tag may open, so only a line-opening header counts.
+    """
     if not isinstance(text, str) or HEADER not in text:
         return None
+    lines = text.splitlines()
+    starts = [index for index, line in enumerate(lines)
+              if re.sub(r"^\s*(?:<[^>]+>\s*)*", "", line).rstrip() == HEADER]
+    if not starts:
+        return None
     fields: dict[str, str] = {}
-    for line in text[text.index(HEADER) + len(HEADER):].splitlines()[1:]:
+    for line in lines[starts[-1] + 1:]:
         if ":" not in line:
             if line.strip():
                 break
@@ -274,9 +284,16 @@ def practice_state(plugin_root: Path, expect: str) -> dict[str, object]:
     except (HookError, OSError) as exc:
         found = f"unreadable: {exc}"
     excluded = [name for name in EXCLUDED if (plugin_root / name.rstrip("/")).exists()]
-    ok = found == expect and not excluded
+    # A file changed but not committed is a practice other than the pinned commit's.
+    try:
+        modified = [line.split(None, 1)[-1] for line in _git(plugin_root, "status", "--porcelain",
+                                              "--untracked-files=no").splitlines() if line.strip()]
+    except (HookError, OSError) as exc:
+        modified = [f"unreadable: {exc}"]
+    ok = found == expect and not excluded and not modified
     return {"ok": ok, "commit": found} if ok else {
-        "ok": False, "expected": expect, "found": found, "excluded_present": excluded}
+        "ok": False, "expected": expect, "found": found, "excluded_present": excluded,
+        "modified": modified}
 
 
 def record_practice(branch: ReportBranch, result: dict[str, object]) -> None:

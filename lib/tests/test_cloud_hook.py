@@ -265,3 +265,17 @@ def test_the_guarded_command_is_silent_outside_the_cloud(tmp_path, shell):
         command = hook["command"].replace(placeholder, str(tmp_path / "absent"))
         result = subprocess.run([shell, "-c", command], input=b"{}", capture_output=True, env=env)
         assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
+
+
+def test_only_a_line_opening_header_counts_and_the_last_wins():
+    saved = cloud_build.ROUTINE_PROMPT.format(practice_name="tradecraft")
+    payload = "<routine-fire-payload>" + header(branch="claude/tradecraft-report-77-build-real") + "</routine-fire-payload>"
+    fields = cloud.parse_header(saved + "\n" + payload)
+    assert fields["report-branch"] == "claude/tradecraft-report-77-build-real"
+    assert cloud.parse_header(saved) is None
+
+
+def test_a_modified_practice_file_fails_the_check(cloud_home):
+    (cloud_home["practice"] / "skills" / "x.md").write_text("changed")
+    result = cloud.practice_state(cloud_home["practice"], cloud_home["commit"])
+    assert result["ok"] is False and result["modified"] == ["skills/x.md"]

@@ -21,7 +21,7 @@ The request's `write_bound` states what applied: the guarded tools and allowed p
 
 Any bundle for this change whose comparison has findings, or whose request has a write-bound baseline but whose stopped launch left no comparison (`unrecorded`), holds every next stage, the holder-named `run <stage>` included. A launch still running owes no account: its report entry reads `running`, because its comparison is written when it stops, and the live-launch routing governs it meanwhile. The run itself is untouched: a finding never fails or discards it.
 
-**A failed cloud attempt check holds the same way.** A cloud attempt whose change-branch check, `[skip ci]` check or practice-check record failed carries a `cloud-check:<name>` finding, and its account names that id like any other. The report is still kept and posted.
+**A failed cloud attempt check holds the same way.** A cloud attempt whose change-branch check, `[skip ci]` check, practice-check record, `environment` check, permission-mode check or local-tree check failed carries a `cloud-check:<name>` finding, and its account names that id like any other. The report is still kept and posted.
 
 The hold releases when a trusted `launch-account` marker for that bundle's dispatch, posted after its findings exist, names exactly its finding ids (the `launch-account` contract in `markers.md`). An account posted before the run completed, or for an unrecorded comparison before the launch began, counts for nothing. Name each finding's party by what made the change, from what you know, never by default:
 

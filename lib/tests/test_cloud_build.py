@@ -581,3 +581,74 @@ def test_an_artifact_run_is_judged_against_the_profile_setup_verifies(machine, m
     _code, _request, run, _output = launch(machine, fake, stage="artifact", brief=b"> brief\n",
                                             copy={"source_commit": HOLDER})
     assert run["attempts"][0]["cloud"]["profile"]["off_profile"] is False
+
+
+def test_a_stopped_cloud_session_is_a_recovery_source(monkeypatch):
+    import work
+    import work_recovery
+    request = {"route": "cloud", "requested": {"vendor": "claude"}}
+    monkeypatch.setattr(work_recovery, "latest_stopped", lambda *_a, **_k: (1, "bundle", request, {}))
+    monkeypatch.setattr(work_recovery, "handover_predecessor", lambda *_a: None)
+    monkeypatch.setattr(work_recovery.lifecycle, "recovery_session", lambda *_a: "cse_STOPPED")
+    monkeypatch.setattr(work_recovery, "validate_target", lambda *_a, **_k: None)
+    source = work_recovery.stopped_source(object(), "build")
+    assert source.session == "cse_STOPPED"
+    monkeypatch.setattr(work_recovery, "latest_stopped",
+                        lambda *_a, **_k: (1, "bundle", {"route": "local"}, {}))
+    with pytest.raises(work.WorkError, match="invalid session identity"):
+        work_recovery.stopped_source(object(), "build")
+
+
+def test_a_follow_up_after_an_interrupted_first_attempt_uses_the_fired_commit():
+    request = {"requested": {"continuity": "fresh"}, "cloud": {"practice": {"commit": INSTALLED}}}
+    interrupted = {"attempts": [{"cloud": {}}]}
+    assert cloud.loaded_commit([(request, interrupted)], "cse_X")[1] == INSTALLED
+    disagreeing = {"attempts": [{"cloud": {"practice_check": {"commit": OLD_PIN}}}]}
+    with pytest.raises(cloud.CloudError):
+        cloud.loaded_commit([(request, disagreeing)], "cse_X")
+
+
+def test_a_repair_that_moves_the_branch_must_descend_from_the_fire_tip():
+    held = cloud.change_branch_check(TIP, AFTER, [], "diverged", repair=True)
+    assert held["ok"] is False and held["checked"] is True
+    assert cloud.change_branch_check(TIP, AFTER, [AFTER], "ahead", repair=True)["ok"] is True
+    assert cloud.change_branch_check(TIP, TIP, [], "identical", repair=True)["ok"] is True
+
+
+def test_a_run_outside_auto_mode_fails_and_holds(machine):
+    import work
+    fake = Fake()
+    real_run = fake._run
+
+    def plan_mode():
+        real_run()
+        usage = json.loads(fake.files["usage.json"])
+        usage["permission_mode"] = {"values": ["plan"], "source": "hook-input"}
+        fake.files["usage.json"] = json.dumps(usage).encode()
+
+    fake._run = plan_mode
+    _code, _request, run, _output = launch(machine, fake)
+    assert run["attempts"][0]["cloud"]["cloud_checks"]["permission_mode"]["ok"] is False
+    assert "cloud-check:permission_mode" in [f["id"] for f in work._cloud_check_findings(run)]
+
+
+def test_a_local_tree_that_did_not_follow_holds_the_next_stage(machine):
+    import work
+    fake = Fake()
+    fake.git = lambda root, *arguments: (1, "not a fast-forward") if arguments[0] == "merge" else (0, "")
+    _code, _request, run, _output = launch(machine, fake)
+    assert run["outcome"] == "success" and fake.comments
+    assert run["attempts"][0]["cloud"]["cloud_checks"]["local_tree"]["ok"] is False
+    assert "cloud-check:local_tree" in [f["id"] for f in work._cloud_check_findings(run)]
+
+
+def test_repository_keys_match_without_regard_to_case(tmp_path):
+    path = tmp_path / "cloud-builds.json"
+    entry = {"routine_id": "trig", "token_file": "t", "setup_record": "s", "set_up_at": "x"}
+    path.write_text(json.dumps({"schema_version": 1, "practice": {"repository": PRACTICE},
+                                "repositories": {"owner/Product": entry}}))
+    assert cloud.route_for("Owner/product#1", path)[0]["routine_id"] == "trig"
+    path.write_text(json.dumps({"schema_version": 1, "practice": {"repository": PRACTICE},
+                                "repositories": {"owner/Product": entry, "Owner/product": entry}}))
+    with pytest.raises(cloud.CloudRefusal, match="more than once"):
+        cloud.route_for("Owner/product#1", path)

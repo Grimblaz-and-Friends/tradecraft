@@ -2158,3 +2158,12 @@ def test_an_entry_sends_a_claude_launch_to_the_cloud_and_starts_nothing_local(jo
     calls.clear()
     assert implementer.run_implementer(args) == 0
     assert calls["entry"] is None and "malformed" in calls["preset_failure"]
+
+
+def test_a_stage_the_route_does_not_carry_stays_local(job, monkeypatch):
+    args, _ = job
+    args.work, args.vendor, args.stage = "Owner/product#592", "claude", "source-verification"
+    _cloud_record(Path.home(), "Owner/product")
+    assert implementer._cloud_route(args) is None
+    args.stage = "build"
+    assert implementer._cloud_route(args)[0]["routine_id"] == "trig_1"
