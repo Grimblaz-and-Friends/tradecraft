@@ -79,7 +79,7 @@ def verify(machine, value, *, phase="complete", pins=None, saved_tool_output=Fal
                         plugin=machine["plugin"], install_path=machine["install"])
 
 
-def test_body_carries_what_row_3_requires():
+def test_body_carries_what_setup_requires():
     body = setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")
     context = body["job_config"]["ccr"]["session_context"]
     assert body["clear_mcp_connections"] is True and context["disallowed_tools"] == ["PushNotification"]
