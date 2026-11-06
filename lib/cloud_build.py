@@ -8,6 +8,7 @@ back to a local builder. Design: lib/DESIGN.md#the-cloud-route
 from __future__ import annotations
 
 import base64
+import functools
 import importlib.util
 from datetime import datetime, timezone
 import hashlib
@@ -29,9 +30,11 @@ DEFAULT_PIN_BRANCH = "cloud-practice"
 REPORT_PREFIX = "claude/tradecraft-report-"
 
 
-def _load_hook():
+@functools.cache
+def _hook():
     # The hook runs alone in the cloud with no lib on its path, and it writes the
     # report branch's format, so the launcher reads the shared constants from it.
+    # It loads on first use, so the library still imports where only lib/ is present.
     path = Path(__file__).resolve().parents[1] / "hooks" / "cloud.py"
     spec = importlib.util.spec_from_file_location("tradecraft_cloud_hook", path)
     module = importlib.util.module_from_spec(spec)
@@ -39,10 +42,13 @@ def _load_hook():
     return module
 
 
-_HOOK = _load_hook()
-CLOUD_DIR = _HOOK.PREFIX
-HEADER = _HOOK.HEADER
-FIGURES = _HOOK.FIGURES
+_FROM_HOOK = {"CLOUD_DIR": "PREFIX", "HEADER": "HEADER", "FIGURES": "FIGURES"}
+
+
+def __getattr__(name: str):
+    if name in _FROM_HOOK:
+        return getattr(_hook(), _FROM_HOOK[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 CLOUD_SESSION = re.compile(r"cse_[A-Za-z0-9]+\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 # A run whose transcript names no effort can't be shown to have run at the profile.
@@ -267,10 +273,10 @@ def report_branch(issue: int | str, stage: str, dispatch_id: str) -> str:
 def header(*, work: str, stage: str, dispatch_id: str, checkout: str, practice_commit: str,
            branch: str) -> str:
     return "\n".join((
-        HEADER, f"work: {work}", f"stage: {stage}", f"dispatch: {dispatch_id}",
+        _hook().HEADER, f"work: {work}", f"stage: {stage}", f"dispatch: {dispatch_id}",
         f"repository: {repository_of(work)}", f"checkout: {checkout}",
         f"practice-commit: {practice_commit}", f"report-branch: {branch}",
-        f"task-file: {CLOUD_DIR}dispatch.md", ""))
+        f"task-file: {_hook().PREFIX}dispatch.md", ""))
 
 
 # ---- what the report branch says -----------------------------------------------
@@ -341,7 +347,7 @@ def ledger_check(usage: dict, previous: list[dict] | None,
             faults.append(f"(b) ledger id {row.get('id')} repeats")
         ids.add(row.get("id"))
         model_sums = sums.setdefault(str(row.get("model")), {})
-        for key in FIGURES:
+        for key in _hook().FIGURES:
             if key in row:
                 model_sums[key] = model_sums.get(key, 0) + row[key]
     if sums != {model: {key: value for key, value in figures.items()}
@@ -527,7 +533,7 @@ def create_report_branch(transport: Transport, repo: str, branch: str, base: str
         "content": base64.b64encode(dispatch).decode("ascii"), "encoding": "base64"})
     blob = _ok(status, value, "create dispatch blob")["sha"]
     status, value = transport.github("POST", f"repos/{repo}/git/trees", {
-        "base_tree": tree, "tree": [{"path": CLOUD_DIR + "dispatch.md", "mode": "100644",
+        "base_tree": tree, "tree": [{"path": _hook().PREFIX + "dispatch.md", "mode": "100644",
                                       "type": "blob", "sha": blob}]})
     new_tree = _ok(status, value, "create dispatch tree")["sha"]
     status, value = transport.github("POST", f"repos/{repo}/git/commits", {
@@ -541,7 +547,7 @@ def create_report_branch(transport: Transport, repo: str, branch: str, base: str
 
 
 def read_branch_file(transport: Transport, repo: str, branch: str, name: str) -> bytes | None:
-    status, value = transport.github("GET", f"repos/{repo}/contents/{CLOUD_DIR}{name}?ref={branch}")
+    status, value = transport.github("GET", f"repos/{repo}/contents/{_hook().PREFIX}{name}?ref={branch}")
     if status == 404:
         return None
     value = _ok(status, value, f"read {name}")
