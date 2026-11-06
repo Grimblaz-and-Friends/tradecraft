@@ -740,3 +740,104 @@ def test_a_failed_record_write_rolls_back_the_published_output(machine, monkeypa
                   validate=lambda *_: {"status": "pass"}, transport=Fake(), record_root=machine["records"],
                   plugin=machine["plugin"], install_path=machine["install"])
     assert not output.exists()
+
+
+def test_the_owners_ruling_is_the_expected_profile(monkeypatch):
+    import launch_settings
+    ruled = launch_settings.LaunchSettings("claude-ruled", "max", "ruling", "ruling")
+    monkeypatch.setattr(launch_settings, "resolve", lambda *_a, **_k: ruled)
+    monkeypatch.setattr(launch_settings, "read_bridge", lambda *_a, **_k: None)
+    assert cloud.builder_profile() == ("claude-ruled", "max")
+    marked = cloud.cloud_profile({"profile": {"models": ["claude-opus-5-5"], "efforts": ["high"]}},
+                                 cloud.builder_profile())
+    assert marked["off_profile"] is True and marked["profile"] == "claude-ruled/max"
+
+
+def test_a_reservation_failure_fires_nothing(machine, monkeypatch):
+    def refuse(*_a, **_k):
+        raise OSError("disk refused the reservation")
+    monkeypatch.setattr(cloud.records, "reserve_bundle", refuse)
+    fake = Fake()
+    with pytest.raises(OSError):
+        launch(machine, fake)
+    assert fake.fired == []
+
+
+def test_a_handover_onto_the_cloud_is_recorded_against_the_cloud_session(machine):
+    output = machine["records"] / "handover" / "result.md"
+    args = argparse.Namespace(
+        root=machine["root"], output=output, work=f"{REPO}#77", stage="build", resume=None,
+        settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
+        retry_of=None, holder_session_id=None, lineage_branch="tradecraft/77-x",
+        lineage_pull_request=None, timeout_seconds=600, artifact_brief_source="brief", artifact_brief=None,
+        handover_from="C:/records/codex/result.md.run.json")
+    cloud.run(args, Deadline(5), entry=machine["entry"], route_source="test", effective_prompt=b"t",
+              prompt=b"t", context=b"", artifact_brief=b"", metadata={}, composition={"origin": "holder"},
+              settings_sources={"vendor": "v", "model": "m", "effort": "e"},
+              validate=lambda *_: {"status": "pass"}, transport=Fake(), record_root=machine["records"],
+              plugin=machine["plugin"], install_path=machine["install"])
+    request = json.loads((output.parent / "result.md.request.json").read_text())
+    assert request["handover"]["replacement_session"] == "cse_ABC123"
+    assert request["handover"]["from_bundle"] == "C:/records/codex/result.md.run.json"
+
+
+@pytest.mark.parametrize("answer", ["lost", "no-session"])
+def test_an_ambiguous_fire_is_unresolved_and_blocks_a_replacement(machine, answer):
+    import run_lifecycle
+    fake = Fake()
+
+    def fire(routine, token, text):
+        fake.fired.append((routine, token, text))
+        if answer == "lost":
+            raise OSError("connection reset")
+        return 200, "{}"
+
+    fake.fire = fire
+    _code, request, run, _output = launch(machine, fake)
+    assert run["launch_unresolved"] is True and run["attempts"][0]["launched"] is None
+    assert "resolved on claude.ai" in run["attempts"][0]["reason"]
+    with pytest.raises(ValueError, match="unresolved"):
+        run_lifecycle.recovery_session(request, run)
+
+
+def test_a_failed_fire_status_is_not_unresolved(machine):
+    _code, _request, run, _output = launch(machine, Fake(fire_status=500))
+    assert not run.get("launch_unresolved") and run["attempts"][0]["launched"] is False
+
+
+def test_a_second_build_after_a_cloud_build_within_budget_is_not_refused(machine):
+    import run_lifecycle
+    _code, request, run, _output = launch(machine, Fake())
+    account = run_lifecycle.runtime_account([(1, "bundle", request, run)])
+    assert account["upper_seconds"] is not None and account["remaining_seconds"] > 0
+    assert run_lifecycle.allocation(account, 600) > 0
+
+
+def test_a_floor_declaration_reads_one_cloud_model_and_effort():
+    import work
+    single = {"cloud": {"profile": {"model": ["claude-opus-5-5"], "effort": "high"}}}
+    assert work._cloud_declared_profile(single) == ("claude-opus-5-5", "high")
+    several = {"cloud": {"profile": {"model": ["a", "b"], "effort": ["high", "low"]}}}
+    assert work._cloud_declared_profile(several) == (None, None)
+    unrecorded = {"cloud": {"profile": {"model": [], "effort": cloud.NO_EFFORT_LABEL}}}
+    assert work._cloud_declared_profile(unrecorded) == (None, None)
+    assert work._cloud_declared_profile({"vendor": "claude"}) == (None, None)
+
+
+def test_a_cloud_repairs_merge_instruction_names_the_cloud_practice_path(tmp_path, monkeypatch):
+    import types
+    import work
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    switch = tmp_path / ".tradecraft" / "cloud-builds.json"
+    switch.parent.mkdir(parents=True)
+    switch.write_text(json.dumps({"schema_version": 1, "practice": {"repository": PRACTICE},
+                                  "repositories": {REPO: {"routine_id": "trig", "token_file": "t",
+                                                          "setup_record": "s", "set_up_at": "x"}}}))
+    state = types.SimpleNamespace(repo=REPO, issue_number=77)
+    script = work._cloud_merge_script(state, "review-disposition", "claude")
+    assert script == "/home/user/tradecraft/skills/persist-changes/scripts/persist.py"
+    assert work._cloud_merge_script(state, "review-disposition", "codex") is None
+    local = types.SimpleNamespace(session="01234567-89ab-cdef-0123-456789abcdef")
+    assert work._cloud_merge_script(state, "review-disposition", "claude", local) is None
+    obligation = work.MergeObligation("h" * 40, REPO, "main", "p" * 40, (), None)
+    assert json.dumps(script) in obligation.prompt("tradecraft/77-x", script)

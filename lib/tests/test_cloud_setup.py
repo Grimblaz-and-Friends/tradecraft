@@ -154,3 +154,10 @@ def test_setup_binds_the_saved_routine_id_to_the_read_back(machine, capsys):
                         install_path=machine["install"]) == 1
     assert "setup FAILED: routine id" in capsys.readouterr().err
     assert not cloud.record_path(machine["home"]).exists()
+
+
+def test_verify_requires_the_owners_ruled_profile(machine, capsys, monkeypatch):
+    monkeypatch.setattr(cloud, "builder_profile", lambda: ("claude-ruled", "max"))
+    assert verify(machine, readback()) == 1
+    err = capsys.readouterr().err
+    assert "setup FAILED: model: required claude-ruled" in err and "effort_level: required max" in err

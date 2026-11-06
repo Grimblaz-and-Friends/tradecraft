@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shlex
@@ -6134,7 +6134,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
                   branch: str | None = None, *, floor_command: str | None = None,
                   merge_obligation: MergeObligation | None = None,
                   version_instruction: str = "",
-                  resumed: ResumeSource | None = None) -> bytes:
+                  resumed: ResumeSource | None = None,
+                  merge_script: str | None = None) -> bytes:
     if decision.stage == "use":
         raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
@@ -6272,7 +6273,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         + "\n--- affirmed implementation brief end ---",
     ]
     if merge_obligation is not None:
-        sections.insert(0, merge_obligation.prompt(branch or BRANCH_PLACEHOLDER))
+        sections.insert(0, merge_obligation.prompt(branch or BRANCH_PLACEHOLDER, merge_script))
     if artifact is not None:
         artifact_label = "artifact under revision" if explicit_artifact else "settled artifact"
         draft_explanation = _settled_draft_explanation(phase) if not explicit_artifact else None
@@ -6873,6 +6874,18 @@ def _unverifiable_declaration(stage: str, reason: str) -> dict[str, object]:
     }
 
 
+def _cloud_declared_profile(attempt) -> tuple[str | None, str | None]:
+    """The one model and effort a cloud attempt's own transcript showed, or None where it showed several.
+
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    seen = ((attempt.get("cloud") or {}).get("profile") or {}) if isinstance(attempt, dict) else {}
+    models = seen.get("model") if isinstance(seen.get("model"), list) else []
+    effort = seen.get("effort")
+    return (models[0] if len(models) == 1 else None,
+            effort if isinstance(effort, str) and effort != cloud_build.NO_EFFORT_LABEL else None)
+
+
 def _marker_declaration(state: WorkState, marker: Marker | None,
                         stage: str) -> dict[str, object]:
     if marker is None:
@@ -6910,6 +6923,7 @@ def _marker_declaration(state: WorkState, marker: Marker | None,
     observed = actual.get("observed") if isinstance(actual, dict) else None
     usage = actual.get("usage") if isinstance(actual, dict) else None
     usage_dispatch = usage.get("dispatch") if isinstance(usage, dict) else None
+    cloud_model, cloud_effort = _cloud_declared_profile(actual)
     qualification = native if native else run.get("staffing_qualification")
     staffing_status = native["staffing_status"] if native else run.get("staffing_status")
     if native is None and staffing_status is None and isinstance(usage_dispatch, dict):
@@ -6936,12 +6950,12 @@ def _marker_declaration(state: WorkState, marker: Marker | None,
         ),
         "actual_model": (
             str(actual.get("model")) if isinstance(actual, dict) and actual.get("model")
-            else None
+            else cloud_model
         ),
         "actual_effort": (
             str(observed.get("effort")) if isinstance(observed, dict) and observed.get("effort")
             else str(actual.get("effort")) if isinstance(actual, dict) and actual.get("effort")
-            else None
+            else cloud_effort
         ),
         "fallback_reason": (
             str(run.get("fallback_reason")) if run.get("fallback_reason") else None
@@ -8204,6 +8218,26 @@ def _merge_version_decision(root: Path, start: str, pinned: str, spec: dict | No
             "value": value, "reason": reason}
 
 
+def _cloud_merge_script(state, stage, vendor, resumed=None) -> str | None:
+    """The persist script's path in a cloud run's practice clone, when the launch goes to the cloud.
+
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    if vendor != "claude" or stage not in cloud_build.CLOUD_STAGES:
+        return None
+    session = getattr(resumed, "session", None)
+    if session and not cloud_build.CLOUD_SESSION.fullmatch(session):
+        return None  # a locally started session resumes locally
+    try:
+        entry, _source = cloud_build.route_for(f"{state.repo}#{state.issue_number}")
+    except cloud_build.CloudError:
+        return None  # the launcher refuses a broken switch; the prompt keeps the local path
+    if entry is None:
+        return None
+    return cloud_build.cloud_practice_path(entry["practice"]["repository"],
+                                           "skills", "persist-changes", "scripts", "persist.py")
+
+
 @dataclass(frozen=True)
 class MergeObligation:
     head: str
@@ -8213,8 +8247,10 @@ class MergeObligation:
     conflicts: tuple[str, ...]
     version_adjustment: dict | None
 
-    def prompt(self, branch: str) -> str:
-        script = Path(__file__).resolve().parents[1] / "skills" / "persist-changes" / "scripts" / "persist.py"
+    def prompt(self, branch: str, script: str | None = None) -> str:
+        # A cloud run finds the script in its practice clone, not under this machine's plugin root.
+        script = PurePosixPath(script) if script else (
+            Path(__file__).resolve().parents[1] / "skills" / "persist-changes" / "scripts" / "persist.py")
         lines = [
             "Merge obligation: do this before the implementation or reviewer repairs in this turn.",
             "When nothing else in this dispatch asks for implementation or repairs, "
@@ -9317,6 +9353,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                     merge_obligation=obligation,
                     version_instruction=version_instruction, resumed=resume_source,
+                    merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source),
                 )
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
@@ -9488,6 +9525,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                         merge_obligation=obligation,
                         version_instruction=version_instruction, resumed=resume_source,
+                        merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source),
                     )
                 except WorkError as exc:
                     if getattr(exc, "version_obligation", None) is not None:

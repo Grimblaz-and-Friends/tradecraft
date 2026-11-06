@@ -8,6 +8,7 @@ back to a local builder. Design: lib/DESIGN.md#the-cloud-route
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import functools
 import importlib.util
 from datetime import datetime, timezone
@@ -29,6 +30,15 @@ import run_lifecycle as lifecycle
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
+# Where a multi-source cloud session clones its sources.
+CLOUD_HOME = "/home/user"
+
+
+def cloud_practice_path(practice: str, *parts: str) -> str:
+    """A shipped practice file as the cloud run finds it, in the practice clone."""
+    return "/".join((CLOUD_HOME, practice_name(practice), *parts))
+
+
 # A routine run may push to `claude/` branches without being told; report branches live there.
 REPORT_PREFIX = "claude/tradecraft-report-"
 
@@ -328,7 +338,12 @@ def builder_profile() -> tuple[str, str]:
     profile, so every cloud run is judged against it too.
     """
     import dispatch_implementer  # Deferred: it imports this module.
-    return dispatch_implementer.PROFILES["implementer"]["claude"]
+    import launch_settings
+    model, effort = dispatch_implementer.PROFILES["implementer"]["claude"]
+    # The owner's model ruling replaces the default the same way it does for a local launch.
+    settings = launch_settings.resolve("implementer", "claude", model, effort, "implementer default",
+                                       "implementer default", bridge=launch_settings.read_bridge())
+    return settings.model, settings.effort
 
 
 def cloud_profile(usage: dict, profile: tuple[str, str] | None = None) -> dict[str, object]:
@@ -860,89 +875,114 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
     request["cloud"] = cloud
     failure, refused, token, env = None, False, None, None
     copy = metadata.get("artifact_copy") or {}
+    # The bundle's files are reserved before anything fires, so a run never starts with nowhere to
+    # be recorded; the request, with the session the fire returns, is written as soon as it returns.
+    reservation = records.reserve_bundle(destinations, output)
+    streams = reservation.__enter__()
     try:
-        if preset_failure is not None:
-            raise CloudRefusal(preset_failure)
-        if follow_up:
-            if CLOUD_SESSION.fullmatch(args.resume) is None:
-                raise CloudError(f"cloud follow-up needs a cse_ session id: {args.resume!r}")
-            env = followup_env()
-            claude = claude_command(args)
-            login_check(transport, env, claude)
-            _start, loaded = loaded_commit(session_attempts(record_root, args.resume), args.resume)
-            try:
-                installed = installed_practice(plugin, install_path or install_record_path(),
-                                               refuse_older=False)["commit"]
-            except CloudRefusal as exc:
-                # The install record is reported, never a reason to refuse a follow-up.
-                installed = f"unavailable: {exc}"
-            cloud["practice"] = {"session_loaded": loaded, "installed_at_send": installed,
-                                 "drift": installed != loaded, "commit": loaded}
-            cloud["session_id"] = args.resume
-            cloud["session_url"] = f"https://claude.ai/code/{args.resume}"
-        else:
-            token = read_token(entry["token_file"])
-            practice = installed_practice(plugin, install_path or install_record_path())
-            action = compare_pin(transport, entry["practice"], practice["commit"])
-            cloud["practice"] = {"repository": entry["practice"]["repository"],
-                                 "branch": entry["practice"]["branch"], **practice,
-                                 "pin_action": action}
-        if args.stage == "artifact":
-            holder = copy.get("source_commit") or request["revision_before"]
-            status, _value = transport.github("GET", f"repos/{repo}/commits/{holder}")
-            if status != 200:
-                raise CloudRefusal(f"holder commit {holder} is not on {repo}; push it, then launch again")
-            checkout, base = f"commit {holder}", holder
-            cloud["holder_commit"] = holder
-        else:
-            if not args.lineage_branch:
-                raise CloudError("a cloud build needs the registered implementation branch")
-            local = records.git_revision(root)
-            code, text = transport.git(root, "push", transport.remote(root),
-                                       f"HEAD:refs/heads/{args.lineage_branch}")
-            if code:
-                raise CloudError(f"cannot publish implementation branch: {text[:300]}")
-            base = remote_tip(transport, repo, args.lineage_branch)
-            if base != local:
-                raise CloudError(f"implementation branch at {base} on {repo}, expected {local}")
-            checkout = f"branch {args.lineage_branch}"
-            cloud["change_branch"] = {"name": args.lineage_branch, "tip_at_fire": base}
-        cloud["dispatch_commit"] = create_report_branch(transport, repo, branch, base,
-                                                        effective_prompt, dispatch_id)
-        text = header(work=args.work, stage=args.stage, dispatch_id=dispatch_id, checkout=checkout,
-                      practice_commit=cloud["practice"]["commit"], branch=branch)
-        if len(text) > FIRE_TEXT_LIMIT:
-            raise CloudRefusal(f"fire text is {len(text)} characters, over the fire's {FIRE_TEXT_LIMIT}; "
-                               "only the header is fired, and the task travels on the report branch")
-        if follow_up:
-            code, raw = transport.cli([*claude, "-p", text, "--cloud", args.resume,
-                                       "--output-format", "json"], env)
-            try:
-                value = json.loads(raw)
-            except ValueError:
-                value = {}
-            if code or not isinstance(value, dict) or value.get("ok") is not True \
-                    or value.get("session_id") != args.resume:
-                raise CloudError(f"follow-up send failed: exit {code} {raw[:300]!r}")
-        else:
-            # Never retried: a second fire cannot be told apart from a second session.
-            status, body = transport.fire(entry["routine_id"], token, text)
-            try:
-                value = json.loads(body)
-            except ValueError:
-                value = {}
-            session = value.get("claude_code_session_id") if isinstance(value, dict) else None
-            if status != 200 or not isinstance(session, str) or CLOUD_SESSION.fullmatch(session) is None:
-                raise CloudError(f"fire failed: HTTP {status} {body[:300]}")
-            cloud["session_id"] = session
-            cloud["session_url"] = value.get("claude_code_session_url")
-    except CloudRefusal as exc:
-        failure, refused = str(exc), True
-    except (CloudError, OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
-        failure = str(exc) if isinstance(exc, CloudError) else f"{type(exc).__name__}: {exc}"
+        try:
+            if preset_failure is not None:
+                raise CloudRefusal(preset_failure)
+            if follow_up:
+                if CLOUD_SESSION.fullmatch(args.resume) is None:
+                    raise CloudError(f"cloud follow-up needs a cse_ session id: {args.resume!r}")
+                env = followup_env()
+                claude = claude_command(args)
+                login_check(transport, env, claude)
+                _start, loaded = loaded_commit(session_attempts(record_root, args.resume), args.resume)
+                try:
+                    installed = installed_practice(plugin, install_path or install_record_path(),
+                                                   refuse_older=False)["commit"]
+                except CloudRefusal as exc:
+                    # The install record is reported, never a reason to refuse a follow-up.
+                    installed = f"unavailable: {exc}"
+                cloud["practice"] = {"session_loaded": loaded, "installed_at_send": installed,
+                                     "drift": installed != loaded, "commit": loaded}
+                cloud["session_id"] = args.resume
+                cloud["session_url"] = f"https://claude.ai/code/{args.resume}"
+            else:
+                token = read_token(entry["token_file"])
+                practice = installed_practice(plugin, install_path or install_record_path())
+                action = compare_pin(transport, entry["practice"], practice["commit"])
+                cloud["practice"] = {"repository": entry["practice"]["repository"],
+                                     "branch": entry["practice"]["branch"], **practice,
+                                     "pin_action": action}
+            if args.stage == "artifact":
+                holder = copy.get("source_commit") or request["revision_before"]
+                status, _value = transport.github("GET", f"repos/{repo}/commits/{holder}")
+                if status != 200:
+                    raise CloudRefusal(f"holder commit {holder} is not on {repo}; push it, then launch again")
+                checkout, base = f"commit {holder}", holder
+                cloud["holder_commit"] = holder
+            else:
+                if not args.lineage_branch:
+                    raise CloudError("a cloud build needs the registered implementation branch")
+                local = records.git_revision(root)
+                code, text = transport.git(root, "push", transport.remote(root),
+                                           f"HEAD:refs/heads/{args.lineage_branch}")
+                if code:
+                    raise CloudError(f"cannot publish implementation branch: {text[:300]}")
+                base = remote_tip(transport, repo, args.lineage_branch)
+                if base != local:
+                    raise CloudError(f"implementation branch at {base} on {repo}, expected {local}")
+                checkout = f"branch {args.lineage_branch}"
+                cloud["change_branch"] = {"name": args.lineage_branch, "tip_at_fire": base}
+            cloud["dispatch_commit"] = create_report_branch(transport, repo, branch, base,
+                                                            effective_prompt, dispatch_id)
+            text = header(work=args.work, stage=args.stage, dispatch_id=dispatch_id, checkout=checkout,
+                          practice_commit=cloud["practice"]["commit"], branch=branch)
+            if len(text) > FIRE_TEXT_LIMIT:
+                raise CloudRefusal(f"fire text is {len(text)} characters, over the fire's {FIRE_TEXT_LIMIT}; "
+                                   "only the header is fired, and the task travels on the report branch")
+            if follow_up:
+                code, raw = transport.cli([*claude, "-p", text, "--cloud", args.resume,
+                                           "--output-format", "json"], env)
+                try:
+                    value = json.loads(raw)
+                except ValueError:
+                    value = {}
+                if code or not isinstance(value, dict) or value.get("ok") is not True \
+                        or value.get("session_id") != args.resume:
+                    raise CloudError(f"follow-up send failed: exit {code} {raw[:300]!r}")
+            else:
+                # Never retried: a second fire cannot be told apart from a second session.
+                try:
+                    status, body = transport.fire(entry["routine_id"], token, text)
+                except OSError as exc:
+                    # The request may have reached the routine; only its answer is lost.
+                    cloud["fire_unresolved"] = True
+                    raise CloudError(f"fire response lost: {exc}") from exc
+                try:
+                    value = json.loads(body)
+                except ValueError:
+                    value = {}
+                session = value.get("claude_code_session_id") if isinstance(value, dict) else None
+                if status == 200 and (not isinstance(session, str) or CLOUD_SESSION.fullmatch(session) is None):
+                    # An accepted fire whose answer names no session may still have started one.
+                    cloud["fire_unresolved"] = True
+                    raise CloudError(f"fire answered HTTP 200 without a session id: {body[:300]}")
+                if status != 200:
+                    raise CloudError(f"fire failed: HTTP {status} {body[:300]}")
+                cloud["session_id"] = session
+                cloud["session_url"] = value.get("claude_code_session_url")
+        except CloudRefusal as exc:
+            failure, refused = str(exc), True
+        except (CloudError, OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
+            failure = str(exc) if isinstance(exc, CloudError) else f"{type(exc).__name__}: {exc}"
+    except BaseException:
+        if not reservation.__exit__(*sys.exc_info()):
+            raise
     token = None
+    if failure is not None and cloud.get("fire_unresolved"):
+        failure += ("; a session may be running unrecorded, so no replacement builder starts until it is "
+                    "resolved on claude.ai")
+    if getattr(args, "handover_from", None):
+        # A handover onto the cloud route lands in the cloud session the fire started.
+        request["handover"] = {"from_bundle": args.handover_from, "to_vendor": "claude",
+                               "replacement_session": cloud.get("session_id"), "phase": "cloud"}
     attempt: dict[str, object] = {
-        "vendor": "claude", "launched": failure is None, "exit_code": None,
+        "vendor": "claude", "launched": failure is None if not cloud.get("fire_unresolved") else None,
+        "exit_code": None,
         "outcome": "error", "reason": "", "source_format": "claude-cloud-routine",
         "environment": {"status": "cloud", "route": "cloud", "instructions_applied": INSTRUCTIONS_APPLIED},
         "cloud": {"session_id": cloud.get("session_id"), "report_branch": branch},
@@ -956,8 +996,10 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                    "assessment": "unassessed"},
         "route": "cloud", "launch_comparison": launch_bound.cloud_not_run(),
     }
+    if cloud.get("fire_unresolved"):
+        run_record["launch_unresolved"] = True  # recovery refuses another writer until it is resolved
     published = None
-    with records.reserve_bundle(destinations, output) as streams:
+    with _reserved(reservation, streams):
         streams[request_path].write(records.json_bytes(request))
         streams[input_path].write(prompt)
         if context_path:
@@ -1025,6 +1067,18 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         return 0
     print(f"implementer: cloud attempt {run_record['outcome']}: {attempt['reason']}", file=sys.stderr)
     return 1
+
+
+@contextmanager
+def _reserved(reservation, streams):
+    """Finish a reservation taken before the fire, keeping it only once marked ready."""
+    try:
+        yield streams
+    except BaseException:
+        if not reservation.__exit__(*sys.exc_info()):
+            raise
+    else:
+        reservation.__exit__(None, None, None)
 
 
 def _cloud_usage(attempt: dict) -> None:
@@ -1110,7 +1164,7 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     record_cloud.update(usage=usage, running_total=totals, delta=this_delta,
                         ledger_check=ledger_check(usage, (previous or {}).get("ledger"),
                                                   [*deltas, this_delta]),
-                        profile=cloud_profile(usage, builder_profile()))
+                        profile=cloud_profile(usage, (args.model, args.effort)))
     if previous is not None and not previous.get("baseline_ok"):
         # A delta from a total nobody could stand behind is no figure either.
         record_cloud["ledger_check"] = {"ok": False, "faults": [
