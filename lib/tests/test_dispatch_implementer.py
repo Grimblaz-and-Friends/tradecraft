@@ -2087,7 +2087,7 @@ def test_906_recovery_evidence_is_recorded_before_the_comparison_takes_the_clean
     assert logged["launch_comparison"]["findings"][0]["id"] == "unrecorded"
 
 
-# ---- the cloud route's switch (#938) ------------------------------------------
+# ---- the cloud route's switch -------------------------------------------------
 
 def _cloud_record(home, repository):
     path = home / ".tradecraft" / "cloud-builds.json"
@@ -2116,7 +2116,7 @@ def _comparable(args):
     return value
 
 
-def test_ac_2_3_a_codex_launch_is_unchanged_by_the_cloud_record(job, monkeypatch):
+def test_a_codex_launch_is_unchanged_by_the_cloud_record(job, monkeypatch):
     import copy
     base, _ = job
     base.work = "Owner/product#592"
@@ -2134,7 +2134,7 @@ def test_ac_2_3_a_codex_launch_is_unchanged_by_the_cloud_record(job, monkeypatch
     assert runs[0] == runs[1]
 
 
-def test_ac_2_1_an_entry_sends_a_claude_launch_to_the_cloud_and_starts_nothing_local(job, monkeypatch):
+def test_an_entry_sends_a_claude_launch_to_the_cloud_and_starts_nothing_local(job, monkeypatch):
     args, _ = job
     args.work, args.vendor = "Owner/product#592", "claude"
     record = _cloud_record(Path.home(), "Owner/product")

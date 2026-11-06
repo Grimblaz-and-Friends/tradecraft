@@ -3827,12 +3827,12 @@ LAUNCH_ACCOUNT_PARTIES = frozenset({"owner", "plugin-update", "session", "builde
                                     "none-found"})
 LAUNCH_ACCOUNT_FIELDS = frozenset({"id", "party", "basis", "session", "owner_report", "practice_issue"})
 LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposition", "use"})
-# `cloud-not-run`: a cloud builder cannot reach this machine (#938 row 9).
+# `cloud-not-run`: a cloud builder cannot reach this machine, so it has nothing to compare.
 LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched", "cloud-not-run"})
 
 
 def _cloud_check_findings(run: dict) -> list[dict]:
-    """A failed cloud attempt check holds the next stage like a launch finding (#938 call 16)."""
+    """A failed cloud attempt check holds the next stage like a launch finding."""
     findings = []
     for attempt in run.get("attempts") or []:
         cloud = attempt.get("cloud") if isinstance(attempt, dict) else None
@@ -3969,7 +3969,7 @@ def _launch_account_refusal(state: WorkState, stage: str) -> Decision | None:
 
 
 def _cloud_report(request, attempt):
-    """A cloud attempt's route, profile mark, checks and practice drift (#938)."""
+    """A cloud attempt's route, profile mark, checks and practice drift."""
     if request.get("route") != "cloud":
         return {"route": "local"} if (attempt.get("vendor") == "claude") else {}
     cloud = attempt.get("cloud") if isinstance(attempt.get("cloud"), dict) else {}

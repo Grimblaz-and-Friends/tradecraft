@@ -381,7 +381,7 @@ def validate_artifact_return(expected: str, returned: str | bytes) -> dict[str, 
 
 
 def _cloud_route(args: argparse.Namespace) -> tuple[dict | None, str, str | None] | None:
-    """The cloud route for a set-up repository's Claude launch, or None for local (#938 row 2).
+    """The cloud route for a set-up repository's Claude launch, or None for local.
 
     A follow-up goes wherever its session runs: a ``cse_`` session is a cloud
     session, and a UUID session started locally is resumed locally.

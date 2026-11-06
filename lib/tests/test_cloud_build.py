@@ -1,4 +1,4 @@
-"""The cloud route: record, token, practice pin, fire, finish and checks (#938)."""
+"""The cloud route: record, token, practice pin, fire, finish and checks."""
 import argparse
 import base64
 import json
@@ -48,7 +48,7 @@ class Fake(cloud.Transport):
             return (404, {}) if self.compare == 404 else (200, {"status": self.compare})
         if method == "PATCH":
             return 200, {}
-        if path.endswith("/git/ref/heads/tradecraft/938-x"):
+        if path.endswith("/git/ref/heads/tradecraft/77-x"):
             return 200, {"object": {"sha": self.change_tip}}
         if "/git/ref/heads/claude/" in path:
             return 200, {"object": {"sha": "d" * 40}}
@@ -157,9 +157,9 @@ def launch(machine, transport, *, stage="build", resume=None, brief=b"", copy=No
            preset=None):
     output = machine["records"] / f"{stage}-{len(list(machine['tmp'].glob('**/*.request.json')))}" / "result.md"
     args = argparse.Namespace(
-        root=machine["root"], output=output, work=f"{REPO}#938", stage=stage, resume=resume,
+        root=machine["root"], output=output, work=f"{REPO}#77", stage=stage, resume=resume,
         settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
-        retry_of=None, holder_session_id=None, lineage_branch=None if stage == "artifact" else "tradecraft/938-x",
+        retry_of=None, holder_session_id=None, lineage_branch=None if stage == "artifact" else "tradecraft/77-x",
         lineage_pull_request=None, timeout_seconds=600, artifact_brief_source="brief",
         artifact_brief=None)
     code = cloud.run(args, Deadline(polls), entry=machine["entry"] if entry else None, route_source="test",
@@ -178,7 +178,7 @@ def everything(machine):
     return b"".join(path.read_bytes() for path in machine["records"].rglob("*") if path.is_file())
 
 
-def test_ac_1_1_a_build_records_its_session_and_checks_the_change_branch(machine):
+def test_a_build_records_its_session_and_checks_the_change_branch(machine):
     fake = Fake()
     code, request, run, output = launch(machine, fake)
     assert code == 0 and run["outcome"] == "success"
@@ -195,12 +195,12 @@ def test_ac_1_1_a_build_records_its_session_and_checks_the_change_branch(machine
     assert request["instructions_applied"] == cloud.INSTRUCTIONS_APPLIED
     assert attempt["cloud"]["instructions_loaded"] == ["/home/user/product/CLAUDE.md"]
     text = fake.fired[0][2]
-    assert text.startswith(cloud.HEADER) and "checkout: branch tradecraft/938-x" in text
+    assert text.startswith(cloud.HEADER) and "checkout: branch tradecraft/77-x" in text
     assert f"practice-commit: {INSTALLED}" in text and len(text) < cloud.FIRE_TEXT_LIMIT
     assert fake.dispatch == b"the task\n"
 
 
-def test_ac_1_1_an_unchanged_change_branch_fails_and_holds(machine):
+def test_an_unchanged_change_branch_fails_and_holds(machine):
     import work
     _code, _request, run, _output = launch(machine, Fake(advance=False))
     check = run["attempts"][0]["cloud"]["cloud_checks"]["change_branch"]
@@ -208,7 +208,7 @@ def test_ac_1_1_an_unchanged_change_branch_fails_and_holds(machine):
     assert [finding["id"] for finding in work._cloud_check_findings(run)] == ["cloud-check:change_branch"]
 
 
-def test_ac_1_2_token_refusals_print_and_keep_nothing_of_the_file(machine, capsys):
+def test_token_refusals_print_and_keep_nothing_of_the_file(machine, capsys):
     for content in (None, b"", b"two\nlines", bytes([0x74, 0xc3, 0xb6, 0x6b])):
         if content is None:
             machine["token"].unlink(missing_ok=True)
@@ -224,7 +224,7 @@ def test_ac_1_2_token_refusals_print_and_keep_nothing_of_the_file(machine, capsy
     assert TOKEN not in seen.out + seen.err
 
 
-def test_ac_1_3_artifact_checks_out_the_holder_commit_and_publishes_the_report(machine):
+def test_artifact_checks_out_the_holder_commit_and_publishes_the_report(machine):
     report = b"> brief\n\n# Artifact\n"
     fake = Fake(report=report)
     copy = {"source_commit": HOLDER}
@@ -240,14 +240,14 @@ def test_ac_1_3_artifact_checks_out_the_holder_commit_and_publishes_the_report(m
     assert code == 1 and HOLDER in run["attempts"][0]["reason"] and missing.fired == []
 
 
-def test_ac_2_2_a_failed_fire_is_recorded_and_never_falls_back(machine):
+def test_a_failed_fire_is_recorded_and_never_falls_back(machine):
     code, _request, run, _output = launch(machine, Fake(fire_status=500))
     assert code == 1 and run["outcome"] == "error" and "fire failed: HTTP 500" in run["attempts"][0]["reason"]
     code, _request, run, _output = launch(machine, Fake(), preset="cloud record x is malformed")
     assert run["outcome"] == "refused" and "malformed" in run["attempts"][0]["reason"]
 
 
-def test_ac_2_1_route_selection_and_a_broken_record(tmp_path):
+def test_route_selection_and_a_broken_record(tmp_path):
     path = tmp_path / "cloud-builds.json"
     assert cloud.route_for(f"{REPO}#1", path)[0] is None
     path.write_text(json.dumps({"schema_version": 1, "practice": {"repository": PRACTICE},
@@ -264,15 +264,15 @@ def test_ac_2_1_route_selection_and_a_broken_record(tmp_path):
             cloud.route_for(f"{REPO}#1", path)
 
 
-def test_ac_10_1_a_record_naming_the_practice_refuses(tmp_path):
+def test_a_record_naming_the_practice_refuses(tmp_path):
     path = tmp_path / "cloud-builds.json"
     path.write_text(json.dumps({"schema_version": 1, "practice": {"repository": PRACTICE},
                                 "repositories": {"Someone/tradecraft": {}}}))
-    with pytest.raises(cloud.CloudRefusal, match="row 10"):
+    with pytest.raises(cloud.CloudRefusal, match="practice's own repository"):
         cloud.route_for(f"{REPO}#1", path)
 
 
-def test_ac_5_1_pin_fast_forwards_once(machine):
+def test_pin_fast_forwards_once(machine):
     fake = Fake()
     assert cloud.compare_pin(fake, machine["entry"]["practice"], INSTALLED).startswith("fast-forwarded")
     fake.compare = "identical"
@@ -282,14 +282,14 @@ def test_ac_5_1_pin_fast_forwards_once(machine):
 
 
 @pytest.mark.parametrize("state, phrase", [("behind", "reload"), ("diverged", "diverged"), (404, "absent")])
-def test_ac_5_2_pin_refusals(machine, state, phrase):
+def test_pin_refusals(machine, state, phrase):
     fake = Fake(compare=state)
     code, _request, run, _output = launch(machine, fake)
     assert code == 1 and run["outcome"] == "refused" and phrase in run["attempts"][0]["reason"]
     assert fake.fired == []
 
 
-def test_ac_5_8_install_record_not_head_decides(machine):
+def test_install_record_not_head_decides(machine):
     practice = cloud.installed_practice(machine["plugin"], machine["install"])
     assert practice["commit"] == INSTALLED
     (machine["plugin"] / ".claude-plugin" / "plugin.json").write_text(
@@ -300,21 +300,21 @@ def test_ac_5_8_install_record_not_head_decides(machine):
     assert '"rev-parse", "HEAD"' not in source and "git status" not in source
 
 
-def test_ac_5_3_a_mismatch_is_recorded_without_waiting(machine):
+def test_a_mismatch_is_recorded_without_waiting(machine):
     code, _request, run, _output = launch(machine, Fake(practice_ok=False), polls=2)
     assert run["outcome"] == "practice_mismatch"
     assert INSTALLED in run["attempts"][0]["reason"] and OLD_PIN in run["attempts"][0]["reason"]
     assert "change_branch" not in run["attempts"][0]["cloud"]["cloud_checks"]
 
 
-def test_ac_5_3c_no_recorded_practice_check_fails_and_holds(machine):
+def test_no_recorded_practice_check_fails_and_holds(machine):
     import work
     _code, _request, run, _output = launch(machine, Fake(usage_practice={"ok": None, "reason": "none"}))
     assert run["attempts"][0]["cloud"]["cloud_checks"]["practice"]["ok"] is False
     assert "cloud-check:practice" in [f["id"] for f in work._cloud_check_findings(run)]
 
 
-def test_ac_6_1_report_is_posted_whole_and_its_branch_deleted(machine):
+def test_report_is_posted_whole_and_its_branch_deleted(machine):
     report = ("x" * 70_000 + "\n").encode()
     fake = Fake(report=report)
     launch(machine, fake)
@@ -324,9 +324,9 @@ def test_ac_6_1_report_is_posted_whole_and_its_branch_deleted(machine):
     assert fake.deleted == [f"repos/{REPO}/git/refs/heads/{fake.branch}"]
 
 
-def test_ac_6_2_delete_refuses_any_other_name():
-    request = {"work": f"{REPO}#938", "stage": "build", "dispatch_id": "d" * 32,
-               "cloud": {"issue": 938, "report_branch": "claude/tradecraft-report-938-build-eeeeeeeeeeee"}}
+def test_delete_refuses_any_other_name():
+    request = {"work": f"{REPO}#77", "stage": "build", "dispatch_id": "d" * 32,
+               "cloud": {"issue": 77, "report_branch": "claude/tradecraft-report-77-build-eeeeeeeeeeee"}}
     with pytest.raises(cloud.CloudError):
         cloud.delete_report_branch(Fake(), request)
     request["cloud"]["report_branch"] = "main"
@@ -336,7 +336,7 @@ def test_ac_6_2_delete_refuses_any_other_name():
     assert source.count('"DELETE"') == 1
 
 
-def test_ac_6_3_a_report_commit_without_skip_ci_fails_and_holds(machine):
+def test_a_report_commit_without_skip_ci_fails_and_holds(machine):
     import work
     _code, _request, run, _output = launch(machine, Fake(skip_ci=False))
     check = run["attempts"][0]["cloud"]["cloud_checks"]["skip_ci"]
@@ -344,7 +344,7 @@ def test_ac_6_3_a_report_commit_without_skip_ci_fails_and_holds(machine):
     assert "cloud-check:skip_ci" in [f["id"] for f in work._cloud_check_findings(run)]
 
 
-def test_ac_4_1_default_effort_is_marked():
+def test_default_effort_is_marked():
     for profile in ({"models": ["claude-opus-5-5"], "efforts": []},
                     {"models": ["claude-opus-5-5"], "efforts": ["medium"]},
                     {"models": ["claude-opus-5-5"], "efforts": ["high", "medium"]},
@@ -354,7 +354,7 @@ def test_ac_4_1_default_effort_is_marked():
         == cloud.DEFAULT_EFFORT_LABEL
 
 
-def test_ac_7_1_and_8_1_build_plus_repair_is_one_running_total(machine):
+def test_and_8_1_build_plus_repair_is_one_running_total(machine):
     fake = Fake()
     launch(machine, fake)
     fake.auth = "claude.ai"
@@ -369,7 +369,7 @@ def test_ac_7_1_and_8_1_build_plus_repair_is_one_running_total(machine):
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in fake.cli_calls[-1][1]
 
 
-def test_ac_5_7_follow_up_after_an_update_keeps_the_loaded_commit(machine):
+def test_follow_up_after_an_update_keeps_the_loaded_commit(machine):
     fake = Fake()
     launch(machine, fake)
     install = json.loads(machine["install"].read_text())
@@ -384,12 +384,12 @@ def test_ac_5_7_follow_up_after_an_update_keeps_the_loaded_commit(machine):
     assert f"practice-commit: {INSTALLED}" in fake.cli_calls[-1][0][2]
 
 
-def test_ac_5_7_a_missing_starting_record_is_an_error_not_a_refusal(machine):
+def test_a_missing_starting_record_is_an_error_not_a_refusal(machine):
     code, _request, run, _output = launch(machine, Fake(), stage="floor", resume="cse_NOPE")
     assert run["outcome"] == "error" and "starting attempts" in run["attempts"][0]["reason"]
 
 
-def test_ac_8_2_no_claude_ai_login_refuses(machine):
+def test_no_claude_ai_login_refuses(machine):
     launch(machine, Fake())
     fake = Fake()
     fake.auth = "oauth_token"
@@ -398,7 +398,7 @@ def test_ac_8_2_no_claude_ai_login_refuses(machine):
     assert len(fake.cli_calls) == 1
 
 
-def test_ac_8_3_revision_resumes_the_author_at_the_current_holder_commit(machine):
+def test_revision_resumes_the_author_at_the_current_holder_commit(machine):
     fake = Fake(report=b"> brief\n\ndraft\n")
     launch(machine, fake, stage="artifact", brief=b"> brief\n", copy={"source_commit": HOLDER})
     code, request, _run, _output = launch(machine, fake, stage="artifact", brief=b"> brief\n",
@@ -407,7 +407,7 @@ def test_ac_8_3_revision_resumes_the_author_at_the_current_holder_commit(machine
     assert "checkout: commit " + "8" * 40 in fake.cli_calls[-1][0][2]
 
 
-def test_ac_7_2_pricing_needs_a_passing_ledger_and_a_rate_row():
+def test_pricing_needs_a_passing_ledger_and_a_rate_row():
     rates = change_cost.load_rates(LIB / "rates.json")
 
     def item(model, ok=True):
@@ -427,12 +427,12 @@ def test_ac_7_2_pricing_needs_a_passing_ledger_and_a_rate_row():
     assert ledger["status"] == "unknown" and "(e)" in json.dumps(ledger)
 
 
-def test_ac_9_1_cloud_not_run_is_clear_and_local_still_compares():
+def test_cloud_not_run_is_clear_and_local_still_compares():
     import launch_bound
     import work
     assert "cloud-not-run" in work.LAUNCH_CLEAR_STATUSES
     value = launch_bound.cloud_not_run()
-    assert value["status"] == "cloud-not-run" and "row 9" in value["reason"] and value["findings"] == []
+    assert value["status"] == "cloud-not-run" and "cannot reach" in value["reason"] and value["findings"] == []
     assert {"clean", "not-launched"} <= work.LAUNCH_CLEAR_STATUSES
 
 
@@ -443,7 +443,7 @@ def test_cse_sessions_are_resumable_only_on_the_cloud_route():
     assert work._session_shaped("01234567-89ab-cdef-0123-456789abcdef", {})
 
 
-def test_ac_6_4_the_saved_prompt_forbids_posting_and_messaging():
+def test_the_saved_prompt_forbids_posting_and_messaging():
     prompt = cloud.ROUTINE_PROMPT
     assert "Never comment on the issue, never message another session" in prompt
     assert "[skip ci]" in prompt and "instructions.md" in prompt and "report.md" in prompt

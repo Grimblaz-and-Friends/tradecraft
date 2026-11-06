@@ -1,4 +1,4 @@
-"""One-time cloud setup: the create body and its read-back verification (#938 row 3)."""
+"""One-time cloud setup: the create body and its read-back verification."""
 import argparse
 import json
 from pathlib import Path
@@ -15,7 +15,7 @@ REPO, PRACTICE, INSTALLED = "Owner/product", "Grimblaz-and-Friends/tradecraft", 
 
 
 def readback(**changes):
-    """A read-back in the shape `RemoteTrigger get` returned on 2026-11-05."""
+    """A read-back in the shape `RemoteTrigger get` returns."""
     sent = setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")
     ccr = json.loads(json.dumps(sent["job_config"]["ccr"]))
     ccr["session_context"].update(model="claude-opus-5-5", effort_level="high",
@@ -79,7 +79,7 @@ def verify(machine, value, *, phase="complete", pins=None, saved_tool_output=Fal
                         plugin=machine["plugin"], install_path=machine["install"])
 
 
-def test_ac_3_1_body_carries_what_row_3_requires():
+def test_body_carries_what_row_3_requires():
     body = setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")
     context = body["job_config"]["ccr"]["session_context"]
     assert body["clear_mcp_connections"] is True and context["disallowed_tools"] == ["PushNotification"]
@@ -93,7 +93,7 @@ def test_ac_3_1_body_carries_what_row_3_requires():
     assert body == setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")  # stable to re-verify
 
 
-def test_ac_3_1_and_5_5_a_clean_complete_writes_the_entry_and_creates_the_pin(machine, capsys):
+def test_and_5_5_a_clean_complete_writes_the_entry_and_creates_the_pin(machine, capsys):
     pins = Pins(False)
     assert verify(machine, readback(), pins=pins) == 0
     record = cloud.read_record(cloud.record_path(machine["home"]))
@@ -121,14 +121,14 @@ def test_ac_3_1_and_5_5_a_clean_complete_writes_the_entry_and_creates_the_pin(ma
     ({"job_config.ccr.environment_id": "env_2"}, "environment_id"),
     ({"job_config.ccr.events.0.data.message.content": "changed"}, "prompt"),
 ])
-def test_ac_3_2_any_differing_field_fails_and_writes_no_entry(machine, capsys, change, field):
+def test_any_differing_field_fails_and_writes_no_entry(machine, capsys, change, field):
     assert verify(machine, readback(**change)) == 1
     assert f"setup FAILED: {field}" in capsys.readouterr().err
     assert not cloud.record_path(machine["home"]).exists()
 
 
-def test_ac_10_1_the_practice_repository_is_refused():
+def test_the_practice_repository_is_refused():
     for repo in (PRACTICE, "Someone/tradecraft"):
-        with pytest.raises(setup.SetupError, match="row 10"):
+        with pytest.raises(setup.SetupError, match="practice's own repository"):
             setup.create_body(repo, "env", PRACTICE, "cloud-practice")
     assert setup.main(["body", "--repo", PRACTICE, "--environment", "env"]) == 1

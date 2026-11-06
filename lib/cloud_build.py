@@ -1,4 +1,4 @@
-"""The Claude implementer as a cloud session for a set-up repository (#938).
+"""The Claude implementer as a cloud session for a set-up repository.
 
 A set-up repository's Claude launches (artifact, build, repairs) fire that
 repository's routine, wait for the run's report branch, and read its report,
@@ -40,14 +40,14 @@ COMMENT_LIMIT = 60_000
 FIRE_TEXT_LIMIT = 65_536
 FOLLOWUP_STAGES = frozenset({"review-disposition", "floor", "build", "artifact"})
 COMPARISON_REASON = ("not run: a cloud builder runs on a remote machine and cannot reach "
-                     "this one (#938 row 9)")
+                     "this one")
 INSTRUCTIONS_APPLIED = ("product CLAUDE.md/AGENTS.md from the cloned repository; no repository's "
                         "committed hooks or permission rules apply, because the session starts "
-                        "above its clones (#938 row 10)")
+                        "above its clones")
 PRACTICE_OWN_REFUSAL = (
     "refused: the practice's own repository is not set up for cloud builds; its product and "
     "practice clones would share /home/user/tradecraft and its committed guard would govern a "
-    "single-source build, which is untested (#938 row 10)")
+    "single-source build, which is untested")
 
 # The saved prompt every set-up routine carries; setup embeds and verifies it.
 ROUTINE_PROMPT = """You are a tradecraft cloud implementer run.
@@ -99,7 +99,7 @@ def is_practice_repository(repository: str, practice: str) -> bool:
 
 
 def read_record(path: Path) -> dict | None:
-    """The parsed switch, or None when absent; a broken switch refuses (row 2)."""
+    """The parsed switch, or None when absent; a broken switch refuses rather than meaning local."""
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
@@ -174,7 +174,7 @@ def _errno_name(number: int) -> str:
     return errno.errorcode.get(number, f"errno {number}")
 
 
-# ---- the practice version (row 5) ------------------------------------------
+# ---- the practice version ---------------------------------------------------
 
 def plugin_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -202,7 +202,7 @@ def _version_key(value: str, where: str) -> tuple[int, ...]:
 
 
 def installed_practice(root: Path, path: Path, *, refuse_older: bool = True) -> dict[str, str]:
-    """The install record's commit and version for this launcher's plugin (call 4)."""
+    """The install record's commit and version for this launcher's plugin."""
     version, name = launcher_version(root)
     try:
         value = json.loads(path.read_text("utf-8"))
@@ -266,7 +266,7 @@ def git_blob_sha(content: bytes) -> str:
 
 
 def finished(files: dict[str, bytes | None]) -> bool:
-    """The finish signal: a report and a usage record naming that report's blob (call 7)."""
+    """The finish signal: a report and a usage record naming that report's blob."""
     report, usage = files.get("report.md"), files.get("usage.json")
     if report is None or usage is None:
         return False
@@ -278,7 +278,7 @@ def finished(files: dict[str, bytes | None]) -> bool:
 
 
 def cloud_profile(usage: dict) -> dict[str, object]:
-    """The main session's model and effort, against the builder profile (row 4)."""
+    """The main session's model and effort, against the builder profile."""
     seen = usage.get("profile") if isinstance(usage.get("profile"), dict) else {}
     models = [value for value in seen.get("models") or [] if isinstance(value, str)]
     efforts = [value for value in seen.get("efforts") or [] if isinstance(value, str)]
@@ -306,7 +306,7 @@ FIGURES = ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h", 
 
 def ledger_check(usage: dict, previous: list[dict] | None,
                  recorded_deltas: list[dict] | None = None) -> dict[str, object]:
-    """Checks (a)–(e) of the hook's reading, without the transcript (§2.6)."""
+    """Checks (a)–(e) of the hook's reading, without the transcript, which the launcher can't read."""
     faults = []
     ledger = usage.get("ledger") if isinstance(usage.get("ledger"), list) else []
     totals = usage.get("totals_by_model") if isinstance(usage.get("totals_by_model"), dict) else {}
@@ -358,7 +358,7 @@ def _nonzero(totals: dict) -> dict:
 
 
 def delta(current: dict, previous: dict | None) -> dict[str, dict[str, int]]:
-    """This attempt's share of the session's running total (call 10)."""
+    """This attempt's share of the session's running total."""
     previous = previous or {}
     result = {}
     for model, figures in current.items():
@@ -368,14 +368,14 @@ def delta(current: dict, previous: dict | None) -> dict[str, dict[str, int]]:
 
 
 def skip_ci_check(commits: list[dict]) -> dict[str, object]:
-    """Every report-branch commit after the dispatch commit carries ``[skip ci]`` (row 6)."""
+    """Every report-branch commit after the dispatch commit carries ``[skip ci]``."""
     missing = [commit["sha"] for commit in commits if "[skip ci]" not in commit.get("message", "")]
     return {"ok": not missing, "commits_without_marker": missing}
 
 
 def change_branch_check(tip_at_fire: str | None, tip_after: str | None, commits: list[str],
                         status: str | None, *, repair: bool) -> dict[str, object]:
-    """The run worked on the change's branch (row 1); a repair's range is recorded only."""
+    """The run worked on the change's branch; a repair's range is recorded only."""
     value = {"tip_at_fire": tip_at_fire, "tip_after": tip_after, "commits": commits,
              "compare_status": status}
     if repair:
@@ -392,7 +392,7 @@ def change_branch_check(tip_at_fire: str | None, tip_after: str | None, commits:
 
 
 def practice_record_check(check: dict | None, usage: dict) -> dict[str, object]:
-    """The usage record copies a recorded practice check that agrees with it (row 5)."""
+    """The usage record copies a recorded practice check that agrees with it."""
     copied = usage.get("practice_check")
     if check is None:
         return {"ok": False, "reason": "no practice-check.json on the report branch"}
@@ -465,7 +465,7 @@ def _ok(status: int, value: object, what: str) -> object:
 # ---- GitHub steps ---------------------------------------------------------
 
 def compare_pin(transport: Transport, practice: dict, installed: str) -> str:
-    """Fast-forward the shared pin to the installed commit, never back (call 5)."""
+    """Fast-forward the shared pin to the installed commit, never back."""
     repo, branch = practice["repository"], practice["branch"]
     status, ref = transport.github("GET", f"repos/{repo}/git/ref/heads/{branch}")
     pin = _ok(status, ref, f"read pin {repo}@{branch}")["object"]["sha"]
@@ -535,7 +535,7 @@ def branch_commits(transport: Transport, repo: str, base: str, tip: str) -> list
 
 
 def delete_report_branch(transport: Transport, request: dict) -> None:
-    """Delete only the name composed from this request's own dispatch id (row 6)."""
+    """Delete only the name composed from this request's own dispatch id."""
     cloud = request.get("cloud") or {}
     expected = report_branch(cloud.get("issue"), request.get("stage"), request.get("dispatch_id") or "")
     name = cloud.get("report_branch")
@@ -561,7 +561,7 @@ def post_report(transport: Transport, work: str, stage: str, session_url: str, b
     return urls
 
 
-# ---- the follow-up's session record (call 14) ----------------------------------
+# ---- the follow-up's session record ------------------------------------------
 
 def session_attempts(record_root: Path, session: str) -> list[tuple[dict, dict]]:
     """Every recorded (request, run) for this cloud session, oldest first."""
@@ -601,7 +601,7 @@ def loaded_commit(attempts: list[tuple[dict, dict]], session: str) -> tuple[dict
 
 
 def login_check(transport: Transport, env: dict) -> None:
-    """A follow-up uses the owner's claude.ai login (row 8; T6)."""
+    """A follow-up uses the owner's claude.ai login."""
     code, raw = transport.cli(["claude", "auth", "status", "--json"], env)
     method = None
     if code == 127:
@@ -694,7 +694,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         settings_source=args.settings_source, settings_scope=args.settings_scope,
         vendor="claude", model=args.model, effort=args.effort,
         continuity="resume" if follow_up else "fresh",
-        permission_boundary="Claude Code cloud session in auto mode on a remote machine (#938)",
+        permission_boundary="Claude Code cloud session in auto mode on a remote machine",
         root=root, requested_session_id=args.resume, command=None, retry_of=args.retry_of,
         holder_session_id=args.holder_session_id,
         setting_sources={**settings_sources, "continuity": "launcher route ("
@@ -750,7 +750,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                 installed = installed_practice(plugin, install_path or install_record_path(),
                                                refuse_older=False)["commit"]
             except CloudRefusal as exc:
-                # The install record is reported, never a reason to refuse (call 14).
+                # The install record is reported, never a reason to refuse a follow-up.
                 installed = f"unavailable: {exc}"
             cloud["practice"] = {"session_loaded": loaded, "installed_at_send": installed,
                                  "drift": installed != loaded, "commit": loaded}

@@ -572,7 +572,7 @@ def _price(item: _Attempt, rates: list[dict]) -> dict:
     resume = dispatch.get("continuity") == "resume"
     if usage.get("source") == "cloud-stop-hook":
         # A cloud attempt's tokens are its delta of the session's running total,
-        # priced only when the hook's ledger checks out (#938 call 10).
+        # priced only when the hook's ledger checks out.
         ledger = _mapping(usage.get("ledger_check"))
         if vendor != "claude" or usage.get("scope") != "session-delta":
             reasons.append("cloud usage is not a Claude session delta")

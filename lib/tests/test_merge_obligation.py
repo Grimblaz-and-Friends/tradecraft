@@ -725,8 +725,8 @@ def test_C5_residual_version_conflict_reason_names_what_the_change_carried(launc
     assert b"carried None" not in record["prompt"]
 
 
-def test_938_run_build_reaches_the_cloud_launcher_with_its_lineage_branch(launch, monkeypatch, tmp_path):
-    """A set-up repository's `run build` hands the cloud route the registered branch (#938)."""
+def test_cloud_run_build_reaches_the_cloud_launcher_with_its_lineage_branch(launch, monkeypatch, tmp_path):
+    """A set-up repository's `run build` hands the cloud route the registered branch."""
     import argparse
     import dispatch_implementer as implementer
     registered, fixture, inputs, compose = launch

@@ -1,4 +1,4 @@
-"""The practice's cloud hook: totals, profile, practice check and finish record (#938)."""
+"""The practice's cloud hook: totals, profile, practice check and finish record."""
 import json
 import os
 from pathlib import Path
@@ -34,15 +34,15 @@ def write(path, entries):
     path.write_text("".join(json.dumps(value) + "\n" for value in entries), "utf-8")
 
 
-def header(branch="claude/tradecraft-report-938-build-abc", repository="Owner/product"):
-    return cloud_build.header(work=f"{repository}#938", stage="build", dispatch_id="abc" * 11,
-                              checkout="branch tradecraft/938-x", practice_commit="a" * 40,
+def header(branch="claude/tradecraft-report-77-build-abc", repository="Owner/product"):
+    return cloud_build.header(work=f"{repository}#77", stage="build", dispatch_id="abc" * 11,
+                              checkout="branch tradecraft/77-x", practice_commit="a" * 40,
                               branch=branch)
 
 
 @pytest.fixture
 def session(tmp_path):
-    """A session laid out as Claude Code writes one (§0.1): main, subagents, workflows."""
+    """A session laid out as Claude Code writes one: main, subagents, workflows."""
     projects = tmp_path / "projects" / "slug"
     main = projects / f"{SESSION}.jsonl"
     write(main, [
@@ -59,7 +59,7 @@ def session(tmp_path):
     return main
 
 
-def test_ac_7_1a_totals_count_distinct_ids_per_model_across_every_file(session):
+def test_totals_count_distinct_ids_per_model_across_every_file(session):
     counted = cloud.tally(session, SESSION)
     totals = counted["totals_by_model"]
     assert totals["claude-opus-5-5"] == {"input": 6, "output": 20, "cache_read": 200,
@@ -75,7 +75,7 @@ def test_ac_7_1a_totals_count_distinct_ids_per_model_across_every_file(session):
     assert cloud_build.ledger_check(usage, None)["ok"] is True
 
 
-def test_ac_7_1a_an_unreadable_listed_file_fails_check_e(session):
+def test_an_unreadable_listed_file_fails_check_e(session):
     (session.parent / SESSION / "subagents" / "agent-x.jsonl").mkdir()
     counted = cloud.tally(session, SESSION)
     assert [row["file"] for row in counted["files_unread"]] == ["subagents/agent-x.jsonl"]
@@ -85,7 +85,7 @@ def test_ac_7_1a_an_unreadable_listed_file_fails_check_e(session):
     assert result["ok"] is False and any(fault.startswith("(e)") for fault in result["faults"])
 
 
-def test_ac_4_2_profile_reads_the_main_session_only(session):
+def test_profile_reads_the_main_session_only(session):
     counted = cloud.tally(session, SESSION)
     seen = cloud.profile(counted["main_entries"])
     assert seen == {"models": ["claude-opus-5-5"], "efforts": ["high"]}
@@ -93,7 +93,7 @@ def test_ac_4_2_profile_reads_the_main_session_only(session):
     assert marked["off_profile"] is False and marked["effort"] == "high"
 
 
-def test_ac_1_1_permission_mode_sources(session):
+def test_permission_mode_sources(session):
     entries = cloud.tally(session, SESSION)["main_entries"]
     assert cloud.permission_mode({"permission_mode": "auto"}, entries) == {"values": ["auto"], "source": "hook-input"}
     assert cloud.permission_mode({}, entries) == {"values": ["auto"], "source": "transcript"}
@@ -102,7 +102,7 @@ def test_ac_1_1_permission_mode_sources(session):
 
 def test_header_round_trips():
     fields = cloud.parse_header("prefix\n" + header())
-    assert fields["report-branch"] == "claude/tradecraft-report-938-build-abc"
+    assert fields["report-branch"] == "claude/tradecraft-report-77-build-abc"
     assert fields["practice-commit"] == "a" * 40 and fields["repository"] == "Owner/product"
 
 
@@ -124,7 +124,7 @@ def cloud_home(tmp_path, monkeypatch):
     (seed / "README").write_text("x")
     git(seed, "add", ".")
     git(seed, "commit", "-qm", "seed")
-    git(seed, "push", "-q", str(remote), "HEAD:refs/heads/claude/tradecraft-report-938-build-abc")
+    git(seed, "push", "-q", str(remote), "HEAD:refs/heads/claude/tradecraft-report-77-build-abc")
     home = tmp_path / "home"
     subprocess.run(["git", "clone", "-q", str(remote), str(home / "product")], check=True, stdin=subprocess.DEVNULL, capture_output=True)
     practice = tmp_path / "practice"
@@ -139,7 +139,7 @@ def cloud_home(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(practice))
     monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
     return {"remote": remote, "practice": practice, "commit": git(practice, "rev-parse", "HEAD"),
-            "branch": cloud.ReportBranch(home / "product", "claude/tradecraft-report-938-build-abc")}
+            "branch": cloud.ReportBranch(home / "product", "claude/tradecraft-report-77-build-abc")}
 
 
 def branch_file(state, name):
@@ -149,10 +149,10 @@ def branch_file(state, name):
 
 
 def messages(state):
-    return git(state["remote"], "log", "--format=%s", "claude/tradecraft-report-938-build-abc").splitlines()
+    return git(state["remote"], "log", "--format=%s", "claude/tradecraft-report-77-build-abc").splitlines()
 
 
-def test_ac_5_3a_prompt_hook_blocks_a_mismatch_and_writes_the_finish_record(cloud_home):
+def test_prompt_hook_blocks_a_mismatch_and_writes_the_finish_record(cloud_home):
     (cloud_home["practice"] / "AGENTS.md").write_text("doctrine")
     code = cloud.run_prompt({"prompt": header()})
     assert code == 2
@@ -165,26 +165,26 @@ def test_ac_5_3a_prompt_hook_blocks_a_mismatch_and_writes_the_finish_record(clou
     assert all("[skip ci]" in line for line in messages(cloud_home)[:-1])
 
 
-def test_ac_5_3b_fallback_check_then_stop_keeps_the_mismatch(cloud_home, session):
-    assert cloud.run_check("b" * 40, "claude/tradecraft-report-938-build-abc", "Owner/product") == 1
+def test_fallback_check_then_stop_keeps_the_mismatch(cloud_home, session):
+    assert cloud.run_check("b" * 40, "claude/tradecraft-report-77-build-abc", "Owner/product") == 1
     assert cloud.run_stop({"session_id": SESSION, "transcript_path": str(session)}) == 0
     usage = json.loads(branch_file(cloud_home, "usage.json"))
     assert usage["practice_check"]["ok"] is False
     assert usage["report_blob"] == cloud_home["branch"].blob("report.md")
     # A later pass never overwrites a recorded mismatch.
-    assert cloud.run_check(cloud_home["commit"], "claude/tradecraft-report-938-build-abc", "Owner/product") == 0
+    assert cloud.run_check(cloud_home["commit"], "claude/tradecraft-report-77-build-abc", "Owner/product") == 0
     assert json.loads(branch_file(cloud_home, "practice-check.json"))["ok"] is False
 
 
-def test_ac_5_3c_stop_without_a_practice_check_writes_ok_null(cloud_home, session):
+def test_stop_without_a_practice_check_writes_ok_null(cloud_home, session):
     assert cloud.run_stop({"session_id": SESSION, "transcript_path": str(session)}) == 0
     usage = json.loads(branch_file(cloud_home, "usage.json"))
     assert usage["practice_check"] == {"ok": None, "reason": "no practice check recorded on the report branch"}
     assert cloud_build.practice_record_check(None, usage)["ok"] is False
 
 
-def test_ac_6_3_hook_commits_carry_skip_ci_and_stop_finishes_after_the_report(cloud_home, session):
-    assert cloud.run_check(cloud_home["commit"], "claude/tradecraft-report-938-build-abc", "Owner/product") == 0
+def test_hook_commits_carry_skip_ci_and_stop_finishes_after_the_report(cloud_home, session):
+    assert cloud.run_check(cloud_home["commit"], "claude/tradecraft-report-77-build-abc", "Owner/product") == 0
     cloud_home["branch"].commit({"report.md": b"built\n", "instructions.md": b"CLAUDE.md\n"},
                                 "builder report [skip ci]")
     assert cloud.run_stop({"session_id": SESSION, "transcript_path": str(session),
@@ -198,7 +198,7 @@ def test_ac_6_3_hook_commits_carry_skip_ci_and_stop_finishes_after_the_report(cl
     assert messages(cloud_home)[0].startswith(f"tradecraft cloud usage {SESSION} stop 1")
 
 
-def test_ac_7_3_outside_the_cloud_the_hook_prints_nothing(monkeypatch, capsys):
+def test_outside_the_cloud_the_hook_prints_nothing(monkeypatch, capsys):
     monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
     assert cloud.main(["stop"]) == 0 and cloud.main(["prompt"]) == 0
     assert capsys.readouterr() == ("", "")
@@ -209,7 +209,7 @@ def test_ac_7_3_outside_the_cloud_the_hook_prints_nothing(monkeypatch, capsys):
 
 
 @pytest.mark.skipif(not __import__("shutil").which("sh"), reason="no POSIX shell")
-def test_ac_7_3_the_guarded_command_is_silent_through_a_posix_shell(tmp_path):
+def test_the_guarded_command_is_silent_through_a_posix_shell(tmp_path):
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text("utf-8"))["hooks"]
     env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_REMOTE"}
     env["CLAUDE_PLUGIN_ROOT"] = str(tmp_path / "absent")

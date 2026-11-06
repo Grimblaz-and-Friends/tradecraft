@@ -9,7 +9,7 @@ Usage: python <plugin-root>/lib/cloud_setup.py body --repo OWNER/REPO --environm
 
 The holder creates and reads the routine with its RemoteTrigger tool; this
 script writes what is sent and makes "differs from what was sent" mechanical.
-Only a clean ``complete`` writes the machine record entry (#938 row 3).
+Only a clean ``complete`` writes the machine record entry.
 Design: <plugin-root>/skills/work/references/cloud-builds.md.
 """
 from __future__ import annotations
@@ -92,8 +92,8 @@ def _sources(value: object) -> list[dict] | None:
 def compare(sent: dict, readback: dict, *, phase: str, token_file: str | None) -> list[str]:
     """Every difference between the sent body and the read-back, by field.
 
-    The read-back paths are those a `RemoteTrigger get` returned on 2026-11-05;
-    no field shows the API trigger, so the first launch proves it (AC-1.1, AC-2.2).
+    The paths are those `RemoteTrigger get` returns. No field shows the API
+    trigger, so the first launch's fire proves it instead.
     """
     faults = []
     context = ("job_config", "ccr", "session_context")

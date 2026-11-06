@@ -962,8 +962,8 @@ def test_unresolved_vendor_handover_recovers_reserved_session_in_its_retained_co
     assert resumed["requested"]["session_id"] == reserved and not failed_root.exists()
 
 
-def test_938_cloud_author_is_revised_in_its_own_session_through_the_entrance(entrance, monkeypatch, tmp_path):
-    """A set-up repository's artifact goes to the cloud, and its revision resumes that author (#938)."""
+def test_cloud_author_is_revised_in_its_own_session_through_the_entrance(entrance, monkeypatch, tmp_path):
+    """A set-up repository's artifact goes to the cloud, and its revision resumes that author."""
     import cloud_build
     from test_cloud_build import Fake, INSTALLED
     holder, store, commands, setup = entrance
