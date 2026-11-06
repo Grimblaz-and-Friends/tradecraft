@@ -2,7 +2,7 @@
 
 **Loaded when** setting a repository up for cloud builds, switching one off, or reading a cloud attempt's route, profile mark, practice drift, attempt checks or cost.
 
-For a set-up repository, every Claude implementer launch (artifact, build, repairs) runs as a Claude Code cloud session that the launcher starts through that repository's routine. A cloud builder cannot reach the owner's machine, which is the route's reason. A failed launch stops and says why; it never falls back to a local builder. A Codex implementer is untouched.
+For a set-up repository, the Claude implementer's launches run as a Claude Code cloud session that the launcher starts through that repository's routine. The route carries the artifact, build, review-disposition and floor stages; any other Claude implementer stage, such as a source-verification account, stays local. A resume follows its session, so the switch has two exceptions: a session started locally before the repository was set up resumes locally, and a `cse_` cloud session resumes in the cloud after the switch entry is removed. A cloud builder cannot reach the owner's machine, which is the route's reason. A failed launch stops and says why; it never falls back to a local builder. A Codex implementer is untouched.
 
 ## The switch
 
@@ -44,6 +44,8 @@ The practice's `Stop` hook acts only when `CLAUDE_CODE_REMOTE` is set, and outsi
 
 The launcher then keeps the report as the published output, posts it whole on the issue (in labelled parts past GitHub's comment limit), deletes only the report branch it named for that dispatch, and fast-forwards the local implementation tree.
 
+**Untested premises.** Whether a cloud review-disposition run can post its reply dispositions on the pull request, and whether the product's own `CLAUDE.md` or `AGENTS.md` loads natively in the cloud, are untested; the task tells the run to read them, and `instructions_loaded` is the evidence. Who posts a cloud review-disposition's replies is the owner's to rule.
+
 ## Follow-ups
 
 A revision or repair goes as a follow-up message into the session it continues, through `claude -p … --cloud cse_…` under the owner's claude.ai login on the launching machine; without that login it refuses and says so. It keeps the practice version its session loaded, even after a plugin update: it makes no pin compare and no version check, and its record names `session_loaded`, `installed_at_send` and `drift`. A judge reading a newer rule than a drifted follow-up ran reads that record.
@@ -55,7 +57,7 @@ The entrance's implementer environments show, per cloud attempt:
 - `route` and the session id;
 - `cloud_profile` and `off_profile`: a main session not wholly on the profile `cloud_setup.py profile` prints is marked, and so is one whose transcript records no effort, recorded as `medium (Opus 5.5 default; no effort key in transcript)`, since nothing shows it ran at the profile's effort. Ask the owner to correct the routine's editor settings;
 - `permission_mode`, which a builder should hold as `auto`;
-- `cloud_checks`: the change-branch check (a build's run advanced the change branch from its fire-time tip), the `[skip ci]` check, the practice-check record, and the `environment` check (the session ran with the cloud environment's background and command-ceiling settings). A failure holds the next stage as a launch finding does;
+- `cloud_checks`: the change-branch check (a build's run advanced the change branch from its fire-time tip), the `[skip ci]` check, the practice-check record, the `environment` check (the session ran with the cloud environment's background and command-ceiling settings), the permission-mode check (the session ran in `auto`), and the local-tree check (the local tree followed the returned branch). A failure holds the next stage as a launch finding does;
 - `ledger_check`: the hook's ledger re-checked without the transcript. A failure makes the attempt's cost unknown with its faults and shows as an attempt fault; it changes nothing else;
 - for a follow-up, `practice_drift`;
 - `instructions_applied` and `instructions_loaded`: the product's `CLAUDE.md` and `AGENTS.md` load, and no repository's committed hooks or permission rules apply, because the session starts above its clones.
