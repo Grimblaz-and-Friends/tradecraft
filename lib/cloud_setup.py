@@ -188,6 +188,10 @@ def verify(args, *, home: Path | None = None, transport=None, plugin: Path | Non
         print(f"setup created: read-back matches; record {setup_path}")
         return 0
     routine = args.routine_id or readback.get("id")
+    if args.routine_id and readback.get("id") != args.routine_id:
+        print(f"setup FAILED: routine id: given {args.routine_id}, read back {readback.get('id')}",
+              file=sys.stderr)
+        return 1
     if not isinstance(routine, str) or not routine:
         print("setup FAILED: routine id: none given or read back", file=sys.stderr)
         return 1

@@ -371,8 +371,9 @@ def ledger_check(usage: dict, previous: list[dict] | None,
     sums: dict[str, dict[str, int]] = {}
     ids = set()
     for row in ledger:
-        if not isinstance(row, dict):
-            faults.append("sums: a ledger row is not an object")
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or any(
+                not isinstance(row.get(key, 0), int) or isinstance(row.get(key, 0), bool) for key in _hook().FIGURES):
+            faults.append(f"sums: ledger row {row.get('id') if isinstance(row, dict) else row!r} is malformed")
             continue
         if row.get("id") in ids:
             faults.append(f"repeated id: ledger id {row.get('id')} repeats")
@@ -398,6 +399,9 @@ def ledger_check(usage: dict, previous: list[dict] | None,
                     summed.setdefault(model, {})[key] = summed.setdefault(model, {}).get(key, 0) + value
         if _nonzero(summed) != _nonzero(totals):
             faults.append("deltas: recorded deltas do not sum to the running total")
+    for row in usage.get("files_read") or []:
+        if isinstance(row, dict) and row.get("malformed_lines"):
+            faults.append(f"unread files: {row.get('file')} has {row['malformed_lines']} unreadable lines")
     unread = usage.get("files_unread") or []
     read = {row.get("file") for row in usage.get("files_read") or [] if isinstance(row, dict)}
     missing = [name for name in usage.get("files_present") or [] if name not in read]
@@ -545,6 +549,11 @@ class Transport:
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
+
+    def remote(self, root: Path) -> str:
+        """The product remote the entrance selected for this tree."""
+        import work  # Deferred: it imports this module.
+        return work._selected_remote(root, "cloud build")
 
 
 def _ok(status: int, value: object, what: str) -> object:
@@ -696,9 +705,18 @@ def loaded_commit(attempts: list[tuple[dict, dict]], session: str) -> tuple[dict
     return request, commit
 
 
-def login_check(transport: Transport, env: dict) -> None:
+def claude_command(args) -> list[str]:
+    """The Claude executable the launch selected, or the one on the path."""
+    selected = getattr(args, "claude", None)
+    if not selected:
+        return ["claude"]
+    from vendor_cli import resolve_command
+    return list(resolve_command("claude", selected))
+
+
+def login_check(transport: Transport, env: dict, claude: list[str] | None = None) -> None:
     """A follow-up uses the owner's claude.ai login."""
-    code, raw = transport.cli(["claude", "auth", "status", "--json"], env)
+    code, raw = transport.cli([*(claude or ["claude"]), "auth", "status", "--json"], env)
     method = None
     if code == 127:
         method = "no claude executable"
@@ -751,7 +769,7 @@ def _previous_usage(attempts: list[tuple[dict, dict]], dispatch_id: str) -> tupl
         for attempt in run_record.get("attempts") or []:
             cloud = attempt.get("cloud") if isinstance(attempt, dict) else None
             if isinstance(cloud, dict) and isinstance(cloud.get("usage"), dict):
-                latest = cloud["usage"]
+                latest = {**cloud["usage"], "baseline_ok": (cloud.get("ledger_check") or {}).get("ok") is True}
                 if isinstance(cloud.get("delta"), dict):
                     deltas.append(cloud["delta"])
     return latest, deltas
@@ -828,6 +846,9 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         request["artifact_brief"] = {"path": str(brief_path),
                                      "source": args.artifact_brief_source or str(args.artifact_brief.resolve()),
                                      "sha256": hashlib.sha256(artifact_brief).hexdigest()}
+    # The build budget counts a cloud attempt by its allocation and measured time, as a local one.
+    allocation = metadata.get("recipient_allocation_seconds") or args.timeout_seconds
+    request["recipient_allocation_seconds"] = allocation
     request["runtime_version"] = None
     request["runtime_version_unavailable_reason"] = "the runtime runs in the cloud session"
     request["revision_before"] = records.git_revision(root)
@@ -846,7 +867,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
             if CLOUD_SESSION.fullmatch(args.resume) is None:
                 raise CloudError(f"cloud follow-up needs a cse_ session id: {args.resume!r}")
             env = followup_env()
-            login_check(transport, env)
+            claude = claude_command(args)
+            login_check(transport, env, claude)
             _start, loaded = loaded_commit(session_attempts(record_root, args.resume), args.resume)
             try:
                 installed = installed_practice(plugin, install_path or install_record_path(),
@@ -876,7 +898,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
             if not args.lineage_branch:
                 raise CloudError("a cloud build needs the registered implementation branch")
             local = records.git_revision(root)
-            code, text = transport.git(root, "push", "origin", f"HEAD:refs/heads/{args.lineage_branch}")
+            code, text = transport.git(root, "push", transport.remote(root),
+                                       f"HEAD:refs/heads/{args.lineage_branch}")
             if code:
                 raise CloudError(f"cannot publish implementation branch: {text[:300]}")
             base = remote_tip(transport, repo, args.lineage_branch)
@@ -892,7 +915,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
             raise CloudRefusal(f"fire text is {len(text)} characters, over the fire's {FIRE_TEXT_LIMIT}; "
                                "only the header is fired, and the task travels on the report branch")
         if follow_up:
-            code, raw = transport.cli(["claude", "-p", text, "--cloud", args.resume,
+            code, raw = transport.cli([*claude, "-p", text, "--cloud", args.resume,
                                        "--output-format", "json"], env)
             try:
                 value = json.loads(raw)
@@ -954,6 +977,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
             run_record["session_identity"] = {"session_id": cloud["session_id"], "source": source}
             attempt["observed"] = {"session_id": cloud["session_id"], "session_id_source": source,
                                    "source": "cloud-stop-hook"}
+        started = time.monotonic()
         try:
             if failure is not None:
                 attempt.update(outcome="refused" if refused else "error", reason=failure)
@@ -973,6 +997,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
             if "observed" not in attempt:
                 records.add_unobserved(attempt, attempt["reason"] or "cloud attempt did not complete")
             run_record["completed_at"] = datetime.now(timezone.utc).isoformat()
+            attempt["allocation_seconds"] = allocation
+            attempt["elapsed_seconds"] = time.monotonic() - started if attempt["launched"] else 0.0
             run_record["revision_after"] = records.git_revision(root)
             records.add_usage_record(attempt, request, completed_at=run_record["completed_at"],
                                      # A practice mismatch stopped before the task, so it filled no seat.
@@ -987,7 +1013,13 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                 records.publish_output(output, published)
                 run_record["result"]["published_output"] = str(output)
                 run_record["result"]["published_output_unavailable_reason"] = None
-            growing.finish()
+            try:
+                growing.finish()
+            except Exception:
+                # An output with no completed record would be read as a finished return.
+                if published is not None:
+                    output.unlink(missing_ok=True)
+                raise
     if run_record["outcome"] == "success":
         print(f"implementer: claude cloud session {cloud.get('session_url')} -> {output}")
         return 0
@@ -1014,9 +1046,13 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     cloud = request["cloud"]
     record_cloud = attempt["cloud"]
     last_error = None
+    allocation, waited_from = request.get("recipient_allocation_seconds"), time.monotonic()
     while True:
         try:
             left = deadline.remaining()
+            # The wait ends at the smaller of the caller's deadline and the recorded allocation.
+            if isinstance(allocation, (int, float)) and time.monotonic() - waited_from > allocation:
+                raise TimeoutError("recorded allocation spent")
         except TimeoutError:
             attempt.update(outcome="interrupted",
                            reason=f"no report branch finish signal before the deadline; session "
@@ -1075,6 +1111,10 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
                         ledger_check=ledger_check(usage, (previous or {}).get("ledger"),
                                                   [*deltas, this_delta]),
                         profile=cloud_profile(usage, builder_profile()))
+    if previous is not None and not previous.get("baseline_ok"):
+        # A delta from a total nobody could stand behind is no figure either.
+        record_cloud["ledger_check"] = {"ok": False, "faults": [
+            *record_cloud["ledger_check"]["faults"], "earlier ledger: the baseline attempt's ledger check failed"]}
     if not record_cloud["ledger_check"]["ok"]:
         # A cost the practice cannot stand behind is unknown; the attempt itself stands.
         attempt["fault"] = "cloud usage ledger disagrees: " + "; ".join(record_cloud["ledger_check"]["faults"])
@@ -1099,7 +1139,7 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
             run_record["outcome"] = "invalid_artifact_return"
             run_record["reason"] = validation["reason"]
     if args.stage != "artifact" and not mismatch:
-        code, text = transport.git(root, "fetch", "origin", args.lineage_branch)
+        code, text = transport.git(root, "fetch", transport.remote(root), args.lineage_branch)
         if not code:
             code, text = transport.git(root, "merge", "--ff-only", "FETCH_HEAD")
         record_cloud["local_tree"] = {"status": "error" if code else "fast-forwarded", "detail": text[:300]}

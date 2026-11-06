@@ -140,6 +140,9 @@ class Fake(cloud.Transport):
         self.calls.append(("git", arguments, None))
         return 0, ""
 
+    def remote(self, root):
+        return "product-remote"
+
     def sleep(self, seconds):
         pass
 
@@ -652,3 +655,88 @@ def test_repository_keys_match_without_regard_to_case(tmp_path):
                                 "repositories": {"owner/Product": entry, "Owner/product": entry}}))
     with pytest.raises(cloud.CloudRefusal, match="more than once"):
         cloud.route_for("Owner/product#1", path)
+
+
+def test_branch_operations_use_the_selected_remote(machine):
+    fake = Fake()
+    launch(machine, fake)
+    gits = [call[1] for call in fake.calls if call[0] == "git"]
+    assert ("push", "product-remote", "HEAD:refs/heads/tradecraft/77-x") in gits
+    assert ("fetch", "product-remote", "tradecraft/77-x") in gits
+    assert not any("origin" in arguments for arguments in gits)
+
+
+def test_a_follow_up_uses_the_selected_claude_executable(machine, monkeypatch):
+    import vendor_cli
+    fake = Fake()
+    launch(machine, fake)
+    monkeypatch.setattr(vendor_cli, "resolve_command", lambda vendor, path: [path])
+    output = machine["records"] / "follow" / "result.md"
+    args = argparse.Namespace(
+        root=machine["root"], output=output, work=f"{REPO}#77", stage="floor", resume="cse_ABC123",
+        settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
+        retry_of=None, holder_session_id=None, lineage_branch="tradecraft/77-x",
+        lineage_pull_request=None, timeout_seconds=600, artifact_brief_source="brief",
+        artifact_brief=None, claude="C:/tools/claude.exe")
+    cloud.run(args, Deadline(5), entry=None, route_source="test", effective_prompt=b"t", prompt=b"t",
+              context=b"", artifact_brief=b"", metadata={}, composition={"origin": "holder"},
+              settings_sources={"vendor": "v", "model": "m", "effort": "e"},
+              validate=lambda *_: {"status": "pass"}, transport=fake, record_root=machine["records"],
+              plugin=machine["plugin"], install_path=machine["install"])
+    assert {argv[0] for argv, _env in fake.cli_calls[-2:]} == {"C:/tools/claude.exe"}
+
+
+def test_a_cloud_attempt_counts_against_the_build_budget(machine):
+    import run_lifecycle
+    _code, request, run, _output = launch(machine, Fake())
+    assert request["recipient_allocation_seconds"] == 600
+    bounds = run_lifecycle.runtime_bounds(request, run)
+    assert bounds["basis"] == "measured recipient runtime" and bounds["upper_seconds"] >= 0
+
+
+@pytest.mark.parametrize("bad", [{"id": "m1", "model": "x", "input": "10"}, {"id": ["m1"], "model": "x"},
+                                 "row"])
+def test_malformed_ledger_evidence_fails_the_check_without_raising(bad):
+    usage = {"ledger": [bad], "totals_by_model": {}, "files_present": [], "files_read": []}
+    assert cloud.ledger_check(usage, None)["ok"] is False
+
+
+def test_unreadable_transcript_lines_fail_the_check():
+    usage = {"ledger": [], "totals_by_model": {}, "files_present": ["main"],
+             "files_read": [{"file": "main", "usage_entries": 0, "malformed_lines": 2}]}
+    result = cloud.ledger_check(usage, None)
+    assert result["ok"] is False and any(f.startswith("unread files") for f in result["faults"])
+
+
+def test_a_failed_earlier_ledger_is_no_baseline_for_a_priced_delta(machine, monkeypatch):
+    fake = Fake()
+    launch(machine, fake)
+    for path in machine["records"].rglob("*.run.json"):
+        record = json.loads(path.read_text())
+        record["attempts"][0]["cloud"]["ledger_check"] = {"ok": False, "faults": ["sums: x"]}
+        path.write_text(json.dumps(record))
+    _code, _request, run, _output = launch(machine, fake, stage="floor", resume="cse_ABC123")
+    check = run["attempts"][0]["cloud"]["ledger_check"]
+    assert check["ok"] is False and "earlier ledger" in check["faults"][-1]
+    price = change_cost._price(change_cost._Attempt(usage=run["attempts"][0]["usage"]),
+                               change_cost.load_rates(LIB / "rates.json"))
+    assert price["status"] == "unknown"
+
+
+def test_a_failed_record_write_rolls_back_the_published_output(machine, monkeypatch):
+    import dispatch_lifecycle
+    monkeypatch.setattr(dispatch_lifecycle.GrowingRun, "finish",
+                        lambda self: (_ for _ in ()).throw(OSError("disk full")))
+    output = machine["records"] / "rollback" / "result.md"
+    args = argparse.Namespace(
+        root=machine["root"], output=output, work=f"{REPO}#77", stage="build", resume=None,
+        settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
+        retry_of=None, holder_session_id=None, lineage_branch="tradecraft/77-x",
+        lineage_pull_request=None, timeout_seconds=600, artifact_brief_source="brief", artifact_brief=None)
+    with pytest.raises(OSError):
+        cloud.run(args, Deadline(5), entry=machine["entry"], route_source="test", effective_prompt=b"t",
+                  prompt=b"t", context=b"", artifact_brief=b"", metadata={}, composition={"origin": "holder"},
+                  settings_sources={"vendor": "v", "model": "m", "effort": "e"},
+                  validate=lambda *_: {"status": "pass"}, transport=Fake(), record_root=machine["records"],
+                  plugin=machine["plugin"], install_path=machine["install"])
+    assert not output.exists()

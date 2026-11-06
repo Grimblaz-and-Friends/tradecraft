@@ -69,18 +69,23 @@ def _text(content: object) -> str:
     return ""
 
 
-def read_jsonl(path: Path) -> list[dict]:
-    """Every object line of a transcript; a malformed line is skipped."""
-    entries = []
+def read_jsonl(path: Path) -> tuple[list[dict], int]:
+    """Every object line of a transcript, and how many lines couldn't be read as one."""
+    entries, malformed = [], 0
     with path.open("rb") as stream:
         for line in stream:
+            if not line.strip():
+                continue
             try:
                 value = json.loads(line)
             except (UnicodeError, ValueError):
+                malformed += 1
                 continue
             if isinstance(value, dict):
                 entries.append(value)
-    return entries
+            else:
+                malformed += 1
+    return entries, malformed
 
 
 def list_files(transcript_path: Path, session: str) -> list[Path]:
@@ -108,8 +113,10 @@ def _figures(usage: dict) -> dict[str, int]:
         row["cache_write_1h"] = split.get("ephemeral_1h_input_tokens", 0)
     else:
         row["cache_creation"] = usage.get("cache_creation_input_tokens", 0)
-    return {key: int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
-            for key, value in row.items()}
+    # A counter that isn't a whole number stays as found, so the ledger check fails on it
+    # rather than pricing it as zero.
+    return {key: value if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else {"invalid": repr(value)} for key, value in row.items()}
 
 
 def tally(transcript_path: Path, session: str) -> dict[str, object]:
@@ -119,7 +126,7 @@ def tally(transcript_path: Path, session: str) -> dict[str, object]:
     for path in present:
         label = _label(path, transcript_path, session)
         try:
-            entries = read_jsonl(path)
+            entries, malformed = read_jsonl(path)
         except OSError as exc:
             unread.append({"file": label, "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -136,12 +143,12 @@ def tally(transcript_path: Path, session: str) -> dict[str, object]:
             bearing += 1
             # The last entry for an id carries its final usage; a repeat counts once.
             rows[identity] = {"id": identity, "model": model, "file": label, **_figures(message["usage"])}
-        read.append({"file": label, "usage_entries": bearing})
+        read.append({"file": label, "usage_entries": bearing, "malformed_lines": malformed})
     totals: dict[str, dict[str, int]] = {}
     for row in rows.values():
         model_totals = totals.setdefault(row["model"], {})
         for key in FIGURES:
-            if key in row:
+            if key in row and isinstance(row[key], int):
                 model_totals[key] = model_totals.get(key, 0) + row[key]
     return {"files_present": [_label(path, transcript_path, session) for path in present],
             "files_read": read, "files_unread": unread,

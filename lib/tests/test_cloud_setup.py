@@ -142,3 +142,15 @@ def test_profile_prints_the_launch_default_the_owner_sets(capsys):
     environment = "".join(f"environment: {name}={value}\n" for name, value in cloud.CLOUD_ENVIRONMENT.items())
     assert capsys.readouterr().out == f"model: {model}\neffort: {effort}\n" + environment
     assert "environment: CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1\n" in environment
+
+
+def test_setup_binds_the_saved_routine_id_to_the_read_back(machine, capsys):
+    path = machine["tmp"] / "readback.json"
+    path.write_text(json.dumps(readback()))
+    args = argparse.Namespace(repo=REPO, environment="env_1", practice_repo=PRACTICE,
+                              practice_branch="cloud-practice", readback=str(path), phase="complete",
+                              token_file=str(machine["token"]), routine_id="trig_other")
+    assert setup.verify(args, home=machine["home"], transport=Pins(False), plugin=machine["plugin"],
+                        install_path=machine["install"]) == 1
+    assert "setup FAILED: routine id" in capsys.readouterr().err
+    assert not cloud.record_path(machine["home"]).exists()

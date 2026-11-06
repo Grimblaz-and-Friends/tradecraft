@@ -279,3 +279,17 @@ def test_a_modified_practice_file_fails_the_check(cloud_home):
     (cloud_home["practice"] / "skills" / "x.md").write_text("changed")
     result = cloud.practice_state(cloud_home["practice"], cloud_home["commit"])
     assert result["ok"] is False and result["modified"] == ["skills/x.md"]
+
+
+def test_a_malformed_line_and_a_bad_counter_are_recorded(session):
+    with session.open("a", encoding="utf-8") as stream:
+        stream.write("{not json\n")
+    bad = entry("m9", "claude-opus-5-5")
+    bad["message"]["usage"]["output_tokens"] = "lots"
+    with session.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(bad) + "\n")
+    counted = cloud.tally(session, SESSION)
+    assert {row["file"]: row["malformed_lines"] for row in counted["files_read"]}["main"] == 1
+    usage = {key: counted[key] for key in ("files_present", "files_read", "files_unread",
+                                           "totals_by_model", "ledger")}
+    assert cloud_build.ledger_check(usage, None)["ok"] is False
