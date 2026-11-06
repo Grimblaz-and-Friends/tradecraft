@@ -20,6 +20,8 @@ import tempfile
 
 HEADER = "TRADECRAFT-CLOUD-RUN v1"
 PREFIX = "tradecraft-cloud/"
+# The practice repository's own doctrine; loaded into a product build it would govern that build,
+# so a clone holding any of them is as wrong as a clone at another commit.
 EXCLUDED = ("CLAUDE.md", "AGENTS.md", ".claude")
 # Claude Code writes these for messages no model produced; they carry no usage.
 SYNTHETIC_MODEL = "<synthetic>"
@@ -206,7 +208,11 @@ def clone_for(repository: str) -> Path:
 
 
 class ReportBranch:
-    """The run's report branch, read and extended through git plumbing."""
+    """The run's report branch, read and extended through git plumbing.
+
+    A temporary index and ``commit-tree`` add files without touching the clone's
+    checkout, index or branch, which the builder is working in.
+    """
 
     def __init__(self, clone: Path, branch: str):
         self.clone, self.branch = clone, branch

@@ -25,6 +25,7 @@ import cloud_build as cloud
 from winio import utf8_stdio
 
 DEFAULT_PRACTICE = "Grimblaz-and-Friends/tradecraft"
+# The practice repository's own doctrine stays out of the clone, so it never governs a product build.
 EXCLUDES = ["/CLAUDE.md", "/AGENTS.md", "/.claude/"]
 
 
@@ -53,6 +54,7 @@ def create_body(repo: str, environment: str, practice: str, branch: str) -> dict
     return {
         "name": f"tradecraft builder: {repo}",
         "cron_expression": "",
+        # A create attaches every account connector unless cleared; a builder needs none.
         "clear_mcp_connections": True,
         "job_config": {"ccr": {
             "environment_id": environment,
@@ -62,6 +64,7 @@ def create_body(repo: str, environment: str, practice: str, branch: str) -> dict
                 "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tradecraft-builder:{repo}"))}}],
             "session_context": {
                 "sources": [_source(repo), _source(practice, branch, EXCLUDES)],
+                # An unattended run has no one to notify, so it never pages the owner's phone.
                 "disallowed_tools": ["PushNotification"],
             },
         }},

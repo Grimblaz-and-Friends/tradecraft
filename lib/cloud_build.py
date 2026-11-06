@@ -24,6 +24,7 @@ import dispatch_record as records
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
+# A routine run may push to `claude/` branches without being told; report branches live there.
 REPORT_PREFIX = "claude/tradecraft-report-"
 CLOUD_DIR = "tradecraft-cloud/"
 HEADER = "TRADECRAFT-CLOUD-RUN v1"
@@ -368,7 +369,11 @@ def delta(current: dict, previous: dict | None) -> dict[str, dict[str, int]]:
 
 
 def skip_ci_check(commits: list[dict]) -> dict[str, object]:
-    """Every report-branch commit after the dispatch commit carries ``[skip ci]``."""
+    """Every report-branch commit after the dispatch commit carries ``[skip ci]``.
+
+    A repository whose CI runs on every push would otherwise spend its runner on
+    each report commit, so a commit without the marker is held for the holder.
+    """
     missing = [commit["sha"] for commit in commits if "[skip ci]" not in commit.get("message", "")]
     return {"ok": not missing, "commits_without_marker": missing}
 
@@ -618,6 +623,8 @@ def login_check(transport: Transport, env: dict) -> None:
 
 
 def followup_env() -> dict:
+    # With an OAuth token set the CLI authenticates by it, and the sessions service
+    # refuses to continue a session; only the claude.ai login can send a follow-up.
     env = dict(os.environ)
     env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     return env
