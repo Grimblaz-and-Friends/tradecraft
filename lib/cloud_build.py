@@ -478,7 +478,11 @@ def change_branch_check(tip_at_fire: str | None, tip_after: str | None, commits:
 
 
 def permission_check(usage: dict) -> dict[str, object]:
-    """The session ran in auto mode, as a builder must."""
+    """The session ran in auto mode.
+
+    No one is there to approve a tool, so outside auto mode a cloud run stalls or does less than its
+    task.
+    """
     mode = usage.get("permission_mode") if isinstance(usage.get("permission_mode"), dict) else {}
     values = mode.get("values") or ["unknown"]
     return {"ok": values == ["auto"], "values": values,
@@ -1158,8 +1162,11 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     while True:
         try:
             left = deadline.remaining()
-            # The wait ends at the smaller of the caller's deadline and the recorded allocation.
-            if isinstance(allocation, (int, float)) and time.monotonic() - waited_from > allocation:
+            # The allocation is what the build budget gave this attempt, so the wait never runs past
+            # the budget even when the caller's deadline is later.
+            if isinstance(allocation, (int, float)):
+                left = min(left, allocation - (time.monotonic() - waited_from))
+            if left <= 0:
                 raise TimeoutError("recorded allocation spent")
         except TimeoutError:
             attempt.update(outcome="interrupted",
@@ -1178,7 +1185,8 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
         if finished(files):
             break
         growing.tick()
-        transport.sleep(min(POLL_SECONDS, max(left - 1, 0.1)))
+        # Sized from the smaller remaining time, so the last sleep ends at the bound, not past it.
+        transport.sleep(min(POLL_SECONDS, left - 1 if left > 1 else left))
     for name in ("instructions.md", "practice-check.json"):
         files[name] = read_branch_file(transport, repo, branch, name)
     usage = json.loads(files["usage.json"])
@@ -1218,7 +1226,9 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     record_cloud.update(usage=usage, running_total=totals, delta=this_delta,
                         ledger_check=ledger_check(usage, (previous or {}).get("ledger"),
                                                   [*deltas, this_delta]),
-                        profile=cloud_profile(usage, (args.model, args.effort)))
+                        # Every stage runs on the one routine setup verified, so every run is judged
+                        # against that profile, not the launch's role-resolved settings.
+                        profile=cloud_profile(usage, builder_profile()))
     if previous is not None and not previous.get("baseline_ok"):
         # A delta from a total nobody could stand behind is no figure either.
         record_cloud["ledger_check"] = {"ok": False, "faults": [

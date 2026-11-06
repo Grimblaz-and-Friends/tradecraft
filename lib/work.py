@@ -3858,7 +3858,7 @@ def _cloud_check_findings(run: dict, request: dict | None = None) -> list[dict]:
             if isinstance(check, dict) and check.get("ok") is False:
                 if name == "local_tree":
                     # Only the tree releases this hold: an account can't make a stale tree current.
-                    if _tree_holds(request, check.get("tip")):
+                    if _tree_contains_tip(request, check.get("tip")):
                         continue
                     findings.append({"id": "cloud-check:local_tree", "item": "cloud_checks.local_tree",
                                      "path": str(cloud.get("report_branch") or ""), "change": "failed",
@@ -3871,7 +3871,9 @@ def _cloud_check_findings(run: dict, request: dict | None = None) -> list[dict]:
                                  "path": str(cloud.get("report_branch") or ""), "change": "failed",
                                  "reason": json.dumps(detail, ensure_ascii=True, sort_keys=True)})
     return findings
-def _tree_holds(request: dict | None, tip: object) -> bool:
+
+
+def _tree_contains_tip(request: dict | None, tip: object) -> bool:
     """Whether the launch's local tree now contains the branch tip the cloud returned."""
     root = (request or {}).get("root")
     if not isinstance(tip, str) or not isinstance(root, str) or not Path(root).is_dir():

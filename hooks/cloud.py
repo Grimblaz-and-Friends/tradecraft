@@ -319,7 +319,10 @@ def record_practice(branch: ReportBranch, result: dict[str, object]) -> None:
         return
     report = (f"PRACTICE MISMATCH expected {result['expected']} found {result['found']}\n"
               + (f"excluded paths present in the practice clone: {', '.join(result['excluded_present'])}\n"
-                 if result["excluded_present"] else ""))
+                 if result["excluded_present"] else "")
+              # Without this, a mismatch caused only by an uncommitted edit reads "expected X found X".
+              + (f"files modified but not committed in the practice clone: {', '.join(result['modified'])}\n"
+                 if result.get("modified") else ""))
     report_bytes = report.encode("utf-8")
     blob = subprocess.run(["git", "hash-object", "--stdin"], input=report_bytes,
                           capture_output=True, timeout=60).stdout.decode("ascii").strip()

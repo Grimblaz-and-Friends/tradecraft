@@ -279,6 +279,9 @@ def test_a_modified_practice_file_fails_the_check(cloud_home):
     (cloud_home["practice"] / "skills" / "x.md").write_text("changed")
     result = cloud.practice_state(cloud_home["practice"], cloud_home["commit"])
     assert result["ok"] is False and result["modified"] == ["skills/x.md"]
+    assert cloud.run_check(cloud_home["commit"], "claude/tradecraft-report-77-build-abc", "Owner/product") == 1
+    report = branch_file(cloud_home, "report.md")
+    assert b"not committed in the practice clone: skills/x.md" in report
 
 
 def test_a_malformed_line_and_a_bad_counter_are_recorded(session):

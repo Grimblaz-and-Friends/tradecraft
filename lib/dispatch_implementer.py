@@ -389,7 +389,8 @@ def _cloud_route(args: argparse.Namespace) -> tuple[dict | None, str, str | None
     """
     if args.stage not in cloud_build.CLOUD_STAGES and not (
             args.resume and cloud_build.CLOUD_SESSION.fullmatch(args.resume)):
-        # The route carries the artifact, the build and its repairs; any other stage stays local.
+        # The route carries the artifact, the build and its repairs; any other stage stays local,
+        # unless it resumes a cloud session, which runs only in the cloud.
         return None
     if args.resume:
         if cloud_build.CLOUD_SESSION.fullmatch(args.resume):

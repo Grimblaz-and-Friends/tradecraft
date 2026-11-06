@@ -169,13 +169,13 @@ def machine(tmp_path, monkeypatch):
 
 
 def launch(machine, transport, *, stage="build", resume=None, brief=b"", copy=None, polls=5, entry=True,
-           preset=None):
+           preset=None, model="claude-opus-5-5", effort="high", timeout_seconds=600):
     output = machine["records"] / f"{stage}-{len(list(machine['tmp'].glob('**/*.request.json')))}" / "result.md"
     args = argparse.Namespace(
         root=machine["root"], output=output, work=f"{REPO}#77", stage=stage, resume=resume,
-        settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
+        settings_source="s", settings_scope="scope", model=model, effort=effort,
         retry_of=None, holder_session_id=None, lineage_branch=None if stage == "artifact" else "tradecraft/77-x",
-        lineage_pull_request=None, timeout_seconds=600, artifact_brief_source="brief",
+        lineage_pull_request=None, timeout_seconds=timeout_seconds, artifact_brief_source="brief",
         artifact_brief=None)
     code = cloud.run(args, Deadline(polls), entry=machine["entry"] if entry else None, route_source="test",
                      effective_prompt=b"the task\n", prompt=b"the task\n", context=b"",
@@ -582,8 +582,11 @@ def test_an_artifact_run_is_judged_against_the_profile_setup_verifies(machine, m
                         {**dispatch_implementer.PROFILES["artifact_author"], "claude": ("claude-other", "low")})
     fake = Fake(report=b"> brief\n\ndraft\n")
     _code, _request, run, _output = launch(machine, fake, stage="artifact", brief=b"> brief\n",
-                                            copy={"source_commit": HOLDER})
+                                            copy={"source_commit": HOLDER}, model="claude-other", effort="low")
+    # The launch carried the artifact author's role-resolved settings; the run is still judged
+    # against the implementer profile the routine was set up with.
     assert run["attempts"][0]["cloud"]["profile"]["off_profile"] is False
+    assert run["attempts"][0]["cloud"]["profile"]["profile"] == "/".join(cloud.builder_profile())
 
 
 def test_a_stopped_cloud_session_is_a_recovery_source(monkeypatch):
@@ -976,3 +979,24 @@ def test_a_cloud_resume_names_its_recorded_practice_path_after_the_switch_is_rem
     assert work._cloud_merge_script(state, "review-disposition", "claude", resumed) == \
         "/home/user/practice-fork/skills/persist-changes/scripts/persist.py"
     assert work._cloud_merge_script(state, "review-disposition", "claude") is None
+
+
+def test_the_wait_never_sleeps_past_the_allocation(machine, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(cloud.time, "monotonic", lambda: clock[0])
+    fake = Fake()
+    fake.files = {}
+    slept = []
+
+    def fire(routine, token, text):
+        return 200, json.dumps({"claude_code_session_id": "cse_WAITING",
+                                "claude_code_session_url": "https://claude.ai/code/cse_WAITING"})
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+
+    fake.fire, fake.sleep = fire, sleep
+    _code, _request, run, _output = launch(machine, fake, polls=50, timeout_seconds=45)
+    assert run["outcome"] == "interrupted"
+    assert sum(slept) <= 45 + 1e-9  # the caller's deadline still had time; the allocation ended the wait
