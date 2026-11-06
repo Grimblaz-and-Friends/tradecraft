@@ -3847,7 +3847,7 @@ LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposi
 LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched", "cloud-not-run"})
 
 
-def _cloud_check_findings(run: dict) -> list[dict]:
+def _cloud_check_findings(run: dict, request: dict | None = None) -> list[dict]:
     # Design: lib/DESIGN.md#the-cloud-route
     """A failed cloud attempt check holds the next stage like a launch finding."""
     findings = []
@@ -3856,12 +3856,29 @@ def _cloud_check_findings(run: dict) -> list[dict]:
         checks = cloud.get("cloud_checks") if isinstance(cloud, dict) else None
         for name, check in sorted((checks or {}).items()):
             if isinstance(check, dict) and check.get("ok") is False:
+                if name == "local_tree":
+                    # Only the tree releases this hold: an account can't make a stale tree current.
+                    if _tree_holds(request, check.get("tip")):
+                        continue
+                    findings.append({"id": "cloud-check:local_tree", "item": "cloud_checks.local_tree",
+                                     "path": str(cloud.get("report_branch") or ""), "change": "failed",
+                                     "reason": json.dumps(check.get("reason") or "failed", ensure_ascii=True),
+                                     "released_by": "tree"})
+                    continue
                 detail = (check.get("faults") or check.get("commits_without_marker")
                           or check.get("reason") or "failed")
                 findings.append({"id": f"cloud-check:{name}", "item": f"cloud_checks.{name}",
                                  "path": str(cloud.get("report_branch") or ""), "change": "failed",
                                  "reason": json.dumps(detail, ensure_ascii=True, sort_keys=True)})
     return findings
+def _tree_holds(request: dict | None, tip: object) -> bool:
+    """Whether the launch's local tree now contains the branch tip the cloud returned."""
+    root = (request or {}).get("root")
+    if not isinstance(tip, str) or not isinstance(root, str) or not Path(root).is_dir():
+        return False
+    return _git(["merge-base", "--is-ancestor", tip, "HEAD"], Path(root)).returncode == 0
+
+
 PRACTICE_ISSUE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*\Z")
 
 
@@ -3937,13 +3954,13 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
                          "change": "unrecorded",
                          "reason": "the request has a write-bound baseline but the run record has no comparison"}]
             status = "unrecorded"
-        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not _cloud_check_findings(run):
+        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not _cloud_check_findings(run, request):
             bundles.append({**entry, "state": "clear", "findings": [],
                             "attributed": comparison.get("attributed") or [], "account": None})
             continue
         else:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
-            findings += _cloud_check_findings(run)
+            findings += _cloud_check_findings(run, request)
             status = "account-required"
         ids = {finding.get("id") for finding in findings}
         # An account counts only once its findings exist: after the run completed,
@@ -3958,7 +3975,7 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             if recorded_at is None or posted is None or posted <= recorded_at:
                 continue
             named = {finding["id"] for finding in launch_account_payload(marker.body)["findings"]}
-            if named == ids:
+            if named == ids and not any(finding.get("released_by") == "tree" for finding in findings):
                 account = {"source": f"{marker.surface}:{marker.source_id}", "author": marker.author}
         bundles.append({**entry, "state": "accounted" if account else status, "findings": findings,
                         "attributed": (comparison or {}).get("attributed") or [], "account": account})
@@ -8228,6 +8245,13 @@ def _cloud_merge_script(state, stage, vendor, resumed=None) -> str | None:
     session = getattr(resumed, "session", None)
     if session and not cloud_build.CLOUD_SESSION.fullmatch(session):
         return None  # a locally started session resumes locally
+    if session:
+        # A cloud session resumes in the cloud whatever the switch now says, so its own record names
+        # the practice clone it runs from.
+        practice = ((getattr(resumed, "request", None) or {}).get("cloud") or {}).get("practice") or {}
+        if isinstance(practice.get("repository"), str) and practice["repository"]:
+            return cloud_build.cloud_practice_path(practice["repository"],
+                                                   "skills", "persist-changes", "scripts", "persist.py")
     try:
         entry, _source = cloud_build.route_for(f"{state.repo}#{state.issue_number}")
     except cloud_build.CloudError:

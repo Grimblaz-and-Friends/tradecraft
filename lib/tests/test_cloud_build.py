@@ -841,3 +841,106 @@ def test_a_cloud_repairs_merge_instruction_names_the_cloud_practice_path(tmp_pat
     assert work._cloud_merge_script(state, "review-disposition", "claude", local) is None
     obligation = work.MergeObligation("h" * 40, REPO, "main", "p" * 40, (), None)
     assert json.dumps(script) in obligation.prompt("tradecraft/77-x", script)
+
+
+def test_an_interrupted_fire_leaves_an_in_flight_record_that_refuses_a_second_fire(machine):
+    import run_lifecycle
+    fake = Fake()
+
+    def fire(routine, token, text):
+        raise KeyboardInterrupt
+
+    fake.fire = fire
+    with pytest.raises(KeyboardInterrupt):
+        launch(machine, fake)
+    [request_path] = list(machine["records"].rglob("*.request.json"))
+    request = json.loads(request_path.read_text())
+    run = json.loads(request_path.with_name("result.md.run.json").read_text())
+    assert request["cloud"]["fire_state"] == "in-flight" and run["launch_unresolved"] is True
+    with pytest.raises(ValueError, match="unresolved"):
+        run_lifecycle.recovery_session(request, run)
+
+
+def test_an_incomplete_fire_answer_is_unresolved(machine):
+    import http.client
+    fake = Fake()
+
+    def fire(routine, token, text):
+        raise http.client.IncompleteRead(b"{\"claude_code_sess")
+
+    fake.fire = fire
+    _code, request, run, _output = launch(machine, fake)
+    assert run["launch_unresolved"] is True and request["cloud"]["fire_state"] == "unresolved"
+
+
+def test_a_handed_over_cloud_session_is_linked_to_its_reservation(machine):
+    state_path = machine["tmp"] / "handover.json"
+    state_path.write_text(json.dumps({"schema_version": 1, "from_bundle": "codex/result.md.run.json",
+                                      "to_vendor": "claude", "phase": "reserved",
+                                      "replacement_session": "01234567-89ab-cdef-0123-456789abcdef"}))
+    output = machine["records"] / "handed" / "result.md"
+    args = argparse.Namespace(
+        root=machine["root"], output=output, work=f"{REPO}#77", stage="build", resume=None,
+        settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
+        retry_of=None, holder_session_id=None, lineage_branch="tradecraft/77-x",
+        lineage_pull_request=None, timeout_seconds=600, artifact_brief_source="brief", artifact_brief=None,
+        handover_from="codex/result.md.run.json", handover_state=state_path)
+    cloud.run(args, Deadline(5), entry=machine["entry"], route_source="test", effective_prompt=b"t",
+              prompt=b"t", context=b"", artifact_brief=b"", metadata={}, composition={"origin": "holder"},
+              settings_sources={"vendor": "v", "model": "m", "effort": "e"},
+              validate=lambda *_: {"status": "pass"}, transport=Fake(), record_root=machine["records"],
+              plugin=machine["plugin"], install_path=machine["install"])
+    request = json.loads((output.parent / "result.md.request.json").read_text())
+    # The entrance accepts a follow-up into the session only when the reservation names it.
+    reservation = json.loads(state_path.read_text())
+    assert reservation["replacement_session"] == "cse_ABC123" and reservation["phase"] == "running"
+    assert request["handover"]["state"] == str(state_path)
+    assert request["handover"]["replacement_session"] == "cse_ABC123"
+
+
+def test_only_the_tree_releases_the_local_tree_hold(tmp_path, monkeypatch):
+    import subprocess
+    import types
+    import work
+    root = tmp_path / "tree"
+    root.mkdir()
+    for command in (["init", "-q"], ["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q",
+                                     "--allow-empty", "-m", "base"]):
+        subprocess.run(["git", "-C", str(root), *command], check=True, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True, stdin=subprocess.DEVNULL).stdout.strip()
+    request = {"dispatch_id": "d1", "stage": "build", "root": str(root), "launched_at": "2026-11-06T10:00:00Z",
+               "write_bound": {"route": "cloud"}}
+
+    def run_with(tip):
+        return {"completed_at": "2026-11-06T11:00:00Z", "launch_comparison": {"status": "cloud-not-run"},
+                "attempts": [{"cloud": {"report_branch": "claude/r", "cloud_checks": {
+                    "local_tree": {"ok": False, "reason": "not a fast-forward", "tip": tip}}}}]}
+
+    account = types.SimpleNamespace(attributes={"dispatch": "d1"}, timestamp="2026-11-06T12:00:00Z",
+                                    surface="issue-comment", source_id="1", author="holder",
+                                    body='```json\n{"schema_version": 1, "findings": '
+                                         '[{"id": "cloud-check:local_tree", "party": "holder"}]}\n```\n')
+    state = types.SimpleNamespace(record_root=tmp_path, repo=REPO, issue_number=77, instalment=None)
+    monkeypatch.setattr(work, "_launch_accounts", lambda _state: [account])
+    monkeypatch.setattr(work, "launch_account_payload",
+                        lambda body: {"findings": [{"id": "cloud-check:local_tree"}]})
+    stale = run_with("f" * 40)
+    monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a: [(1, "b", request, stale)])
+    assert work._evaluate_launch_findings(state)["status"] == "held"  # an account can't release it
+    current = run_with(head)
+    monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a: [(1, "b", request, current)])
+    assert work._evaluate_launch_findings(state)["status"] == "clear"
+
+
+def test_a_cloud_resume_names_its_recorded_practice_path_after_the_switch_is_removed(tmp_path, monkeypatch):
+    import types
+    import work
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)  # no switch entry at all
+    state = types.SimpleNamespace(repo=REPO, issue_number=77)
+    resumed = types.SimpleNamespace(session="cse_STARTED", request={
+        "cloud": {"practice": {"repository": "Adopter/practice-fork"}}})
+    assert work._cloud_merge_script(state, "review-disposition", "claude", resumed) == \
+        "/home/user/practice-fork/skills/persist-changes/scripts/persist.py"
+    assert work._cloud_merge_script(state, "review-disposition", "claude") is None

@@ -877,6 +877,12 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
     copy = metadata.get("artifact_copy") or {}
     # The bundle's files are reserved before anything fires, so a run never starts with nowhere to
     # be recorded; the request, with the session the fire returns, is written as soon as it returns.
+    handover_state = getattr(args, "handover_state", None)
+    if getattr(args, "handover_from", None):
+        # A handover onto the cloud route lands in the cloud session the fire starts.
+        request["handover"] = {"state": str(handover_state) if handover_state else None,
+                               "from_bundle": args.handover_from, "to_vendor": "claude",
+                               "replacement_session": None, "phase": "cloud"}
     reservation = records.reserve_bundle(destinations, output)
     streams = reservation.__enter__()
     try:
@@ -889,7 +895,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                 env = followup_env()
                 claude = claude_command(args)
                 login_check(transport, env, claude)
-                _start, loaded = loaded_commit(session_attempts(record_root, args.resume), args.resume)
+                start, loaded = loaded_commit(session_attempts(record_root, args.resume), args.resume)
                 try:
                     installed = installed_practice(plugin, install_path or install_record_path(),
                                                    refuse_older=False)["commit"]
@@ -897,7 +903,9 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     # The install record is reported, never a reason to refuse a follow-up.
                     installed = f"unavailable: {exc}"
                 cloud["practice"] = {"session_loaded": loaded, "installed_at_send": installed,
-                                     "drift": installed != loaded, "commit": loaded}
+                                     "drift": installed != loaded, "commit": loaded,
+                                     "repository": ((start.get("cloud") or {}).get("practice") or {})
+                                     .get("repository")}
                 cloud["session_id"] = args.resume
                 cloud["session_url"] = f"https://claude.ai/code/{args.resume}"
             else:
@@ -946,12 +954,14 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     raise CloudError(f"follow-up send failed: exit {code} {raw[:300]!r}")
             else:
                 # Never retried: a second fire cannot be told apart from a second session.
+                _persist_in_flight(streams, request, request_path, run_path)
                 try:
                     status, body = transport.fire(entry["routine_id"], token, text)
-                except OSError as exc:
-                    # The request may have reached the routine; only its answer is lost.
+                except Exception as exc:
+                    # The request may have reached the routine; a lost connection, an incomplete read
+                    # or any other failure loses only its answer.
                     cloud["fire_unresolved"] = True
-                    raise CloudError(f"fire response lost: {exc}") from exc
+                    raise CloudError(f"fire response lost: {type(exc).__name__}: {exc}") from exc
                 try:
                     value = json.loads(body)
                 except ValueError:
@@ -962,9 +972,19 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     cloud["fire_unresolved"] = True
                     raise CloudError(f"fire answered HTTP 200 without a session id: {body[:300]}")
                 if status != 200:
+                    cloud["fire_state"] = "refused"
                     raise CloudError(f"fire failed: HTTP {status} {body[:300]}")
                 cloud["session_id"] = session
                 cloud["session_url"] = value.get("claude_code_session_url")
+                cloud["fire_state"] = "answered"
+                if request.get("handover"):
+                    request["handover"]["replacement_session"] = session
+                    if handover_state:
+                        try:
+                            _relink_handover(Path(handover_state), session)
+                        except (OSError, ValueError, CloudError) as exc:
+                            # The session is running; a failed relink is recorded, never a failed launch.
+                            cloud["handover_relink_error"] = f"{type(exc).__name__}: {exc}"
         except CloudRefusal as exc:
             failure, refused = str(exc), True
         except (CloudError, OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
@@ -976,10 +996,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
     if failure is not None and cloud.get("fire_unresolved"):
         failure += ("; a session may be running unrecorded, so no replacement builder starts until it is "
                     "resolved on claude.ai")
-    if getattr(args, "handover_from", None):
-        # A handover onto the cloud route lands in the cloud session the fire started.
-        request["handover"] = {"from_bundle": args.handover_from, "to_vendor": "claude",
-                               "replacement_session": cloud.get("session_id"), "phase": "cloud"}
+    if cloud.get("fire_unresolved"):
+        cloud["fire_state"] = "unresolved"
     attempt: dict[str, object] = {
         "vendor": "claude", "launched": failure is None if not cloud.get("fire_unresolved") else None,
         "exit_code": None,
@@ -1000,7 +1018,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         run_record["launch_unresolved"] = True  # recovery refuses another writer until it is resolved
     published = None
     with _reserved(reservation, streams):
-        streams[request_path].write(records.json_bytes(request))
+        _rewrite(streams[request_path], records.json_bytes(request))
         streams[input_path].write(prompt)
         if context_path:
             streams[context_path].write(context)
@@ -1067,6 +1085,39 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         return 0
     print(f"implementer: cloud attempt {run_record['outcome']}: {attempt['reason']}", file=sys.stderr)
     return 1
+
+
+def _rewrite(stream, data: bytes) -> None:
+    """Replace a reserved stream's whole content and make it durable."""
+    stream.seek(0)
+    stream.truncate()
+    stream.write(data)
+    stream.flush()
+    os.fsync(stream.fileno())
+
+
+def _persist_in_flight(streams, request: dict, request_path: Path, run_path: Path) -> None:
+    """Keep a discoverable, unresolved launch before the fire, so an interrupted launcher leaves a
+    record that refuses a second fire rather than nothing at all."""
+    request["cloud"]["fire_state"] = "in-flight"
+    _rewrite(streams[request_path], records.json_bytes(request))
+    _rewrite(streams[run_path], records.json_bytes({
+        "schema_version": records.SCHEMA_VERSION, "dispatch_id": request["dispatch_id"],
+        "request": str(request_path), "actual_vendor": "claude", "attempts": [], "route": "cloud",
+        "lifecycle": "running", "launched_at": request["launched_at"],
+        "launcher_process": lifecycle.process_identity(), "launch_unresolved": True}))
+    streams.mark_ready()
+
+
+def _relink_handover(path: Path, session: str) -> None:
+    """Point the handover reservation at the cloud session, so a follow-up into it is accepted."""
+    value = json.loads(path.read_bytes())
+    if not isinstance(value, dict):
+        raise CloudError(f"cannot read handover reservation: {path}")
+    value.update(replacement_session=session, phase="running")
+    staged = path.with_name(f".{path.name}.cloud")
+    staged.write_bytes(records.json_bytes(value))
+    os.replace(staged, path)
 
 
 @contextmanager
@@ -1199,7 +1250,7 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
         record_cloud["local_tree"] = {"status": "error" if code else "fast-forwarded", "detail": text[:300]}
         # The use stage builds its consumer tree from the local tree's HEAD, so a tree that didn't
         # follow the returned branch holds the next stage until it does; the report is still kept.
-        checks["local_tree"] = {"ok": not code, "reason": text[:300] if code else ""}
+        checks["local_tree"] = {"ok": not code, "reason": text[:300] if code else "", "tip": after}
         if code:
             run_record["error"] = f"local tree did not follow the cloud branch: {text[:300]}"
     try:
