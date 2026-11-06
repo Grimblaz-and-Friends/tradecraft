@@ -7,7 +7,7 @@ Usage: cloud.py stop     (Stop hook; hook input JSON on stdin)
 
 It acts only in a Claude Code cloud session (``CLAUDE_CODE_REMOTE`` set) whose
 prompt carries a ``TRADECRAFT-CLOUD-RUN v1`` header; elsewhere it does nothing
-and prints nothing. Design: <plugin-root>/skills/work/references/cloud-builds.md.
+and prints nothing. Design: lib/DESIGN.md#the-cloud-route
 """
 from __future__ import annotations
 

@@ -129,7 +129,7 @@ ISSUE_URL = re.compile(
 REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?\Z")
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
-# A Claude cloud session's id (#938 call 9); accepted on the cloud route only.
+# A Claude cloud session's id. Design: lib/DESIGN.md#the-cloud-route
 CLOUD_SESSION_ID = re.compile(r"cse_[A-Za-z0-9]+\Z")
 
 
@@ -3832,6 +3832,7 @@ LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched", "cloud-not-run"})
 
 
 def _cloud_check_findings(run: dict) -> list[dict]:
+    # Design: lib/DESIGN.md#the-cloud-route
     """A failed cloud attempt check holds the next stage like a launch finding."""
     findings = []
     for attempt in run.get("attempts") or []:
@@ -3969,6 +3970,7 @@ def _launch_account_refusal(state: WorkState, stage: str) -> Decision | None:
 
 
 def _cloud_report(request, attempt):
+    # Design: lib/DESIGN.md#the-cloud-route
     """A cloud attempt's route, profile mark, checks and practice drift."""
     if request.get("route") != "cloud":
         return {"route": "local"} if (attempt.get("vendor") == "claude") else {}

@@ -3,7 +3,7 @@
 A set-up repository's Claude launches (artifact, build, repairs) fire that
 repository's routine, wait for the run's report branch, and read its report,
 usage and checks into the same bundle a local launch writes. Nothing here falls
-back to a local builder. Design: <plugin-root>/skills/work/references/cloud-builds.md.
+back to a local builder. Design: lib/DESIGN.md#the-cloud-route
 """
 from __future__ import annotations
 

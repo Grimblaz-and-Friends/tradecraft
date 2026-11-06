@@ -10,7 +10,7 @@ Usage: python <plugin-root>/lib/cloud_setup.py body --repo OWNER/REPO --environm
 The holder creates and reads the routine with its RemoteTrigger tool; this
 script writes what is sent and makes "differs from what was sent" mechanical.
 Only a clean ``complete`` writes the machine record entry.
-Design: <plugin-root>/skills/work/references/cloud-builds.md.
+Design: lib/DESIGN.md#the-cloud-route
 """
 from __future__ import annotations
 

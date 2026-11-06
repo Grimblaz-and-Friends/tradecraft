@@ -61,11 +61,3 @@ The entrance's implementer environments show, per cloud attempt:
 - `instructions_applied` and `instructions_loaded`: the product's `CLAUDE.md` and `AGENTS.md` load, and no repository's committed hooks or permission rules apply, because the session starts above its clones.
 
 The launch comparison reads `cloud-not-run` with its reason, a clear status. Cost is each attempt's delta of the session's running total, priced per model at the rate card; a model with no rate row is unpriced, never zero.
-
-## Decisions in force
-
-- The task travels on the report branch, because composed prompts exceed the fire's 65,536-character limit.
-- The launcher posts the report and the holder keeps every marker.
-- The installed commit comes from the install record, so the pin moves on plugin updates and never on merges.
-- A follow-up keeps its session's version; a new session loads exactly the installed one.
-- Attempt checks reuse the launch-findings hold rather than adding a gate.

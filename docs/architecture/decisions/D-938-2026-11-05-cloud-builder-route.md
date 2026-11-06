@@ -6,7 +6,9 @@
 
 ## Decision
 
-A repository the owner sets up runs every Claude implementer launch (artifact, build, repairs) as a Claude Code cloud session fired through that repository's routine. The route, its records and its checks are described in the shipped reference `skills/work/references/cloud-builds.md`, which code points at.
+A repository the owner sets up runs every Claude implementer launch (artifact, build, repairs) as a Claude Code cloud session fired through that repository's routine. The route's mechanism and reasons live in `lib/DESIGN.md#the-cloud-route`, which code points at; the setup and reading steps are in the shipped reference `skills/work/references/cloud-builds.md`.
+
+**What this narrows.** [D-939](D-939-2026-11-03-claude-launch-writes-stay-in-their-tree.md) binds every Claude author and builder launch to its tree, with a launch-owned file-tool guard and a before-and-after comparison of the owner's machine. A cloud launch runs on a remote machine, so neither applies to it: its record says the comparison didn't run and why. Everything else in D-939 stands, and a local Claude launch keeps both.
 
 ## Why
 

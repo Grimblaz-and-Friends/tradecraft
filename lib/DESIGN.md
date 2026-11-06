@@ -43,3 +43,21 @@ The reader launches on its role's vendor and records a same-vendor reason whenev
 - Every judgement fails closed, so a `clean` can't pass over a flag, a reading or a record the gate can't see.
 
 **Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons.
+
+## The cloud route
+
+**What it does now.** For a repository with an entry in the machine switch `~/.tradecraft/cloud-builds.json`, every Claude implementer launch (artifact, build, repair) runs as a Claude Code cloud session fired through that repository's routine, and a Codex launch is untouched (`cloud_build.py`). The launcher reads the routine's token from the file the entry names, moves the shared practice pin forward to the installed plugin's commit when it is behind, writes the task to a report branch in one `[skip ci]` commit, and fires the routine with a short header naming the work, checkout, practice commit and report branch. The run checks its practice clone first (`hooks/cloud.py`, as a prompt hook and as the saved prompt's first command), does the task, and pushes its report and the list of instruction files it loaded. The practice's `Stop` hook totals the session's usage over distinct message ids across the main and subagent transcripts, records the main session's model, effort and permission mode, copies the practice check, and pushes `usage.json`; a `usage.json` naming the pushed report's blob is the finish signal. The launcher then checks the report branch (the practice check, `[skip ci]` on every commit, and for a build that the change branch advanced), keeps the report as the published output, posts it on the issue, deletes only the report branch it named, and fast-forwards the local tree. A revision or repair is a follow-up message into the same session, on the version that session loaded. Setup (`cloud_setup.py`) writes the routine's create body and compares every read-back with it.
+
+**Why.**
+
+- The route gives the implementer a machine that can't reach the owner's, so a failed launch refuses and never falls back to a local builder, and the before-and-after comparison of the owner's machine has nothing to compare.
+- The task travels on the report branch because a composed prompt is larger than the fire accepts; the fire carries only the header.
+- The report comes back on a branch because a run's own issue comments are refused by its safety screen, and a message to another session elevates the run.
+- The practice pin follows the plugin install record's commit, never a checkout's `HEAD`, so it moves once per plugin update and never on a merge, and a reload clears an older launcher's refusal.
+- A started session can't load a newer practice, so a follow-up keeps its session's version and records both commits; a new session loads exactly the installed one.
+- The practice clone excludes the practice repository's own `CLAUDE.md`, `AGENTS.md` and `.claude/`, so its repository doctrine never governs a product build; a clone holding one is treated like a clone at the wrong commit.
+- The cost comes from a hook the runtime runs, not from the builder's own counting, and the launcher re-checks the hook's ledger without the transcript; a ledger it can't stand behind makes the cost unknown and leaves the attempt's work alone.
+- The three attempt checks reuse the launch-findings hold, so a failure shows to the holder without discarding the report.
+- The practice's own repository is refused, because its product and practice clones would share one folder and its committed guard would govern a single-source build.
+
+**Decisions in force:** D-938, a set-up repository's Claude implementer runs as a cloud session with no local fallback, its cost counted by the shipped `Stop` hook and re-checked against its ledger, and the practice's own repository refused; D-938 narrows D-939 for cloud launches, which have no local file-tool guard and no before-and-after comparison.
