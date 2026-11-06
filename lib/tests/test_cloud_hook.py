@@ -208,7 +208,10 @@ def test_outside_the_cloud_the_hook_prints_nothing(monkeypatch, capsys):
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text("utf-8"))["hooks"]
     for event in ("Stop", "UserPromptSubmit"):
         command = hooks[event][0]["hooks"][0]["command"]
-        assert command.startswith('[ -n "$CLAUDE_CODE_REMOTE" ] && exec python3 ') and command.endswith("|| true")
+        # A line PowerShell and bash both accept, the guard, then the close of PowerShell's comment.
+        opening, guard, closing = command.split("\n")
+        assert (opening, closing) == ("set -- `# <#`", "#>")
+        assert guard.startswith('[ -n "$CLAUDE_CODE_REMOTE" ] && exec python3 ') and guard.endswith("|| true")
 
 
 def hook_commands():
