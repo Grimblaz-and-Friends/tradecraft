@@ -122,10 +122,11 @@ def compare(sent: dict, readback: dict, *, phase: str, token_file: str | None) -
         faults.append(f"disallowed_tools: sent ['PushNotification'], read back {tools}")
     if phase == "complete":
         model, effort = _get(readback, *context, "model"), _get(readback, *context, "effort_level")
-        if model != cloud.PROFILE_MODEL:
-            faults.append(f"model: required {cloud.PROFILE_MODEL}, read back {model}")
-        if effort != cloud.PROFILE_EFFORT:
-            faults.append(f"effort_level: required {cloud.PROFILE_EFFORT}, read back {effort}")
+        want_model, want_effort = cloud.builder_profile()
+        if model != want_model:
+            faults.append(f"model: required {want_model}, read back {model}")
+        if effort != want_effort:
+            faults.append(f"effort_level: required {want_effort}, read back {effort}")
         if token_file is None:
             faults.append("token_file: required at complete")
         else:

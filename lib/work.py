@@ -55,6 +55,7 @@ import artifact_tree
 import launch_bound
 import run_lifecycle as lifecycle
 import work_recovery
+import cloud_build
 import dispatch_implementer
 import dispatch_seat
 import launch_settings as setting_resolution
@@ -129,18 +130,24 @@ ISSUE_URL = re.compile(
 REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?\Z")
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
-# A Claude cloud session's id. Design: lib/DESIGN.md#the-cloud-route
-CLOUD_SESSION_ID = re.compile(r"cse_[A-Za-z0-9]+\Z")
 
 
 def _session_shaped(session: object, request: object = None, *, vendor: object = None) -> bool:
-    """A resumable session id: a UUID, or a cloud session's id where the route is cloud."""
+    """A resumable session id: a UUID, or a Claude cloud session's id from a cloud source.
+
+    A cloud id is accepted from a bundle the cloud route recorded, or from a Claude
+    builder-session marker, and its resume always continues that cloud session.
+    Design: lib/DESIGN.md#the-cloud-route
+    """
     if not isinstance(session, str):
         return False
     if SESSION_ID.fullmatch(session):
         return True
-    cloud = (isinstance(request, dict) and request.get("route") == "cloud") or vendor == "claude"
-    return cloud and CLOUD_SESSION_ID.fullmatch(session) is not None
+    if isinstance(request, dict):
+        cloud = request.get("route") == "cloud"
+    else:
+        cloud = vendor == "claude"
+    return cloud and cloud_build.CLOUD_SESSION.fullmatch(session) is not None
 
 
 WORK_EVIDENCE_MARKERS = frozenset({
@@ -7312,11 +7319,11 @@ def resume_session(state: WorkState, stage: str, record_root: Path | None = None
         return bundled
     if stage == "artifact":
         return None
-    sessions = [marker.attributes.get("session") for marker in state.issue_markers
+    sessions = [(marker.attributes.get("session"), marker.attributes.get("vendor"))
+                for marker in state.issue_markers
                 if marker.name == "builder-session" and marker.attributes.get("vendor")]
-    return next((session for session in reversed(sessions)
-                 if _session_shaped(session, vendor="claude" if isinstance(session, str)
-                                    and session.startswith("cse_") else None)), None)
+    return next((session for session, vendor in reversed(sessions)
+                 if _session_shaped(session, vendor=vendor)), None)
 
 
 def _session_settings(source: ResumeSource) -> dict[str, object]:

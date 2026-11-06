@@ -8,6 +8,7 @@ back to a local builder. Design: lib/DESIGN.md#the-cloud-route
 from __future__ import annotations
 
 import base64
+import importlib.util
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -26,20 +27,32 @@ RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
 # A routine run may push to `claude/` branches without being told; report branches live there.
 REPORT_PREFIX = "claude/tradecraft-report-"
-CLOUD_DIR = "tradecraft-cloud/"
-HEADER = "TRADECRAFT-CLOUD-RUN v1"
+
+
+def _load_hook():
+    # The hook runs alone in the cloud with no lib on its path, and it writes the
+    # report branch's format, so the launcher reads the shared constants from it.
+    path = Path(__file__).resolve().parents[1] / "hooks" / "cloud.py"
+    spec = importlib.util.spec_from_file_location("tradecraft_cloud_hook", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_HOOK = _load_hook()
+CLOUD_DIR = _HOOK.PREFIX
+HEADER = _HOOK.HEADER
+FIGURES = _HOOK.FIGURES
 CLOUD_SESSION = re.compile(r"cse_[A-Za-z0-9]+\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
-PROFILE_MODEL, PROFILE_EFFORT = "claude-opus-5-5", "high"
-# Opus 5.5 runs at medium when no effort is chosen (spike round five).
-DEFAULT_EFFORT_LABEL = "medium (Opus 5.5 default; no effort key in transcript)"
+# A run whose transcript names no effort can't be shown to have run at the profile.
+NO_EFFORT_LABEL = "none recorded: the transcript names no effort"
 FIRE_URL = "https://api.anthropic.com/v1/claude_code/routines/{routine}/fire"
 FIRE_HEADERS = {"anthropic-beta": "experimental-cc-routine-2026-04-01",
                 "anthropic-version": "2023-06-01"}
 POLL_SECONDS = 30
 COMMENT_LIMIT = 60_000
 FIRE_TEXT_LIMIT = 65_536
-FOLLOWUP_STAGES = frozenset({"review-disposition", "floor", "build", "artifact"})
 COMPARISON_REASON = ("not run: a cloud builder runs on a remote machine and cannot reach "
                      "this one")
 INSTRUCTIONS_APPLIED = ("product CLAUDE.md/AGENTS.md from the cloned repository; no repository's "
@@ -278,31 +291,38 @@ def finished(files: dict[str, bytes | None]) -> bool:
     return isinstance(value, dict) and value.get("report_blob") == git_blob_sha(report)
 
 
-def cloud_profile(usage: dict) -> dict[str, object]:
+def builder_profile(stage: str = "build") -> tuple[str, str]:
+    """The Claude model and effort the local launch defaults to, which the routine must match."""
+    import dispatch_implementer  # Deferred: it imports this module.
+    role = "artifact_author" if stage == "artifact" else "implementer"
+    return dispatch_implementer.PROFILES[role]["claude"]
+
+
+def cloud_profile(usage: dict, profile: tuple[str, str] | None = None) -> dict[str, object]:
     """The main session's model and effort, against the builder profile."""
+    expected_model, expected_effort = profile or builder_profile()
     seen = usage.get("profile") if isinstance(usage.get("profile"), dict) else {}
     models = [value for value in seen.get("models") or [] if isinstance(value, str)]
     efforts = [value for value in seen.get("efforts") or [] if isinstance(value, str)]
     reasons = []
     if not models:
         reasons.append("no main-session model recorded")
-    elif models != [PROFILE_MODEL]:
-        reasons.append("main-session models " + ", ".join(models) + f" differ from {PROFILE_MODEL}")
+    elif models != [expected_model]:
+        reasons.append("main-session models " + ", ".join(models) + f" differ from {expected_model}")
     if not efforts:
-        effort = DEFAULT_EFFORT_LABEL
-        reasons.append("no effort recorded; " + DEFAULT_EFFORT_LABEL)
-    elif efforts == [PROFILE_EFFORT]:
-        effort = PROFILE_EFFORT
+        effort = NO_EFFORT_LABEL
+        reasons.append(NO_EFFORT_LABEL)
+    elif efforts == [expected_effort]:
+        effort = expected_effort
     else:
         effort = efforts[0] if len(efforts) == 1 else efforts
-        reasons.append("main-session efforts " + ", ".join(efforts) + f" differ from {PROFILE_EFFORT}")
+        reasons.append("main-session efforts " + ", ".join(efforts) + f" differ from {expected_effort}")
     mode = usage.get("permission_mode") if isinstance(usage.get("permission_mode"), dict) else {}
-    return {"model": models, "effort": effort, "profile": f"{PROFILE_MODEL}/{PROFILE_EFFORT}",
+    return {"model": models, "effort": effort, "profile": f"{expected_model}/{expected_effort}",
             "off_profile": bool(reasons), "reason": "; ".join(reasons),
             "permission_mode": mode.get("values") or ["unknown"]}
 
 
-FIGURES = ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h", "cache_creation")
 
 
 def ledger_check(usage: dict, previous: list[dict] | None,
@@ -872,8 +892,9 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
             run_record["completed_at"] = datetime.now(timezone.utc).isoformat()
             run_record["revision_after"] = records.git_revision(root)
             records.add_usage_record(attempt, request, completed_at=run_record["completed_at"],
+                                     # A practice mismatch stopped before the task, so it filled no seat.
                                      staffing_status="qualified" if run_record["outcome"] in {
-                                         "success", "invalid_artifact_return", "practice_mismatch"}
+                                         "success", "invalid_artifact_return"}
                                      else "unfilled")
             _cloud_usage(attempt)
             for stream in streams.values():
@@ -956,7 +977,7 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     record_cloud.update(usage=usage, running_total=totals, delta=this_delta,
                         ledger_check=ledger_check(usage, (previous or {}).get("ledger"),
                                                   [*deltas, this_delta]),
-                        profile=cloud_profile(usage))
+                        profile=cloud_profile(usage, builder_profile(args.stage)))
     if not record_cloud["ledger_check"]["ok"]:
         # A cost the practice cannot stand behind is unknown; the attempt itself stands.
         attempt["fault"] = "cloud usage ledger disagrees: " + "; ".join(record_cloud["ledger_check"]["faults"])
@@ -967,6 +988,8 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     else:
         attempt.update(outcome="success", reason="")
         run_record["outcome"] = "success"
+    # An artifact is compared byte for byte with its brief, as a local return is;
+    # other returns fold CRLF the way the local launcher does.
     published = report if artifact_brief else report.replace(b"\r\n", b"\n")
     streams[source_path].write(published)
     streams[source_path].flush()

@@ -351,7 +351,7 @@ def test_default_effort_is_marked():
                     {"models": ["claude-sonnet-5"], "efforts": ["high"]}):
         assert cloud.cloud_profile({"profile": profile})["off_profile"] is True
     assert cloud.cloud_profile({"profile": {"models": ["claude-opus-5-5"], "efforts": []}})["effort"] \
-        == cloud.DEFAULT_EFFORT_LABEL
+        == cloud.NO_EFFORT_LABEL
 
 
 def test_and_8_1_build_plus_repair_is_one_running_total(machine):
@@ -436,11 +436,22 @@ def test_cloud_not_run_is_clear_and_local_still_compares():
     assert {"clean", "not-launched"} <= work.LAUNCH_CLEAR_STATUSES
 
 
-def test_cse_sessions_are_resumable_only_on_the_cloud_route():
+def test_cse_sessions_are_resumable_only_from_a_cloud_source(tmp_path):
     import work
     assert work._session_shaped("cse_ABC", {"route": "cloud"})
     assert not work._session_shaped("cse_ABC", {"route": "local"})
+    assert not work._session_shaped("cse_ABC", {"route": "local"}, vendor="claude")
+    assert work._session_shaped("cse_ABC", vendor="claude")
+    assert not work._session_shaped("cse_ABC", vendor="codex")
     assert work._session_shaped("01234567-89ab-cdef-0123-456789abcdef", {})
+    state = work.WorkState(REPO, 77, {})
+
+    def marker(session, vendor):
+        return work.Marker("builder-session", {"session": session, "vendor": vendor}, "", "producer")
+
+    state.validated_markers = [marker("cse_CLAUDE", "claude"), marker("cse_CODEX", "codex")]
+    # The newest marker names a Codex vendor, so its cloud-shaped id is never resumed.
+    assert work.resume_session(state, "build", tmp_path) == "cse_CLAUDE"
 
 
 def test_the_saved_prompt_forbids_posting_and_messaging():
