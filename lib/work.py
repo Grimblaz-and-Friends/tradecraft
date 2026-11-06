@@ -3857,8 +3857,9 @@ def _reach_refusal(state: WorkState, stage: str) -> Decision | None:
 
 # `none-found`: the holder inspected what the finding names and found no change
 # needing a party, which is the true account of an uncompared or unrecorded one.
+# `cloud-check`: a failed cloud attempt check the holder verified; its basis names the check.
 LAUNCH_ACCOUNT_PARTIES = frozenset({"owner", "plugin-update", "session", "builder-damage",
-                                    "none-found"})
+                                    "none-found", "cloud-check"})
 LAUNCH_ACCOUNT_FIELDS = frozenset({"id", "party", "basis", "session", "owner_report", "practice_issue"})
 LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposition", "use"})
 # `cloud-not-run`: a cloud builder cannot reach this machine, so it has nothing to compare.
@@ -3934,6 +3935,9 @@ def launch_account_payload(body: str) -> dict[str, object]:
                 raise ValueError(f"launch account {party} finding requires {name}")
         if party == "builder-damage" and PRACTICE_ISSUE.fullmatch(entry["practice_issue"]) is None:
             raise ValueError("launch account practice_issue must be owner/repo#n")
+        if party == "cloud-check" and (not identity.startswith("cloud-check:")
+                                       or identity.split(":", 1)[1] not in entry["basis"]):
+            raise ValueError("a cloud-check account answers a cloud-check finding and its basis names the check")
     return value
 
 
@@ -3969,18 +3973,20 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             bundles.append({**entry, "state": "running",
                             "status": "not yet recorded: the launch is running"})
             continue
+        # Read once, so a tree that moves mid-evaluation can't leave a held bundle with no findings.
+        cloud_findings = _cloud_check_findings(run, request) if isinstance(comparison, dict) else []
         if not isinstance(comparison, dict):
             findings = [{"id": "unrecorded", "item": "comparison", "path": "",
                          "change": "unrecorded",
                          "reason": "the request has a write-bound baseline but the run record has no comparison"}]
             status = "unrecorded"
-        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not _cloud_check_findings(run, request):
+        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not cloud_findings:
             bundles.append({**entry, "state": "clear", "findings": [],
                             "attributed": comparison.get("attributed") or [], "account": None})
             continue
         else:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
-            findings += _cloud_check_findings(run, request)
+            findings += cloud_findings
             status = "account-required"
         ids = {finding.get("id") for finding in findings}
         # An account counts only once its findings exist: after the run completed,

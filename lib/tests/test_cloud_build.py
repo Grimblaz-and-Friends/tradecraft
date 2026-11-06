@@ -1048,3 +1048,17 @@ def test_a_follow_up_after_an_interrupted_build_that_pushed_levels_the_tree_firs
     else:
         assert request["cloud"]["local_fast_forward"] == {"from": TIP, "to": AFTER}
         assert request["cloud"]["change_branch"]["tip_at_fire"] == AFTER
+
+
+def test_a_failed_cloud_check_is_accounted_by_the_cloud_check_party():
+    import work
+
+    def body(identity, basis):
+        return ("```json\n" + json.dumps({"schema_version": 1, "findings": [
+            {"id": identity, "party": "cloud-check", "basis": basis}]}) + "\n```\n")
+
+    verified = "skip_ci: the holder read both commits; each is the builder's report, no workflow ran"
+    assert work.launch_account_payload(body("cloud-check:skip_ci", verified))["findings"][0]["party"] == "cloud-check"
+    for identity, basis in (("cloud-check:skip_ci", "the holder looked"), ("unrecorded", verified)):
+        with pytest.raises(ValueError, match="cloud-check account"):
+            work.launch_account_payload(body(identity, basis))
