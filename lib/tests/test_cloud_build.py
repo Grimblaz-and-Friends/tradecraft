@@ -526,7 +526,8 @@ def test_a_repair_that_makes_no_commit_is_not_held(machine):
 def test_a_session_without_the_cloud_environment_fails_and_holds(machine):
     import work
     fake = Fake()
-    fake.environment = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": None, "BASH_MAX_TIMEOUT_MS": "999"}
+    longer = str(int(cloud.CLOUD_ENVIRONMENT["BASH_MAX_TIMEOUT_MS"]) + 1)
+    fake.environment = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": None, "BASH_MAX_TIMEOUT_MS": longer}
     _code, _request, run, _output = launch(machine, fake)
     check = run["attempts"][0]["cloud"]["cloud_checks"]["environment"]
     assert check["ok"] is False and len(check["faults"]) == 2
@@ -555,3 +556,28 @@ def test_a_practice_mismatch_records_only_the_mismatch(machine):
     assert run["outcome"] == "practice_mismatch"
     assert list(run["attempts"][0]["cloud"]["cloud_checks"]) == ["practice"]
     assert work._cloud_check_findings(run) == []
+
+
+@pytest.mark.parametrize("ceiling, ok", [(None, True), ("1000", True), ("0", False), ("x", False),
+                                         ("bigger", False)])
+def test_the_command_ceiling_may_be_shorter_but_never_longer(ceiling, ok):
+    limit = int(cloud.CLOUD_ENVIRONMENT["BASH_MAX_TIMEOUT_MS"])
+    value = {None: str(limit), "bigger": str(limit + 1)}.get(ceiling, ceiling)
+    usage = {"environment": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1", "BASH_MAX_TIMEOUT_MS": value}}
+    assert cloud.environment_check(usage)["ok"] is ok
+
+
+def test_background_tasks_must_be_off_exactly():
+    usage = {"environment": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "0",
+                             "BASH_MAX_TIMEOUT_MS": cloud.CLOUD_ENVIRONMENT["BASH_MAX_TIMEOUT_MS"]}}
+    assert cloud.environment_check(usage)["ok"] is False
+
+
+def test_an_artifact_run_is_judged_against_the_profile_setup_verifies(machine, monkeypatch):
+    import dispatch_implementer
+    monkeypatch.setitem(dispatch_implementer.PROFILES, "artifact_author",
+                        {**dispatch_implementer.PROFILES["artifact_author"], "claude": ("claude-other", "low")})
+    fake = Fake(report=b"> brief\n\ndraft\n")
+    _code, _request, run, _output = launch(machine, fake, stage="artifact", brief=b"> brief\n",
+                                            copy={"source_commit": HOLDER})
+    assert run["attempts"][0]["cloud"]["profile"]["off_profile"] is False

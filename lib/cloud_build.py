@@ -65,7 +65,8 @@ COMMENT_LIMIT = 60_000
 # The fire's text limit; a composed prompt is larger, so only the header is fired.
 FIRE_TEXT_LIMIT = 65_536
 # Background tasks off and a command ceiling, so no work outlives the reply the launcher reads; set
-# once on the cloud environment. The ceiling is the shortest stage limit, so it fits every stage.
+# once on the cloud environment. The ceiling printed for setup is the shortest stage limit, so it
+# fits every stage; the check accepts any shorter one, so a later change to a limit isn't a failure.
 CLOUD_ENVIRONMENT = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
                      "BASH_MAX_TIMEOUT_MS": str(int(min(
                          lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS, lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS) * 1000))}
@@ -316,11 +317,14 @@ def finished(files: dict[str, bytes | None]) -> bool:
     return isinstance(value, dict) and value.get("report_blob") == git_blob_sha(report)
 
 
-def builder_profile(stage: str = "build") -> tuple[str, str]:
-    """The Claude model and effort the local launch defaults to, which the routine must match."""
+def builder_profile() -> tuple[str, str]:
+    """The Claude model and effort the local implementer defaults to, which the routine must match.
+
+    One routine serves every stage, artifact included, and setup verifies it against this one
+    profile, so every cloud run is judged against it too.
+    """
     import dispatch_implementer  # Deferred: it imports this module.
-    role = "artifact_author" if stage == "artifact" else "implementer"
-    return dispatch_implementer.PROFILES[role]["claude"]
+    return dispatch_implementer.PROFILES["implementer"]["claude"]
 
 
 def cloud_profile(usage: dict, profile: tuple[str, str] | None = None) -> dict[str, object]:
@@ -448,8 +452,16 @@ def change_branch_check(tip_at_fire: str | None, tip_after: str | None, commits:
 def environment_check(usage: dict) -> dict[str, object]:
     """The session ran with the cloud environment's background and command-ceiling settings."""
     seen = usage.get("environment") if isinstance(usage.get("environment"), dict) else {}
-    faults = [f"{name}: expected {value!r}, found {seen.get(name)!r}"
-              for name, value in CLOUD_ENVIRONMENT.items() if seen.get(name) != value]
+    faults = []
+    wanted = CLOUD_ENVIRONMENT["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"]
+    background = seen.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
+    if background != wanted:
+        faults.append(f"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: expected {wanted!r}, found {background!r}")
+    ceiling, found = int(CLOUD_ENVIRONMENT["BASH_MAX_TIMEOUT_MS"]), seen.get("BASH_MAX_TIMEOUT_MS")
+    value = int(found) if isinstance(found, str) and found.isdigit() else None
+    if value is None or not 0 < value <= ceiling:
+        faults.append(f"BASH_MAX_TIMEOUT_MS: expected a positive value no longer than {ceiling}, "
+                      f"found {found!r}")
     return {"ok": not faults, "seen": seen, "faults": faults}
 
 
@@ -1038,7 +1050,7 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     record_cloud.update(usage=usage, running_total=totals, delta=this_delta,
                         ledger_check=ledger_check(usage, (previous or {}).get("ledger"),
                                                   [*deltas, this_delta]),
-                        profile=cloud_profile(usage, builder_profile(args.stage)))
+                        profile=cloud_profile(usage, builder_profile()))
     if not record_cloud["ledger_check"]["ok"]:
         # A cost the practice cannot stand behind is unknown; the attempt itself stands.
         attempt["fault"] = "cloud usage ledger disagrees: " + "; ".join(record_cloud["ledger_check"]["faults"])

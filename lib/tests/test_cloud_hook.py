@@ -222,11 +222,42 @@ def test_every_hook_names_bash_so_powershell_never_runs_the_posix_guard():
     assert hook_commands() and all(hook.get("shell") == "bash" for hook in hook_commands())
 
 
+def posix_shell(name):
+    """The shell Claude Code would run a hook through: on Windows, Git for Windows' own."""
+    import shutil
+    if os.name != "nt":
+        return shutil.which(name)
+    # System32's bash.exe is the WSL launcher, which Claude Code never uses for a hook.
+    configured = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if configured and name == "bash":
+        return configured if Path(configured).is_file() else None
+    try:
+        exec_path = subprocess.run(["git", "--exec-path"], capture_output=True, text=True,
+                                   stdin=subprocess.DEVNULL).stdout.strip()
+    except OSError:
+        return None
+    if not exec_path:
+        return None
+    root = Path(exec_path).parents[2]  # <git>/mingw64/libexec/git-core
+    for candidate in (root / "bin" / f"{name}.exe", root / "usr" / "bin" / f"{name}.exe"):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def test_the_windows_shell_is_never_the_wsl_launcher():
+    for name in ("bash", "sh"):
+        found = posix_shell(name)
+        assert found is None or "system32" not in found.lower()
+
+
 @pytest.mark.parametrize("shell", ["bash", "sh"])
 def test_the_guarded_command_is_silent_outside_the_cloud(tmp_path, shell):
-    import shutil
-    if not shutil.which(shell):
-        pytest.skip(f"no {shell} on this machine")
+    resolved = posix_shell(shell)
+    if not resolved:
+        pytest.skip(f"no {shell} from Git for Windows on this machine" if os.name == "nt"
+                    else f"no {shell} on this machine")
+    shell = resolved
     env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_REMOTE"}
     for hook in hook_commands():
         # Claude Code substitutes the plugin root into the command text before the shell runs it.
