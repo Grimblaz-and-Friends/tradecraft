@@ -75,7 +75,7 @@ def test_totals_count_distinct_ids_per_model_across_every_file(session):
     assert cloud_build.ledger_check(usage, None)["ok"] is True
 
 
-def test_an_unreadable_listed_file_fails_check_e(session):
+def test_an_unreadable_listed_file_fails_the_unread_files_check(session):
     (session.parent / SESSION / "subagents" / "agent-x.jsonl").mkdir()
     counted = cloud.tally(session, SESSION)
     assert [row["file"] for row in counted["files_unread"]] == ["subagents/agent-x.jsonl"]
@@ -183,7 +183,9 @@ def test_stop_without_a_practice_check_writes_ok_null(cloud_home, session):
     assert cloud_build.practice_record_check(None, usage)["ok"] is False
 
 
-def test_hook_commits_carry_skip_ci_and_stop_finishes_after_the_report(cloud_home, session):
+def test_hook_commits_carry_skip_ci_and_stop_finishes_after_the_report(cloud_home, session, monkeypatch):
+    for name, value in cloud_build.CLOUD_ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
     assert cloud.run_check(cloud_home["commit"], "claude/tradecraft-report-77-build-abc", "Owner/product") == 0
     cloud_home["branch"].commit({"report.md": b"built\n", "instructions.md": b"CLAUDE.md\n"},
                                 "builder report [skip ci]")
@@ -194,6 +196,7 @@ def test_hook_commits_carry_skip_ci_and_stop_finishes_after_the_report(cloud_hom
     usage = json.loads(files["usage.json"])
     assert usage["stop_index"] == 1 and usage["practice_check"]["ok"] is True
     assert usage["permission_mode"]["values"] == ["auto"]
+    assert cloud_build.environment_check(usage)["ok"] is True
     assert all("[skip ci]" in line for line in messages(cloud_home)[:-1])
     assert messages(cloud_home)[0].startswith(f"tradecraft cloud usage {SESSION} stop 1")
 
@@ -208,12 +211,26 @@ def test_outside_the_cloud_the_hook_prints_nothing(monkeypatch, capsys):
         assert command.startswith('[ -n "$CLAUDE_CODE_REMOTE" ] && exec python3 ') and command.endswith("|| true")
 
 
-@pytest.mark.skipif(not __import__("shutil").which("sh"), reason="no POSIX shell")
-def test_the_guarded_command_is_silent_through_a_posix_shell(tmp_path):
+def hook_commands():
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text("utf-8"))["hooks"]
+    return [hook for event in hooks.values() for group in event for hook in group["hooks"]]
+
+
+def test_every_hook_names_bash_so_powershell_never_runs_the_posix_guard():
+    # Claude Code runs a shell-form hook through PowerShell on a Windows machine without
+    # Git Bash unless the hook names its shell; the guard is POSIX syntax.
+    assert hook_commands() and all(hook.get("shell") == "bash" for hook in hook_commands())
+
+
+@pytest.mark.parametrize("shell", ["bash", "sh"])
+def test_the_guarded_command_is_silent_outside_the_cloud(tmp_path, shell):
+    import shutil
+    if not shutil.which(shell):
+        pytest.skip(f"no {shell} on this machine")
     env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_REMOTE"}
-    env["CLAUDE_PLUGIN_ROOT"] = str(tmp_path / "absent")
-    for event in ("Stop", "UserPromptSubmit"):
-        result = subprocess.run(["sh", "-c", hooks[event][0]["hooks"][0]["command"]], input=b"{}",
-                                capture_output=True, env=env)
+    for hook in hook_commands():
+        # Claude Code substitutes the plugin root into the command text before the shell runs it.
+        placeholder = "${" + "CLAUDE_PLUGIN_ROOT}"
+        command = hook["command"].replace(placeholder, str(tmp_path / "absent"))
+        result = subprocess.run([shell, "-c", command], input=b"{}", capture_output=True, env=env)
         assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")

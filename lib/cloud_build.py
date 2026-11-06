@@ -25,6 +25,7 @@ import urllib.request
 import dispatch_record as records
 from dispatch_lifecycle import CLAUDE_DISALLOWED_TOOLS
 import launch_bound
+import run_lifecycle as lifecycle
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
@@ -44,7 +45,7 @@ def _hook():
     return module
 
 
-_FROM_HOOK = {"CLOUD_DIR": "PREFIX", "HEADER": "HEADER", "FIGURES": "FIGURES"}
+_FROM_HOOK = {"HEADER": "HEADER", "FIGURES": "FIGURES", "EXCLUDED": "EXCLUDED"}
 
 
 def __getattr__(name: str):
@@ -59,17 +60,23 @@ FIRE_URL = "https://api.anthropic.com/v1/claude_code/routines/{routine}/fire"
 FIRE_HEADERS = {"anthropic-beta": "experimental-cc-routine-2026-04-01",
                 "anthropic-version": "2023-06-01"}
 POLL_SECONDS = 30
-# Under GitHub's 65,536-character comment limit, leaving room for each part's label line.
+# Each part stays under GitHub's comment limit even at four bytes a character, with room for its label.
 COMMENT_LIMIT = 60_000
+# The fire's text limit; a composed prompt is larger, so only the header is fired.
 FIRE_TEXT_LIMIT = 65_536
+# D-924's two environment settings, set once on the cloud environment. The command ceiling
+# is the shortest stage limit, so no command outlives any stage that runs there.
+CLOUD_ENVIRONMENT = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                     "BASH_MAX_TIMEOUT_MS": str(int(min(
+                         lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS, lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS) * 1000))}
 COMPARISON_REASON = launch_bound.CLOUD_NOT_RUN_REASON
 # The tools that schedule work past a turn, as every Claude launch excludes them, and the
 # phone notification an unattended run has no one to receive. The routine carries them.
 ROUTINE_DISALLOWED_TOOLS = ("PushNotification", *CLAUDE_DISALLOWED_TOOLS)
 ROUTINE_CONTROLS_REASON = (
-    "not applicable: a cloud session's environment belongs to its routine, so the background-task "
-    "and command-ceiling settings can't be set per launch; the routine disallows "
-    + ", ".join(ROUTINE_DISALLOWED_TOOLS) + ", checked at setup")
+    "set on the cloud environment, not per launch: a cloud session's environment belongs to its "
+    "routine; the Stop hook records the values the session saw and the attempt's environment "
+    "check compares them, and the routine disallows " + ", ".join(ROUTINE_DISALLOWED_TOOLS))
 INSTRUCTIONS_APPLIED = ("product CLAUDE.md/AGENTS.md from the cloned repository; no repository's "
                         "committed hooks or permission rules apply, because the session starts "
                         "above its clones")
@@ -78,7 +85,6 @@ PRACTICE_OWN_REFUSAL = (
     "practice clones would share /home/user/tradecraft and its committed guard would govern a "
     "single-source build, which is untested")
 
-# The saved prompt every set-up routine carries; setup embeds and verifies it.
 ROUTINE_PROMPT = """You are a tradecraft cloud implementer run.
 
 Act only when this run's message carries a `TRADECRAFT-CLOUD-RUN v1` payload. Otherwise reply "no payload; nothing done" and stop.
@@ -437,6 +443,14 @@ def change_branch_check(tip_at_fire: str | None, tip_after: str | None, commits:
     return {**value, "ok": not faults, "checked": True, "faults": faults}
 
 
+def environment_check(usage: dict) -> dict[str, object]:
+    """The session ran with the cloud environment's background and command-ceiling settings."""
+    seen = usage.get("environment") if isinstance(usage.get("environment"), dict) else {}
+    faults = [f"{name}: expected {value!r}, found {seen.get(name)!r}"
+              for name, value in CLOUD_ENVIRONMENT.items() if seen.get(name) != value]
+    return {"ok": not faults, "seen": seen, "faults": faults}
+
+
 def practice_record_check(check: dict | None, usage: dict) -> dict[str, object]:
     """The usage record copies a recorded practice check that agrees with it."""
     copied = usage.get("practice_check")
@@ -528,7 +542,10 @@ def compare_pin(transport: Transport, practice: dict, installed: str) -> str:
             "to reload this session (/reload-plugins or restart), then launch again; if the installed "
             "plugin itself is older, update it first")
     if state != "ahead":
-        raise CloudRefusal(f"installed commit {installed} has diverged from {pin} on {repo}@{branch}")
+        # A reload can't fix a pin off the release line; only the owner can move it back.
+        raise CloudRefusal(f"installed commit {installed} has diverged from {pin} on {repo}@{branch}; "
+                           "the pin has left the release line, so ask the owner to move it back to "
+                           "a release, then launch again")
     status, value = transport.github("PATCH", f"repos/{repo}/git/refs/heads/{branch}",
                                      {"sha": installed, "force": False})
     _ok(status, value, "fast-forward pin")
@@ -673,6 +690,8 @@ def followup_env() -> dict:
 
 # ---- one cloud attempt -------------------------------------------------------
 
+# The stages that can rightly make no commit: a disposition or a floor turn may change nothing.
+# A resumed build is still a build, so its change branch is checked.
 REPAIR_STAGES = frozenset({"review-disposition", "floor"})
 
 
@@ -834,6 +853,9 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                                                         effective_prompt, dispatch_id)
         text = header(work=args.work, stage=args.stage, dispatch_id=dispatch_id, checkout=checkout,
                       practice_commit=cloud["practice"]["commit"], branch=branch)
+        if len(text) > FIRE_TEXT_LIMIT:
+            raise CloudRefusal(f"fire text is {len(text)} characters, over the fire's {FIRE_TEXT_LIMIT}; "
+                               "only the header is fired, and the task travels on the report branch")
         if follow_up:
             code, raw = transport.cli(["claude", "-p", text, "--cloud", args.resume,
                                        "--output-format", "json"], env)
@@ -992,7 +1014,8 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
     mismatch = isinstance(check, dict) and check.get("ok") is False
     checks = {"practice": practice_record_check(check, usage) if not mismatch
               else {"ok": True, "reason": "practice mismatch recorded"},
-              "skip_ci": skip_ci_check(branch_commits(transport, repo, cloud["dispatch_commit"], tip))}
+              "skip_ci": skip_ci_check(branch_commits(transport, repo, cloud["dispatch_commit"], tip)),
+              "environment": environment_check(usage)}
     if args.stage != "artifact" and not mismatch:
         after = remote_tip(transport, repo, args.lineage_branch)
         status, value = transport.github(
@@ -1001,7 +1024,7 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
         checks["change_branch"] = change_branch_check(
             cloud["change_branch"]["tip_at_fire"], after,
             [row["sha"] for row in value.get("commits") or []], value.get("status"),
-            repair=args.stage in REPAIR_STAGES or bool(args.resume))
+            repair=args.stage in REPAIR_STAGES)
     record_cloud["cloud_checks"] = checks
     previous, deltas = _previous_usage(session_attempts(record_root, cloud["session_id"]),
                                        request["dispatch_id"])

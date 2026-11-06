@@ -41,6 +41,7 @@ class Fake(cloud.Transport):
         self.ledger = [{"id": "m1", "model": "claude-opus-5-5", "file": "main",
                         "input": 10, "output": 20, "cache_read": 30, "cache_creation": 0}]
         self.read_errors = 0
+        self.environment = dict(cloud.CLOUD_ENVIRONMENT)
 
     def github(self, method, path, body=None):
         self.calls.append((method, path, body))
@@ -108,6 +109,7 @@ class Fake(cloud.Transport):
                  "files_present": ["main"], "files_read": [{"file": "main", "usage_entries": 1}],
                  "files_unread": [], "profile": {"models": ["claude-opus-5-5"], "efforts": ["high"]},
                  "permission_mode": {"values": ["auto"], "source": "hook-input"},
+                 "environment": self.environment,
                  "practice_check": self.usage_practice if self.usage_practice is not None else check}
         self.files.update({"report.md": report, "instructions.md": b"/home/user/product/CLAUDE.md\n",
                            "practice-check.json": json.dumps(check).encode(),
@@ -495,8 +497,51 @@ def test_a_cloud_attempt_reports_its_launch_controls_as_not_applicable():
     request, attempt = {"route": "cloud"}, {"vendor": "claude", "launched": True,
                                             "source_format": "claude-cloud-routine"}
     controls = work._launch_controls_report(request, {"lifecycle": "completed"}, attempt)
-    assert controls["status"] == "not-applicable" and "routine" in controls["reason"]
+    assert controls["status"] == "cloud-environment" and "cloud environment" in controls["reason"]
+    assert controls["expected"] == cloud.CLOUD_ENVIRONMENT
     assert controls["disallowed_tools"] == ["PushNotification", "Monitor", "ScheduleWakeup", "CronCreate",
                                             "Workflow"]
     assert work._stream_check_report({"lifecycle": "completed"}, attempt)["status"] == "not-applicable"
     assert work.launch_bound.cloud_not_run()["reason"] == cloud.COMPARISON_REASON
+
+
+def test_a_resumed_build_is_held_to_the_change_branch(machine):
+    fake = Fake()
+    launch(machine, fake)
+    fake.advance = False
+    _code, _request, run, _output = launch(machine, fake, stage="build", resume="cse_ABC123")
+    check = run["attempts"][0]["cloud"]["cloud_checks"]["change_branch"]
+    assert check["checked"] is True and check["ok"] is False
+
+
+def test_a_repair_that_makes_no_commit_is_not_held(machine):
+    fake = Fake()
+    launch(machine, fake)
+    fake.advance = False
+    _code, _request, run, _output = launch(machine, fake, stage="review-disposition", resume="cse_ABC123")
+    check = run["attempts"][0]["cloud"]["cloud_checks"]["change_branch"]
+    assert check["checked"] is False and check["ok"] is True
+
+
+def test_a_session_without_the_cloud_environment_fails_and_holds(machine):
+    import work
+    fake = Fake()
+    fake.environment = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": None, "BASH_MAX_TIMEOUT_MS": "999"}
+    _code, _request, run, _output = launch(machine, fake)
+    check = run["attempts"][0]["cloud"]["cloud_checks"]["environment"]
+    assert check["ok"] is False and len(check["faults"]) == 2
+    assert "cloud-check:environment" in [finding["id"] for finding in work._cloud_check_findings(run)]
+
+
+def test_a_fire_text_over_the_limit_refuses_before_firing(machine, monkeypatch):
+    monkeypatch.setattr(cloud, "FIRE_TEXT_LIMIT", 10)
+    fake = Fake()
+    code, _request, run, _output = launch(machine, fake)
+    assert code == 1 and run["outcome"] == "refused" and "report branch" in run["attempts"][0]["reason"]
+    assert fake.fired == []
+
+
+def test_a_diverged_pin_asks_the_owner_rather_than_a_reload(machine):
+    _code, _request, run, _output = launch(machine, Fake(compare="diverged"))
+    reason = run["attempts"][0]["reason"]
+    assert "move it back to a release" in reason and "reload" not in reason

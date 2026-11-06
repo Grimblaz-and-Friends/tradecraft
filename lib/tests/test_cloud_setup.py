@@ -139,4 +139,6 @@ def test_the_practice_repository_is_refused():
 def test_profile_prints_the_launch_default_the_owner_sets(capsys):
     assert setup.main(["profile"]) == 0
     model, effort = cloud.builder_profile()
-    assert capsys.readouterr().out == f"model: {model}\neffort: {effort}\n"
+    environment = "".join(f"environment: {name}={value}\n" for name, value in cloud.CLOUD_ENVIRONMENT.items())
+    assert capsys.readouterr().out == f"model: {model}\neffort: {effort}\n" + environment
+    assert "environment: CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1\n" in environment

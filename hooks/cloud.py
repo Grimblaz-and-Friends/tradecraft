@@ -22,7 +22,7 @@ HEADER = "TRADECRAFT-CLOUD-RUN v1"
 PREFIX = "tradecraft-cloud/"
 # The practice repository's own doctrine; loaded into a product build it would govern that build,
 # so a clone holding any of them is as wrong as a clone at another commit.
-EXCLUDED = ("CLAUDE.md", "AGENTS.md", ".claude")
+EXCLUDED = ("CLAUDE.md", "AGENTS.md", ".claude/")
 # Claude Code writes these for messages no model produced; they carry no usage.
 SYNTHETIC_MODEL = "<synthetic>"
 FIGURES = ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h", "cache_creation")
@@ -269,7 +269,7 @@ def practice_state(plugin_root: Path, expect: str) -> dict[str, object]:
         found = _git(plugin_root, "rev-parse", "HEAD")
     except (HookError, OSError) as exc:
         found = f"unreadable: {exc}"
-    excluded = [name for name in EXCLUDED if (plugin_root / name).exists()]
+    excluded = [name for name in EXCLUDED if (plugin_root / name.rstrip("/")).exists()]
     ok = found == expect and not excluded
     return {"ok": ok, "commit": found} if ok else {
         "ok": False, "expected": expect, "found": found, "excluded_present": excluded}
@@ -361,6 +361,7 @@ def run_stop(hook_input: dict) -> int:
             practice = json.loads(check) if check else None
         except ValueError:
             practice = {"ok": None, "reason": "practice-check.json on the report branch is not JSON"}
+        # A stop that couldn't push leaves its error here, so the next usage record carries it.
         try:
             earlier = json.loads(store.read_text("utf-8")) if store.exists() else []
         except (OSError, ValueError):
@@ -376,6 +377,9 @@ def run_stop(hook_input: dict) -> int:
             "practice_check": practice if practice is not None else {
                 "ok": None, "reason": "no practice check recorded on the report branch"},
             "hook_errors": earlier,
+            # The launcher checks these against the cloud environment's settings.
+            "environment": {name: os.environ.get(name)
+                            for name in ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "BASH_MAX_TIMEOUT_MS")},
         }
         branch.commit({"usage.json": _json(usage)},
                       f"tradecraft cloud usage {session} stop {index} [skip ci]")

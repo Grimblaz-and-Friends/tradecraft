@@ -3622,7 +3622,9 @@ def _launch_controls_report(request, run, attempt):
         return None
     if request.get("route") == "cloud":
         # A cloud launch's controls live in its routine. Design: lib/DESIGN.md#the-cloud-route
-        return {"status": "not-applicable", "reason": cloud_build.ROUTINE_CONTROLS_REASON,
+        check = ((attempt.get("cloud") or {}).get("cloud_checks") or {}).get("environment") or {}
+        return {"status": "cloud-environment", "reason": cloud_build.ROUTINE_CONTROLS_REASON,
+                "expected": dict(cloud_build.CLOUD_ENVIRONMENT), "seen": check.get("seen"),
                 "disallowed_tools": list(cloud_build.ROUTINE_DISALLOWED_TOOLS)}
     controls = request.get("launch_controls")
     if not isinstance(controls, dict):

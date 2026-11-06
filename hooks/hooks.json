@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE_REMOTE\" ] && exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/cloud.py\" stop || true"
+            "command": "[ -n \"$CLAUDE_CODE_REMOTE\" ] && exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/cloud.py\" stop || true",
+            "shell": "bash"
           }
         ]
       }
@@ -15,7 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE_REMOTE\" ] && exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/cloud.py\" prompt || true"
+            "command": "[ -n \"$CLAUDE_CODE_REMOTE\" ] && exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/cloud.py\" prompt || true",
+            "shell": "bash"
           }
         ]
       }

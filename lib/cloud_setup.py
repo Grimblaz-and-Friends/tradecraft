@@ -9,7 +9,8 @@ Usage: python <plugin-root>/lib/cloud_setup.py body --repo OWNER/REPO --environm
        python <plugin-root>/lib/cloud_setup.py profile
 
 ``profile`` prints the model and effort the owner sets in the routine's editor, from
-the launch default the cloud run is checked against, so the steps carry no copy.
+the launch default the cloud run is checked against, and the environment variables the
+owner sets once on the cloud environment, so the steps carry no copy.
 
 The holder creates and reads the routine with its RemoteTrigger tool; this
 script writes what is sent and makes "differs from what was sent" mechanical.
@@ -29,8 +30,11 @@ import cloud_build as cloud
 from winio import utf8_stdio
 
 DEFAULT_PRACTICE = "Grimblaz-and-Friends/tradecraft"
-# The practice repository's own doctrine stays out of the clone, so it never governs a product build.
-EXCLUDES = ["/CLAUDE.md", "/AGENTS.md", "/.claude/"]
+
+
+def excludes() -> list[str]:
+    """The practice clone's sparse exclusions: the hook's doctrine files, rooted at the clone."""
+    return ["/" + name for name in cloud.EXCLUDED]
 
 
 class SetupError(RuntimeError):
@@ -65,9 +69,10 @@ def create_body(repo: str, environment: str, practice: str, branch: str) -> dict
             "events": [{"data": {
                 "message": {"content": prompt, "role": "user"}, "parent_tool_use_id": None,
                 "session_id": "", "type": "user",
+                # Stable per repository, so `verify` rebuilds exactly the body that was sent.
                 "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tradecraft-builder:{repo}"))}}],
             "session_context": {
-                "sources": [_source(repo), _source(practice, branch, EXCLUDES)],
+                "sources": [_source(repo), _source(practice, branch, excludes())],
                 "disallowed_tools": list(cloud.ROUTINE_DISALLOWED_TOOLS),
             },
         }},
@@ -232,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "profile":
             model, effort = cloud.builder_profile()
             print(f"model: {model}\neffort: {effort}")
+            for name, value in cloud.CLOUD_ENVIRONMENT.items():
+                print(f"environment: {name}={value}")
             return 0
         if args.command == "body":
             print(json.dumps(create_body(args.repo, args.environment, args.practice_repo,
