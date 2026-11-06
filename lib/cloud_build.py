@@ -64,8 +64,8 @@ POLL_SECONDS = 30
 COMMENT_LIMIT = 60_000
 # The fire's text limit; a composed prompt is larger, so only the header is fired.
 FIRE_TEXT_LIMIT = 65_536
-# D-924's two environment settings, set once on the cloud environment. The command ceiling
-# is the shortest stage limit, so no command outlives any stage that runs there.
+# Background tasks off and a command ceiling, so no work outlives the reply the launcher reads; set
+# once on the cloud environment. The ceiling is the shortest stage limit, so it fits every stage.
 CLOUD_ENVIRONMENT = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
                      "BASH_MAX_TIMEOUT_MS": str(int(min(
                          lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS, lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS) * 1000))}
@@ -255,6 +255,8 @@ def installed_practice(root: Path, path: Path, *, refuse_older: bool = True) -> 
     if own:
         chosen = own[0]
     else:
+        # A launcher run from a checkout or a copy rather than the installed cache isn't named by
+        # the record, so it follows the one user-scope install, which is what a new session loads.
         users = [entry for entry in candidates if entry.get("scope") == "user"]
         if len(users) != 1:
             raise CloudRefusal(f"plugin install record {path} has {len(users)} user-scope {name} entries; "
@@ -1012,10 +1014,13 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
         if instructions is not None else None)
     record_cloud["practice_check"] = check
     mismatch = isinstance(check, dict) and check.get("ok") is False
-    checks = {"practice": practice_record_check(check, usage) if not mismatch
-              else {"ok": True, "reason": "practice mismatch recorded"},
-              "skip_ci": skip_ci_check(branch_commits(transport, repo, cloud["dispatch_commit"], tip)),
-              "environment": environment_check(usage)}
+    if mismatch:
+        # A run stopped by a practice mismatch did nothing, so its record shows only the mismatch.
+        checks = {"practice": {"ok": True, "reason": "practice mismatch recorded"}}
+    else:
+        checks = {"practice": practice_record_check(check, usage),
+                  "skip_ci": skip_ci_check(branch_commits(transport, repo, cloud["dispatch_commit"], tip)),
+                  "environment": environment_check(usage)}
     if args.stage != "artifact" and not mismatch:
         after = remote_tip(transport, repo, args.lineage_branch)
         status, value = transport.github(

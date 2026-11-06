@@ -545,3 +545,13 @@ def test_a_diverged_pin_asks_the_owner_rather_than_a_reload(machine):
     _code, _request, run, _output = launch(machine, Fake(compare="diverged"))
     reason = run["attempts"][0]["reason"]
     assert "move it back to a release" in reason and "reload" not in reason
+
+
+def test_a_practice_mismatch_records_only_the_mismatch(machine):
+    import work
+    fake = Fake(practice_ok=False)
+    fake.environment = {}  # the mismatch finish record carries no environment
+    _code, _request, run, _output = launch(machine, fake)
+    assert run["outcome"] == "practice_mismatch"
+    assert list(run["attempts"][0]["cloud"]["cloud_checks"]) == ["practice"]
+    assert work._cloud_check_findings(run) == []

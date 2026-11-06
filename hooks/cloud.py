@@ -151,7 +151,11 @@ def _effort(entry: dict) -> object:
 
 
 def profile(main_entries: list[dict]) -> dict[str, list[str]]:
-    """Models and efforts from the main session's own entries, sidechains excluded."""
+    """Models and efforts from the main session's own entries, sidechains excluded.
+
+    The profile is the builder's own model and effort; its subagents may run others by
+    design, so they count toward cost but not against the profile.
+    """
     models, efforts = set(), set()
     for entry in main_entries:
         if entry.get("isSidechain") is True:
