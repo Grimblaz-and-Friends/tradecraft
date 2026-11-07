@@ -9394,12 +9394,12 @@ def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
     git(implementation, "add", "job.md", "SKILL.md", ".gitattributes")
     git(implementation, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "consumer")
-    output = tmp_path / "consumer"
+    output = tmp_path / "trees" / "consumer"
     metadata = work.recipient_tree.create_consumer_tree(
         source=implementation, output=output, work="example/product#12",
         producer_version=work.records.producer_version(), mode="adopter", paths=["job.md"],
         loading_surfaces=["SKILL.md"], front_page=None, root_instructions=None,
-        directed_paths=[], exclusions=[], deny_texts=[],
+        directed_paths=[], exclusions=[], deny_texts=[], records_home=home / ".tradecraft",
     )
     dispatch = tmp_path / "use-job.md"
     dispatch.write_bytes(b"Use the result and return a session note.\n")
@@ -9485,11 +9485,11 @@ def test_registered_tree_keeps_its_earlier_version_boundary(tmp_path, monkeypatc
 
     monkeypatch.setattr(work.recipient_tree, "create_consumer_tree", create_consumer_tree)
 
-    assert work._tree_command(args, tmp_path, object()) == 0
+    assert work._tree_command(args, tmp_path, FakeTransport(tree_reads())) == 0
     assert json.loads(capsys.readouterr().out)["producer_version"] == "0.153.0"
 
 
-def test_tree_revision_and_run_use_need_no_registration(tmp_path, monkeypatch):
+def test_tree_revision_and_run_use_need_no_registration(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "landed builder bundle"))
     home = tmp_path / "home"
     home.mkdir()
@@ -9509,9 +9509,9 @@ def test_tree_revision_and_run_use_need_no_registration(tmp_path, monkeypatch):
     git(holder, "remote", "add", "origin", str(remote))
     git(holder, "push", "--set-upstream", "origin", branch)
     transport = FakeTransport({
-        "repos/example/product": {"default_branch": branch},
+        "repos/example/product": {"default_branch": branch}, **tree_reads(),
     })
-    output = tmp_path / "consumer"
+    output = tmp_path / "trees" / "consumer"
     args = work.parser().parse_args([
         "tree", "--repo", "example/product", "--issue", "12", "--root", str(holder),
         "--revision", revision, "--mode", "adopter", "--output", str(output),
@@ -9522,7 +9522,9 @@ def test_tree_revision_and_run_use_need_no_registration(tmp_path, monkeypatch):
         lambda *_args, **_kwargs: pytest.fail("named revision must not read registration"),
     )
     assert work.run(args, transport=transport) == 0
-    metadata = work.recipient_tree.metadata_path(output)
+    # The holder passes the record path `tree` printed.
+    metadata = Path(json.loads(capsys.readouterr().out)["tree_metadata"])
+    assert [entry.name for entry in output.parent.iterdir()] == ["consumer"]
     claim = json.loads(metadata.read_bytes())
     assert claim["source_revision"] == revision
     assert claim["registration_used"] is False
@@ -9573,13 +9575,13 @@ def test_run_use_refuses_recomputed_metadata_for_an_unlanded_commit(
     git(holder, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "unlanded consumer")
     unlanded = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
-    output = tmp_path / "consumer"
+    output = tmp_path / "trees" / "consumer"
     metadata = work.recipient_tree.create_consumer_tree(
         source=holder, output=output, work="example/product#12",
         producer_version=work.records.producer_version(), mode="adopter", paths=["job.md"],
         loading_surfaces=["SKILL.md"], front_page=None, root_instructions=None,
         directed_paths=[], exclusions=[], deny_texts=[], source_revision=unlanded,
-        registration_used=False,
+        registration_used=False, records_home=home / ".tradecraft",
     )
     dispatch = tmp_path / "job.txt"
     dispatch.write_bytes(b"Use the delivered mechanism on a real job.\n")
@@ -9625,7 +9627,7 @@ def test_tree_revision_refuses_an_unlanded_commit_before_creating_output(
     git(holder, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "side")
     revision = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
-    output = tmp_path / "consumer"
+    output = tmp_path / "trees" / "consumer"
     args = work.parser().parse_args([
         "tree", "--repo", "example/product", "--issue", "12", "--root", str(holder),
         "--revision", revision, "--mode", "adopter", "--output", str(output),
@@ -9633,10 +9635,204 @@ def test_tree_revision_refuses_an_unlanded_commit_before_creating_output(
     ])
     with pytest.raises(work.WorkError, match="not reachable"):
         work.run(args, transport=FakeTransport({
-            "repos/example/product": {"default_branch": branch},
+            "repos/example/product": {"default_branch": branch}, **tree_reads(),
         }))
     assert not output.exists()
-    assert not work.recipient_tree.metadata_path(output).exists()
+    assert not (tmp_path / "home" / ".tradecraft" / "trees").exists()
+
+
+def tree_reads(repo="example/product", issue=12, pulls=(), *, failing=None):
+    """The three reads `tree` makes to learn the change's open pull request."""
+    reads = {f"repos/{repo}/issues/{issue}": {"number": issue, "state": "open", "body": ""},
+             f"repos/{repo}/issues/{issue}/comments": [],
+             f"repos/{repo}/pulls?state=all&per_page=100": list(pulls)}
+    if failing is not None:
+        reads[failing.format(repo=repo, issue=issue)] = work.WorkError("503 fixture read failed")
+    return reads
+
+
+def registered_consumer(tmp_path, monkeypatch):
+    """A holder with a registered implementation carrying a consumer surface."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "builder bundle"))
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    (implementation / "job.md").write_bytes(b"consumer surface\n")
+    (implementation / "SKILL.md").write_bytes(b"loading surface\n")
+    (implementation / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+    git(implementation, "add", "job.md", "SKILL.md", ".gitattributes")
+    git(implementation, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "consumer")
+    return holder, home / ".tradecraft"
+
+
+def tree_arguments(holder, output, issue=12):
+    return work.parser().parse_args([
+        "tree", "--repo", "example/product", "--issue", str(issue), "--root", str(holder),
+        "--mode", "adopter", "--output", str(output), "--path", "job.md", "--loading-surface", "SKILL.md",
+    ])
+
+
+def built_tree(holder, output, capsys, transport=None):
+    assert work.run(tree_arguments(holder, output), transport=transport or FakeTransport(tree_reads())) == 0
+    return Path(json.loads(capsys.readouterr().out)["tree_metadata"])
+
+
+def launch_use(holder, metadata, tmp_path, monkeypatch, capsys):
+    """Run `run use` on a tree record; return the seats launched and the stage's report."""
+    dispatch = tmp_path / "use-job.md"
+    dispatch.write_bytes(b"Use the result and return a session note.\n")
+    launches = []
+    original_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_seat.py":
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "_recipient_run", run)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor: [f"--{vendor}", f"/{vendor}-fixture"])
+    capsys.readouterr()
+    assert work.execute_stage(
+        state(AFFIRMED, pr=True, draft=False), work.Decision("use", True, "fresh", "holder-named-stage"),
+        holder, None, dispatch_path=dispatch, tree_metadata=metadata,
+        floor_command="python fixture-check.py") == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    return launches, (json.loads(lines[-1]) if lines else {})
+
+
+def test_a_registered_tree_keeps_only_itself_in_its_folder_and_its_record_in_the_entrances_records(
+        tmp_path, monkeypatch, capsys):
+    holder, records_home = registered_consumer(tmp_path, monkeypatch)
+    output = tmp_path / "trees" / "consumer"
+    metadata = built_tree(holder, output, capsys)
+    assert [entry.name for entry in output.parent.iterdir()] == ["consumer"]
+    assert metadata.is_file() and metadata.is_relative_to(records_home.resolve() / "trees")
+    assert not metadata.is_relative_to(output.parent.resolve())
+    launches, _report = launch_use(holder, metadata, tmp_path, monkeypatch, capsys)
+    assert len(launches) == 1
+    assert Path(launches[0][launches[0].index("--root") + 1]) == output.resolve()
+
+
+@pytest.mark.parametrize("place", ["home", "records"])
+def test_tree_refuses_a_folder_holding_the_entrances_records_or_one_inside_them(
+        tmp_path, monkeypatch, capsys, place):
+    holder, records_home = registered_consumer(tmp_path, monkeypatch)
+    output = (tmp_path / "home" / "tree") if place == "home" else records_home / "tree"
+    with pytest.raises(work.WorkError, match="entrance's records"):
+        built_tree(holder, output, capsys)
+    assert not output.exists() and not (records_home / "trees").exists()
+
+
+@pytest.mark.parametrize("damage", ["edited", "another-tree"])
+def test_run_use_refuses_an_edited_record_or_one_naming_another_tree(
+        tmp_path, monkeypatch, capsys, damage):
+    holder, _records_home = registered_consumer(tmp_path, monkeypatch)
+    metadata = built_tree(holder, tmp_path / "trees" / "first", capsys)
+    if damage == "edited":
+        content = bytearray(metadata.read_bytes())
+        content[content.index(b'"mode": "adopter"') + 10] ^= 1
+        metadata.write_bytes(bytes(content))
+    else:
+        second = built_tree(holder, tmp_path / "trees" / "second", capsys)
+        second.write_bytes(metadata.read_bytes())
+        metadata = second
+    launches, report = launch_use(holder, metadata, tmp_path, monkeypatch, capsys)
+    assert launches == [] and report["reason"] == "consumer-tree-unproved-for-use"
+
+
+@pytest.mark.parametrize("beside", ["own", "another-change", "former"])
+def test_run_use_refuses_a_tree_with_a_record_beside_it_naming_the_file_and_the_rebuild(
+        tmp_path, monkeypatch, capsys, beside):
+    holder, _records_home = registered_consumer(tmp_path, monkeypatch)
+    output = tmp_path / "trees" / "consumer"
+    metadata = built_tree(holder, output, capsys)
+    former = work.recipient_tree.former_record_path(output)
+    if beside == "another-change":
+        value = json.loads(metadata.read_bytes())
+        value["work"] = "example/product#13"
+        former.write_bytes(json.dumps(value).encode())
+    else:
+        former.write_bytes(metadata.read_bytes())
+    if beside == "former":
+        # Laid out as entrances before this layout built it, its record passed from beside the tree.
+        metadata.unlink()
+        metadata = former
+    launches, report = launch_use(holder, metadata, tmp_path, monkeypatch, capsys)
+    assert launches == [] and report["reason"] == "consumer-tree-unproved-for-use"
+    assert str(former.resolve()) in report["detail"] and "rebuild" in report["detail"]
+    assert "work.py tree" in report["detail"]
+
+
+def test_run_use_launches_with_a_job_fixture_and_a_second_tree_beside_the_tree(
+        tmp_path, monkeypatch, capsys):
+    holder, _records_home = registered_consumer(tmp_path, monkeypatch)
+    output = tmp_path / "trees" / "consumer"
+    metadata = built_tree(holder, output, capsys)
+    built_tree(holder, tmp_path / "trees" / "after", capsys)
+    (output.parent / "fixture.json").write_bytes(b"{}\n")
+    launches, _report = launch_use(holder, metadata, tmp_path, monkeypatch, capsys)
+    assert len(launches) == 1
+
+
+@pytest.mark.parametrize("named", [("t", "tree484I1"), ("work-484", "tree")])
+def test_tree_refuses_a_path_whose_two_folders_carry_the_issue_number_before_building(
+        tmp_path, monkeypatch, named):
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(work, "resolve_implementation_root",
+                        lambda *_a, **_k: pytest.fail("a refused path builds nothing"))
+    base = tmp_path / "base"
+    output = base.joinpath(*named)
+    args = tree_arguments(tmp_path, output, issue=484)
+    with pytest.raises(work.WorkError, match="484") as raised:
+        work._tree_command(args, tmp_path, FakeTransport(tree_reads(issue=484)))
+    assert repr(named[0] if "484" in named[0] else named[1]) in str(raised.value)
+    assert not base.exists() and not (home / ".tradecraft" / "trees").exists()
+
+
+@pytest.mark.parametrize(("issue", "named"), [
+    (484, ("u1484b2", "tree")),
+    # 97 is a whole run only in a folder above the tree's folder.
+    (97, ("c0-97-ab12", "scratchpad", "useA", "tree")),
+])
+def test_tree_builds_where_the_number_is_part_of_a_longer_run_or_only_higher_up(
+        tmp_path, monkeypatch, issue, named):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    built = []
+    monkeypatch.setattr(work, "resolve_implementation_root",
+                        lambda *_a, **_k: (tmp_path / "source", "tradecraft/fixture", False))
+    monkeypatch.setattr(work.recipient_tree, "create_consumer_tree",
+                        lambda **values: built.append(values["output"]) or tmp_path / "record.json")
+    output = (tmp_path / "base").joinpath(*named)
+    args = tree_arguments(tmp_path, output, issue=issue)
+    assert work._tree_command(args, tmp_path, FakeTransport(tree_reads(issue=issue))) == 0
+    assert built == [output]
+
+
+@pytest.mark.parametrize("failing", [None, "repos/{repo}/issues/{issue}", "repos/{repo}/issues/{issue}/comments",
+                                     "repos/{repo}/pulls?state=all&per_page=100"])
+def test_tree_refuses_a_folder_naming_the_open_pull_request_and_fails_closed_without_it(
+        tmp_path, monkeypatch, failing):
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(work, "resolve_implementation_root",
+                        lambda *_a, **_k: pytest.fail("a refused path builds nothing"))
+    pull = {"number": 512, "state": "open", "merged_at": None, "body": "Closes #12",
+            "head": {"ref": "tradecraft/12-fixture"}}
+    output = tmp_path / "base" / ("pr512" if failing is None else "plain") / "tree"
+    with pytest.raises(work.WorkError, match="512" if failing is None else "open pull request") as raised:
+        work._tree_command(tree_arguments(tmp_path, output),
+                           tmp_path, FakeTransport(tree_reads(pulls=[pull], failing=failing)))
+    if failing is None:
+        assert "'pr512'" in str(raised.value)
+    assert not (tmp_path / "base").exists() and not (home / ".tradecraft" / "trees").exists()
 
 
 @pytest.mark.parametrize("timeout, expected", [(None, "7200"), (42.5, "42.5")])
@@ -10275,7 +10471,8 @@ def test_raw_output_registration_and_tree_report_without_new_policy_prerequisite
     elif route == "tree":
         arguments.extend(["--mode", "adopter", "--output", str(tmp_path / "tree"),
                           "--path", "job.md", "--loading-surface", "job.md"])
-    assert work.run(work.parser().parse_args(arguments), transport=object()) == 0
+    assert work.run(work.parser().parse_args(arguments),
+                    transport=FakeTransport(tree_reads("acme/widget", 3))) == 0
     report = json.loads(capsys.readouterr().out)["raw_output"]
     assert report["status"] == ("not-evaluated" if policy == "declared" else
                                 "unverifiable" if policy in {"malformed", "unreadable"} else "undeclared")

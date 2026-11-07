@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -4749,6 +4750,14 @@ def _cold_reading_source(state: WorkState) -> Path:
     return state.record_root or records.default_record_root().expanduser().resolve()
 
 
+def _records_home(state: WorkState | None) -> Path:
+    """The entrance's records, where `tree`, `run use` and the cold reader keep every tree's record."""
+    # One derivation, so `run use` and the gate find a record where the tree's builder put it.
+    store = _cold_reading_source(state) if state is not None else (
+        records.default_record_root().expanduser().resolve())
+    return store.parent
+
+
 def _cold_readings(state: WorkState) -> list[dict[str, object]]:
     """Every reading of this pull request whose return passed its form check, oldest first."""
     work = f"{state.repo}#{state.issue_number}"
@@ -4771,7 +4780,7 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
             raise WorkError(f"cold-reader bundle lacks its retained return or reading root: {path}")
         try:
             returned = source.read_text("utf-8")
-            metadata = cold_reader.load_metadata(recipient_tree.metadata_path(Path(root)))
+            metadata = cold_reader.load_metadata(cold_reader.reading_record(Path(root), _records_home(state)))
         except (OSError, UnicodeError, cold_reader.ColdReaderError) as exc:
             raise WorkError(f"cold-reader bundle cannot be read: {path}: {exc}") from exc
         # The stage refused this return for its form, so it was never a reading.
@@ -5161,16 +5170,20 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
                      reason="cold-reading-unverifiable", detail=str(exc))).as_dict(), state)
         return 0
-    # The tree outlives the run: the gate reloads each reading's coverage from its metadata.
-    place = _cold_reading_source(state).parent / "cold-reader" / uuid.uuid4().hex
+    # The gate reloads each reading's coverage from its record, which the entrance's records keep.
+    home = _records_home(state)
+    place = home / "cold-reader" / uuid.uuid4().hex
+    # The reader works in its tree's folder, so that folder holds the tree alone and sits outside the records.
+    reading = Path(tempfile.mkdtemp(prefix="tradecraft-reading-")) / "reading"
     numbers = [state.issue_number] + ([state.pr["number"]] if isinstance(state.pr.get("number"), int) else [])
     try:
         metadata_path = cold_reader.build_tree(
-            source=state.holder_root, output=place / "reading", work=work,
+            source=state.holder_root, output=reading, work=work,
             producer_version=records.producer_version(), base_tip=state.pr["base"]["sha"],
-            head=sha, covered=covered, branch=branch, numbers=numbers)
+            head=sha, covered=covered, branch=branch, numbers=numbers, records_home=home)
         metadata = cold_reader.load_metadata(metadata_path)
     except cold_reader.ColdReaderError as exc:
+        shutil.rmtree(reading.parent, ignore_errors=True)
         refusal = replace(decision, dispatch=False, continuity=None, status="refused",
                           reason="cold-reading-tree-refused", detail=str(exc))
         _emit_report(_reported_decision(state, refusal).as_dict(), state)
@@ -5178,6 +5191,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     diff = metadata_path.with_suffix(".diff")
     standard = (Path(__file__).resolve().parent.parent / "skills" / "authoring" / "references"
                 / "code-reasons.md").read_text("utf-8")
+    place.mkdir(parents=True, exist_ok=True)
     prompt = place / "prompt.md"
     prompt.write_bytes(cold_reader.compose_prompt(
         metadata, standard, diff.read_text("utf-8", errors="replace") if metadata["diff"] == "inline" else None))
@@ -5196,7 +5210,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
                    else "cold-reader-fell-back-to-builder-vendor")
     command = [
         sys.executable, str(Path(__file__).resolve().parent / "dispatch_seat.py"),
-        "--dispatch", str(prompt), "--root", str(place / "reading"),
+        "--dispatch", str(prompt), "--root", str(reading),
         "--work", work, "--stage", "cold-reader", "--output", str(output),
         "--settings-source", vendor_source, "--settings-scope", "cold-reader",
         "--vendor", vendor, "--own-vendor", own_vendor, "--own-vendor-source", own_source,
@@ -9152,7 +9166,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 )
             consumer_root = recipient_tree.validate_consumer_tree(
                 tree_metadata, work=f"{state.repo}#{state.issue_number}",
-                source=source_root, claim=claim,
+                source=source_root, records_home=_records_home(state), claim=claim,
             )
         except (WorkError, recipient_tree.RecipientTreeError) as exc:
             refused_use = _reported_decision(state, Decision(
@@ -9657,7 +9671,7 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--draft-comment", help="cold-seat only: must agree with the automatically selected draft")
     cli.add_argument("--floor-command", help="exact repository command for a composed run floor dispatch")
     cli.add_argument("--tree-metadata", type=Path,
-                     help="adjacent metadata from tree; required by run use")
+                     help="the record path tree printed; required by run use")
     cli.add_argument(
         "--timeout-seconds", type=float,
         help="declared caller limit; defaults to 7200 for build and 3600 for every other stage",
@@ -9740,6 +9754,7 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
     return "resume"
 
 
+# Design: lib/DESIGN.md#consumer-trees (_tree_command and _refuse_tree_path_naming)
 def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -> int:
     if args.stage is not None:
         raise WorkError("tree does not accept a stage")
@@ -9755,6 +9770,24 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
         raise WorkError(
             f"tree: found={current}; required={required}; mechanism={mechanism}"
         )
+    output = args.output.expanduser().resolve()
+    # The issue number first, since it needs no network.
+    _refuse_tree_path_naming(output, [args.issue])
+    try:
+        base = f"repos/{args.repo}"
+        issue_endpoint = f"{base}/issues/{args.issue}"
+        open_numbers, _merged = _candidate_pr_classes(
+            args.issue, _dict(transport.get(issue_endpoint), issue_endpoint),
+            _get_list(transport, f"{issue_endpoint}/comments"),
+            _get_list(transport, f"{base}/pulls?state=all&per_page=100"), load_work_config(root),
+        )
+    except (WorkError, OSError, ValueError) as exc:
+        # Without the open pull request's number the path can't be cleared of it, so nothing is built.
+        raise WorkError(
+            "tree: cannot establish the open pull request's number, so the tree's path "
+            f"can't be checked: {exc}"
+        ) from exc
+    _refuse_tree_path_naming(output, sorted(open_numbers))
     if args.revision is not None:
         source, source_revision = _landed_revision_source(
             transport, args.repo, root, args.revision
@@ -9777,6 +9810,7 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
             directed_paths=args.directed_path, exclusions=args.exclude_record,
             deny_texts=args.deny_text,
             source_revision=source_revision, registration_used=registration_used,
+            records_home=_records_home(None),
         )
     except recipient_tree.RecipientTreeError as exc:
         raise WorkError(str(exc)) from exc
@@ -9785,6 +9819,19 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
         "producer_version": current, "tree_metadata": str(metadata),
     }, raw=raw_output.inspect_policy(_selected_policy_path(args, root)))
     return 0
+
+
+def _refuse_tree_path_naming(output: Path, numbers: list[int]) -> None:
+    """Refuse a tree whose folder, or the folder it sits in, carries a change number as a whole run."""
+    # The consumer's commands carry these two names; folders higher up are named by the runtime, and a
+    # session id's random digits would refuse holders by chance.
+    for name in (output.name, output.parent.name):
+        for number in numbers:
+            if re.search(rf"(?<![0-9]){number}(?![0-9])", name):
+                raise WorkError(
+                    f"tree: the folder name {name!r} carries the change's number {number}; name the tree "
+                    "and the folder it sits in without the change's issue or pull-request number"
+                )
 
 
 def run(
