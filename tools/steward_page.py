@@ -1,21 +1,5 @@
 # Design: tools/DESIGN.md#the-standing-page
-"""The Steward's standing page in parts, edited one entry at a time.
-
-The page is its own data. Its issue body is the pickup part, and six Steward
-comments on the same issue hold the other parts. Every entry is one top-level
-list item whose first line ends with a hidden marker naming its id, its kind
-and the issue it waits on, so this tool can number the ready list, hold each
-part to its size limit, and say which entries' issues have closed. What leaves
-the page goes first, word for word, to a closed archive issue.
-
-Each part's last confirmed text is saved under the Steward's state directory,
-and a write is refused while the live part differs from that copy, so another
-hand's edit is shown rather than overwritten. GitHub has no conditional update,
-so an edit landing between this tool's last re-read and its write is still
-overwritten.
-
-Standard library only. Machine-read output is one line of ASCII JSON.
-"""
+"""Edit the Steward's standing page one entry at a time, and archive what leaves it."""
 
 from __future__ import annotations
 
@@ -36,6 +20,7 @@ from winio import utf8_stdio  # noqa: E402  (steward_watch puts lib/ on the path
 LIMIT = 20_000
 # GitHub's comment cap counts UTF-8 bytes, whatever its refusal message says.
 ARCHIVE_CAP = 262_144
+# Aliases per GraphQL query: few calls for a whole page, each well inside GitHub's per-query cost.
 GRAPHQL_BATCH = 50
 
 PART_ORDER = ("body", "steward", "read", "ready", "flight", "traps", "residues")
@@ -71,8 +56,8 @@ ENTRY_LINE = re.compile(
     r"(?P<prefix>(?:[-*+]|\d{1,9}[.)])[ \t]+)(?P<content>.*?)[ \t]*"
     + ENTRY_MARKER.pattern + r"[ \t]*")
 OVER_MARKER = "<!-- lab:steward-over:v1 -->"
-OVER_LINE = re.compile(
-    r"> \*\*Over its 20,000-byte limit at [\d,]+ bytes:\*\* (?P<reason>.+)")
+OVER_LINE = re.compile(re.escape(f"> **Over its {LIMIT:,}-byte limit at ") + r"[\d,]+"
+                       + re.escape(" bytes:** ") + r"(?P<reason>.+)")
 INDEX_BEGIN = "<!-- lab:steward-index:v1 begin -->"
 INDEX_END = "<!-- lab:steward-index:v1 end -->"
 ARCHIVE_ISSUE_MARKER = "<!-- lab:steward-archive-issue:v1 -->"
@@ -153,7 +138,7 @@ def lab_short_names() -> list[str]:
 
 
 def check_ref(ref: str, names: list[str]) -> str:
-    """`none`, or REPO#N where REPO is one of the lab's six repositories."""
+    """`none`, or REPO#N where REPO is one of the lab's repositories."""
     if ref == "none":
         return ref
     match = REF.fullmatch(ref)
@@ -363,7 +348,7 @@ def render(part: Part, index: list[str], over_line: str | None = None) -> str:
 
 
 def over_line(bytes_: int, reason: str) -> str:
-    return f"> **Over its 20,000-byte limit at {bytes_:,} bytes:** {reason}"
+    return f"> **Over its {LIMIT:,}-byte limit at {bytes_:,} bytes:** {reason}"
 
 
 # ---------------------------------------------------------------- the page
@@ -513,10 +498,8 @@ def resolve_states(github: sw.GitHub, refs: list[str]) -> tuple[dict, dict]:
             elif node.get("state") == "OPEN":
                 states[ref] = "open"
             elif node.get("__typename") == "PullRequest":
-                # Only a merge lands a pull request.
                 states[ref] = "landed" if node.get("merged") else "closed"
             else:
-                # Only an issue closed as completed has landed.
                 states[ref] = "landed" if node.get("stateReason") == "COMPLETED" else "closed"
 
     for start in range(0, len(refs), GRAPHQL_BATCH):
@@ -628,6 +611,7 @@ class PageTool:
             reason = part.over_reason
         else:
             reason = one_line(over, "--over-reason")
+        # The shown size counts its own digits, so render until it equals the text's own size.
         guess = size(plain)
         while True:
             text = render(part, page.index(), over_line(guess, reason))
@@ -805,6 +789,7 @@ class PageTool:
             self.check_copy("body", page.body.live, None)
             part.comment_id = None
         text = self.finalize(page, part, over)
+        # sw.post prepends this same post marker line; the read-back matches only while the two agree.
         posted = sw.post(self.github, self.number, "post", None, text.split("\n", 1)[1])
         cid = int(posted["id"])
         part.comment_id = cid
@@ -863,6 +848,7 @@ class PageTool:
             "title": one_line(title, "--title"),
             "body": ARCHIVE_ISSUE_MARKER + "\n" + ARCHIVE_ISSUE_PROSE + "\n"})
         number = int(made["number"])
+        # Closed at once so it never sits among open work; completed, as a record and not a declined plan.
         self.github.send("PATCH", f"repos/{sw.LAB_REPO}/issues/{number}",
                          {"state": "closed", "state_reason": "completed"})
         self.writes.append({"part": "archive", "url": made.get("html_url")})
@@ -874,6 +860,7 @@ class PageTool:
         issue = self.github.get(f"repos/{sw.LAB_REPO}/issues/{number}")
         if normalise(issue.get("body")).split("\n", 1)[0].rstrip() != ARCHIVE_ISSUE_MARKER:
             raise PageError(f"issue {number} does not open with {ARCHIVE_ISSUE_MARKER}")
+        # The repository is public, so anyone else could post a comment forging a read's archive.
         return [c for c in self.github.comments(sw.LAB_REPO, number)
                 if (c.get("user") or {}).get("login") == sw.OWNER_LOGIN]
 

@@ -1,12 +1,11 @@
 # Design: tools/DESIGN.md#the-standing-page
-"""Tests for tools/steward_page.py: the standing page in parts, edited entry by entry (#891).
+"""Tests for tools/steward_page.py: the standing page in parts, edited entry by entry.
 
 Every GitHub call goes through a recording fake holding one page issue, its
 comments, the archive issue and the state of each referenced issue, so each
 test states what GitHub held and reads back every write the tool sent. Every
 test passes its own state directory; the probe-refusal test is the only one
-that resolves the default, and it asserts the refusal. Criterion ids (A1 ...)
-are the settled artifact's on #891.
+that resolves the default, and it asserts the refusal.
 """
 
 from __future__ import annotations
@@ -79,6 +78,7 @@ class FakeGitHub:
         if tail[0] == "issues" and tail[2] == "comments" and len(tail) == 3:
             number = int(tail[1])
             if method == "GET":
+                # `gh api --paginate` prints one JSON array per page, so the fake serves two pages.
                 items = self.comments[number]
                 half = len(items) // 2
                 return json.dumps(items[:half]) + "\n" + json.dumps(items[half:])
@@ -206,11 +206,11 @@ def st(tmp_path):
     return build(tmp_path)
 
 
-# ---------------------------------------------------------------- row 1: parts
+# ---------------------------------------------------------------- parts, kinds and faults
 
 
 def test_body_index_links_every_part_on_its_page(st):
-    """A1: one link per part, each to the comment on this page carrying that part's marker."""
+    """One link per part, each to the comment on this page carrying that part's marker."""
     body = st.lab.part_text("body")
     links = re.findall(r"\]\(https://github\.com/([^)]+)/issues/(\d+)#issuecomment-(\d+)\)", body)
     assert len(links) == 6
@@ -221,7 +221,7 @@ def test_body_index_links_every_part_on_its_page(st):
 
 
 def test_index_shows_a_missing_part_and_gains_it_when_created(tmp_path):
-    """A1: with five parts the sixth shows as not yet created, then links once created."""
+    """With five parts the sixth shows as not yet created, then links once created."""
     st = build(tmp_path, parts=sp.COMMENT_PARTS[:-1])
     assert "- Residues (not yet created)" in st.lab.part_text("body")
     assert st("status")["missing"] == ["residues"]
@@ -241,7 +241,7 @@ def intake_after_everything(st) -> list:
 
 
 def test_part_comments_new_and_edited_are_never_intake(st):
-    """A2: every part comment classifies as post, after creation and after each edit."""
+    """Every part comment classifies as post, after creation and after each edit."""
     assert intake_after_everything(st) == ([], [])
     one = st.add("flight", "first in flight")
     two = st.add("flight", "second in flight")
@@ -257,7 +257,7 @@ def test_part_comments_new_and_edited_are_never_intake(st):
 
 
 def test_a_part_marker_without_the_post_line_or_from_another_account_is_not_a_part(tmp_path):
-    """A2: only a Grimblaz comment opening with the post marker counts as a part."""
+    """Only a Grimblaz comment opening with the post marker counts as a part."""
     st = build(tmp_path, parts=sp.COMMENT_PARTS[:-1])
     copied = st.lab.add_comment(PAGE, "<!-- lab:steward:v1 kind=post -->\n"
                                 "<!-- lab:steward-part:v1 part=residues -->\n", login="someone")
@@ -269,14 +269,14 @@ def test_a_part_marker_without_the_post_line_or_from_another_account_is_not_a_pa
 
 
 def test_a_ruling_lands_in_the_body(st):
-    """A3: the kind decides the part, and a ruling's part is the body."""
+    """The kind decides the part, and a ruling's part is the body."""
     rid = st.add("ruling", "Holders run the floor before review.")
     assert [e["id"] for e in st.entries("body")] == [rid]
     assert rid in st.lab.part_text("body")
 
 
 def test_a_ruling_cannot_leave_the_body_and_nothing_else_enters_it(st):
-    """A3: no move takes a ruling out of the body, or another kind into it."""
+    """No move takes a ruling out of the body, or another kind into it."""
     rid = st.add("ruling", "Holders run the floor before review.")
     fid = st.add("flight", "in flight")
     st.refused("move", rid, "--kind", "steward-ruling", "--text-file", st.file("x"),
@@ -286,7 +286,7 @@ def test_a_ruling_cannot_leave_the_body_and_nothing_else_enters_it(st):
 
 
 def test_a_hand_placed_ruling_in_a_comment_part_is_a_fault(st):
-    """A3: status names the misplaced ruling, and every write refuses until it is repaired."""
+    """Status names the misplaced ruling, and every write refuses until it is repaired."""
     text = st.lab.part_text("steward").rstrip("\n") + (
         "\n\n- smuggled <!-- lab:steward-entry:v1 id=0badcafe kind=ruling issue=none -->\n")
     st.lab.set_part("steward", text)
@@ -297,7 +297,7 @@ def test_a_hand_placed_ruling_in_a_comment_part_is_a_fault(st):
 
 
 def test_body_then_load_body_lists_each_ruling(st):
-    """A3: after body and load body, status counts the body's rulings by id."""
+    """After body and load body, status counts the body's rulings by id."""
     loaded = st("load", "body", "--file", st.json_file([
         {"kind": "ruling", "issue": "none", "text": f"Ruling {n} applies." } for n in range(3)]))
     body = st("status")["parts"]["body"]
@@ -307,7 +307,7 @@ def test_body_then_load_body_lists_each_ruling(st):
 
 @pytest.mark.parametrize("command", ["add", "replace", "move"])
 def test_a_ready_entry_is_one_line(st, command):
-    """A4: add, replace and move each refuse two lines for a ready entry."""
+    """Add, replace and move each refuse two lines for a ready entry."""
     rid = st.add("ready", "tradecraft#1: a defect. After #2.")
     fid = st.add("flight", "in flight")
     two = st.file("line one\nline two")
@@ -318,7 +318,7 @@ def test_a_ready_entry_is_one_line(st, command):
 
 
 def test_keep_leaves_a_ready_entry_on_one_line(st):
-    """A4: the kept reason joins a ready entry's one line."""
+    """The kept reason joins a ready entry's one line."""
     rid = st.add("ready", "tradecraft#1: a defect. After #2.", "tradecraft#1")
     st("keep", rid, "--reason", "its follow-up is still open")
     (line,) = [l for l in st.lab.part_text("ready").split("\n") if rid in l]
@@ -338,7 +338,7 @@ def hand_edit(st, name: str, text: str) -> None:
     ("outside-repo", "lab's repositories"),
 ])
 def test_a_fault_is_named_and_nothing_written(st, fault, match):
-    """A5: each fault is reported by name, and a writing command writes nothing."""
+    """Each fault is reported by name, and a writing command writes nothing."""
     fid = st.add("flight", "in flight")
     flight = st.lab.part_text("flight").rstrip("\n")
     if fault == "unmarked":
@@ -358,7 +358,7 @@ def test_a_fault_is_named_and_nothing_written(st, fault, match):
 
 
 def test_an_issue_outside_the_lab_is_refused(st):
-    """A5: a repository outside the lab's six never reaches the page."""
+    """A repository outside the lab's six never reaches the page."""
     st.refused("add", "--kind", "flight", "--issue", "Elsewhere#3", "--text-file", st.file("x"),
                match="lab's repositories")
 
@@ -381,7 +381,7 @@ WRITING = [
 
 @pytest.mark.parametrize("argv", WRITING, ids=[" ".join(a[:2]) for a in WRITING])
 def test_a_probe_page_is_refused_against_the_default_state_directory(tmp_path, monkeypatch, argv):
-    """A6: a page other than 683 never runs against the live Steward's state."""
+    """A page other than 683 never runs against the live Steward's state."""
     monkeypatch.delenv(sw.STATE_ENV, raising=False)
     lab = FakeGitHub()
     path = tmp_path / "f.txt"
@@ -393,7 +393,7 @@ def test_a_probe_page_is_refused_against_the_default_state_directory(tmp_path, m
     assert lab.calls == []
 
 
-# ---------------------------------------------------------------- row 2: limit
+# ---------------------------------------------------------------- the size limit
 
 
 BIG = "x" * 25_000
@@ -423,14 +423,14 @@ def shrinking_commands(st, name: str, ids: list[str]) -> dict:
 @pytest.mark.parametrize("name", sp.PART_ORDER)
 @pytest.mark.parametrize("command", ["add", "replace", "move", "keep", "preamble", "archive"])
 def test_an_edit_leaving_a_part_over_with_no_reason_writes_nothing(st, name, command):
-    """A7: on every part, the body included, even while a reason shows and the edit shrinks it."""
+    """On every part, the body included, even while a reason shows and the edit shrinks it."""
     ids = make_over(st, name)
     st.refused(*shrinking_commands(st, name, ids)[command], match="over its 20,000-byte limit")
 
 
 @pytest.mark.parametrize("name", sp.PART_ORDER)
 def test_load_into_an_over_part_with_no_reason_writes_nothing(st, name):
-    """A7: load is held to the limit like every other write."""
+    """Load is held to the limit like every other write."""
     make_over(st, name, entries=False)
     kind = next(k for k, p in sp.KIND_PART.items() if p == name)
     st.refused("load", name, "--file", st.json_file([{"kind": kind, "issue": "none", "text": "t"}]),
@@ -439,13 +439,13 @@ def test_load_into_an_over_part_with_no_reason_writes_nothing(st, name):
 
 @pytest.mark.parametrize("name", sp.COMMENT_PARTS)
 def test_create_part_over_the_limit_with_no_reason_writes_nothing(tmp_path, name):
-    """A7: a new part is held to the limit before it is posted."""
+    """A new part is held to the limit before it is posted."""
     st = build(tmp_path, parts=[n for n in sp.COMMENT_PARTS if n != name])
     st.refused("create-part", name, "--text-file", st.file(BIG), match="over its 20,000-byte limit")
 
 
 def test_body_over_the_limit_with_no_reason_writes_nothing(tmp_path):
-    """A7: the move's body command is held to the limit too."""
+    """The move's body command is held to the limit too."""
     lab = FakeGitHub()
     st = Steward(lab, tmp_path)
     archive = st("init-archive", "--title", "a")["archive"]
@@ -455,7 +455,7 @@ def test_body_over_the_limit_with_no_reason_writes_nothing(tmp_path):
 
 
 def test_create_part_refuses_when_the_new_index_would_put_the_body_over(tmp_path):
-    """A7: the index a create-part regenerates counts against the body's limit."""
+    """The index a create-part regenerates counts against the body's limit."""
     st = build(tmp_path, parts=sp.COMMENT_PARTS[:-1])
     head = sp.size(st.lab.part_text("body"))
     st("preamble", "body", "--text-file",
@@ -466,7 +466,7 @@ def test_create_part_refuses_when_the_new_index_would_put_the_body_over(tmp_path
 
 
 def test_growing_a_part_over_with_no_reason_and_same_with_none_shown_write_nothing(st):
-    """A7: growing past the limit needs a reason, and `same` needs one already shown."""
+    """Growing past the limit needs a reason, and `same` needs one already shown."""
     st.refused("add", "--kind", "flight", "--issue", "none", "--text-file", st.file(BIG),
                match="over its 20,000-byte limit")
     st.refused("add", "--kind", "flight", "--issue", "none", "--text-file", st.file(BIG),
@@ -476,8 +476,8 @@ def test_growing_a_part_over_with_no_reason_and_same_with_none_shown_write_nothi
 
 
 def test_the_limit_is_twenty_thousand_bytes_of_the_text_written(st):
-    """A7: 20,000 bytes is allowed and 20,001 refused, counted in UTF-8 bytes."""
-    overhead = sp.size(sp.render(_traps_with(""), []))  # header, separators, newline
+    """A part exactly at the limit is written and one byte over is refused, counted in UTF-8."""
+    overhead = sp.size(sp.render(_traps_with(""), []))
 
     def text_of(total: int) -> str:
         body = total - overhead - 2  # the blank line between header and preamble
@@ -496,7 +496,7 @@ def _traps_with(preamble: str) -> sp.Part:
 
 
 def test_every_writing_command_takes_an_over_reason():
-    """A7: every command that writes a part accepts --over-reason."""
+    """Every command that writes a part accepts --over-reason."""
     parser = sp.build_parser()
     for name in ("create-part", "load", "preamble", "body", "add", "replace", "move", "keep",
                  "archive"):
@@ -509,13 +509,14 @@ def over_shown(text: str) -> tuple[int, str] | None:
     if sp.OVER_MARKER not in lines:
         return None
     line = lines[lines.index(sp.OVER_MARKER) + 1]
-    match = re.fullmatch(r"> \*\*Over its 20,000-byte limit at ([\d,]+) bytes:\*\* (.+)", line)
+    match = re.fullmatch(re.escape(f"> **Over its {sp.LIMIT:,}-byte limit at ") + r"([\d,]+)"
+                         + re.escape(" bytes:** ") + "(.+)", line)
     return int(match.group(1).replace(",", "")), match.group(2)
 
 
 @pytest.mark.parametrize("name", sp.PART_ORDER)
 def test_a_reason_shows_in_the_part_and_leaves_once_back_under(st, name):
-    """A8: the block carries the reason and the true size; same keeps it; under removes it."""
+    """The block carries the reason and the true size; same keeps it; under removes it."""
     make_over(st, name, entries=False)
     text = st.lab.part_text(name)
     assert over_shown(text) == (sp.size(text), "the move left it long")
@@ -529,7 +530,7 @@ def test_a_reason_shows_in_the_part_and_leaves_once_back_under(st, name):
     assert st("status")["parts"][name]["over_reason"] is None
 
 
-# ---------------------------------------------------------------- row 3: tool
+# ---------------------------------------------------------------- the saved copy, numbering, closed lists
 
 
 def stale_commands(st, fid: str, gid: str) -> list[tuple]:
@@ -545,7 +546,7 @@ def stale_commands(st, fid: str, gid: str) -> list[tuple]:
 
 
 def test_a_stale_saved_copy_writes_nothing_and_shows_the_difference(st):
-    """A9: with the live part changed by another hand, every writing command refuses with a diff."""
+    """With the live part changed by another hand, every writing command refuses with a diff."""
     fid, gid = st.add("flight", "first"), st.add("flight", "second")
     live = st.lab.part_text("flight")
     st.lab.set_part("flight", live.replace("second", "second, edited by hand"))
@@ -553,7 +554,9 @@ def test_a_stale_saved_copy_writes_nothing_and_shows_the_difference(st):
         error = st.refused(*argv, match="differs from the saved copy")
         assert "+" in error.detail["diff"] and "second, edited by hand" in error.detail["diff"]
         assert error.detail["live_sha256"] == sp.sha256(st.lab.part_text("flight"))
-    error = st.refused("load", "flight", "--file", st.json_file([]))  # load refuses a part with entries
+    # load fills only an empty part, so here it refuses before reading the copy; the next test
+    # gives it an empty part.
+    error = st.refused("load", "flight", "--file", st.json_file([]))
     assert "already holds entries" in str(error)
 
 
@@ -564,7 +567,7 @@ def assert_stale(error, name: str, changed: str, live: str) -> None:
 
 
 def test_a_stale_saved_copy_stops_load_body_and_create_part_too(tmp_path):
-    """A9: load, body and create-part each refuse a stale copy of the part they write."""
+    """Load, body and create-part each refuse a stale copy of the part they write."""
     for name in ("load", "create", "body"):
         (tmp_path / name).mkdir()
     st = build(tmp_path / "load")
@@ -592,7 +595,7 @@ def test_a_stale_saved_copy_stops_load_body_and_create_part_too(tmp_path):
 
 
 def test_a_part_changed_mid_archive_stops_the_run_at_that_part(st):
-    """A9: the re-read before each write catches a change after the first read; later parts wait."""
+    """The re-read before each write catches a change after the first read; later parts wait."""
     ids = {name: st.add(kind, f"{name} entry")
            for name, kind in (("ready", "ready"), ("flight", "flight"), ("traps", "trap"))}
     flight_id = st.lab.part_comment("flight")["id"]
@@ -624,7 +627,7 @@ def _archive_comment(st, read: int) -> dict:
 
 
 def test_no_saved_copy_writes_nothing_until_the_live_part_is_accepted(st):
-    """A10: a replacement Steward sees the live part, and only its shown SHA is accepted."""
+    """A replacement Steward sees the live part, and only its shown SHA is accepted."""
     for path in (st.state / f"page-{PAGE}").iterdir():
         path.unlink()
     error = st.refused("add", "--kind", "flight", "--issue", "none", "--text-file", st.file("x"),
@@ -638,7 +641,7 @@ def test_no_saved_copy_writes_nothing_until_the_live_part_is_accepted(st):
 
 
 def test_status_and_show_never_create_a_saved_copy(tmp_path):
-    """A10: reading the page leaves the state directory untouched."""
+    """Reading the page leaves the state directory untouched."""
     st = build(tmp_path)
     fresh = Steward(st.lab, tmp_path / "fresh")
     fresh("status")
@@ -653,7 +656,7 @@ def numbers(st) -> list[str]:
 
 
 def test_the_ready_list_is_numbered_in_order_after_every_change(st):
-    """A11: from a misnumbered list, add, move within, move out and archive each renumber 1..n."""
+    """From a misnumbered list, add, move within, move out and archive each renumber 1..n."""
     a, b, c = (st.add("ready", f"tradecraft#{n}: defect {n}.") for n in (1, 2, 3))
     text = st.lab.part_text("ready")
     for wrong, line in zip(("3", "3", "7"), [l for l in text.split("\n") if re.match(r"\d+\. ", l)]):
@@ -673,7 +676,7 @@ def test_the_ready_list_is_numbered_in_order_after_every_change(st):
 
 
 def test_the_closed_lists_name_exactly_the_closed_references(st):
-    """A12: over two repositories and more than 50 references, in every state GitHub reports."""
+    """Over two repositories and more than one GraphQL batch, in every state GitHub reports."""
     lab = st.lab
     states = {"open": issue(), "completed": issue("CLOSED", "COMPLETED"),
               "not-planned": issue("CLOSED", "NOT_PLANNED"), "no-reason": issue("CLOSED", None),
@@ -694,8 +697,8 @@ def test_the_closed_lists_name_exactly_the_closed_references(st):
     flight.append({"kind": "flight", "issue": "none", "text": "no issue"})
     st("load", "flight", "--file", st.json_file(flight), "--over-reason", "a test of many entries")
     st("load", "body", "--file", st.json_file(rulings), "--over-reason", "a test of many entries")
-    kept_ref = "tradecraft#101"  # open
-    kept = [e for e in st.entries("flight") if e["issue"] == "tradecraft#102"][0]["id"]
+    kept_ref = next(ref for ref, label in expected.items() if label == "completed")
+    kept = [e for e in st.entries("flight") if e["issue"] == kept_ref][0]["id"]
     st("keep", kept, "--reason", "still read", "--over-reason", "same")
     status = st("status")
     assert len([c for c in lab.calls if c[1] == "graphql"]) >= 2
@@ -704,20 +707,21 @@ def test_the_closed_lists_name_exactly_the_closed_references(st):
     for ref, label in expected.items():
         is_closed = label not in ("open", "pr-open")
         landed = label in ("completed", "merged")
-        if ref == "tradecraft#102":
+        if ref == kept_ref:
             assert ("flight", ref) not in closed
         else:
             assert (("flight", ref) in closed) == is_closed, ref
         assert (("ruling", ref) in closed) == (is_closed and landed), ref
         assert (("ruling", ref) in unlanded) == (is_closed and not landed), ref
     assert [r["id"] for r in status["kept"]] == [kept]
+    assert kept not in {r["id"] for r in status["closed"] + status["closed_without_landing"]}
+    assert ("ruling", kept_ref) in closed
     assert all(r["issue"] != "none" for r in status["closed"])
-    assert kept_ref not in {r["issue"] for r in status["closed"]}
     assert status["unresolved"] == []
 
 
 def test_an_unresolvable_reference_is_an_error_never_open(st):
-    """A12: a reference GitHub cannot resolve is reported, and the rest still resolve."""
+    """A reference GitHub cannot resolve is reported, and the rest still resolve."""
     st.lab.states["tradecraft#890"] = issue("CLOSED", "COMPLETED")
     st.add("flight", "known", "tradecraft#890")
     st.add("flight", "unknown", "tradecraft#99999")
@@ -728,7 +732,7 @@ def test_an_unresolvable_reference_is_an_error_never_open(st):
 
 
 def test_no_marker_starts_a_list_item_or_shares_a_line_with_other_text(st):
-    """A13: each marker is on its own line or ends an entry's first line."""
+    """Each marker is on its own line or ends an entry's first line."""
     st.add("ruling", "A **bold** ruling.", "none")
     st.add("ready", "**tradecraft#5**: a defect.", "none")
     fid = st.add("flight", "multi\nline\n\n  - nested")
@@ -745,20 +749,20 @@ def test_no_marker_starts_a_list_item_or_shares_a_line_with_other_text(st):
 
 @pytest.mark.parametrize("char", ["\x1b", "\x00"])
 def test_control_characters_are_refused(st, char):
-    """A14: text carrying a control character never reaches the page."""
+    """Text carrying a control character never reaches the page."""
     st.refused("add", "--kind", "flight", "--issue", "none", "--text-file", st.file(f"a{char}b"),
                match="control character")
     st.refused("keep", st.add("flight", "x"), "--reason", f"a{char}b", match="control character")
 
 
 def test_a_byte_order_mark_is_refused(st):
-    """A14: a BOM in a text file is refused."""
+    """A BOM in a text file is refused."""
     st.refused("add", "--kind", "flight", "--issue", "none", "--text-file", st.file(sw.BOM + "a"),
                match="byte-order mark")
 
 
 def test_a_write_read_back_differently_leaves_the_copy_so_the_next_edit_is_stale(st):
-    """A14: the copy moves only on a confirmed write."""
+    """The copy moves only on a confirmed write."""
     st.lab.store = lambda endpoint, body: body + "GitHub changed this\n"
     with pytest.raises(sp.PageError, match="read back differently"):
         st.add("flight", "x")
@@ -768,7 +772,7 @@ def test_a_write_read_back_differently_leaves_the_copy_so_the_next_edit_is_stale
 
 
 def test_every_command_on_its_happy_path(st):
-    """A14: each page edit the Steward makes is a command."""
+    """Each page edit the Steward makes is a command."""
     st.lab.states["tradecraft#890"] = issue("CLOSED", "COMPLETED")
     rid = st.add("ruling", "A ruling.")
     sid = st.add("owner-wait", "Waits on the owner.")
@@ -791,18 +795,18 @@ def test_every_command_on_its_happy_path(st):
 
 
 def test_create_part_is_refused_for_an_existing_part_and_body_once_marked(st):
-    """A14: create-part and body each refuse to overwrite what exists."""
+    """Create-part and body each refuse to overwrite what exists."""
     st.refused("create-part", "flight", "--text-file", st.file("x"), match="already exists")
     st.refused("body", "--text-file", st.file("x"), "--archive", st.archive,
                match="already carries the page marker")
     st.refused("init-archive", "--title", "again", match="already names archive")
 
 
-# ---------------------------------------------------------------- row 4: archive
+# ---------------------------------------------------------------- the archive
 
 
 def test_the_archive_posts_before_any_part_is_written_and_holds_each_entry_word_for_word(st):
-    """A15: the archive comment comes first, and every removed entry is in it exactly."""
+    """The archive comment comes first, and every removed entry is in it exactly."""
     st.lab.states["tradecraft#890"] = issue("CLOSED", "COMPLETED")
     ids = [st.add("flight", "landed\n  with a second line", "tradecraft#890"),
            st.add("ready", "tradecraft#890: landed.", "tradecraft#890"),
@@ -832,7 +836,7 @@ def _kind_of(text: str) -> str:
 
 
 def test_a_stale_part_refuses_the_archive_before_anything_is_posted(st):
-    """A15: the first read stale-checks every affected part."""
+    """The first read stale-checks every affected part."""
     fid = st.add("flight", "x")
     st.lab.set_part("flight", st.lab.part_text("flight") + "hand\n")
     st.refused("archive", "--read", "43", "--ids", fid, match="differs from the saved copy")
@@ -840,7 +844,7 @@ def test_a_stale_part_refuses_the_archive_before_anything_is_posted(st):
 
 
 def test_an_archive_read_back_missing_an_entry_removes_nothing(st):
-    """A15: nothing leaves the page unless the archive comment holds it."""
+    """Nothing leaves the page unless the archive comment holds it."""
     fid, gid = st.add("flight", "kept on GitHub"), st.add("flight", "dropped by GitHub")
     st.lab.store = lambda endpoint, body: (body.replace(_entry_text(st, gid), "")
                                            if f"issues/{st.archive}/" in endpoint else body)
@@ -850,7 +854,7 @@ def test_an_archive_read_back_missing_an_entry_removes_nothing(st):
 
 
 def test_a_second_run_for_a_read_appends_to_its_one_comment(st):
-    """A15: one comment per read, appended to and never duplicated."""
+    """One comment per read, appended to and never duplicated."""
     fid = st.add("flight", "first")
     st("archive", "--read", "45", "--ids", fid)
     first = _archive_comment(st, 45)["body"]
@@ -862,7 +866,7 @@ def test_a_second_run_for_a_read_appends_to_its_one_comment(st):
 
 
 def test_no_other_command_removes_an_entry(st):
-    """A15: only archive reduces the set of entry ids."""
+    """Only archive reduces the set of entry ids."""
     a, b = st.add("flight", "a"), st.add("flight", "b")
     seen = st.ids()
     for argv in (("replace", a, "--text-file", st.file("a2")), ("move", b, "--position", "1"),
@@ -874,7 +878,7 @@ def test_no_other_command_removes_an_entry(st):
 
 
 def test_a_ruling_closed_without_landing_refuses_the_read_until_kept_or_repointed(st):
-    """A16: the run names the ruling; after keep or replace --issue it completes."""
+    """The run names the ruling; after keep or replace --issue it completes."""
     lab = st.lab
     lab.states.update({"tradecraft#501": issue("CLOSED", "NOT_PLANNED"),
                        "tradecraft#502": pull("CLOSED", False),
@@ -895,7 +899,7 @@ def test_a_ruling_closed_without_landing_refuses_the_read_until_kept_or_repointe
 
 
 def test_after_closed_every_closed_entry_left_is_kept_and_says_why(st):
-    """A16: closed entries go, kept ones stay with their reasons, open ones stay."""
+    """Closed entries go, kept ones stay with their reasons, open ones stay."""
     st.lab.states.update({"tradecraft#601": issue("CLOSED", "COMPLETED"),
                           "Daemon#602": pull("MERGED", True), "tradecraft#603": issue()})
     gone = [st.add("flight", "closed", "tradecraft#601"), st.add("trap", "merged", "Daemon#602")]
@@ -910,7 +914,7 @@ def test_after_closed_every_closed_entry_left_is_kept_and_says_why(st):
 
 
 def test_closed_leaves_issueless_entries_and_ids_archives_them(st):
-    """A17: a ruling with no carrying change leaves only when named."""
+    """A ruling with no carrying change leaves only when named."""
     rid = st.add("ruling", "no carrying change")
     text = _entry_text(st, rid)
     st("archive", "--read", "48", "--closed")
@@ -921,7 +925,7 @@ def test_closed_leaves_issueless_entries_and_ids_archives_them(st):
 
 
 def test_the_move_archive_posts_the_file_whole_and_only_once(st):
-    """C13: the move's archive comment holds the old page, and a second move is refused."""
+    """The move's archive comment holds the old page, and a second move is refused."""
     (move,) = [c for c in st.lab.comments[st.archive] if "event=move" in c["body"]]
     assert OLD_BODY.strip("\n") in move["body"]
     st.refused("archive", "--move", "--archive", st.archive, "--file", st.file("again"),
@@ -929,7 +933,7 @@ def test_the_move_archive_posts_the_file_whole_and_only_once(st):
 
 
 def test_parse_and_render_round_trip(st):
-    """C5, C7: the tool reads back exactly what it writes."""
+    """The tool reads back exactly what it writes."""
     st.add("flight", "one\n  two")
     make_over(st, "flight", entries=False)
     for name in sp.PART_ORDER:

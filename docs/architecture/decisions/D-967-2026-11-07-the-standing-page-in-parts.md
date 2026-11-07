@@ -4,6 +4,8 @@
 
 The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/891) governs. The pre-implementation artifact was [settled on the cap route](https://github.com/Grimblaz-and-Friends/tradecraft/issues/891#issuecomment-6703516778). The lane is ordinary / connected, and no panel was bought.
 
+This record supersedes none. [D-691](D-691-2026-09-21-steward-and-cross-session-intake.md) designates #683 as the standing page and the read's standing issue, and that stays; this record changes only the page's form.
+
 ## The owner's answers
 
 Given together on 2026-11-07 ("Take all three"):
@@ -42,7 +44,7 @@ Given together on 2026-11-07 ("Take all three"):
 
 ## Made while building
 
-- **GitHub's comment cap is 262,144 UTF-8 bytes.** The build's probe posted a 65,537-character comment, which GitHub accepted, and was refused at 262,145 characters and at 140,000 two-byte characters, each refusal reading "maximum is 65536 characters". The archive's cap check counts bytes.
+- **GitHub's comment cap is 262,144 UTF-8 bytes, not a character count.** #957's premise test ([comment 6674635185](https://github.com/Grimblaz-and-Friends/tradecraft/issues/957#issuecomment-6674635185)) had 262,144 ASCII bytes accepted and 262,145 refused, and 87,000 three-byte em dashes (260,858 bytes) accepted while 100,000 (299,858 bytes) were refused, each refusal reading "maximum is 65536 characters". This build's own probe agrees: a 65,537-character comment was accepted, and 262,145 characters and 140,000 two-byte characters were refused. The archive's cap check counts bytes.
 - **Text files may carry CRLF line endings, which are normalised to LF,** as text read from GitHub is; a lone carriage return is still refused.
 - **Entry and preamble text may mention the wake's `lab:steward:v1` marker,** because live rulings name it, but not a structure marker this tool reads (`lab:steward-part`, `-entry`, `-over`, `-index`, `-archive`). The move's archive file may carry any of them, because it holds the old page word for word.
 - **Any fault on the page blocks every write.** The Steward repairs a fault by hand, then runs `accept` on the part, so no write builds on a part the tool cannot read.

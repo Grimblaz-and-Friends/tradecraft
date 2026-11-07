@@ -22,7 +22,7 @@ Nothing here ships. Each section names the decisions in force behind its code by
 - The page is its own data, not generated from files, because a replacement Steward elsewhere would not have those files; the live page stays the record, and the saved copy only lets the tool notice another hand's edit.
 - A replacement with no copy must accept the live part explicitly, because refusing forever would stall it and silently adopting the live page would hide another's edit.
 - The marker ends an entry's first line because a marker at the start of a list item makes GitHub render the rest of the item as raw text.
-- Ids are random so that no second write is needed to keep a counter, and they stay unique against the archive.
+- Ids are random so that no second write is needed to keep a counter. A new id is checked only against the live page, so an archived id can recur, rarely; nothing depends on archived ids staying unique, because the archive matches an entry by its exact text.
 - Each part has a limit because archiving alone leaves current parts long; the reason route keeps a stalled ruling possible without making the overrun silent.
 - A ruling whose change closed without landing never leaves on `--closed`, because only landing retires a ruling and a holder must not lose one in force.
 - Nothing leaves the page before it is in the archive, so nothing the owner ruled disappears without a searchable record.
