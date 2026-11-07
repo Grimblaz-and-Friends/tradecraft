@@ -60,6 +60,18 @@ def refuse_records_placement(output: Path, records_home: Path) -> None:
         )
 
 
+def remove_tree(root: Path) -> None:
+    """Remove a tree the entrance built, leaving whatever the system still refuses."""
+    def writable(function, path, _error):
+        # Git writes its objects read-only, which Windows won't delete until the attribute clears.
+        try:
+            os.chmod(path, 0o700)
+            function(path)
+        except OSError:
+            pass
+    shutil.rmtree(root, onexc=writable)
+
+
 def write_record(record: Path, content: bytes) -> None:
     """Write a record whole: a partial record never stands at its path."""
     record.parent.mkdir(parents=True, exist_ok=True)

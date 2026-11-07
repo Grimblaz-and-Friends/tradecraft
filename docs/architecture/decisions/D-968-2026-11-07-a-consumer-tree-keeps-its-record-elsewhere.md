@@ -35,6 +35,7 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 ## Answered connected-review findings
 
 - **A sibling tree's former record is refused too.** The lab reviewer found that `tree` and `run use` checked only `<tree>.tradecraft-tree.json`, so a tree rebuilt beside an older sibling tree kept that sibling's record, which names its change, in the consumer's folder. Both now refuse any entrance tree record in the tree's folder, naming it. Tree folders, job fixtures and other files stay lawful, as row 2 requires.
+- **A reading whose record can't be written leaves nothing behind.** CodeRabbit found that a failed record write left the reading's temporary tree and its diff. The stage now removes both, clearing Git's read-only objects so the removal holds on Windows, and still reports the failure; a record already written is never removed.
 
 ## What this supersedes
 

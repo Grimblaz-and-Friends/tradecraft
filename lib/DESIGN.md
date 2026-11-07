@@ -22,7 +22,7 @@ The holder posts the account whole in one `open` comment with its own review aga
 
 The reader launches on its role's vendor and records a same-vendor reason whenever it lands on the builder's vendor, fallback included, and it never starts until a build bundle or the builder's session marker proves which vendor built the change.
 
-The reading tree is built in a temporary folder of its own, holding only the tree and outside the entrance's records, which keep the reading's record and diff, written as consumer trees' records are, and its prompt. The gate finds a reading's record there or, for a reading recorded before the records kept it, where that reading left it, beside its tree; a record found in neither place is reported at its path in the records. The tree itself is kept after the run.
+The reading tree is built in a temporary folder of its own, holding only the tree and outside the entrance's records, which keep the reading's record and diff, written as consumer trees' records are, and its prompt. The gate finds a reading's record there or, for a reading recorded before the records kept it, where that reading left it, beside its tree; a record found in neither place is reported at its path in the records. The tree itself is kept after the run; a tree whose record could not be written is removed, with any diff written for it, because no reading can be judged without its record.
 
 **Why.**
 

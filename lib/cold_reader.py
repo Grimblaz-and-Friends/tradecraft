@@ -329,10 +329,15 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
     }
     value["metadata_sha256"] = _digest(value)
     # The diff first, so a record that stands always has its diff.
-    if inline:
-        recipient_tree.write_record(record.with_suffix(".diff"), diff)
-    recipient_tree.write_record(
-        record, json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True).encode("ascii") + b"\n")
+    try:
+        if inline:
+            recipient_tree.write_record(record.with_suffix(".diff"), diff)
+        recipient_tree.write_record(
+            record, json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True).encode("ascii") + b"\n")
+    except OSError:
+        # A diff whose record never stood belongs to no reading.
+        record.with_suffix(".diff").unlink(missing_ok=True)
+        raise
     return record
 
 

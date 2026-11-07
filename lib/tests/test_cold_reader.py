@@ -770,6 +770,29 @@ def test_the_reading_tree_sits_alone_in_its_folder_outside_the_records_which_kee
     assert prompt.name == "prompt.md" and prompt.resolve().is_relative_to(home)
 
 
+@pytest.mark.cold_reading
+def test_a_reading_whose_record_cannot_be_written_leaves_no_tree_or_diff(change, monkeypatch):
+    written = cold_reader.recipient_tree.write_record
+
+    def write_record(path, content):
+        if path.suffix == ".json":
+            raise OSError("fixture disk full")
+        written(path, content)
+
+    monkeypatch.setattr(cold_reader.recipient_tree, "write_record", write_record)
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("claude", "fixture build bundle"))
+    monkeypatch.setattr(work, "_invoke_recipient", lambda *_a: pytest.fail("no seat may launch"))
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    with pytest.raises(OSError, match="fixture disk full"):
+        work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                                  dispatch_path=None, tree_metadata=None, timeout_seconds=600,
+                                  claude_path=None, codex_path=None)
+    assert list((change.tmp / "temp").iterdir()) == []
+    trees = change.home / "trees"
+    assert not trees.exists() or list(trees.iterdir()) == []
+
+
 def former_layout(change, name):
     """Move a reading into the layout entrances before this one wrote: its tree inside the records,
     its record and diff beside the tree."""

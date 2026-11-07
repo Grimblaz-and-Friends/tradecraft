@@ -16,7 +16,6 @@ from pathlib import Path
 import re
 import secrets
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -5184,11 +5183,15 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
             head=sha, covered=covered, branch=branch, numbers=numbers, records_home=home)
         metadata = cold_reader.load_metadata(metadata_path)
     except cold_reader.ColdReaderError as exc:
-        shutil.rmtree(reading.parent, ignore_errors=True)
+        recipient_tree.remove_tree(reading.parent)
         refusal = replace(decision, dispatch=False, continuity=None, status="refused",
                           reason="cold-reading-tree-refused", detail=str(exc))
         _emit_report(_reported_decision(state, refusal).as_dict(), state)
         return 0
+    except OSError:
+        # A tree whose record never stood can't be judged, so nothing of it is kept.
+        recipient_tree.remove_tree(reading.parent)
+        raise
     diff = metadata_path.with_suffix(".diff")
     standard = (Path(__file__).resolve().parent.parent / "skills" / "authoring" / "references"
                 / "code-reasons.md").read_text("utf-8")
