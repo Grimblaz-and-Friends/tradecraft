@@ -1,0 +1,129 @@
+# The standing page in parts
+
+**Purpose:** operate #683 as a pickup body and six part comments through `tools/steward_page.py`, archive what leaves it at each read, and move the old single-body page into parts once. **Audience:** the Steward, a resumed Steward, and a replacement. **Success:** every page edit goes through the tool, no part grows past its limit unseen, nothing leaves the page without first reaching the archive, and a holder reading only the body finds every ruling it applies.
+
+Run every command from the Steward's checkout as `python tools/steward_page.py COMMAND`. Each prints one line of ASCII JSON. A refusal exits non-zero with `error`, and adds only what applies to it: `part`, with `diff` and `live_sha256` for a stale copy or `live` and `live_sha256` where there is no copy or `accept`'s SHA no longer matches; `bytes` for a part over its limit; `faults`, `unresolved` or `closed_without_landing` for what blocked the run; `missing` for entries an archive comment read back without; and `written`, the writes already made, when the refusal came after a write. An archive halted at a part adds `stopped_at`, and its `written` is `[]` when a re-run stops at its first part before writing anything. Each command takes `--page N` (default 683; any other page is a probe, refused against the default state directory) and `--state-dir`, resolved as `tools/steward_watch.py` resolves it.
+
+## The parts and their kinds
+
+| Part | Where | Entry kinds |
+|---|---|---|
+| `body` | #683's issue body | `ruling`: a ruling a holder applies |
+| `steward` | comment | `steward-ruling` (binds only the Steward), `owner-wait` (waits on the owner), `owed` (what the Steward owes) |
+| `read` | comment | `read`: the latest read |
+| `ready` | comment | `ready` |
+| `flight` | comment | `flight` |
+| `traps` | comment | `trap` |
+| `residues` | comment | `residue` |
+
+The kind decides the part, so `add` takes a kind and no part. The tool refuses a `ruling` anywhere but the body and any other kind in it; a ruling leaves the body only through the archive. **Put a ruling in the `steward` part only if it binds only the Steward or waits on the owner.** A ruling a holder applies stays in the body until it retires, and the tool cannot judge whom a ruling binds, so that judgement is yours.
+
+## The markers
+
+- **A part comment** opens with `<!-- lab:steward:v1 kind=post -->` and carries `<!-- lab:steward-part:v1 part=NAME -->` on its second line. It counts only from the owner's account; a second comment naming the same part is a fault.
+- **The body** opens with `<!-- lab:steward-part:v1 part=body archive=N -->`, `N` being the archive issue. The tool rewrites the index between `<!-- lab:steward-index:v1 begin -->` and `<!-- lab:steward-index:v1 end -->` on every body write and after every `create-part`, one link per part, and a part not yet created shows `(not yet created)`.
+- **An entry** is one top-level list item whose first line ends with `<!-- lab:steward-entry:v1 id=ID kind=KIND issue=REF -->`, plus ` kept=yes` once kept. `ID` is eight random hex digits. `REF` is `none` or `REPO#N`, an issue or pull request in tradecraft, change-proof or one of the products; nothing else is accepted. An entry that seems to wait on two issues is two entries, or names the one whose closing ends it.
+- **An over-limit block** is `<!-- lab:steward-over:v1 -->` under the part's marker lines, then the visible `> **Over its 20,000-byte limit at N bytes:** REASON`.
+
+Everything above a part's first entry is its preamble. Entry and preamble text comes from a UTF-8 file you write without the list prefix or any marker; the tool adds both. It refuses a byte-order mark, a control character (C0 other than newline and tab, delete, or C1), and the structure markers above; it accepts a mention of the wake's own `lab:steward:v1` marker, because rulings in force name it. The one exception is the move's archive file, read by `archive --move`, which may carry the structure markers because it holds the old page word for word. A ready entry is one line, and the ready list is renumbered on every write.
+
+**A fault blocks every write to a part.** The tool reports these:
+
+- an unmarked top-level list item after a part's first entry, or an entry marker that does not end a top-level list item's first line;
+- an unknown kind, or a kind in the wrong part;
+- an `issue=` value that is malformed or names a repository outside the lab;
+- an entry id that appears twice on the page;
+- a ready entry spanning more than one line;
+- a kept entry whose `Kept after its issue closed:` reason can't be read;
+- an over-limit marker with no reason line under it, or below the part's first entry;
+- index delimiters out of place, out of order or missing one end;
+- a body page marker that carries an attribute other than `archive=N`, or names no archive issue;
+- a part carried by two comments, a counted comment whose part marker sits anywhere but its second line, or a comment carrying an unknown part marker.
+
+`status` names each fault, and a refused write lists them under `faults`. **Repairing a fault is the one edit you make by hand:** repair the part `status` names, then `accept` it. `init-archive` and `archive --move` write no part, so they run on a faulty page.
+
+## The commands
+
+Every command that writes a part also takes `--over-reason R`.
+
+| Command | What it does |
+|---|---|
+| `status` | Writes nothing, not even a saved copy. Per part: link, bytes, limit, over-limit reason, copy state (`in-step`, `differs`, `no-copy`) and faults; for the body, its `ruling` entries and their count, its archive issue and whether its index is current. Also the missing parts, every fault, comments carrying a part marker that do not count, the `closed`, `closed_without_landing` and `kept` lists, and each reference that could not be resolved. |
+| `show PART` | The live part, its SHA-256 and its entries. |
+| `accept PART --sha SHA` | Records the live part as the saved copy, only if its SHA-256 is still `SHA`. |
+| `add --kind K --issue REF --text-file F [--position N \| --after ID]` | Adds one entry to its kind's part, at the end unless placed. |
+| `replace ID [--text-file F] [--issue REF] [--clear-kept]` | Replaces an entry's text or its issue. A kept entry keeps its shown reason unless `--clear-kept`. |
+| `move ID (--position N \| --after ID)` | Reorders an entry within its part. |
+| `move ID --kind K --text-file F [--position N \| --after ID]` | Moves an entry to another kind, with new text, writing the destination before removing the source; a failure between leaves a duplicate that `status` shows. A kept entry keeps its shown reason. |
+| `keep ID --reason TEXT` | Sets `kept=yes` and shows `Kept after its issue closed: TEXT`, on a ready entry's one line, otherwise on a continuation line. |
+| `preamble PART --text-file F` | Replaces a part's preamble; on the body it also rewrites the index. |
+| `create-part PART --text-file F` | Posts a new part comment with F as its preamble; refused if the part exists. |
+| `load PART --file entries.json` | Fills a part that holds no entries from a JSON list of `{kind, issue, text}`, each field text; it checks every entry before writing. Accepts the body. |
+| `body --text-file F --archive N --rulings R` | The move only: writes the body's preamble, page marker, index and every ruling in R, a JSON list of `{kind, issue, text}`, in one write over the accepted copy; a rulings file that fails its checks writes nothing, and the old body stands. Refused once the body carries the page marker, and until archive issue N holds the move's comment. |
+| `init-archive --title T` | Creates the archive issue, opening with `<!-- lab:steward-archive-issue:v1 -->` and a second line `<!-- lab:steward-archive-page:v1 page=N -->` naming its page, and closes it. It records the new issue's number in the state directory as soon as the issue exists, so it refuses once the body names an archive, or while that record or GitHub's issue listing names an archive for this page; the record covers a quick re-run the listing has not caught up with. |
+| `archive --read N [--closed] [--ids ID ...]` | Archives at read N (below), into the archive issue the body names. It needs `--closed`, `--ids` or both, and `--archive` is refused. |
+| `archive --move --archive N --file F` | Posts F whole, under the line `<!-- lab:steward-archive:v1 event=move -->` and a heading `## The move, DATE`, as the move's one archive comment, before anything is removed. Refused once the archive holds a move comment. |
+
+## The limit
+
+**Each part, the body included, is held to 20,000 bytes of the exact UTF-8 text the tool would write,** markers and any over-limit block counted. A write that would leave a part over is refused and writes nothing unless you give `--over-reason`; the part then shows that reason and its size until a write brings it back under, which removes the block. Every write that leaves a part over needs a reason, even one that shrinks it, so the limit never lapses quietly while a part is being trimmed: `--over-reason same` restates the reason already shown and is refused where none is. On `archive` and `create-part`, the one reason applies to each part the command leaves over.
+
+## The saved copy and the write window
+
+The tool keeps each part's last confirmed text as `page-<PAGE>/<part>.json` in the state directory, and moves it only after a write is read back and matches. **Immediately before each write it re-reads the live part, and writes nothing to that part when:**
+
+- **the live part differs from the copy.** It prints a unified diff from the copy to the live text, with the live SHA-256. Review the difference, run `accept PART --sha SHA`, and redo the edit.
+- **the live part changed since this command read it but still matches the copy,** because another run wrote both the part and the copy. It prints a diff from the text as this command read it to the live text, and says to run the command again. Run it again; no `accept` is needed, because the copy is already in step.
+- **there is no copy.** It prints the live part and its SHA-256. Review it, run `accept PART --sha SHA`, and redo the edit.
+
+A read-back that differs from what was written is reported and leaves the copy as it was, so your next edit shows you the difference.
+
+**The window.** GitHub has no conditional update for a comment or an issue body. A hand edit that lands between the tool's last re-read and its write is overwritten; it survives only in GitHub's edit history, and the tool does not detect it.
+
+## The archive and keep rules
+
+**Landed** means a pull request that merged or an issue closed as completed. An issue closed as not planned, as a duplicate or with no reason has closed without landing, and so has a pull request closed unmerged. `status` reads every entry's reference and lists:
+
+- **closed:** every entry whose reference closed, except the next two lists;
+- **closed without landing:** every unkept ruling, `ruling` or `steward-ruling`, whose reference closed without landing;
+- **kept:** every entry with `kept=yes`, with its reason.
+
+`issue=none` never appears in a closed list. A reference that cannot be resolved is never treated as open: `status` lists it under `unresolved` and exits normally, and `archive --read` refuses.
+
+`archive --read N` runs in this order:
+
+1. **It refuses before choosing anything** on a faulty page, as every write does; when the body names no archive issue; when a reference cannot be resolved; and while any ruling is closed without landing, naming each. Re-point each such ruling with `replace --issue` to its new carrying change, or to `none`, or `keep` it with its reason.
+2. **It selects:** `--closed` takes every closed entry that is not kept, a ruling (`ruling` or `steward-ruling`) only once its change landed, and every other kind, `owner-wait` included, on any close; `--ids` takes exactly the entries named, which is how a ruling with no carrying change, a declined item and a ruling the owner retired leave.
+3. **It checks every part it will change** before posting anything, and refuses the whole run on a part that differs from its saved copy or would be over its limit without a reason.
+4. **It posts** the removed entries, each exactly as it stood, marker included, grouped under their part's title, as read N's one comment on the archive issue; a re-run appends only the entries that comment does not already hold whole, compared from each entry's marked line to its end. Immediately before its own write it re-reads that comment and refuses, writing nothing, if another run changed it since this run read it; run the command again. It refuses a comment over GitHub's 262,144-byte cap.
+5. **It reads the comment back** and removes nothing unless every entry is in it.
+6. **It rewrites each affected part,** re-reading it first. A part that changed stops the run there, leaving it and every later part unwritten, and prints the diff. As in the saved-copy section above: where the part differs from its saved copy, review the difference, `accept` it and re-run the same command; where another run wrote both the part and its copy, re-run without `accept`. Entries already in read N's comment are removed without being posted again, and an `--ids` id that comment already holds is accepted though it has left the page; an id neither on the page nor in that comment is refused.
+
+No other command removes an entry. Keep an entry whose issue has closed but which still applies with `keep`, giving why.
+
+## At each read
+
+1. Run `status`.
+2. Review its lists: re-point each ruling under "closed without landing" with `replace --issue`, or keep it with its reason; keep anything else that must stay, with its reason; and collect the ids of retired and declined entries.
+3. Run `archive --read N --closed --ids ...`.
+4. Put the `status` output in the read's job, the instructions you write for the cross-change read's seats, and ask those read seats to read the body and follow its links, report each part over its limit with its reason, and report any entry listed as closed that is still on the page without a reason.
+
+## The move
+
+Once, after the change that built the tool merges, with the default state directory:
+
+1. Fast-forward your checkout.
+2. `init-archive --title ...`, and note its number.
+3. Draft the new parts from #683. Split the page into its parts; trim each entry to what applies now, posting the history and pickup notes you remove onto the entry's own issue with `gh issue comment` where that issue lacks them; collect the text that leaves into one file, with the trimmed history of entries that have no issue of their own and, for every ruling it archives, the change that retired it or "declined"; place each ruling by whom it binds; and write the **ruling ledger**: one row for every entry of the old "Rulings a holder applies" and "Rulings waiting on the owner" sections, giving its first words, where it went (the body, the `steward` part, or the move's archive comment), why for a row sent to the `steward` part (it binds only the Steward, or it waits on the owner), and the retiring change or "declined" for a row archived. Record the old body's SHA-256 from `show body` as you draft.
+4. `archive --move --archive N --file <that file>`, before anything is removed.
+5. `create-part` and `load` for the six comment parts. A part that would end over its limit is refused. Trim it further; if it cannot get under without dropping something still in force, put it to the owner with its size before you write any `--over-reason`. A part left over its limit at the move would open the page with a standing over-limit reason, making the limit a notice rather than a limit, and only the owner may let a ruling in force leave its part to make one fit. Outside the move you give the reason yourself.
+6. `accept body --sha <the SHA you recorded>`, which refuses a body changed since you drafted. If it refuses, the move comment and the parts already exist, so `archive --move` and `load` cannot take the change; recover in these four recovery steps, in this order, and never write stale drafts over a newer body:
+   - **Recovery 1, compare.** Compare the old body as drafted, the text behind the recorded SHA, with the current body. `accept`'s refusal shows the live text and its SHA-256; record that SHA, the one for the text you are reconciling. GitHub's edit history holds the drafted text.
+   - **Recovery 2, the addendum.** Before any write, post every changed line that leaves the page, word for word, as one plain comment on the archive issue headed "The move, addendum", with `gh issue comment`. The tool posts only one move comment, and this addendum is the only archive comment you write by hand: on a repeated recovery, append to it with `gh api --method PATCH` on its comment id rather than posting a second. Add a ledger row for each changed ruling.
+   - **Recovery 3, carry what stays.** Carry every changed line that stays on the page through the tool: a ruling holders apply goes into `rulings.json` for `body --rulings`. A line that belongs to an entry already loaded into a part updates that entry with `replace`, so the part never holds the old and new versions side by side; a line with no entry yet, a Steward ruling, an owner wait or anything else for a part already created, goes in with `add`, to the part its kind names.
+   - **Recovery 4, accept.** Accept the SHA you recorded at recovery 1 with `accept body --sha`, not a fresh one from `show body`. If `accept` refuses it, the body changed again: repeat from recovery 1.
+
+   Then `body --text-file <how the page is used> --archive N --rulings rulings.json` with every ruling the ledger sends to the body. A body that would end over its limit follows step 5's rule.
+7. `status`. Every part must be under its limit, or have gone to the owner as step 5 says. The body's ruling count must equal the ledger's body rows, each row's first words found in one of those entries.
+8. Update your own scripts that parse the old section headings, and the read-job template you keep in your own toolkit, outside this repository, to match "At each read".
+9. Report the moved page to the owner, with each part's size and the ledger.
