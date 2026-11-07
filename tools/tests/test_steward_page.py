@@ -358,7 +358,7 @@ def test_a_fault_is_named_and_nothing_written(st, fault, match):
 
 
 def test_an_issue_outside_the_lab_is_refused(st):
-    """A repository outside the lab's six never reaches the page."""
+    """A repository outside the lab never reaches the page."""
     st.refused("add", "--kind", "flight", "--issue", "Elsewhere#3", "--text-file", st.file("x"),
                match="lab's repositories")
 
@@ -608,6 +608,7 @@ def test_a_part_changed_mid_archive_stops_the_run_at_that_part(st):
     with pytest.raises(sp.PageError, match="differs from the saved copy") as info:
         st("archive", "--read", "7", "--ids", *ids.values())
     assert info.value.detail["stopped_at"] == "flight"
+    assert [w["part"] for w in info.value.detail["written"]] == ["archive", "ready"]
     assert ids["ready"] not in st.lab.part_text("ready")
     assert ids["flight"] in st.lab.part_text("flight") and ids["traps"] in st.lab.part_text("traps")
     posts = len(st.lab.writes())
@@ -618,6 +619,43 @@ def test_a_part_changed_mid_archive_stops_the_run_at_that_part(st):
     assert archive_writes == [], "entries already in the read's comment were posted again"
     assert ids["flight"] not in st.lab.part_text("flight")
     assert ids["traps"] not in st.lab.part_text("traps")
+
+
+def nth_get(lab: FakeGitHub, suffix: str, nth: int, fn) -> None:
+    """Run fn just before the nth GET whose endpoint ends with suffix."""
+    seen = []
+
+    def match(method, endpoint):
+        if method == "GET" and endpoint.endswith(suffix):
+            seen.append(endpoint)
+            return len(seen) == nth
+        return False
+
+    lab.hooks.append((match, fn))
+
+
+def test_a_refusal_after_a_move_wrote_its_destination_names_that_write(st):
+    """A move between parts that stops at a stale source still reports the destination it wrote."""
+    fid = st.add("flight", "to become a trap")
+    flight = st.lab.part_comment("flight")
+    nth_get(st.lab, f"issues/comments/{flight['id']}", 1,
+            lambda: flight.update(body=flight["body"].replace("## In flight", "## In flight, by hand")))
+    with pytest.raises(sp.PageError, match="differs from the saved copy") as info:
+        st("move", fid, "--kind", "trap", "--text-file", st.file("now a trap"))
+    assert [w["part"] for w in info.value.detail["written"]] == ["traps"]
+    assert fid in st.lab.part_text("traps") and fid in st.lab.part_text("flight")
+
+
+def test_a_refusal_after_create_part_posted_names_the_new_part(tmp_path):
+    """A body changed after create-part posted the new part leaves a refusal naming that post."""
+    st = build(tmp_path, parts=sp.COMMENT_PARTS[:-1])
+    body = st.lab.issues[PAGE]
+    # The first GET of the body is the page's load; the second is the re-read before its rewrite.
+    nth_get(st.lab, f"issues/{PAGE}", 2, lambda: body.update(body=body["body"] + "A hand edit.\n"))
+    with pytest.raises(sp.PageError, match="differs from the saved copy") as info:
+        st("create-part", "residues", "--text-file", st.file("## Residues"))
+    assert [w["part"] for w in info.value.detail["written"]] == ["residues"]
+    assert "(not yet created)" in st.lab.part_text("body")
 
 
 def _archive_comment(st, read: int) -> dict:
@@ -729,6 +767,20 @@ def test_an_unresolvable_reference_is_an_error_never_open(st):
     assert [u["issue"] for u in status["unresolved"]] == ["tradecraft#99999"]
     assert "Could not resolve" in status["unresolved"][0]["error"]
     assert [r["issue"] for r in status["closed"]] == ["tradecraft#890"]
+
+
+def test_a_failed_state_read_stops_the_run_rather_than_marking_references_unresolved(st):
+    """Only an unresolvable reference is retried singly; any other gh failure stops the run."""
+    st.lab.states["tradecraft#890"] = issue("CLOSED", "COMPLETED")
+    st.add("flight", "known", "tradecraft#890")
+
+    def refuse(query):
+        raise sw.WatchError("gh api --method POST exited 1: HTTP 401: Bad credentials")
+
+    st.lab.graphql = refuse
+    with pytest.raises(sp.PageError, match="issue states could not be read: .*401"):
+        st("status")
+    assert len([c for c in st.lab.calls if c[1] == "graphql"]) == 1
 
 
 def test_no_marker_starts_a_list_item_or_shares_a_line_with_other_text(st):
@@ -896,6 +948,24 @@ def test_a_ruling_closed_without_landing_refuses_the_read_until_kept_or_repointe
     assert [r["id"] for r in status["kept"]] == [r1]
     assert landed not in {e["id"] for e in st.entries("flight")}
     assert "Kept after its issue closed: its follow-up carries it" in st.lab.part_text("body")
+
+
+def test_a_steward_ruling_is_held_like_a_ruling_and_other_steward_kinds_are_not(st):
+    """A Steward-only ruling leaves on --closed only once its change landed; owner waits leave on any close."""
+    st.lab.states.update({"tradecraft#701": issue("CLOSED", "NOT_PLANNED"),
+                          "tradecraft#702": pull("MERGED", True),
+                          "tradecraft#703": issue("CLOSED", "NOT_PLANNED")})
+    held = st.add("steward-ruling", "binds only the Steward, change declined", "tradecraft#701")
+    landed = st.add("steward-ruling", "binds only the Steward, change merged", "tradecraft#702")
+    waited = st.add("owner-wait", "the owner declined it", "tradecraft#703")
+    status = st("status")
+    assert [r["id"] for r in status["closed_without_landing"]] == [held]
+    assert {r["id"] for r in status["closed"]} == {landed, waited}
+    error = st.refused("archive", "--read", "49", "--closed", match="closed without landing")
+    assert [r["id"] for r in error.detail["closed_without_landing"]] == [held]
+    st("replace", held, "--issue", "none")
+    st("archive", "--read", "49", "--closed")
+    assert held in st.ids() and not {landed, waited} & st.ids()
 
 
 def test_after_closed_every_closed_entry_left_is_kept_and_says_why(st):

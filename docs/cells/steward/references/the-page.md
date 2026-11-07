@@ -66,7 +66,7 @@ The tool keeps each part's last confirmed text as `page-<PAGE>/<part>.json` in t
 **Landed** means a pull request that merged or an issue closed as completed. An issue closed as not planned, as a duplicate or with no reason, and a pull request closed unmerged, closed without landing. `status` reads every entry's reference fifty at a time and lists:
 
 - **closed:** every entry whose reference closed, except the next two lists;
-- **closed without landing:** every unkept `ruling` whose reference closed without landing;
+- **closed without landing:** every unkept ruling, `ruling` or `steward-ruling`, whose reference closed without landing;
 - **kept:** every entry with `kept=yes`, with its reason.
 
 `issue=none` never appears in a closed list, and a reference that cannot be resolved is an error, never open.
@@ -75,7 +75,7 @@ The tool keeps each part's last confirmed text as `page-<PAGE>/<part>.json` in t
 
 1. **It refuses while any ruling is closed without landing,** naming each. Re-point each with `replace --issue` to its new carrying change, or to `none`, or `keep` it with its reason. A reference that cannot be resolved also refuses the run.
 2. **It reads and stale-checks every part it will change** before posting anything, and refuses the whole run on a stale or over-limit part.
-3. **It selects:** `--closed` takes every closed entry that is not kept, a ruling only once its change landed; `--ids` takes exactly the entries named, which is how a ruling with no carrying change, a declined item and a ruling the owner retired leave.
+3. **It selects:** `--closed` takes every closed entry that is not kept, a ruling (`ruling` or `steward-ruling`) only once its change landed, and every other kind, `owner-wait` included, on any close; `--ids` takes exactly the entries named, which is how a ruling with no carrying change, a declined item and a ruling the owner retired leave.
 4. **It posts** the removed entries, each exactly as it stood, marker included, grouped under their part's title, as read N's one comment on the archive issue; a re-run appends only the entries that comment does not already hold word for word. It refuses a comment over GitHub's 262,144-byte cap.
 5. **It reads the comment back** and removes nothing unless every entry is in it.
 6. **It rewrites each affected part,** re-reading it first. A part that changed stops the run there, leaving it and every later part unwritten, and prints the diff; `accept` that part and re-run, and entries already in read N's comment are removed without being posted again.

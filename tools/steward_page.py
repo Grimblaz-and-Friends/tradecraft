@@ -22,6 +22,8 @@ LIMIT = 20_000
 ARCHIVE_CAP = 262_144
 # Aliases per GraphQL query: few calls for a whole page, each well inside GitHub's per-query cost.
 GRAPHQL_BATCH = 50
+# What gh reports when a GraphQL query names a number that is neither an issue nor a pull request.
+UNRESOLVED = "Could not resolve to"
 
 PART_ORDER = ("body", "steward", "read", "ready", "flight", "traps", "residues")
 COMMENT_PARTS = PART_ORDER[1:]
@@ -34,6 +36,8 @@ TITLES = {
     "traps": "Traps",
     "residues": "Residues",
 }
+# Rulings retire only when their carrying change lands; every other kind leaves on any close.
+RULING_KINDS = ("ruling", "steward-ruling")
 KIND_PART = {
     "ruling": "body",
     "steward-ruling": "steward",
@@ -138,7 +142,6 @@ def lab_short_names() -> list[str]:
 
 
 def check_ref(ref: str, names: list[str]) -> str:
-    """`none`, or REPO#N where REPO is one of the lab's repositories."""
     if ref == "none":
         return ref
     match = REF.fullmatch(ref)
@@ -484,6 +487,10 @@ def resolve_states(github: sw.GitHub, refs: list[str]) -> tuple[dict, dict]:
         try:
             answer = github.send("POST", "graphql", {"query": "query { " + " ".join(fields) + " }"})
         except sw.WatchError as exc:
+            if UNRESOLVED not in str(exc):
+                raise PageError(f"issue states could not be read: {exc}") from exc
+            # One unresolvable reference fails its whole query, so the batch is retried singly to
+            # name it and still resolve the rest.
             if len(chunk) > 1:
                 for ref in chunk:
                     query([ref])
@@ -517,7 +524,7 @@ def closed_lists(page: Page, states: dict) -> dict:
             if entry.kept:
                 lists["kept"].append({**row, "reason": entry.kept_reason()})
             elif states.get(entry.issue) in ("landed", "closed"):
-                if entry.kind == "ruling" and states[entry.issue] != "landed":
+                if entry.kind in RULING_KINDS and states[entry.issue] != "landed":
                     lists["closed_without_landing"].append(row)
                 else:
                     lists["closed"].append(row)
@@ -831,7 +838,7 @@ class PageTool:
         if page.body.marked:
             raise PageError("the body already carries the page marker; change its preamble "
                             "with preamble body")
-        self.archive_issue(archive)
+        self.check_archive_issue(archive)
         live = page.body.live
         part = Part("body", None, live)
         part.archive = archive
@@ -856,10 +863,13 @@ class PageTool:
 
     # -- the archive
 
-    def archive_issue(self, number: int) -> list[dict]:
+    def check_archive_issue(self, number: int) -> None:
         issue = self.github.get(f"repos/{sw.LAB_REPO}/issues/{number}")
         if normalise(issue.get("body")).split("\n", 1)[0].rstrip() != ARCHIVE_ISSUE_MARKER:
             raise PageError(f"issue {number} does not open with {ARCHIVE_ISSUE_MARKER}")
+
+    def archive_comments(self, number: int) -> list[dict]:
+        self.check_archive_issue(number)
         # The repository is public, so anyone else could post a comment forging a read's archive.
         return [c for c in self.github.comments(sw.LAB_REPO, number)
                 if (c.get("user") or {}).get("login") == sw.OWNER_LOGIN]
@@ -881,7 +891,7 @@ class PageTool:
         return {"id": cid, "url": url, "body": back}
 
     def archive_move(self, number: int, text: str) -> dict:
-        comments = self.archive_issue(number)
+        comments = self.archive_comments(number)
         found = [c for c in comments if ARCHIVE_MARKER.fullmatch(sw.first_line(c.get("body")))
                  and "event=move" in sw.first_line(c.get("body"))]
         if found:
@@ -901,7 +911,7 @@ class PageTool:
         number = page.part("body").archive
         if not number:
             raise PageError("the body names no archive issue")
-        comments = self.archive_issue(number)
+        comments = self.archive_comments(number)
         refs = [e.issue for part in page.all_parts() for e in part.entries]
         states, errors = resolve_states(self.github, refs)
         if errors:
@@ -1048,6 +1058,16 @@ def run(args: argparse.Namespace, github: sw.GitHub | None = None,
     state_dir = sw.resolve_state_dir(args.state_dir)
     sw.refuse_probe_against_default(state_dir, ["--page"] if args.page != sw.STANDING_PAGE else [])
     tool = PageTool(github or sw.GitHub(), args.page, state_dir, now or sw.now_utc())
+    try:
+        return dispatch(tool, args)
+    except PageError as exc:
+        # A refusal after a write must say what already reached GitHub, or the Steward can't tell.
+        if tool.writes:
+            exc.detail.setdefault("written", list(tool.writes))
+        raise
+
+
+def dispatch(tool: PageTool, args: argparse.Namespace) -> dict:
     over = getattr(args, "over_reason", None)
     command = args.command
     if command == "status":
