@@ -49,6 +49,8 @@ class FakeGitHub:
         # Ten-digit ids, as GitHub's are today, so index lines measure what they will on the live page.
         self.next_comment = 7_000_000_000
         self.next_issue = 2000
+        self.listing_lags = False
+        self.unlisted: set[int] = set()
 
     def __call__(self, args, input_text=None, timeout=60):
         method = args[args.index("--method") + 1]
@@ -64,7 +66,8 @@ class FakeGitHub:
         tail = endpoint.split("?")[0].split("/")[3:]
         if tail == ["issues"] and method == "GET":
             return json.dumps([i for i in self.issues.values()
-                               if i.get("user", {}).get("login") == "Grimblaz"])
+                               if i.get("user", {}).get("login") == "Grimblaz"
+                               and i["number"] not in self.unlisted])
         if tail == ["issues"] and method == "POST":
             self.next_issue += 1
             made = {"number": self.next_issue, "body": payload["body"], "state": "open",
@@ -72,6 +75,8 @@ class FakeGitHub:
                     "html_url": f"https://github.com/{REPO}/issues/{self.next_issue}"}
             self.issues[self.next_issue] = made
             self.comments[self.next_issue] = []
+            if self.listing_lags:
+                self.unlisted.add(self.next_issue)
             return json.dumps(made)
         if tail[0] == "issues" and len(tail) == 2:
             target = self.issues[int(tail[1])]
@@ -201,7 +206,7 @@ def build(tmp: Path, parts=sp.COMMENT_PARTS) -> Steward:
         st("create-part", name, "--text-file", st.file(f"## {sp.TITLES[name]}"))
     st.accept("body")
     st("body", "--text-file", st.file("How this page is used: read this body at pickup."),
-       "--archive", archive)
+       "--archive", archive, "--rulings", st.json_file([]))
     st.archive = archive
     return st
 
@@ -404,7 +409,7 @@ WRITING = [
     ("preamble", "flight", "--text-file", "F"),
     ("create-part", "flight", "--text-file", "F"),
     ("load", "flight", "--file", "F"),
-    ("body", "--text-file", "F", "--archive", "5"),
+    ("body", "--text-file", "F", "--archive", "5", "--rulings", "F"),
     ("archive", "--read", "3", "--closed"),
     ("archive", "--move", "--archive", "5", "--file", "F"),
     ("accept", "flight", "--sha", "0"),
@@ -484,7 +489,7 @@ def test_body_over_the_limit_with_no_reason_writes_nothing(tmp_path):
     archive = st("init-archive", "--title", "a")["archive"]
     st("archive", "--move", "--archive", archive, "--file", st.file(OLD_BODY))
     st.accept("body")
-    st.refused("body", "--text-file", st.file(BIG), "--archive", archive,
+    st.refused("body", "--text-file", st.file(BIG), "--archive", archive, "--rulings", st.json_file([]),
                match="over its 20,000-byte limit")
 
 
@@ -629,7 +634,7 @@ def test_a_stale_saved_copy_stops_load_body_and_create_part_too(tmp_path):
     st.accept("body")
     st.lab.set_part("body", OLD_BODY.replace("- an old ruling", "- an old ruling, by hand"))
     error = st.refused("body", "--text-file", st.file("How this page is used."),
-                       "--archive", archive, match="differs from the saved copy")
+                       "--archive", archive, "--rulings", st.json_file([]), match="differs from the saved copy")
     assert_stale(error, "body", "- an old ruling, by hand", st.lab.part_text("body"))
 
 
@@ -892,10 +897,10 @@ def test_body_refuses_until_the_archive_holds_the_move(tmp_path):
     st.accept("body")
     st.lab.add_comment(archive, sp.MOVE_MARKER + "\nforged by another account\n", login="someone")
     st.refused("body", "--text-file", st.file("How this page is used."), "--archive", archive,
-               match="holds no move comment")
+               "--rulings", st.json_file([]), match="holds no move comment")
     assert st.lab.part_text("body") == OLD_BODY
     st("archive", "--move", "--archive", archive, "--file", st.file(OLD_BODY))
-    st("body", "--text-file", st.file("How this page is used."), "--archive", archive)
+    st("body", "--text-file", st.file("How this page is used."), "--archive", archive, "--rulings", st.json_file([]))
 
 
 def test_init_archive_refuses_while_this_page_has_one_and_ignores_other_pages(tmp_path):
@@ -954,10 +959,104 @@ def test_a_malformed_issue_value_is_a_fault_and_never_queried(st, ref):
     assert not any(ref in (c[2] or {}).get("query", "") for c in st.lab.calls if c[1] == "graphql")
 
 
+def test_init_archive_refuses_a_rerun_before_the_listing_shows_the_new_archive(tmp_path):
+    """The state directory's record names the new archive while GitHub's listing still lags."""
+    st = Steward(FakeGitHub(), tmp_path)
+    st.lab.listing_lags = True
+    first = st("init-archive", "--title", "a")["archive"]
+    st.refused("init-archive", "--title", "again", match=f"archive issue {first} already exists")
+    assert sorted(st.lab.issues) == [PAGE, first]
+
+
+def test_body_writes_its_rulings_with_the_marker_in_one_write(tmp_path):
+    """The old page is replaced whole or not at all; a bad rulings file leaves it standing."""
+    st = Steward(FakeGitHub(), tmp_path)
+    archive = st("init-archive", "--title", "a")["archive"]
+    st("archive", "--move", "--archive", archive, "--file", st.file(OLD_BODY))
+    st.accept("body")
+    st.refused("body", "--text-file", st.file("How this page is used."), "--archive", archive,
+               "--rulings", st.json_file([{"kind": "ruling", "issue": "none", "text": "fine"},
+                                          {"kind": "flight", "issue": "none", "text": "wrong part"}]),
+               match="does not belong in the body part")
+    assert st.lab.part_text("body") == OLD_BODY
+    before = len(st.lab.writes())
+    ids = st("body", "--text-file", st.file("How this page is used."), "--archive", archive,
+             "--rulings", st.json_file([{"kind": "ruling", "issue": "none", "text": f"Ruling {n}."}
+                                        for n in range(2)]))["ids"]
+    assert [c[1] for c in st.lab.writes()[before:]] == [f"repos/{REPO}/issues/{PAGE}"]
+    assert st("status")["parts"]["body"]["rulings"] == ids
+
+
+@pytest.mark.parametrize("item,match", [
+    ({"kind": "flight", "issue": 5, "text": "x"}, "issue must be text"),
+    ({"kind": "flight", "issue": "none", "text": ["x"]}, "text must be text"),
+    ({"kind": None, "issue": "none", "text": "x"}, "kind must be text"),
+])
+def test_load_refuses_an_entry_whose_fields_are_not_text(st, item, match):
+    """load names the entry and writes nothing."""
+    st.refused("load", "flight", "--file", st.json_file([item]), match=f"entry 1: {match}")
+
+
+@pytest.mark.parametrize("code", [0x7F, 0x85, 0x9F])
+def test_c1_control_characters_are_refused(st, code):
+    """Delete and the C1 controls are refused like the C0 ones."""
+    st.refused("add", "--kind", "flight", "--issue", "none", "--text-file",
+               st.file("a" + chr(code) + "b"), match="control character")
+
+
+@pytest.mark.parametrize("marker", [
+    "<!-- lab:steward-part:v1 part=body -->",
+    "<!-- lab:steward-part:v1 part=body archive=0 -->",
+    "<!-- lab:steward-part:v1 part=body archive=x -->",
+])
+def test_a_body_marker_naming_no_archive_is_a_fault(st, marker):
+    """The page marker must name its archive issue, or no write proceeds."""
+    body = st.lab.part_text("body")
+    hand_edit(st, "body", marker + body[body.index("\n"):])
+    assert any("names no archive issue" in f for f in st("status")["faults"])
+    st.refused("add", "--kind", "ruling", "--issue", "none", "--text-file", st.file("x"),
+               match="faults")
+
+
+def test_index_delimiters_out_of_order_are_a_fault_and_left_alone(st):
+    """A hand-swapped index is named, and nothing rewrites the body around it."""
+    body = st.lab.part_text("body")
+    swapped = (body.replace(sp.INDEX_BEGIN, "@@BEGIN@@").replace(sp.INDEX_END, sp.INDEX_BEGIN)
+               .replace("@@BEGIN@@", sp.INDEX_END))
+    hand_edit(st, "body", swapped)
+    assert any("out of order" in f for f in st("status")["faults"])
+    st.refused("preamble", "body", "--text-file", st.file("x"), match="faults")
+    assert st.lab.part_text("body") == swapped
+
+
+def test_a_part_marker_off_line_two_is_a_fault_not_a_missing_part(tmp_path):
+    """A counted comment with its part marker elsewhere is named, and blocks create-part."""
+    st = build(tmp_path, parts=sp.COMMENT_PARTS[:-1])
+    stray = st.lab.add_comment(PAGE, sw.marker_line("post") + "\nSome text first.\n"
+                               "<!-- lab:steward-part:v1 part=residues -->\n")
+    status = st("status")
+    assert any(f"comment {stray['id']}" in f for f in status["faults"])
+    assert "residues" not in status["missing"]
+    st.refused("create-part", "residues", "--text-file", st.file("## Residues"), match="faults")
+
+
+def test_a_command_refuses_when_another_run_wrote_the_part_after_it_read(st):
+    """A second run's completed edit, saved copy and all, is never overwritten by the first."""
+    flight = st.lab.part_comment("flight")
+    inner = {}
+    nth_get(st.lab, f"issues/comments/{flight['id']}", 1,
+            lambda: inner.update(id=st.add("flight", "written by the other run")))
+    with pytest.raises(sp.PageError, match="changed after this command read it") as info:
+        st.add("flight", "written by the first run")
+    assert "written by the other run" in info.value.detail["diff"]
+    assert inner["id"] in st.lab.part_text("flight")
+    assert "written by the first run" not in st.lab.part_text("flight")
+
+
 def test_create_part_is_refused_for_an_existing_part_and_body_once_marked(st):
     """Create-part and body each refuse to overwrite what exists."""
     st.refused("create-part", "flight", "--text-file", st.file("x"), match="already exists")
-    st.refused("body", "--text-file", st.file("x"), "--archive", st.archive,
+    st.refused("body", "--text-file", st.file("x"), "--archive", st.archive, "--rulings", st.json_file([]),
                match="already carries the page marker")
     st.refused("init-archive", "--title", "again", match="already names archive")
 
@@ -1089,6 +1188,39 @@ def test_after_closed_every_closed_entry_left_is_kept_and_says_why(st):
     assert not set(gone) & left and {kept, opened} <= left
     status = st("status")
     assert status["closed"] == [] and [r["reason"] for r in status["kept"]] == ["still applies until #700"]
+
+
+def test_a_rerun_with_ids_already_archived_finishes_a_stopped_archive(st):
+    """Ids the read's comment already holds are accepted; an id held nowhere is refused."""
+    fid, tid = st.add("flight", "first"), st.add("trap", "second")
+    traps = st.lab.part_comment("traps")
+    nth_get(st.lab, f"issues/comments/{traps['id']}", 1,
+            lambda: traps.update(body=traps["body"].replace("## Traps", "## Traps, by hand")))
+    with pytest.raises(sp.PageError, match="differs from the saved copy"):
+        st("archive", "--read", "50", "--ids", fid, tid)
+    assert fid not in st.ids() and tid in st.ids()
+    st.accept("traps")
+    st.refused("archive", "--read", "50", "--ids", fid, tid, "0000dead", match="no entry 0000dead")
+    st("archive", "--read", "50", "--ids", fid, tid)
+    assert tid not in st.ids()
+
+
+def test_the_archive_compares_whole_entries_not_text_inside_them(st):
+    """An entry is held only when the read's comment carries it whole, not inside a longer one."""
+    fid = st.add("flight", "short")
+    text = _entry_text(st, fid)
+    st.lab.add_comment(st.archive, f"<!-- lab:steward-archive:v1 read=51 -->\n## Read 51\n\n"
+                       f"### In flight\n\n{text}\n  a line the page no longer has\n")
+    st("archive", "--read", "51", "--ids", fid)
+    assert text in sp.archived_entries(_archive_comment(st, 51)["body"])
+    assert fid not in st.ids()
+
+
+def test_archive_read_refuses_archive(st):
+    """--archive belongs to the move; a read uses the archive the body names."""
+    fid = st.add("flight", "x")
+    st.refused("archive", "--read", "52", "--ids", fid, "--archive", st.archive,
+               match="--archive applies to archive --move")
 
 
 def test_closed_leaves_issueless_entries_and_ids_archives_them(st):

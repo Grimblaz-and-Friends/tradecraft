@@ -117,7 +117,7 @@ def clean(text: str, what: str, markers_ok: bool = False) -> str:
     text = normalise(text)
     for number, line in enumerate(text.split("\n"), 1):
         for char in line:
-            if ord(char) < 0x20 and char != "\t":
+            if (ord(char) < 0x20 and char != "\t") or 0x7F <= ord(char) <= 0x9F:
                 raise PageError(f"{what} line {number} carries the control character "
                                 f"U+{ord(char):04X}; nothing written")
     for marker in STRUCTURE:
@@ -278,9 +278,12 @@ def parse_part(name: str, text: str, names: list[str], comment_id: int | None = 
     top = 1 if name == "body" else 2
     if name == "body":
         attrs = dict(sw.ATTR.findall(PART_MARKER.fullmatch(lines[0].rstrip()).group("attrs")))
-        if set(attrs) - {"archive"} or not attrs.get("archive", "1").isdigit():
+        archive = attrs.get("archive", "")
+        if set(attrs) - {"archive"}:
             part.faults.append("body: the page marker carries an attribute other than archive=N")
-        part.archive = int(attrs["archive"]) if attrs.get("archive", "").isdigit() else None
+        if not archive.isdigit() or int(archive) == 0:
+            part.faults.append("body: the page marker names no archive issue as archive=N")
+        part.archive = int(archive) if archive.isdigit() and int(archive) > 0 else None
     rest = lines[top:]
     first = next((i for i, line in enumerate(rest) if ENTRY_LINE.fullmatch(line)), len(rest))
     pre = list(rest[:first])
@@ -305,8 +308,10 @@ def parse_part(name: str, text: str, names: list[str], comment_id: int | None = 
         if line == OVER_MARKER:
             part.faults.append(f"{where(offset)}: an over-limit marker below the first entry")
     if INDEX_BEGIN in pre or INDEX_END in pre:
-        if name != "body" or INDEX_BEGIN not in pre or INDEX_END not in pre:
-            part.faults.append(f"{name}: an index block out of place or missing its other end")
+        if (name != "body" or INDEX_BEGIN not in pre or INDEX_END not in pre
+                or pre.index(INDEX_END) < pre.index(INDEX_BEGIN)):
+            part.faults.append(f"{name}: an index block out of place, out of order, or missing "
+                               "its other end")
         else:
             begin, end = pre.index(INDEX_BEGIN), pre.index(INDEX_END)
             part.index = pre[begin:end + 1]
@@ -344,6 +349,27 @@ def parse_part(name: str, text: str, names: list[str], comment_id: int | None = 
     return part
 
 
+def unified(before: str, after: str, label_before: str, label_after: str) -> str:
+    return "".join(difflib.unified_diff(before.splitlines(keepends=True),
+                                        after.splitlines(keepends=True),
+                                        fromfile=label_before, tofile=label_after))
+
+
+def archived_entries(text: str) -> list[str]:
+    """Each whole entry an archive comment holds, from its marked line to the entry's end."""
+    found: list[list[str]] = []
+    current: list[str] | None = None
+    for line in normalise(text).split("\n"):
+        if ENTRY_LINE.fullmatch(line):
+            current = [line]
+            found.append(current)
+        elif line.startswith("#"):
+            current = None
+        elif current is not None:
+            current.append(line)
+    return ["\n".join(strip_blank(lines)) for lines in found]
+
+
 def render(part: Part, index: list[str], over_line: str | None = None) -> str:
     blocks = ["\n".join(part.header())]
     if over_line:
@@ -379,6 +405,7 @@ class Page:
         self.names = names
         self.faults: list[str] = []
         self.not_counted: list[int] = []
+        self.misplaced: set[str] = set()
         self.parts: dict[str, Part] = {}
         first = body.split("\n", 1)[0].rstrip()
         mark = PART_MARKER.fullmatch(first)
@@ -392,9 +419,15 @@ class Page:
             text = normalise(comment.get("body"))
             lines = text.split("\n")
             match = PART_MARKER.fullmatch(lines[1].rstrip()) if len(lines) > 1 else None
-            if not match:
-                continue
             cid = int(comment["id"])
+            if not match:
+                stray = [PART_MARKER.fullmatch(line.rstrip()) for line in lines]
+                stray = [m for m in stray if m]
+                if stray and (sw.classify_comment(comment) or {}).get("kind") == "post":
+                    self.misplaced.update(m.group("part") for m in stray)
+                    self.faults.append(f"comment {cid} carries a part marker off its second line; "
+                                       "move it to line two by hand, then accept the part")
+                continue
             if (sw.classify_comment(comment) or {}).get("kind") != "post":
                 self.not_counted.append(cid)
                 continue
@@ -598,9 +631,7 @@ class PageTool:
                             f"Read the live part below, then run accept {name} --sha SHA",
                             part=name, live=live, live_sha256=sha256(live))
         if saved.get("text") != live or saved.get("comment_id") != comment_id:
-            diff = "".join(difflib.unified_diff(
-                (saved.get("text") or "").splitlines(keepends=True), live.splitlines(keepends=True),
-                fromfile=f"{name} (saved copy)", tofile=f"{name} (live)"))
+            diff = unified(saved.get("text") or "", live, f"{name} (saved copy)", f"{name} (live)")
             if saved.get("comment_id") != comment_id:
                 diff = (f"comment id: saved {saved.get('comment_id')}, live {comment_id}\n") + diff
             raise PageError(f"the live {name} part differs from the saved copy, so nothing was "
@@ -641,8 +672,15 @@ class PageTool:
                 return text
             guess = size(text)
 
-    def write(self, page: Page, name: str, comment_id: int | None, text: str) -> None:
-        self.check_copy(name, self.fetch(name, comment_id), comment_id)
+    def write(self, page: Page, name: str, comment_id: int | None, text: str, loaded: str) -> None:
+        live = self.fetch(name, comment_id)
+        self.check_copy(name, live, comment_id)
+        if live != loaded:
+            # Another run may have written the part and its saved copy since this one read it.
+            raise PageError(f"the live {name} part changed after this command read it, so nothing "
+                            "was written to it; run the command again", part=name,
+                            diff=unified(loaded, live, f"{name} (as read)", f"{name} (live)"),
+                            live_sha256=sha256(live))
         endpoint = (f"repos/{sw.LAB_REPO}/issues/{self.number}" if name == "body"
                     else f"repos/{sw.LAB_REPO}/issues/comments/{comment_id}")
         self.github.send("PATCH", endpoint, {"body": text})
@@ -660,9 +698,9 @@ class PageTool:
             part = page.part(name)
             text = self.finalize(page, part, over)
             self.check_copy(name, part.live, part.comment_id)
-            prepared.append((name, part.comment_id, text))
-        for name, comment_id, text in prepared:
-            self.write(page, name, comment_id, text)
+            prepared.append((name, part.comment_id, text, part.live))
+        for name, comment_id, text, loaded in prepared:
+            self.write(page, name, comment_id, text, loaded)
 
     def result(self, **fields) -> dict:
         return {"schema_version": 1, **fields, "writes": self.writes}
@@ -690,7 +728,8 @@ class PageTool:
                             "index_current": part.marked and part.index == page.index()})
             parts[name] = row
         return {"schema_version": 1, "page": page.link(), "parts": parts,
-                "missing": [n for n in COMMENT_PARTS if n not in page.parts],
+                "missing": [n for n in COMMENT_PARTS
+                            if n not in page.parts and n not in page.misplaced],
                 "faults": page.all_faults(), "not_counted": page.not_counted,
                 **closed_lists(page, states),
                 "unresolved": [{"issue": k, "error": v} for k, v in sorted(errors.items())]}
@@ -822,7 +861,7 @@ class PageTool:
         self.save_copy(name, text, cid)
         if page.body.marked:
             body_text = self.finalize(page, page.body, over)
-            self.write(page, "body", None, body_text)
+            self.write(page, "body", None, body_text, page.body.live)
         return self.result(created=name, comment_id=cid, link=page.link(cid))
 
     def load_entries(self, name: str, items: list, over: str | None) -> dict:
@@ -830,27 +869,37 @@ class PageTool:
         part = page.part(name)
         if part.entries:
             raise PageError(f"part {name} already holds entries; load fills only an empty part")
-        if not isinstance(items, list):
-            raise PageError("the entries file holds a JSON list of {kind, issue, text}")
-        taken: set[str] = set()
-        for number, item in enumerate(items, 1):
-            if not isinstance(item, dict) or set(item) != {"kind", "issue", "text"}:
-                raise PageError(f"entry {number} is not exactly {{kind, issue, text}}")
-            kind = item["kind"]
-            if KIND_PART.get(kind) != name:
-                raise PageError(f"entry {number}: kind {kind!r} does not belong in the {name} part")
-            text = clean(str(item["text"]), f"entry {number}")
-            entry = build_entry(page.new_id(taken), kind, check_ref(item["issue"], self.names), text)
-            taken.add(entry.id)
-            part.entries.append(entry)
+        part.entries = self.entries_from(page, name, items)
         self.commit(page, [name], over)
         return self.result(loaded=name, ids=[e.id for e in part.entries])
 
-    def write_body(self, text: str, archive: int, over: str | None) -> dict:
+    def entries_from(self, page: Page, name: str, items) -> list[Entry]:
+        """Every entry of a JSON list, checked whole before anything is written."""
+        if not isinstance(items, list):
+            raise PageError("the entries file holds a JSON list of {kind, issue, text}")
+        taken: set[str] = set()
+        entries = []
+        for number, item in enumerate(items, 1):
+            if not isinstance(item, dict) or set(item) != {"kind", "issue", "text"}:
+                raise PageError(f"entry {number} is not exactly {{kind, issue, text}}")
+            wrong = [key for key in ("kind", "issue", "text") if not isinstance(item[key], str)]
+            if wrong:
+                raise PageError(f"entry {number}: {', '.join(wrong)} must be text")
+            kind = item["kind"]
+            if KIND_PART.get(kind) != name:
+                raise PageError(f"entry {number}: kind {kind!r} does not belong in the {name} part")
+            text = clean(item["text"], f"entry {number}")
+            entry = build_entry(page.new_id(taken), kind, check_ref(item["issue"], self.names), text)
+            taken.add(entry.id)
+            entries.append(entry)
+        return entries
+
+    def write_body(self, text: str, archive: int, rulings, over: str | None) -> dict:
         page = self.load_for_write()
         if page.body.marked:
             raise PageError("the body already carries the page marker; change its preamble "
                             "with preamble body")
+        entries = self.entries_from(page, "body", rulings)
         if not any(sw.first_line(c.get("body")) == MOVE_MARKER for c in self.archive_comments(archive)):
             raise PageError(f"archive issue {archive} holds no move comment yet; run archive --move "
                             "first, so the old page is archived before the body is overwritten")
@@ -858,15 +907,18 @@ class PageTool:
         part = Part("body", None, live)
         part.archive = archive
         part.preamble = strip_blank(text.split("\n"))
+        # One write carries the rulings with the marker, so the old page is never half replaced.
+        part.entries = entries
         page.body = part
         self.commit(page, ["body"], over)
-        return self.result(body=page.link(), archive=archive)
+        return self.result(body=page.link(), archive=archive, ids=[e.id for e in entries])
 
     def init_archive(self, title: str) -> dict:
         page = self.load()
         if page.body.marked and page.body.archive:
             raise PageError(f"the page already names archive issue {page.body.archive}")
-        found = self.archives_for_page()
+        recorded = sw.read_json(self.archive_record(), {}).get("archive")
+        found = sorted(set(self.archives_for_page()) | ({int(recorded)} if recorded else set()))
         if found:
             raise PageError(f"archive issue {found[0]} already exists for page {self.number}; "
                             f"name it with body --archive {found[0]}", archives=found)
@@ -875,11 +927,17 @@ class PageTool:
             "body": "\n".join([ARCHIVE_ISSUE_MARKER, ARCHIVE_PAGE_LINE.format(page=self.number),
                                ARCHIVE_ISSUE_PROSE]) + "\n"})
         number = int(made["number"])
+        # GitHub's issue listing lags a new issue, so a quick re-run relies on this record instead.
+        sw.write_json_atomic(self.archive_record(), {"schema_version": 1, "page": self.number,
+                                                     "archive": number})
         self.writes.append({"part": "archive", "url": made.get("html_url")})
         # Closed at once so it never sits among open work; completed, as a record and not a declined plan.
         self.github.send("PATCH", f"repos/{sw.LAB_REPO}/issues/{number}",
                          {"state": "closed", "state_reason": "completed"})
         return self.result(archive=number)
+
+    def archive_record(self) -> Path:
+        return self.state_dir / f"page-{self.number}" / "archive.json"
 
     def archives_for_page(self) -> list[int]:
         issues = self.github.get_all(f"repos/{sw.LAB_REPO}/issues?state=all&creator={sw.OWNER_LOGIN}"
@@ -953,11 +1011,23 @@ class PageTool:
             raise PageError("a ruling's carrying change closed without landing; re-point each "
                             "with replace --issue, or keep it with its reason, then re-run. "
                             "Nothing written", closed_without_landing=lists["closed_without_landing"])
+        mark = f"<!-- lab:steward-archive:v1 read={read} -->"
+        existing = [c for c in comments if sw.first_line(c.get("body")) == mark]
+        if len(existing) > 1:
+            raise PageError(f"the archive holds {len(existing)} comments for read {read}")
+        current = normalise(existing[0]["body"]) if existing else None
+        held = archived_entries(current) if current is not None else []
+        held_ids = {ENTRY_MARKER.search(text).group("id") for text in held}
+        on_page = page.ids()
         chosen: list[str] = []
         if closed:
             chosen += [row["id"] for row in lists["closed"]]
         for eid in ids:
-            page.find(eid)
+            if eid not in on_page:
+                # A re-run after a stopped archive names entries already gone from the page.
+                if eid in held_ids:
+                    continue
+                page.find(eid)
             if eid not in chosen:
                 chosen.append(eid)
         if not chosen:
@@ -973,13 +1043,8 @@ class PageTool:
             part = page.part(name)
             text = self.finalize(page, part, over)
             self.check_copy(name, part.live, part.comment_id)
-            prepared.append((name, part.comment_id, text))
-        mark = f"<!-- lab:steward-archive:v1 read={read} -->"
-        existing = [c for c in comments if sw.first_line(c.get("body")) == mark]
-        if len(existing) > 1:
-            raise PageError(f"the archive holds {len(existing)} comments for read {read}")
-        current = normalise(existing[0]["body"]) if existing else None
-        fresh = [(n, e) for n, e in removed if current is None or e.text not in current]
+            prepared.append((name, part.comment_id, text, part.live))
+        fresh = [(n, e) for n, e in removed if e.text not in held]
         groups = []
         for name in PART_ORDER:
             group = [e.text for n, e in fresh if n == name]
@@ -997,13 +1062,14 @@ class PageTool:
             back = current
             url = (f"https://github.com/{sw.LAB_REPO}/issues/{number}"
                    f"#issuecomment-{existing[0]['id']}")
-        missing = [e.id for _, e in removed if e.text not in back]
+        back_entries = archived_entries(back)
+        missing = [e.id for _, e in removed if e.text not in back_entries]
         if missing:
             raise PageError("the archive comment read back without some entries, so nothing was "
                             "removed from the page", missing=missing, written=self.writes)
-        for name, comment_id, text in prepared:
+        for name, comment_id, text, loaded in prepared:
             try:
-                self.write(page, name, comment_id, text)
+                self.write(page, name, comment_id, text, loaded)
             except PageError as exc:
                 exc.detail.setdefault("written", self.writes)
                 exc.detail["stopped_at"] = name
@@ -1069,9 +1135,10 @@ def build_parser() -> argparse.ArgumentParser:
     one = command("load", "fill an empty part from a JSON list of {kind, issue, text}")
     one.add_argument("part", choices=PART_ORDER)
     one.add_argument("--file", required=True)
-    one = command("body", "write the body's preamble, page marker and index (the move only)")
+    one = command("body", "write the body's preamble, page marker, index and rulings (the move only)")
     one.add_argument("--text-file", required=True)
     one.add_argument("--archive", type=int, required=True)
+    one.add_argument("--rulings", required=True, help="JSON list of {kind, issue, text} rulings")
     one = command("init-archive", "create and close the archive issue", writes=False)
     one.add_argument("--title", required=True)
     one = command("archive", "post entries to the archive, then remove them from the page")
@@ -1103,6 +1170,14 @@ def run(args: argparse.Namespace, github: sw.GitHub | None = None,
         raise
 
 
+def read_json_file(path: str):
+    text = read_file(path, "entries file")
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise PageError(f"entries file {path} is not JSON: {exc}") from exc
+
+
 def dispatch(tool: PageTool, args: argparse.Namespace) -> dict:
     over = getattr(args, "over_reason", None)
     command = args.command
@@ -1128,14 +1203,10 @@ def dispatch(tool: PageTool, args: argparse.Namespace) -> dict:
     if command == "create-part":
         return tool.create_part(args.part, read_file(args.text_file, "text file"), over)
     if command == "load":
-        text = read_file(args.file, "entries file")
-        try:
-            items = json.loads(text)
-        except ValueError as exc:
-            raise PageError(f"entries file {args.file} is not JSON: {exc}") from exc
-        return tool.load_entries(args.part, items, over)
+        return tool.load_entries(args.part, read_json_file(args.file), over)
     if command == "body":
-        return tool.write_body(read_file(args.text_file, "text file"), args.archive, over)
+        return tool.write_body(read_file(args.text_file, "text file"), args.archive,
+                               read_json_file(args.rulings), over)
     if command == "init-archive":
         return tool.init_archive(args.title)
     if command == "archive":
@@ -1147,6 +1218,9 @@ def dispatch(tool: PageTool, args: argparse.Namespace) -> dict:
             return tool.archive_move(args.archive, read_file(args.file, "move file", markers_ok=True))
         if args.file:
             raise PageError("--file applies to archive --move")
+        if args.archive:
+            raise PageError("--archive applies to archive --move; archive --read uses the archive "
+                            "issue the body names")
         return tool.archive_read(args.read, args.closed, args.ids, over)
     raise PageError(f"unknown command {command}")
 

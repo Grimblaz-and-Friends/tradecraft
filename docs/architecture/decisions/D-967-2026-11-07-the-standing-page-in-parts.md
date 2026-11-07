@@ -47,16 +47,26 @@ Given together on 2026-11-07 ("Take all three"):
 - **GitHub's comment cap is 262,144 UTF-8 bytes, not a character count.** #957's premise test ([comment 6674635185](https://github.com/Grimblaz-and-Friends/tradecraft/issues/957#issuecomment-6674635185)) had 262,144 ASCII bytes accepted and 262,145 refused, and 87,000 three-byte em dashes (260,858 bytes) accepted while 100,000 (299,858 bytes) were refused, each refusal reading "maximum is 65536 characters". This build's own probe agrees: a 65,537-character comment was accepted, and 262,145 characters and 140,000 two-byte characters were refused. The archive's cap check counts bytes.
 - **Text files may carry CRLF line endings, which are normalised to LF,** as text read from GitHub is; a lone carriage return is still refused.
 - **Entry and preamble text may mention the wake's `lab:steward:v1` marker,** because live rulings name it, but not a structure marker this tool reads (`lab:steward-part`, `-entry`, `-over`, `-index`, `-archive`). The move's archive file may carry any of them, because it holds the old page word for word.
-- **Any fault on the page blocks every write.** The Steward repairs a fault by hand, then runs `accept` on the part, so no write builds on a part the tool cannot read.
+- **Any fault on the page blocks every write to a part;** `init-archive` and `archive --move` write no part. The Steward repairs a fault by hand, then runs `accept` on the part, so no write builds on a part the tool cannot read.
 - **The archive skips an entry whose exact text read N's comment already holds,** marker and id included, so a re-run never posts twice, and an entry changed since it was posted is posted again in its new form rather than removed unrecorded.
 - **`replace --clear-kept` clears `kept`;** otherwise `replace` and a move to another kind carry a kept entry's shown reason onto its new text.
-- **`body` refuses a body that already carries the page marker,** because it writes no entries and would otherwise drop the body's rulings without archiving them.
+- **`body` refuses a body that already carries the page marker,** because it would replace the body's rulings without archiving them.
 - **`create-part` checks the body's limit and saved copy before posting,** using a longer stand-in comment id for the new index line, so a refusal there rarely comes after the new part exists.
 - **Only an unresolvable reference is retried singly.** gh fails a whole GraphQL query when one number in it is neither an issue nor a pull request, so a failed batch is split to name that reference; any other gh failure, such as an expired login, stops the read with its own error rather than reporting every reference unresolved.
 - **A refusal after a write names what was written,** for every command: a move between parts stopped at its source, `create-part` stopped at the body's rewrite, or an archive stopped at a part.
 - **The archive issue's second line names its page** (`<!-- lab:steward-archive-page:v1 page=N -->`), under the marker C10 names, so a probe page's archive is never taken for #683's. `init-archive` refuses while an archive for the page already exists, open or closed, and reports the new issue before closing it, so a failed close still names it.
 - **`body` refuses until the archive issue holds the move's comment from the owner's account,** so the old page cannot be overwritten before what leaves it is archived, whatever order the Steward runs the move in.
 - **A malformed `issue=` value is a fault and is never sent to GitHub,** so `status` names it rather than failing on it.
+- **A run's final re-read must equal the text that run read,** not only the saved copy, so another run's completed edit refuses this one rather than being overwritten.
+- **`clean` refuses delete and the C1 controls as well as the C0 ones.**
+- **A body page marker with a missing, zero or malformed `archive=` is a fault.**
+- **Index delimiters out of order, or one missing, are a fault, and the text is left as it was.**
+- **A counted comment whose part marker sits off its second line is a fault naming it,** never a missing part, so `create-part` cannot add a second carrier for that part.
+- **`load` and `body` refuse an entry whose `kind`, `issue` or `text` is not text, before any write.**
+- **`body` takes the rulings file and writes the body whole in one write,** superseding C13's split into `body` then `load body`, so a failed check leaves the old page standing; the move accepts the body by the SHA-256 recorded while drafting, so a body changed since the drafts is refused.
+- **`init-archive` records the new archive in the state directory,** because GitHub's issue listing lagged a new issue by seconds in the final-head probe, and a re-run refuses while that record names one.
+- **The archive compares whole entries, and a re-run's `--ids` may name entries read N's comment already holds,** so the documented re-run finishes a stopped archive and an entry inside a longer one is never taken as held.
+- **`archive --read` refuses `--archive`,** which only the move uses.
 - **`init-archive` refuses once the body names an archive,** and closes the new issue as completed.
 
 ## What the cold rounds changed
