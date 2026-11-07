@@ -157,6 +157,8 @@ def tally(transcript_path: Path, session: str) -> dict[str, object]:
 
 
 def _effort(entry: dict) -> object:
+    # The spike's transcripts carried `effort` and `perTurnEffort` on the entry; the transcript
+    # format is undocumented, so the message-level and `{"level": …}` forms are read as well.
     for holder in (entry, entry.get("message") if isinstance(entry.get("message"), dict) else {}):
         for key in ("effort", "perTurnEffort"):
             value = holder.get(key)
@@ -213,13 +215,15 @@ def latest_header(main_entries: list[dict]) -> dict[str, str] | None:
 
 # ---- git plumbing on the product clone ------------------------------------
 
-def _git(clone: Path, *arguments: str, env: dict | None = None, data: bytes | None = None) -> str:
+def _git(clone: Path, *arguments: str, env: dict | None = None, data: bytes | None = None,
+         strip: bool = True) -> str:
     result = subprocess.run(["git", "-C", str(clone), *arguments], input=data if data is not None else b"",
                             capture_output=True, env=env, timeout=120)
     if result.returncode:
         raise HookError(f"git {' '.join(arguments[:2])} failed: "
                         + result.stderr.decode("utf-8", "replace").strip()[:300])
-    return result.stdout.decode("utf-8", "replace").strip()
+    text = result.stdout.decode("utf-8", "replace")
+    return text.strip() if strip else text
 
 
 # Where a multi-source cloud session clones its sources.
@@ -299,8 +303,16 @@ def practice_state(plugin_root: Path, expect: str) -> dict[str, object]:
     # A file changed, or added, but not committed is a practice other than the pinned commit's: an
     # added skill or hook file changes what the run loads as surely as an edit does.
     try:
-        modified = [line.split(None, 1)[-1] for line in _git(plugin_root, "status", "--porcelain",
-                                              "--untracked-files=all").splitlines() if line.strip()]
+        # NUL-separated, so a recorded path is the real one: unquoted, and a rename's new name alone.
+        entries = _git(plugin_root, "status", "--porcelain", "-z", "--untracked-files=all",
+                       strip=False).split("\0")
+        modified, index = [], 0
+        while index < len(entries):
+            entry, index = entries[index], index + 1
+            if len(entry) > 3:
+                modified.append(entry[3:])
+                if entry[0] in "RC":
+                    index += 1  # the original path follows a rename or copy
     except (HookError, OSError) as exc:
         modified = [f"unreadable: {exc}"]
     ok = found == expect and not excluded and not modified

@@ -264,6 +264,7 @@ def test_the_guarded_command_is_silent_outside_the_cloud(tmp_path, shell):
     env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_REMOTE"}
     for hook in hook_commands():
         # Claude Code substitutes the plugin root into the command text before the shell runs it.
+        # The token is split because the lint's harness-token rule covers shipped files under lib.
         placeholder = "${" + "CLAUDE_PLUGIN_ROOT}"
         command = hook["command"].replace(placeholder, str(tmp_path / "absent"))
         result = subprocess.run([shell, "-c", command], input=b"{}", capture_output=True, env=env)
@@ -320,6 +321,15 @@ def test_an_untracked_practice_file_fails_the_check(cloud_home):
     (cloud_home["practice"] / "skills" / "added.md").write_text("new")
     result = cloud.practice_state(cloud_home["practice"], cloud_home["commit"])
     assert result["ok"] is False and result["modified"] == ["skills/added.md"]
+
+
+def test_a_renamed_or_quoted_practice_path_is_recorded_as_it_is(cloud_home):
+    practice = cloud_home["practice"]
+    git(practice, "mv", "skills/x.md", "skills/y.md")
+    quoted = "caf" + chr(0xE9) + ".md"  # porcelain without -z quotes a non-ASCII name
+    (practice / "skills" / quoted).write_text("new", encoding="utf-8")
+    result = cloud.practice_state(practice, cloud_home["commit"])
+    assert result["ok"] is False and sorted(result["modified"]) == sorted([f"skills/{quoted}", "skills/y.md"])
 
 
 def test_a_malformed_line_and_a_bad_counter_are_recorded(session):

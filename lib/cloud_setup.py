@@ -169,6 +169,8 @@ def compare(sent: dict, readback: dict, *, phase: str, token_file: str | None) -
                if not isinstance(tools, list) or tool not in tools]
     if missing:
         faults.append(f"disallowed_tools: sent {list(cloud.ROUTINE_DISALLOWED_TOOLS)}, read back {tools}")
+    # The API can't set the model, the effort or a trigger; the owner sets them in the editor visit
+    # between the two phases, so only `complete` asks for them, and for the token that visit saves.
     if phase == "complete":
         model, effort = _get(readback, *context, "model"), _get(readback, *context, "effort_level")
         want_model, want_effort = cloud.builder_profile()
