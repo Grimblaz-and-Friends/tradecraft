@@ -99,10 +99,10 @@ Once, after the change that built the tool merges, with the default state direct
 4. `archive --move --archive N --file <that file>`, before anything is removed.
 5. `create-part` and `load` for the six comment parts.
 6. `accept body --sha <the SHA you recorded>`, which refuses a body changed since you drafted. If it refuses, the move comment and the parts already exist, so `archive --move` and `load` cannot take the change; recover this way, and never write stale drafts over a newer body:
-   1. Compare the old body as drafted, the text behind the recorded SHA, with the current body. `accept`'s refusal shows the live text, and GitHub's edit history holds the drafted one.
-   2. Carry every changed line that stays on the page through the tool: a ruling holders apply goes into `rulings.json` for `body --rulings`; a Steward ruling, an owner wait, or anything else for a part already created goes in with `add`, to the part its kind names.
+   1. Compare the old body as drafted, the text behind the recorded SHA, with the current body. `accept`'s refusal shows the live text and its SHA-256; record that SHA, the one for the text you are reconciling. GitHub's edit history holds the drafted text.
+   2. Carry every changed line that stays on the page through the tool: a ruling holders apply goes into `rulings.json` for `body --rulings`. A line that belongs to an entry already loaded into a part updates that entry with `replace`, so the part never holds the old and new versions side by side; a line with no entry yet, a Steward ruling, an owner wait or anything else for a part already created, goes in with `add`, to the part its kind names.
    3. Before any of step 2's writes, post every changed line that leaves the page, word for word, as one plain comment on the archive issue headed "The move, addendum", with `gh issue comment`. The tool posts only one move comment, and this addendum is the only archive comment you post by hand. Add a ledger row for each changed ruling.
-   4. Record the current body's SHA-256 with `show body`, and accept it with `accept body --sha`.
+   4. Accept the SHA you recorded at step 1 with `accept body --sha`, not a fresh one from `show body`. If `accept` refuses it, the body changed again: repeat the reconciliation from step 1.
 
    Then `body --text-file <how the page is used> --archive N --rulings rulings.json` with every ruling the ledger sends to the body.
 7. `status`. Every part must be under its limit; a part that cannot get there without dropping something still in force goes to the owner with its size before any `--over-reason` is written. The body's ruling count must equal the ledger's body rows, each row's first words found in one of those entries.
