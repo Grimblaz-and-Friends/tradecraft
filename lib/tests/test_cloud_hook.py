@@ -315,6 +315,13 @@ def test_a_modified_practice_file_fails_the_check(cloud_home):
     assert b"not committed in the practice clone: skills/x.md" in report
 
 
+def test_an_untracked_practice_file_fails_the_check(cloud_home):
+    # An added skill or hook file changes what the run loads as surely as an edit.
+    (cloud_home["practice"] / "skills" / "added.md").write_text("new")
+    result = cloud.practice_state(cloud_home["practice"], cloud_home["commit"])
+    assert result["ok"] is False and result["modified"] == ["skills/added.md"]
+
+
 def test_a_malformed_line_and_a_bad_counter_are_recorded(session):
     with session.open("a", encoding="utf-8") as stream:
         stream.write("{not json\n")

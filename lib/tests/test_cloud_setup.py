@@ -140,8 +140,12 @@ def test_profile_prints_the_launch_default_the_owner_sets(capsys):
     assert setup.main(["profile"]) == 0
     model, effort = cloud.builder_profile()
     environment = "".join(f"environment: {name}={value}\n" for name, value in cloud.CLOUD_ENVIRONMENT.items())
-    assert capsys.readouterr().out == f"model: {model}\neffort: {effort}\n" + environment
+    plugin_dirs = "environment: CLAUDE_CODE_PLUGIN_DIRS=/home/user/tradecraft\n"
+    assert capsys.readouterr().out == f"model: {model}\neffort: {effort}\n" + environment + plugin_dirs
     assert "environment: CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1\n" in environment
+    # A fork's clone is its own folder.
+    assert setup.main(["profile", "--practice-repo", "Adopter/practice-fork"]) == 0
+    assert capsys.readouterr().out.endswith("environment: CLAUDE_CODE_PLUGIN_DIRS=/home/user/practice-fork\n")
 
 
 def test_setup_binds_the_saved_routine_id_to_the_read_back(machine, capsys):

@@ -8,7 +8,7 @@ Usage: python <plugin-root>/lib/cloud_setup.py body --repo OWNER/REPO --environm
            [--practice-repo R] [--practice-branch B]
        python <plugin-root>/lib/cloud_setup.py restore --repo OWNER/REPO --environment ENV_ID
            --readback FILE [--practice-repo R] [--practice-branch B]
-       python <plugin-root>/lib/cloud_setup.py profile
+       python <plugin-root>/lib/cloud_setup.py profile [--practice-repo R]
 
 ``restore`` prints the `RemoteTrigger update` body that puts the practice source's pin and
 exclusions back after a save in the routine's editor dropped them; everything else stays as
@@ -256,7 +256,8 @@ def verify(args, *, home: Path | None = None, transport=None, plugin: Path | Non
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = result.add_subparsers(dest="command", required=True)
-    commands.add_parser("profile")
+    # A fork's clone has its own folder name, so the plugin directory follows the practice named.
+    commands.add_parser("profile").add_argument("--practice-repo", default=DEFAULT_PRACTICE)
     for name in ("body", "verify", "restore"):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
@@ -281,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"model: {model}\neffort: {effort}")
             for name, value in cloud.CLOUD_ENVIRONMENT.items():
                 print(f"environment: {name}={value}")
+            # Without it the practice's hooks never load in the cloud, so no finish signal arrives.
+            print(f"environment: CLAUDE_CODE_PLUGIN_DIRS={cloud.cloud_practice_path(args.practice_repo)}")
             return 0
         if args.command == "body":
             print(json.dumps(create_body(args.repo, args.environment, args.practice_repo,

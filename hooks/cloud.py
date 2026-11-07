@@ -296,10 +296,11 @@ def practice_state(plugin_root: Path, expect: str) -> dict[str, object]:
     except (HookError, OSError) as exc:
         found = f"unreadable: {exc}"
     excluded = [name for name in EXCLUDED if (plugin_root / name.rstrip("/")).exists()]
-    # A file changed but not committed is a practice other than the pinned commit's.
+    # A file changed, or added, but not committed is a practice other than the pinned commit's: an
+    # added skill or hook file changes what the run loads as surely as an edit does.
     try:
         modified = [line.split(None, 1)[-1] for line in _git(plugin_root, "status", "--porcelain",
-                                              "--untracked-files=no").splitlines() if line.strip()]
+                                              "--untracked-files=all").splitlines() if line.strip()]
     except (HookError, OSError) as exc:
         modified = [f"unreadable: {exc}"]
     ok = found == expect and not excluded and not modified
