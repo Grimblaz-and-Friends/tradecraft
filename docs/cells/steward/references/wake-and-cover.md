@@ -12,7 +12,7 @@ Every comment the Steward posts on #683 opens with exactly one first line:
 <!-- lab:steward:v1 kind=KIND [read=N] -->
 ```
 
-`KIND` is `post`, `read-note` or `watermark`, and `read=N` appears on read notes only. Only the first line counts: a marker quoted later in a comment does not make it the Steward's. A marker counts only on a comment from the owner's account (`Grimblaz`), which every lab session writes with: tradecraft is public, so a marker copied by anyone else is intake like any other comment and never a watermark. The `lab:` namespace keeps these out of the shipped `tradecraft:` marker vocabulary.
+`KIND` is `post`, `read-note` or `watermark`, and `read=N` appears on read notes only. A part comment of the standing page is a `post` whose second line carries `<!-- lab:steward-part:v1 part=NAME -->`; only the first line is classified, so that second marker changes nothing here, and a part comment, new or edited, is never intake (`the-page.md`). Only the first line counts: a marker quoted later in a comment does not make it the Steward's. A marker counts only on a comment from the owner's account (`Grimblaz`), which every lab session writes with: tradecraft is public, so a marker copied by anyone else is intake like any other comment and never a watermark. The `lab:` namespace keeps these out of the shipped `tradecraft:` marker vocabulary.
 
 Exactly one comment is the watermark, edited in place:
 
@@ -28,7 +28,7 @@ Each command takes `--page N` (default 683; any other page is a probe) and `--st
 
 | Command | What it does |
 |---|---|
-| `post --kind post\|read-note [--read N] --body-file F` | Prepends the marker and posts. Every Steward comment on #683 goes through it. Write the comment's text to a file first (your scratchpad will do), leaving the marker out because the command adds it, then pass that file's path. |
+| `post --kind post\|read-note [--read N] --body-file F` | Prepends the marker and posts. Every Steward comment on #683 other than a part comment goes through it; `tools/steward_page.py` posts each part comment through this same route. Write the comment's text to a file first (your scratchpad will do), leaving the marker out because the command adds it, then pass that file's path. |
 | `handled COMMENT_ID` | Moves `handled` forward to a comment on the page, refusing a lower or foreign id, and prints every unmarked comment it newly covers so you see what you are declaring handled. |
 | `read-recorded --read N --cutoff ISO` | After a read note posts, sets `read` and `cutoff`, so the next read can come due. |
 | `status` | Prints the watermark, open intake, the next read's merge count, each repository's reach, the cover's state and the handover's state. |
