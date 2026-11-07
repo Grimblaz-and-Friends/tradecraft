@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Install or uninstall the lab-only holder pane in one checkout, at local scope.
 
+Design: tools/holder_pane/README.md#install
+
 Lab tooling (#888). Every Claude Code CLI call this makes carries
 `--scope local`, so nothing reaches user settings and no builder or seat
 launched with `--setting-sources user` loads the mod. The hooks-module opt-in
@@ -19,6 +21,7 @@ local-scope plugins from the main checkout (#915).
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -44,24 +47,36 @@ class Refused(Exception):
 
 
 def newest_desktop_claude(environ: dict[str, str] | None = None) -> Path | None:
-    """The newest desktop-app Claude Code: the runtime holder sessions load in."""
+    """The newest desktop-app Claude Code: the runtime holder sessions load in.
+
+    Searched where the app keeps it now (`%LOCALAPPDATA%\\Claude-Data\\*\\claude-code`)
+    and in its old place under `%APPDATA%`; the highest version wins.
+    """
     environ = environ if environ is not None else dict(os.environ)
+    bases = []
+    local = environ.get("LOCALAPPDATA")
+    if local:
+        try:
+            bases.extend(entry / "claude-code" for entry in (Path(local) / "Claude-Data").iterdir())
+        except OSError:
+            pass
     appdata = environ.get("APPDATA")
-    if not appdata:
-        return None
-    base = Path(appdata) / "Claude" / "claude-code"
+    if appdata:
+        bases.append(Path(appdata) / "Claude" / "claude-code")
     found = []
-    try:
-        for version in base.iterdir():
-            if not VERSION.match(version.name):
-                continue
-            for build in version.iterdir():
-                exe = build / "claude.exe"
-                if exe.is_file():
-                    found.append((tuple(int(part) for part in version.name.split(".")), exe))
-    except OSError:
-        return None
-    return max(found)[1] if found else None
+    for base in bases:
+        try:
+            for version in base.iterdir():
+                if not VERSION.match(version.name):
+                    continue
+                for build in version.iterdir():
+                    exe = build / "claude.exe"
+                    if exe.is_file():
+                        found.append((tuple(int(part) for part in version.name.split(".")),
+                                      str(exe), exe))
+        except OSError:
+            continue
+    return max(found)[2] if found else None
 
 
 def _git(runner: Runner, checkout: Path, *args: str) -> int:
@@ -107,22 +122,49 @@ def _install_records() -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _remember(checkout: Path, added_opt_in: bool) -> None:
+def _remember(checkout: Path, added_opt_in: bool, local_before: bytes | None) -> None:
+    """Record the first install: whether it added the opt-in, and the local file it found."""
     records = _install_records()
-    records[str(checkout)] = {"added_opt_in": added_opt_in}
+    records[str(checkout)] = {
+        "added_opt_in": added_opt_in,
+        "local_before": None if local_before is None
+        else base64.b64encode(local_before).decode("ascii"),
+    }
     path = _install_record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
-def _forget(checkout: Path) -> bool:
-    """Drop the checkout's install record; answer whether this installer added the opt-in."""
+def _forget(checkout: Path) -> dict[str, Any] | None:
+    """Drop the checkout's install record and answer it."""
     records = _install_records()
     record = records.pop(str(checkout), None)
     path = _install_record_path()
     if path.exists():
         path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
-    return isinstance(record, dict) and record.get("added_opt_in") is True
+    return record if isinstance(record, dict) else None
+
+
+def _still_installed(checkout: Path) -> list[Path]:
+    """Every other recorded checkout whose own local file still enables the pane.
+
+    The local file is read as well as the record, so a checkout uninstalled by
+    hand or deleted can't keep the shared registration forever.
+    """
+    found = []
+    here = os.path.normcase(str(checkout))
+    for name in _install_records():
+        other = Path(name)
+        if os.path.normcase(name) == here or not other.is_dir():
+            continue
+        try:
+            settings = _read_settings(other / LOCAL)
+        except (Refused, OSError, ValueError):
+            continue
+        plugins = settings.get("enabledPlugins")
+        if isinstance(plugins, dict) and plugins.get(PLUGIN_REF) is True:
+            found.append(other)
+    return found
 
 
 def set_opt_in(path: Path) -> bool:
@@ -137,18 +179,45 @@ def set_opt_in(path: Path) -> bool:
     return added
 
 
-def clear_opt_in(path: Path) -> None:
+def restore_local(path: Path, record: dict[str, Any] | None) -> str | None:
+    """Put the checkout's local file back as the first install found it.
+
+    The pane's own keys are removed from what the file holds now, with any
+    container they leave empty that the snapshot didn't hold. When the result
+    is the snapshot, its exact bytes go back (or the file goes, if the install
+    created it); otherwise the result is kept and the answer says why.
+    """
+    record = record or {}
+    snapshot = record.get("local_before", False)
+    before_bytes = base64.b64decode(snapshot) if isinstance(snapshot, str) else None
+    try:
+        before = json.loads(before_bytes.decode("utf-8")) if before_bytes is not None else {}
+    except ValueError:
+        before = None
     if not path.exists():
-        return
+        return None
     settings = _read_settings(path)
-    env = settings.get("env")
-    if isinstance(env, dict) and OPT_IN in env:
-        env = {key: value for key, value in env.items() if key != OPT_IN}
-        if env:
-            settings["env"] = env
+    removals = [("enabledPlugins", PLUGIN_REF), ("extraKnownMarketplaces", MARKETPLACE)]
+    if record.get("added_opt_in") is True:
+        removals.append(("env", OPT_IN))
+    for container, key in removals:
+        held = settings.get(container)
+        if isinstance(held, dict):
+            held.pop(key, None)
+            kept_empty = snapshot is not False and isinstance(before, dict) and container in before
+            if not held and not kept_empty:
+                settings.pop(container, None)
+    if snapshot is not False and settings == before:
+        if before_bytes is None:
+            path.unlink()
         else:
-            settings.pop("env", None)
-        _write_settings(path, settings)
+            path.write_bytes(before_bytes)
+        return None
+    _write_settings(path, settings)
+    if snapshot is False:
+        return None
+    return (f"{path}: not restored byte for byte, because it changed after the install; "
+            f"the pane's keys were removed and every other change kept")
 
 
 def _claude(runner: Runner, claude: Path, checkout: Path, *args: str) -> None:
@@ -164,22 +233,36 @@ def _claude(runner: Runner, claude: Path, checkout: Path, *args: str) -> None:
 def install(checkout: Path, claude: Path, runner: Runner = subprocess.run,
             marketplace: Path = MARKETPLACE_DIR) -> None:
     check_local_file(checkout, runner)
+    try:
+        local_before: bytes | None = (checkout / LOCAL).read_bytes()
+    except FileNotFoundError:
+        local_before = None
     _claude(runner, claude, checkout, "plugin", "marketplace", "add", str(marketplace),
             "--scope", "local")
     _claude(runner, claude, checkout, "plugin", "install", PLUGIN_REF, "--scope", "local")
     added = set_opt_in(checkout / LOCAL)
-    # A reinstall keeps the first install's answer: the opt-in it found is not its own.
+    # A reinstall keeps the first install's record: the opt-in and file it found are not its own.
     if str(checkout) not in _install_records():
-        _remember(checkout, added)
+        _remember(checkout, added, local_before)
 
 
-def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> None:
+def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> list[str]:
+    """Uninstall here; keep the shared marketplace while another checkout has the pane."""
+    messages = []
     _claude(runner, claude, checkout, "plugin", "uninstall", PLUGIN_REF, "--scope", "local")
-    _claude(runner, claude, checkout, "plugin", "marketplace", "remove", MARKETPLACE,
-            "--scope", "local")
+    others = _still_installed(checkout)
+    if others:
+        messages.append(f"kept the shared marketplace {MARKETPLACE}: still installed in "
+                        + ", ".join(str(other) for other in others))
+    else:
+        _claude(runner, claude, checkout, "plugin", "marketplace", "remove", MARKETPLACE,
+                "--scope", "local")
+        messages.append(f"removed the shared marketplace {MARKETPLACE}: no other checkout has it")
     # Other function hooks in the checkout may rely on an opt-in that predates this install.
-    if _forget(checkout):
-        clear_opt_in(checkout / LOCAL)
+    note = restore_local(checkout / LOCAL, _forget(checkout))
+    if note:
+        messages.append(note)
+    return messages
 
 
 def install_worktree(worktree: Path, main_checkout: Path, runner: Runner = subprocess.run) -> None:
@@ -246,7 +329,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "install":
             install(checkout, claude)
         else:
-            uninstall(checkout, claude)
+            for message in uninstall(checkout, claude):
+                print(message)
     except (Refused, RuntimeError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 1

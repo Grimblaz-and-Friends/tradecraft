@@ -27,10 +27,11 @@ type World = {
   bound?: boolean
   block?: string | null
   lateReadMs?: number
+  bashError?: boolean
 }
 
 function world(on: On, w: World) {
-  const seen = { core: [] as string[], calls: [] as string[], opened: 0, statuses: [] as Array<string | undefined>, readsStarted: 0, readsDone: 0 }
+  const seen = { core: [] as string[], payloads: [] as Array<{ command: string; payload: any }>, calls: [] as string[], opened: 0, statuses: [] as Array<string | undefined>, readsStarted: 0, readsDone: 0 }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.complete', ($, e) => ({ text: '' }) as any)
   on('classic.Stop', () => ({}) as any)
@@ -48,7 +49,7 @@ function world(on: On, w: World) {
     seen.calls.push(SET)
     return { result: [], text: 'Renamed' } as any
   })
-  on('tool.call', { tool: 'Bash' }, () => ({ result: {}, text: '12345' }) as any)
+  on('tool.call', { tool: 'Bash' }, () => ({ result: {}, text: '12345', ...(w.bashError ? { isError: true } : {}) }) as any)
   on('ui.open', () => {
     seen.opened += 1
     return { value: { isPlaced: true } } as any
@@ -60,6 +61,8 @@ function world(on: On, w: World) {
   on('process.run', async ($, e) => {
     const command = String(e.argv[2])
     seen.core.push(command)
+    const stdin = (e as any).init?.stdin
+    seen.payloads.push({ command, payload: typeof stdin === 'string' && stdin ? JSON.parse(stdin) : null })
     if (command === 'read' && w.lateReadMs) {
       // The entrance read answers late: only once the test moves the clock past it.
       seen.readsStarted += 1
@@ -173,4 +176,50 @@ test('a run binds with its options in any order', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'python lib/work.py run build --issue 888 --repo Grimblaz-and-Friends/tradecraft --root D:/x' } as any)
   expect(seen.core).toContain('observe')
   expect(seen.opened).toBe(1)
+})
+
+// What the core needs to follow a background stage and the holder's own posts.
+test('observe carries the background flag, the error flag and the session root', async ($, on) => {
+  const seen = world(on, { bashError: true })
+  await $.session.start({ cwd: 'D:/root', surface: null } as any)
+  await $.tool.call({ tool: 'Bash', command: RUN, run_in_background: true } as any)
+  const observed = seen.payloads.find(one => one.command === 'observe')?.payload
+  expect(observed.background).toBe(true)
+  expect(observed.is_error).toBe(true)
+  expect(observed.root).toBe('D:/root')
+})
+
+test('a foreground call passes background false and is_error false', async ($, on) => {
+  const seen = world(on, {})
+  await $.session.start({ cwd: 'D:/root', surface: null } as any)
+  await $.tool.call({ tool: 'Bash', command: RUN } as any)
+  const observed = seen.payloads.find(one => one.command === 'observe')?.payload
+  expect(observed.background).toBe(false)
+  expect(observed.is_error).toBe(false)
+})
+
+test('a bound session gh issue comment reaches observe', async ($, on) => {
+  const seen = world(on, {})
+  await $.session.start({ cwd: 'D:/root', surface: null } as any)
+  await $.tool.call({ tool: 'Bash', command: RUN } as any)
+  await $.tool.call({ tool: 'Bash', command: 'gh issue comment 95 --body-file note.md' } as any)
+  expect(seen.core.filter(command => command === 'observe').length).toBe(2)
+})
+
+test('Stop passes its background task list to the reminder', async ($, on) => {
+  const seen = world(on, {})
+  await $.session.start({ cwd: 'D:/root', surface: null } as any)
+  await $.tool.call({ tool: 'Bash', command: RUN } as any)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 't1' }] } as any)
+  const reminded = seen.payloads.find(one => one.command === 'remind')?.payload
+  expect(reminded.background_tasks).toEqual([{ id: 't1' }])
+})
+
+test('with no candidate at restart, nothing is drawn or renamed', async ($, on) => {
+  const seen = world(on, {})
+  await $.session.start({ cwd: 'D:/root', surface: null } as any)
+  await $.turn.complete(TURN)
+  expect(seen.core).toEqual(['recover'])
+  expect(seen.opened).toBe(0)
+  expect(seen.calls.includes(SET)).toBe(false)
 })
