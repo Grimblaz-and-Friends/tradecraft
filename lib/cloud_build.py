@@ -30,6 +30,7 @@ import run_lifecycle as lifecycle
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
+DEFAULT_PRACTICE = "Grimblaz-and-Friends/tradecraft"
 def cloud_practice_path(practice: str, *parts: str) -> str:
     """A shipped practice file as the cloud run finds it, in the practice clone."""
     return "/".join((_hook().CLOUD_HOME, practice_name(practice), *parts))
@@ -765,6 +766,25 @@ def followup_env() -> dict:
 
 
 # ---- one cloud attempt -------------------------------------------------------
+
+def launch_route(stage: str, resume: str | None, work: str) -> tuple[dict | None, str, str | None] | None:
+    """The one routing decision for a Claude implementer launch: None for local, or the cloud's
+    (switch entry or None, its source, a refusal or None). The launcher and the entrance both read it.
+
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    if resume and CLOUD_SESSION.fullmatch(resume):
+        # A cloud session runs only in the cloud, whatever the stage or the switch now says.
+        return None, f"recorded cloud session {resume}", None
+    if resume or stage not in CLOUD_STAGES:
+        return None  # a locally started session resumes locally; other stages stay local
+    try:
+        entry, source = route_for(work)
+    except CloudError as exc:
+        # A broken switch never quietly means local.
+        return None, f"record {record_path()}", str(exc)
+    return None if entry is None else (entry, source, None)
+
 
 # The stages the cloud route carries: the artifact, the build and the build's repairs.
 CLOUD_STAGES = frozenset({"artifact", "build", "review-disposition", "floor"})

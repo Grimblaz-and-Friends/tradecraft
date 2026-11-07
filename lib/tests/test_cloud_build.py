@@ -1083,3 +1083,27 @@ def test_a_mismatch_stopped_before_any_turn_records_its_profile_as_not_run(machi
     assert profile["reason"] == cloud.NOT_RUN_REASON and profile["permission_mode"] == ["not run"]
     # Without a mismatch, a usage record with no turn is still marked.
     assert cloud.cloud_profile({"practice_check": {"ok": True}})["off_profile"] is True
+
+
+def test_the_entrance_and_the_launcher_read_one_routing_decision(tmp_path, monkeypatch):
+    import types
+    import work
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)  # the switch entry is gone
+    state = types.SimpleNamespace(repo=REPO, issue_number=77, record_root=tmp_path / "records")
+    # A cse_ resume found only through a builder-session marker: no bundle, so no request.
+    for stage in ("review-disposition", "floor", "build"):
+        assert cloud.launch_route(stage, "cse_MARKER", f"{REPO}#77") is not None
+        assert work._cloud_practice(state, stage, "claude", None, "cse_MARKER") == cloud.DEFAULT_PRACTICE
+        assert work._cloud_merge_script(state, stage, "claude", None, "cse_MARKER").startswith("/home/user/")
+    # A bundle that names no practice repository: the session's own starting record does.
+    started = tmp_path / "records" / "start"
+    started.mkdir(parents=True)
+    (started / "result.md.request.json").write_text(json.dumps(
+        {"cloud": {"session_id": "cse_MARKER", "practice": {"repository": "Adopter/practice-fork"}}}))
+    (started / "result.md.run.json").write_text("{}")
+    bare = types.SimpleNamespace(session="cse_MARKER", request={"cloud": {}})
+    assert work._cloud_practice(state, "review-disposition", "claude", bare) == "Adopter/practice-fork"
+    # A UUID resume is local for both.
+    uuid = "01234567-89ab-cdef-0123-456789abcdef"
+    assert cloud.launch_route("review-disposition", uuid, f"{REPO}#77") is None
+    assert work._cloud_practice(state, "review-disposition", "claude", None, uuid) is None

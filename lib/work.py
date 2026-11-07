@@ -8352,32 +8352,46 @@ def _merge_version_decision(root: Path, start: str, pinned: str, spec: dict | No
             "value": value, "reason": reason}
 
 
-def _cloud_practice(state, stage, vendor, resumed=None) -> str | None:
+def _cloud_practice(state, stage, vendor, resumed=None, session=None) -> str | None:
     """The practice repository a launch's cloud session runs from, or None for a local launch.
 
-    It routes as the launcher does. Design: lib/DESIGN.md#the-cloud-route
+    It reads the launcher's own routing decision. Design: lib/DESIGN.md#the-cloud-route
     """
     if vendor != "claude":
         return None
-    session = getattr(resumed, "session", None)
-    if session and cloud_build.CLOUD_SESSION.fullmatch(session):
-        # A cloud session resumes in the cloud whatever the switch now says, so its own record names
-        # the practice clone it runs from.
-        practice = ((getattr(resumed, "request", None) or {}).get("cloud") or {}).get("practice") or {}
+    session = session or getattr(resumed, "session", None)
+    route = cloud_build.launch_route(stage, session, f"{state.repo}#{state.issue_number}")
+    if route is None:
+        return None
+    entry, _source, refusal = route
+    if entry is not None:
+        return entry["practice"]["repository"]
+    if refusal is not None:
+        return None  # the launcher refuses a broken switch, so nothing runs
+    return _session_practice(state, session, resumed)
+
+
+def _session_practice(state, session: str, resumed=None) -> str:
+    """The practice a cloud session runs from: its own records first, as the switch may be gone."""
+    def recorded():
+        yield ((getattr(resumed, "request", None) or {}).get("cloud") or {}).get("practice") or {}
+        try:
+            root = getattr(state, "record_root", None) or records.default_record_root()
+            for request, _run in cloud_build.session_attempts(root, session):
+                yield (request.get("cloud") or {}).get("practice") or {}
+            yield (cloud_build.read_record(cloud_build.record_path()) or {}).get("practice") or {}
+        except (OSError, cloud_build.CloudError):
+            return
+
+    for practice in recorded():
         if isinstance(practice.get("repository"), str) and practice["repository"]:
             return practice["repository"]
-    elif session or stage not in cloud_build.CLOUD_STAGES:
-        return None  # a locally started session resumes locally; other stages stay local
-    try:
-        entry, _source = cloud_build.route_for(f"{state.repo}#{state.issue_number}")
-    except cloud_build.CloudError:
-        return None  # the launcher refuses a broken switch; the prompt keeps the local text
-    return None if entry is None else entry["practice"]["repository"]
+    return cloud_build.DEFAULT_PRACTICE
 
 
-def _cloud_merge_script(state, stage, vendor, resumed=None) -> str | None:
+def _cloud_merge_script(state, stage, vendor, resumed=None, session=None) -> str | None:
     """The persist script's path in a cloud run's practice clone, when the launch goes to the cloud."""
-    practice = _cloud_practice(state, stage, vendor, resumed)
+    practice = _cloud_practice(state, stage, vendor, resumed, session)
     return None if practice is None else cloud_build.cloud_practice_path(
         practice, "skills", "persist-changes", "scripts", "persist.py")
 
@@ -9497,8 +9511,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                     merge_obligation=obligation,
                     version_instruction=version_instruction, resumed=resume_source,
-                    merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source),
-                    cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source) is not None,
+                    merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source, session),
+                    cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source, session) is not None,
                 )
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
@@ -9670,8 +9684,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                         merge_obligation=obligation,
                         version_instruction=version_instruction, resumed=resume_source,
-                        merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source),
-                        cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source) is not None,
+                        merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source, session),
+                        cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source, session) is not None,
                     )
                 except WorkError as exc:
                     if getattr(exc, "version_obligation", None) is not None:
@@ -9822,8 +9836,9 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     command.extend(("--retry-of", handover_retry_of))
                 if selected_vendor in {"claude", "codex"}:
                     context = Path(temporary) / "context.txt"
-                    cloud_practice = _cloud_practice(state, decision.stage, selected_vendor, resume_source)
-                    # A cloud run's task file describes the cloud; the local text stays as it was.
+                    cloud_practice = _cloud_practice(state, decision.stage, selected_vendor, resume_source,
+                                                     session)
+                    # A cloud run's task file describes the cloud; a local run's describes this machine.
                     preamble = (cloud_preamble(cloud_practice) if cloud_practice
                                 else implementer_preamble(selected_vendor, here.parent))
                     window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])

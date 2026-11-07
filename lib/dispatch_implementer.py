@@ -387,21 +387,7 @@ def _cloud_route(args: argparse.Namespace) -> tuple[dict | None, str, str | None
     session, and a UUID session started locally is resumed locally.
     Design: lib/DESIGN.md#the-cloud-route
     """
-    if args.stage not in cloud_build.CLOUD_STAGES and not (
-            args.resume and cloud_build.CLOUD_SESSION.fullmatch(args.resume)):
-        # The route carries the artifact, the build and its repairs; any other stage stays local,
-        # unless it resumes a cloud session, which runs only in the cloud.
-        return None
-    if args.resume:
-        if cloud_build.CLOUD_SESSION.fullmatch(args.resume):
-            return None, f"recorded cloud session {args.resume}", None
-        return None
-    try:
-        entry, source = cloud_build.route_for(args.work)
-    except cloud_build.CloudError as exc:
-        # A broken switch never quietly means local.
-        return None, f"record {cloud_build.record_path()}", str(exc)
-    return None if entry is None else (entry, source, None)
+    return cloud_build.launch_route(args.stage, args.resume, args.work)
 
 
 def run_implementer(args: argparse.Namespace) -> int:

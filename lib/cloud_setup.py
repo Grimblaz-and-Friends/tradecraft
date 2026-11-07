@@ -35,7 +35,7 @@ import uuid
 import cloud_build as cloud
 from winio import utf8_stdio
 
-DEFAULT_PRACTICE = "Grimblaz-and-Friends/tradecraft"
+DEFAULT_PRACTICE = cloud.DEFAULT_PRACTICE
 
 
 def excludes() -> list[str]:
