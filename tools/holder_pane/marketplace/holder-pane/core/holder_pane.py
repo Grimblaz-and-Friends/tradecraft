@@ -826,6 +826,8 @@ def recover(ctx: Ctx, session_id: str, root: str) -> dict[str, Any] | None:
         matches = at_root
     if len(changes(matches)) != 1:
         return None
+    # Every remaining row names the same change, so any of them binds it; one at the
+    # session's root is preferred only for the root the binding reports.
     row = next((row for row in matches if row in at_root), matches[-1])
     instalment = row.get("instalment") if isinstance(row.get("instalment"), str) else None
     return {"repository": row["repository"], "issue": row["issue"],
@@ -856,6 +858,9 @@ TITLE_HEAD = re.compile(r"\s*at head\s+`?([0-9a-fA-F]{7,40})`?(?![0-9a-fA-F])")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
 PS_VARIABLE = re.compile(r"^\$([A-Za-z_][A-Za-z0-9_]*)$")
 STDOUT_REDIRECT = re.compile(r"^(1?>>?|&>>?|\*>>?)(?!&)")
+# Reads are capped so a stray large file can't stall a hook. Only a body's opening line
+# matters, and a report past its cap reads as no report, which the next entrance read
+# corrects, as for any report the pane can't find.
 BODY_LIMIT_BYTES = 65536
 REPORT_LIMIT_BYTES = 8 * 1024 * 1024
 # gh options that take no value, so the word after them is not theirs.
@@ -1325,7 +1330,7 @@ def _tee_target(found: list[Word], cwd: str | None) -> Path | None:
 
 
 def _read_text(path: Path | None) -> str | None:
-    """A body file's first 64 KiB as UTF-8 (a BOM stripped); None when it can't be read."""
+    """A body file's first BODY_LIMIT_BYTES as UTF-8 (a BOM stripped); None when it can't be read."""
     if path is None:
         return None
     try:
@@ -1389,6 +1394,7 @@ def report_file(path: Path | None, since: float) -> tuple[dict[str, Any] | None,
 
 
 def _same_head(first: Any, second: Any) -> bool:
+    # Title lines and reports may carry an abbreviated SHA; Git never abbreviates below 7.
     if not (isinstance(first, str) and isinstance(second, str)):
         return False
     first, second = first.lower(), second.lower()
@@ -1420,6 +1426,8 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     if title.get("steward"):
         unbind(ctx, session_id)
         return {"bound": False}
+    # Binding may have reset the session's state for a new change, so it is read again; only
+    # the desktop-record lookup the title read just made is kept, so it isn't repeated.
     state = {**load_session(ctx, session_id),
              **{key: state[key] for key in ("desktop_record", "desktop_miss_at") if key in state}}
     change = load_change(ctx, change_key(binding["repository"], binding["issue"]))
@@ -1449,7 +1457,7 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
         else:
             report = last_json_object(output)
             if report is None:
-                # A report redirected to a file is read from there.
+                # A holder that redirects the call's output leaves no report in the tool result.
                 report = report_file(commands.redirect(), started)[0]
             reading = no_launch_reading(stage, report, output, ended, pr)
             if reading is not None:
@@ -1482,9 +1490,15 @@ def _observe_posts(binding: dict[str, Any], state: dict[str, Any], change: dict[
             continue
         title = release_report_title(post["body"], issue, known)
         target = post["target"]
-        if target != issue and not (
-                target == known if known is not None
-                else post["kind"] == "pr" or (title is not None and title["pull_request"] == target)):
+        # Until the pane knows the change's pull request, any `gh pr` target counts: the real
+        # release report names no pull request the pane could check, and any other wrong
+        # mark corrects itself at the next read.
+        if known is not None:
+            ours = target in (issue, known)
+        else:
+            ours = target == issue or post["kind"] == "pr" or (
+                title is not None and title["pull_request"] == target)
+        if not ours:
             continue
         if title is not None:
             head = title["head"] or (in_force.get("head") if isinstance(in_force, dict) else None)
@@ -1607,10 +1621,13 @@ def _end_report_post(state: dict[str, Any], change: dict[str, Any]) -> None:
     if not isinstance(posted, dict):
         return
     at = posted.get("at")
-    at = at if isinstance(at, (int, float)) else 0.0  # recorded by 0.1.5, with no time
+    # A posted-report record with no post time is dated before every reading, so any
+    # reading can end it by these same rules.
+    at = at if isinstance(at, (int, float)) else 0.0
     for reading in (state.get("reading"), change.get("reading")):
         if not isinstance(reading, dict) or float(reading.get("read_at") or 0) <= float(at):
             continue
+        # An entrance read is a decision even when cached without the flag.
         decided = reading.get("decision") is True or reading.get("source") == "entrance"
         head = reading.get("head")
         if (decided and reading.get("stage") != "release-report") or (
@@ -2015,6 +2032,17 @@ def lookup_pull_request(ctx: Ctx, repository: str, issue: int,
 
 # --- the reminder (row 6) -----------------------------------------------------------
 
+def _strings(value: Any) -> set[str]:
+    """Every string in a JSON value, whole, so a task id is never found inside a longer one."""
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, list):
+        return set().union(*(_strings(item) for item in value)) if value else set()
+    return set()
+
+
 def remind(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = str(payload["session_id"])
     binding = load_binding(ctx, session_id)
@@ -2027,7 +2055,7 @@ def remind(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     tasks = payload.get("background_tasks")
     if isinstance(background, dict) and background.get("task_id") and tasks is not None \
             and not background.get("ended_at") \
-            and str(background["task_id"]) not in json.dumps(tasks):
+            and str(background["task_id"]) not in _strings(tasks):
         # Stop's own list no longer names the task: it has ended.
         background["ended_at"] = ctx.now()
     view = compute_view(ctx, binding, state)

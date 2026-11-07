@@ -1130,12 +1130,13 @@ def test_core_runs_as_a_script(home):
     assert json.loads(completed.stdout)["waiting_on"] == "ci"
 
 
-# --- #940: the holder's own steps, worked out by the pane (row 1) ----------------------------
+# --- the holder's own steps, worked out by the pane (row 1) ----------------------------------
 #
-# Replays of Daemon #95's recorded calls (#961, #954), with synthesized fixtures:
-# command strings in the recorded shapes, minimal reports carrying the recorded
-# stage, status, reason, head and `next`, and title-line body files. Nothing is
-# copied from the recorded output or transcript.
+# Replays of a real holder's recorded calls: stages run in the background with their output
+# redirected, a release report and use markers posted from files, and catch-up run seconds
+# after a post. Fixtures are synthesized in the recorded shapes (command strings, minimal
+# reports with stage, status, reason, head and `next`, and title-line body files); nothing is
+# copied from the recorded output.
 
 from datetime import datetime  # noqa: E402
 
@@ -1150,7 +1151,8 @@ def at(clock: str, day: int = 6) -> float:
 
 
 class Forbidden:
-    """A runner for every path but `read()`: any subprocess at all fails the test (C1.6)."""
+    """A runner for every path but `read()`: working out the holder's steps must start no
+    subprocess, so nothing new reaches GitHub or a model."""
 
     def __call__(self, argv, **kwargs):
         raise AssertionError(f"no subprocess outside read(): {argv}")
@@ -1437,6 +1439,15 @@ def test_940_c1_7_no_reminder_while_running_ended_or_posted(home, tmp_path, stag
     assert holder.remind(at("06:41:00")) == f"next: run {stage} (yours)"
 
 
+def test_940_c1_7_a_task_id_inside_a_longer_one_is_not_still_running(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.entrance(at("06:00:00"), {"stage": "proof", "status": "runnable", "reason": "x"})
+    holder.observe(at("06:10:01"), holder.stage("proof"), holder.launched("t1"),
+                   started=at("06:10:00"), background=True)
+    assert holder.remind(at("06:11:00"), tasks=[{"id": "t10", "status": "running"}]) is None
+    assert holder.tick(at("06:11:30"))["status"] == "ended"
+
+
 def test_940_c1_7_posted_state_never_reminds(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
@@ -1600,6 +1611,11 @@ ENDS = {
         json.dumps({"stage": "catch-up", "status": "holder-owned", "head": HEAD2,
                     "next": rr_decision(HEAD2)})),
     "entrance-new-head": lambda h: h.entrance(at("07:00:00"), rr_decision(HEAD2)),
+    "catch-up-same-head-next-waiting": lambda h: h.observe(
+        at("07:00:00"), h.stage("catch-up", redirect=False),
+        json.dumps({"stage": "catch-up", "status": "holder-owned", "head": HEAD,
+                    "next": {"stage": "waiting", "status": "waiting",
+                             "reason": "latest-check-run-pending"}})),
     "build-launch": lambda h: h.observe(at("07:00:00"), h.stage("build", redirect=False),
                                         "12345"),
 }
@@ -1844,7 +1860,10 @@ class FakeClaude(FakeTools):
         if argv[0] == "git":
             return answer
         path = Path(kwargs["cwd"]) / ".claude" / "settings.local.json"
-        settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except ValueError:
+            return answer  # a file that isn't JSON is left alone
         action = argv[1:4]
         if action[:3] == ["plugin", "marketplace", "add"]:
             settings.setdefault("extraKnownMarketplaces", {})[installer.MARKETPLACE] = {
@@ -1953,6 +1972,26 @@ def test_940_c5_2_a_legacy_record_leaves_no_empty_containers(tmp_path, records):
     records.write_text(json.dumps({str(root): {"added_opt_in": True}}), encoding="utf-8")
     installer.uninstall(root, Path("claude.exe"), tools)
     assert json.loads(path.read_text()) == {"permissions": {"allow": []}}
+
+
+def test_940_c5_2_an_unparseable_file_or_snapshot_says_so(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    path = root / ".claude" / "settings.local.json"
+    path.write_text('{"permissions": {}}', encoding="utf-8")
+    tools = FakeClaude()
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
+    path.write_text("not json", encoding="utf-8")
+    messages = installer.uninstall(root, Path("claude.exe"), tools)
+    assert path.read_text(encoding="utf-8") == "not json"
+    assert any("isn't a JSON object now" in message for message in messages)
+    path.write_text('{"permissions": {}}', encoding="utf-8")
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
+    record = json.loads(records.read_text())
+    record[str(root)]["local_before"] = "bm90IGpzb24="  # "not json"
+    records.write_text(json.dumps(record), encoding="utf-8")
+    messages = installer.uninstall(root, Path("claude.exe"), tools)
+    assert any("copy taken at the install" in message for message in messages)
 
 
 def test_940_c5_3_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):

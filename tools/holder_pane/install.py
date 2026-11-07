@@ -73,10 +73,10 @@ def newest_desktop_claude(environ: dict[str, str] | None = None) -> Path | None:
                     exe = build / "claude.exe"
                     if exe.is_file():
                         found.append((tuple(int(part) for part in version.name.split(".")),
-                                      str(exe), exe))
+                                      exe))
         except OSError:
             continue
-    return max(found)[2] if found else None
+    return max(found)[1] if found else None
 
 
 def _git(runner: Runner, checkout: Path, *args: str) -> int:
@@ -136,7 +136,7 @@ def _remember(checkout: Path, added_opt_in: bool, local_before: bytes | None) ->
 
 
 def _forget(checkout: Path) -> dict[str, Any] | None:
-    """Drop the checkout's install record and answer it."""
+    """Drop the checkout's install record; uninstall restores from what it held."""
     records = _install_records()
     record = records.pop(str(checkout), None)
     path = _install_record_path()
@@ -188,6 +188,8 @@ def restore_local(path: Path, record: dict[str, Any] | None) -> str | None:
     created it); otherwise the result is kept and the answer says why.
     """
     record = record or {}
+    # Three states: bytes (the file as it was), None (it was absent), and False for a record
+    # kept before snapshots were, which can only have its keys removed.
     snapshot = record.get("local_before", False)
     before_bytes = base64.b64decode(snapshot) if isinstance(snapshot, str) else None
     try:
@@ -196,7 +198,11 @@ def restore_local(path: Path, record: dict[str, Any] | None) -> str | None:
         before = None
     if not path.exists():
         return None
-    settings = _read_settings(path)
+    try:
+        settings = _read_settings(path)
+    except (Refused, ValueError):
+        return (f"{path}: left as it is, because it isn't a JSON object now; "
+                f"remove the pane's keys from it by hand")
     removals = [("enabledPlugins", PLUGIN_REF), ("extraKnownMarketplaces", MARKETPLACE)]
     if record.get("added_opt_in") is True:
         removals.append(("env", OPT_IN))
@@ -216,6 +222,9 @@ def restore_local(path: Path, record: dict[str, Any] | None) -> str | None:
     _write_settings(path, settings)
     if snapshot is False:
         return None
+    if not isinstance(before, dict):
+        return (f"{path}: not restored byte for byte, because the copy taken at the install "
+                f"isn't a JSON object; the pane's keys were removed and the rest kept")
     return (f"{path}: not restored byte for byte, because it changed after the install; "
             f"the pane's keys were removed and every other change kept")
 
