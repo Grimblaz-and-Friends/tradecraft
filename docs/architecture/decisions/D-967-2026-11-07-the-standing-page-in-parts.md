@@ -1,4 +1,4 @@
-# D-891 — The standing page in parts, edited by a repo tool, with an archive
+# D-967 — The standing page in parts, edited by a repo tool, with an archive
 
 **Purpose:** record why #891 splits the lab's standing page into a short pickup body and six linked part comments, edits it only through `tools/steward_page.py`, and archives what leaves it. **Audience:** a future session changing the page's shape, the tool, its markers, its limit or the archive. **Success:** that reader can recover what was chosen over what without the issue.
 

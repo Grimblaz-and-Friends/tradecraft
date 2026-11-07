@@ -557,6 +557,40 @@ def test_a_stale_saved_copy_writes_nothing_and_shows_the_difference(st):
     assert "already holds entries" in str(error)
 
 
+def assert_stale(error, name: str, changed: str, live: str) -> None:
+    assert error.detail["part"] == name
+    assert f"+{changed}" in error.detail["diff"].splitlines()
+    assert error.detail["live_sha256"] == sp.sha256(live)
+
+
+def test_a_stale_saved_copy_stops_load_body_and_create_part_too(tmp_path):
+    """A9: load, body and create-part each refuse a stale copy of the part they write."""
+    for name in ("load", "create", "body"):
+        (tmp_path / name).mkdir()
+    st = build(tmp_path / "load")
+    st.lab.set_part("traps", st.lab.part_text("traps").replace("## Traps", "## Traps, by hand"))
+    error = st.refused("load", "traps", "--file", st.json_file(
+        [{"kind": "trap", "issue": "none", "text": "a trap"}]), match="differs from the saved copy")
+    assert_stale(error, "traps", "## Traps, by hand", st.lab.part_text("traps"))
+
+    # create-part rewrites the body's index, so a stale body stops it before the part is posted.
+    st = build(tmp_path / "create", parts=sp.COMMENT_PARTS[:-1])
+    st.lab.set_part("body", st.lab.part_text("body") + "A hand-added line.\n")
+    error = st.refused("create-part", "residues", "--text-file", st.file("## Residues"),
+                       match="differs from the saved copy")
+    assert_stale(error, "body", "A hand-added line.", st.lab.part_text("body"))
+    assert st("status")["missing"] == ["residues"]
+
+    # body writes only a body without the page marker, so its stale copy is of the old page.
+    st = Steward(FakeGitHub(), tmp_path / "body")
+    archive = st("init-archive", "--title", "a")["archive"]
+    st.accept("body")
+    st.lab.set_part("body", OLD_BODY.replace("- an old ruling", "- an old ruling, by hand"))
+    error = st.refused("body", "--text-file", st.file("How this page is used."),
+                       "--archive", archive, match="differs from the saved copy")
+    assert_stale(error, "body", "- an old ruling, by hand", st.lab.part_text("body"))
+
+
 def test_a_part_changed_mid_archive_stops_the_run_at_that_part(st):
     """A9: the re-read before each write catches a change after the first read; later parts wait."""
     ids = {name: st.add(kind, f"{name} entry")

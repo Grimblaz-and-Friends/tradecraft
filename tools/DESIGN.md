@@ -28,4 +28,4 @@ Nothing here ships. Each section names the decisions in force behind its code by
 - Nothing leaves the page before it is in the archive, so nothing the owner ruled disappears without a searchable record.
 - A destination is written before its source on a move between parts, so a failure leaves a duplicate that `status` shows rather than a loss.
 
-**Decisions in force:** [D-891](../docs/architecture/decisions/D-891-2026-11-07-the-standing-page-in-parts.md).
+**Decisions in force:** [D-967](../docs/architecture/decisions/D-967-2026-11-07-the-standing-page-in-parts.md).
