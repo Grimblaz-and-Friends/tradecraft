@@ -67,6 +67,7 @@ Given together on 2026-11-07 ("Take all three"):
 - **`init-archive` records the new archive in the state directory,** because GitHub's issue listing lagged a new issue by seconds in the final-head probe, and a re-run refuses while that record names one.
 - **The archive compares whole entries, and a re-run's `--ids` may name entries read N's comment already holds,** so the documented re-run finishes a stopped archive and an entry inside a longer one is never taken as held.
 - **`archive --read` refuses `--archive`,** which only the move uses.
+- **The move's one hand-posted archive comment is "The move, addendum",** posted with `gh issue comment` when the old body changed after drafting: the tool refuses a second move comment and `load` an already-filled part, so lines that stay go in through `body --rulings` or `add`, and lines that leave can reach the archive no other way.
 - **`archive --read` re-reads read N's comment immediately before its own write, and refuses if it changed since the run read it,** because appending to a stale copy would drop another run's archived entries; only the last-moment window is left, as for the parts.
 - **`init-archive` refuses once the body names an archive,** and closes the new issue as completed.
 
