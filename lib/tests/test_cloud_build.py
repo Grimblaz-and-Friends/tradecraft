@@ -1062,3 +1062,24 @@ def test_a_failed_cloud_check_is_accounted_by_the_cloud_check_party():
     for identity, basis in (("cloud-check:skip_ci", "the holder looked"), ("unrecorded", verified)):
         with pytest.raises(ValueError, match="cloud-check account"):
             work.launch_account_payload(body(identity, basis))
+
+
+def test_a_mismatch_stopped_before_any_turn_records_its_profile_as_not_run(machine):
+    fake = Fake(practice_ok=False)
+    real_run = fake._run
+
+    def hook_blocked():
+        # The prompt hook wrote the finish record and the model took no turn.
+        real_run()
+        usage = json.loads(fake.files["usage.json"])
+        fake.files["usage.json"] = json.dumps({key: usage[key] for key in ("practice_check", "report_blob")}
+                                              | {"finish": "practice-mismatch"}).encode()
+
+    fake._run = hook_blocked
+    _code, _request, run, _output = launch(machine, fake, polls=2)
+    profile = run["attempts"][0]["cloud"]["profile"]
+    assert run["outcome"] == "practice_mismatch"
+    assert profile["off_profile"] is False and profile["status"] == "not run"
+    assert profile["reason"] == cloud.NOT_RUN_REASON and profile["permission_mode"] == ["not run"]
+    # Without a mismatch, a usage record with no turn is still marked.
+    assert cloud.cloud_profile({"practice_check": {"ok": True}})["off_profile"] is True

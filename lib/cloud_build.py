@@ -343,12 +343,21 @@ def builder_profile() -> tuple[str, str]:
     return settings.model, settings.effort
 
 
-def cloud_profile(usage: dict, profile: tuple[str, str] | None = None) -> dict[str, object]:
+NOT_RUN_REASON = "not run: the practice check stopped the run before any model turn"
+
+
+def cloud_profile(usage: dict, profile: tuple[str, str] | None = None, *,
+                  mismatch: bool = False) -> dict[str, object]:
     """The main session's model and effort, against the builder profile."""
     expected_model, expected_effort = profile or builder_profile()
     seen = usage.get("profile") if isinstance(usage.get("profile"), dict) else {}
     models = [value for value in seen.get("models") or [] if isinstance(value, str)]
     efforts = [value for value in seen.get("efforts") or [] if isinstance(value, str)]
+    if mismatch and not models and not usage.get("ledger"):
+        # Nothing ran, so there is no profile to mark and nothing for the routine's owner to correct.
+        return {"model": [], "effort": None, "profile": f"{expected_model}/{expected_effort}",
+                "off_profile": False, "status": "not run", "reason": NOT_RUN_REASON,
+                "permission_mode": ["not run"]}
     reasons = []
     if not models:
         reasons.append("no main-session model recorded")
@@ -1244,7 +1253,7 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
                                                   [*deltas, this_delta]),
                         # Every stage runs on the one routine setup verified, so every run is judged
                         # against that profile, not the launch's role-resolved settings.
-                        profile=cloud_profile(usage, builder_profile()))
+                        profile=cloud_profile(usage, builder_profile(), mismatch=mismatch))
     if previous is not None and not previous.get("baseline_ok"):
         # A delta from a total nobody could stand behind is no figure either.
         record_cloud["ledger_check"] = {"ok": False, "faults": [
