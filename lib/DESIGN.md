@@ -22,6 +22,8 @@ The holder posts the account whole in one `open` comment with its own review aga
 
 The reader launches on its role's vendor and records a same-vendor reason whenever it lands on the builder's vendor, fallback included, and it never starts until a build bundle or the builder's session marker proves which vendor built the change.
 
+The reading tree is built in a temporary folder of its own, holding only the tree and outside the entrance's records, which keep the reading's record and diff, written as consumer trees' records are, and its prompt. The gate finds a reading's record there or, for a reading recorded before the records kept it, where that reading left it, beside its tree; a record found in neither place is reported at its path in the records. The tree itself is kept after the run; a tree whose record could not be written is removed, with any diff written for it, because no reading can be judged without its record.
+
 **Why.**
 
 - A reader who saw the brief can't show what the code alone explains, so the reader never sees the issue, brief, pull-request text or branch name.
@@ -41,8 +43,11 @@ The reader launches on its role's vendor and records a same-vendor reason whenev
 - A `Can tell: no` can't be accepted, because why the change was made must reach the record that outlives it.
 - There is no round cap, because every flag is either judged by a later reading or accepted with a reason, and a cap would let a change close over a flag nobody judged. A flag that keeps coming back ends when the holder accepts it or names it a false claim about the tree, which is probed; a passage of the wrong shape, which is restated whole; or a fork, which is put to the owner.
 - Every judgement fails closed, so a `clean` can't pass over a flag, a reading or a record the gate can't see.
+- The reader works in its tree's folder, so that folder holds the tree alone; a record or prompt there would name the change.
+- A reading recorded before the records kept it still counts, because pull requests open when that layout changed hold such readings.
+- The reading tree is kept after the run, though the gate needs only its record, so that what the reader saw can still be inspected when a holder disputes a flag.
 
-**Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons.
+**Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons; D-968, a consumer tree keeps its record elsewhere.
 
 ## The cloud route
 
@@ -68,3 +73,33 @@ The reader launches on its role's vendor and records a same-vendor reason whenev
 - The practice's own repository is refused, because its product and practice clones would share one folder and its committed guard would govern a single-source build.
 
 **Decisions in force:** D-938, a set-up repository's Claude implementer runs as a cloud session with no local fallback, its cost counted by the shipped `Stop` hook and re-checked against its ledger, and the practice's own repository refused; D-938 narrows D-939 for cloud launches, which have no local file-tool guard, no before-and-after comparison and no memory setting, and which the owner's global instructions don't reach; D-938 narrows D-924 for cloud launches in that the command ceiling is fixed on the cloud environment rather than set per launch, its notice travels in the cloud task's preamble, and the stream check reads not applicable; the hook manifest is exempt from the harness-token rule of D-156, D-222 and D-618, because it must name the plugin root; D-938 narrows D-911 for cloud launches, which use no `--add-dir` or shim, are told to read the product clone's own `CLAUDE.md` and `AGENTS.md`, and record the instruction files from the run's own `instructions.md`, because the launcher can't read a cloud transcript.
+
+## Consumer trees
+
+**What it does now.** `work.py tree` builds a use consumer's tree from committed bytes: a new repository with one neutral detached commit, no remote and no shared history, holding only the declared job paths and loading surfaces, each file proved against its committed blob. Its record of the tree names the change, the source checkout and revision, what was excluded and every carried file, under a digest. `tree` writes that record whole to the entrance's own records, under `trees/`, in a file named by a digest of the tree's resolved path, prints the path as `tree_metadata`, and leaves nothing but the tree in the folder the tree sits in. `run use` takes that path, proves the record's integrity, re-proves the source revision, the neutral repository and the tree's bytes, and launches the consumer with the tree as its root. The cold reader's reading tree is recorded the same way.
+
+Before anything is built or launched:
+
+- `tree` refuses an output that exists, one inside the source, one inside the entrance's records, and one whose folder holds those records at any depth;
+- `tree` refuses an output whose folder holds an entrance tree record file, `<tree>.tradecraft-tree.json` for this tree or any other, naming that file and saying to remove it;
+- `tree` refuses an output whose own name, or the name of the folder it sits in, carries the change's issue number or an open pull request's number as a whole run of digits, checking the issue number first, without the network; a merged pull request's number is not checked, folders higher up are not examined, and when the issue, its comments or its pull requests can't be read, `tree` refuses;
+- `run use` refuses a tree whose folder holds such a record file, naming the file and saying to remove it and rebuild the tree it records, without opening it; any other file beside a tree, such as a job fixture or a second tree, is lawful;
+- `run use` refuses a record that isn't at the path derived from the tree it names, one whose digest doesn't match, and every mismatch of source, revision, bytes or repository shape.
+
+`tree` replaces a record left at its path by a tree since deleted, so a deleted tree can be rebuilt where it was; a reading's record is never replaced.
+
+**Why.**
+
+- The tree's folder is the consumer's working space: a consumer lists it and works in it, so a record there would tell it which change it is judging, where the holder's checkout is, and what was withheld.
+- The record's name is derived from the tree's resolved path, compared as the platform compares paths, so a record still proves which tree it belongs to without sitting next to it, and one copied to another tree's path is refused.
+- Only the entrance's own records beside a tree are refused, because a tree built before the record moved, or one with its record put back, keeps the exposure, while side-by-side trees and job fixtures are layouts a job needs. A sibling tree's record counts too: it names its change as plainly to a consumer listing the folder.
+- `tree` refuses a path with the record file beside it, because a tree built there would meet `run use`'s refusal again; removing the file is the holder's, since the entrance never opens it to tell whose it is.
+- Only an open pull request's number is checked, because an open pull request is the change under test, while a merged one belongs to work already landed, such as an earlier instalment.
+- Only the tree's folder and the folder it sits in are checked for the change's numbers, because those two names appear in every command the consumer runs and are the ones a holder chooses; folders higher up are usually named by the runtime, and the random digits of a session id would refuse holders by chance.
+- An unreadable pull-request lookup refuses, because a check that can't be decided would otherwise pass the path it exists to stop.
+- The entrance's records may not sit in or below the tree's folder, so that nothing but the tree is there for every tree, including one built in the home folder.
+- A stale record is replaced because a holder who deletes a tree can't see its record to delete it too, and a record proves nothing without its tree.
+- Every record is written to a temporary file and then moved into place, so a partial record never stands.
+- This keeps the record out of the consumer's folder only. A consumer whose shell reaches the rest of the machine can still find the entrance's records, which is a separate exposure.
+
+**Decisions in force:** D-726, the entrance is the holder's instrument, which builds neutral, mode-declared, history-free consumer trees; D-736, a landed commit is a lawful consumer-tree source; D-968, a consumer tree keeps its record elsewhere.

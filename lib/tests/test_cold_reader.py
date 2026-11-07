@@ -61,21 +61,23 @@ def repository(tmp_path):
         "b.py": "# Design: design/missing.md#s\n",
         "decisions/D3.md": "# D3\n\nDecided in " + ISSUE + ".\n",
     }, "change")
-    return SimpleNamespace(root=root, base=base, head=head, tmp=tmp_path)
+    # The entrance's records sit apart from the readings' folder, as they must for a reading to build.
+    return SimpleNamespace(root=root, base=base, head=head, tmp=tmp_path, readings=tmp_path / "readings",
+                           home=tmp_path / "entrance")
 
 
 def build(repository, covered=None, name="reading", branch=BRANCH):
     return cold_reader.build_tree(
-        source=repository.root, output=repository.tmp / name, work=WORK,
+        source=repository.root, output=repository.readings / name, work=WORK,
         producer_version="0.206.0", base_tip=repository.base, head=repository.head,
-        covered=covered, branch=branch, numbers=[12, 7])
+        covered=covered, branch=branch, numbers=[12, 7], records_home=repository.home)
 
 
 def test_tree_carries_only_changed_files_pointed_sections_and_every_link_inside_them(repository):
     metadata = cold_reader.load_metadata(build(repository))
     assert sorted(metadata["files"]) == ["a.py", "b.py", "decisions/D1.md", "decisions/D3.md",
                                         "design/x.md", "notes/guide.md"]
-    tree = repository.tmp / "reading"
+    tree = repository.readings / "reading"
     for absent in ("design/y.md", "notes/z.md", "decisions/D2.md", "other/w.md"):
         assert not (tree / absent).exists()
     assert metadata["coverage"]["b.py"]["dependencies"][0]["blob"] == "absent"
@@ -216,9 +218,9 @@ def bundle(store, name, account, tree_root, completed=DAY + "T10:00:00Z"):
 @pytest.mark.cold_reading
 def test_an_open_reading_counts_only_with_the_seat_return_unaltered(repository):
     metadata = build(repository)
-    store = repository.tmp / "records"
+    store = repository.home / "records"
     account = ACCOUNT.format(dash=cold_reader.EM_DASH, tell="yes")
-    bundle(store, "r1", account, repository.tmp / "reading")
+    bundle(store, "r1", account, repository.readings / "reading")
     marker = ("<!-- tradecraft:cold-reading:v1 head=" + repository.head + " status=open "
               "staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer -->\n\n")
     review = "\n\n### Holder's review against the brief\n\nNone.\n"
@@ -261,7 +263,11 @@ class Change:
         self.tmp, self.config, self.brief = tmp_path, config, brief
         self.root = tmp_path / "source"
         self.root.mkdir()
-        self.store = tmp_path / "store"
+        self.store = tmp_path / "entrance" / "store"
+        self.home, self.trees = self.store.parent, tmp_path / "readings"
+        # The stage builds its reading in the system's temporary folder; here, one the test owns.
+        (tmp_path / "temp").mkdir()
+        monkeypatch.setattr(work.tempfile, "tempdir", str(tmp_path / "temp"))
         self.clock = CLOCK_START
         self.comments = []
         self.readings = 0
@@ -313,10 +319,10 @@ class Change:
     def read(self, account, covered=None):
         self.readings += 1
         name = f"reading-{self.readings}"
-        cold_reader.build_tree(source=self.root, output=self.tmp / name, work=WORK,
+        cold_reader.build_tree(source=self.root, output=self.trees / name, work=WORK,
                                producer_version="0.206.0", base_tip=self.base, head=self.head,
-                               covered=covered, branch=BRANCH, numbers=[12])
-        bundle(self.store, name, account, self.tmp / name, completed=self.tick())
+                               covered=covered, branch=BRANCH, numbers=[12], records_home=self.home)
+        bundle(self.store, name, account, self.trees / name, completed=self.tick())
         return account
 
     def post(self, body):
@@ -744,7 +750,92 @@ def test_a_per_issue_override_names_the_cold_reader():
 @pytest.mark.cold_reading
 def test_a_reading_whose_tree_metadata_is_lost_is_unverifiable_rather_than_absent(change):
     change.read(clean())
-    work.recipient_tree.metadata_path(change.tmp / "reading-1").unlink()
+    cold_reader.reading_record(change.trees / "reading-1", change.home).unlink()
+    decision = change.decide()
+    assert decision.reason == "cold-reading-unverifiable" and "reading-1.run.json" in decision.detail
+
+
+@pytest.mark.cold_reading
+def test_the_reading_tree_sits_alone_in_its_folder_outside_the_records_which_keep_its_files(
+        change, monkeypatch, capsys):
+    _code, command, _decision, _report = run_stage(change, monkeypatch, capsys, clean())
+    reading = Path(option(command, "--root"))
+    assert reading.name == "reading" and [entry.name for entry in reading.parent.iterdir()] == ["reading"]
+    home = work._cold_reading_source(change.state()).parent.resolve()
+    assert not reading.resolve().is_relative_to(home)
+    record = cold_reader.reading_record(reading, home)
+    assert record.is_file() and record.is_relative_to(home / "trees")
+    assert cold_reader.load_metadata(record)["diff"] == "inline" and record.with_suffix(".diff").is_file()
+    prompt = Path(option(command, "--dispatch"))
+    assert prompt.name == "prompt.md" and prompt.resolve().is_relative_to(home)
+
+
+@pytest.mark.cold_reading
+def test_a_reading_whose_record_cannot_be_written_leaves_no_tree_or_diff(change, monkeypatch):
+    written = cold_reader.recipient_tree.write_record
+
+    def write_record(path, content):
+        if path.suffix == ".json":
+            raise OSError("fixture disk full")
+        written(path, content)
+
+    monkeypatch.setattr(cold_reader.recipient_tree, "write_record", write_record)
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("claude", "fixture build bundle"))
+    monkeypatch.setattr(work, "_invoke_recipient", lambda *_a: pytest.fail("no seat may launch"))
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    with pytest.raises(OSError, match="fixture disk full"):
+        work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                                  dispatch_path=None, tree_metadata=None, timeout_seconds=600,
+                                  claude_path=None, codex_path=None)
+    assert list((change.tmp / "temp").iterdir()) == []
+    trees = change.home / "trees"
+    assert not trees.exists() or list(trees.iterdir()) == []
+
+
+def former_layout(change, name):
+    """Move a reading into the layout entrances before this one wrote: its tree inside the records,
+    its record and diff beside the tree."""
+    tree = change.trees / name
+    record = cold_reader.reading_record(tree, change.home)
+    former_tree = change.home / "cold-reader" / name / "reading"
+    former_tree.parent.mkdir(parents=True)
+    tree.rename(former_tree)
+    value = json.loads(record.read_bytes())
+    value.pop("metadata_sha256")
+    value["tree_root"] = str(former_tree.resolve())
+    value["metadata_sha256"] = cold_reader._digest(value)
+    former = recipient_tree.former_record_path(former_tree)
+    former.write_bytes(json.dumps(value, indent=2, sort_keys=True).encode("ascii") + b"\n")
+    record.with_suffix(".diff").rename(former.with_suffix(".diff"))
+    record.unlink()
+    request = change.store / f"{name}.request.json"
+    request.write_text(json.dumps({**json.loads(request.read_text("utf-8")), "root": str(former_tree)}),
+                       encoding="utf-8")
+    assert not any((change.home / "trees").iterdir())
+    return former
+
+
+@pytest.mark.cold_reading
+def test_a_reading_recorded_before_the_records_kept_it_still_counts(change):
+    change.reviewed(clean())
+    former_layout(change, "reading-1")
+    assert change.decide().reason == "cold-reading-close"
+    change.post_clean()
+    decision = change.decide()
+    assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+
+
+def test_a_lost_reading_record_is_named_where_the_records_keep_it(tmp_path):
+    reading = tmp_path / "readings" / "reading"
+    assert cold_reader.reading_record(reading, tmp_path / "entrance") == recipient_tree.record_path(
+        reading, tmp_path / "entrance")
+
+
+@pytest.mark.cold_reading
+def test_a_reading_recorded_before_the_records_kept_it_is_unverifiable_without_its_record(change):
+    change.read(clean())
+    former_layout(change, "reading-1").unlink()
     decision = change.decide()
     assert decision.reason == "cold-reading-unverifiable" and "reading-1.run.json" in decision.detail
 
@@ -783,7 +874,7 @@ def test_a_damaged_reading_stops_the_builder_prompt_rather_than_leaving_it_out(c
     change.post_open(flagged("a.py"))
     fixture = change.state()
     work.validate_marker_claims(fixture)
-    work.recipient_tree.metadata_path(change.tmp / "reading-1").unlink()
+    cold_reader.reading_record(change.trees / "reading-1", change.home).unlink()
     with pytest.raises(work.WorkError, match="reading-1.run.json"):
         work._stage_prompt(fixture, work.Decision("build", True, "resume", "cold-reading-review-owed"),
                            branch=BRANCH)
@@ -792,7 +883,7 @@ def test_a_damaged_reading_stops_the_builder_prompt_rather_than_leaving_it_out(c
 @pytest.mark.cold_reading
 def test_the_stage_reports_a_damaged_reading_instead_of_raising(change, monkeypatch, capsys):
     change.read(clean())
-    work.recipient_tree.metadata_path(change.tmp / "reading-1").unlink()
+    cold_reader.reading_record(change.trees / "reading-1", change.home).unlink()
     monkeypatch.setattr(work, "_invoke_recipient", lambda *_a: pytest.fail("no seat may launch"))
     fixture = change.state()
     work.validate_marker_claims(fixture)
@@ -1078,7 +1169,7 @@ def test_a_bad_timeout_is_refused_before_any_tree_is_built(change):
         work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
                                   dispatch_path=None, tree_metadata=None, timeout_seconds=-1,
                                   claude_path=None, codex_path=None)
-    assert not (change.tmp / "cold-reader").exists()
+    assert not (change.home / "cold-reader").exists()
 
 
 def test_a_flag_on_a_path_outside_the_tree_fails_the_form():

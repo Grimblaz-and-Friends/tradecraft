@@ -244,14 +244,20 @@ def _digest(value: dict) -> str:
 
 def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
                base_tip: str, head: str, covered: list[str] | None, branch: str,
-               numbers: list[int]) -> Path:
-    """Write the reading tree and its metadata beside it; refuse one that names the branch."""
+               numbers: list[int], records_home: Path) -> Path:
+    """Write the reading tree, its record and diff kept in the entrance's records; refuse one naming the branch."""
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
-    if output.exists() or recipient_tree.metadata_path(output).exists():
+    record = recipient_tree.record_path(output, records_home)
+    # A reading's record is evidence the gate reads, so it is never replaced.
+    if output.exists() or record.exists():
         raise ColdReaderError(f"refusing existing reading output: {output}")
     if recipient_tree._inside(output, source):
         raise ColdReaderError("reading output must be outside the source repository")
+    try:
+        recipient_tree.refuse_records_placement(output, records_home)
+    except recipient_tree.RecipientTreeError as exc:
+        raise ColdReaderError(str(exc)) from exc
     state = current(source, base_tip, head)
     changed = state["change_set"]
     if not changed:
@@ -322,11 +328,26 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
         "verification": "raw-object-ids-match",
     }
     value["metadata_sha256"] = _digest(value)
-    recipient_tree.metadata_path(output).write_bytes(
-        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True).encode("ascii") + b"\n")
-    if inline:
-        recipient_tree.metadata_path(output).with_suffix(".diff").write_bytes(diff)
-    return recipient_tree.metadata_path(output)
+    # The diff first, so a record that stands always has its diff.
+    try:
+        if inline:
+            recipient_tree.write_record(record.with_suffix(".diff"), diff)
+        recipient_tree.write_record(
+            record, json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True).encode("ascii") + b"\n")
+    except OSError:
+        # A diff whose record never stood belongs to no reading.
+        record.with_suffix(".diff").unlink(missing_ok=True)
+        raise
+    return record
+
+
+def reading_record(root: Path, records_home: Path) -> Path:
+    """A reading's record: in the entrance's records, or beside its tree where the former layout wrote it."""
+    # A reading recorded beside its tree still counts for the pull request that holds it; a record found in
+    # neither place is named where it belongs, so a lost record is reported there.
+    record = recipient_tree.record_path(root, records_home)
+    former = recipient_tree.former_record_path(root)
+    return former if not record.exists() and former.exists() else record
 
 
 def load_metadata(path: Path) -> dict:
