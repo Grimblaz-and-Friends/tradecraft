@@ -12,7 +12,7 @@ Every inline comment ends in its own thread, by a fix or a one-line reply carryi
 
 Where the base branch's rules require review threads to be resolved, whoever posts an inline disposition reply, the builder at review disposition, the holder posting a cloud review-disposition's returned replies, or the holder answering an author at release, resolves that thread in the same turn, because GitHub will not merge while it stays open; elsewhere the answered thread stays open, so a `declined` remains visible to the owner at merge, and where the rules cannot be read, resolve nothing and let the release report name any block that follows.
 
-A cloud review-disposition run posts nothing on the pull request and resolves no thread. It returns every reply in its report's `tradecraft-cloud-replies` block, each naming its target (a thread's root comment id, or the conversation for a body finding or an unidentified review) and its exact text; the holder posts each exactly as returned, resolves each thread it answers, and posts the completion marker the final reply carries.
+A cloud review-disposition run posts nothing on the pull request and resolves no thread, because its own posts may be refused by its safety screen (the `work` cell's cloud-builds reference). It returns every reply in its report's `tradecraft-cloud-replies` block, each naming its target (a thread's root comment id, or the conversation for a body finding or an unidentified review) and its exact text; the holder posts each exactly as returned, resolves each thread it answers, and posts the completion marker the final reply carries.
 
 ## Findings in a review body
 

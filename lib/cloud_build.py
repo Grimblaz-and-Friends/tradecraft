@@ -462,18 +462,19 @@ def skip_ci_check(commits: list[dict]) -> dict[str, object]:
 
 
 def change_branch_check(tip_at_fire: str | None, tip_after: str | None, commits: list[str],
-                        status: str | None, *, repair: bool) -> dict[str, object]:
+                        status: str | None, *, repair: bool, stage: str = "repair") -> dict[str, object]:
     """The run worked on the change's branch; a repair's range is recorded only."""
     value = {"tip_at_fire": tip_at_fire, "tip_after": tip_after, "commits": commits,
              "compare_status": status}
     if repair:
-        # A disposition can rightly make no commit, but one that moves the branch must build on it.
+        # A review-disposition or floor turn can rightly make no commit, but one that moves the branch
+        # must build on it.
         moved = tip_after is not None and tip_after != tip_at_fire
         if moved and status != "ahead":
             return {**value, "ok": False, "checked": True,
                     "faults": ["tip_after does not descend from tip_at_fire"]}
         return {**value, "ok": True, "checked": False,
-                "reason": "a disposition can rightly make no commit"}
+                "reason": f"a {stage} turn can rightly make no commit"}
     faults = []
     if tip_after is None or tip_after == tip_at_fire:
         faults.append("the change branch's tip is unchanged")
@@ -1262,7 +1263,7 @@ def _finish(args, transport, request, run_record, attempt, growing, deadline, re
         checks["change_branch"] = change_branch_check(
             cloud["change_branch"]["tip_at_fire"], after,
             [row["sha"] for row in value.get("commits") or []], value.get("status"),
-            repair=args.stage in REPAIR_STAGES)
+            repair=args.stage in REPAIR_STAGES, stage=args.stage)
     record_cloud["cloud_checks"] = checks
     previous, deltas = _previous_usage(session_attempts(record_root, cloud["session_id"]),
                                        request["dispatch_id"])

@@ -1107,3 +1107,8 @@ def test_the_entrance_and_the_launcher_read_one_routing_decision(tmp_path, monke
     uuid = "01234567-89ab-cdef-0123-456789abcdef"
     assert cloud.launch_route("review-disposition", uuid, f"{REPO}#77") is None
     assert work._cloud_practice(state, "review-disposition", "claude", None, uuid) is None
+
+
+def test_a_repair_change_branch_reason_names_its_stage():
+    assert cloud.change_branch_check(TIP, TIP, [], "identical", repair=True, stage="floor")["reason"] \
+        == "a floor turn can rightly make no commit"

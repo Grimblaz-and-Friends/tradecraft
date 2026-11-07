@@ -12472,7 +12472,7 @@ def test_938_a_cloud_review_disposition_returns_its_replies_and_a_local_one_is_u
                              "reviewer-thread-lacks-disposition", "701,702")
     local = work._stage_prompt(fixture, decision, floor_command="python fixture-check.py").decode()
     cloud = work._stage_prompt(fixture, decision, floor_command="python fixture-check.py", cloud=True).decode()
-    assert local == _disposition_prompt(fixture.synchronization)  # the local prompt is unchanged
+    assert local == _disposition_prompt(fixture.synchronization)  # the local prompt carries no cloud clause
     assert work.CLOUD_REPLY_INSTRUCTION in cloud and "post nothing on the pull request" in cloud
     for posting in (work.THREAD_RESOLUTION_INSTRUCTION, work.RESOLVE_THREAD_COMMAND,
                     "after posting each inline disposition reply", "resolveReviewThread"):
