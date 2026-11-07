@@ -4784,7 +4784,8 @@ def _cloud_replies_pending(state: WorkState) -> str | None:
     finished = _time(run.get("completed_at"))
     if finished is None:
         return None
-    for item in [*state.review_comments, *state.issue_comments]:
+    # Only the pull request's own surfaces: a holder reading on the work's issue posts no reply.
+    for item in [*state.review_comments, *state.pr_comments]:
         posted = _time(item.get("created_at") if isinstance(item.get("created_at"), str) else None)
         if _author(item) in state.config.marker_producers and posted is not None and posted > finished:
             return None

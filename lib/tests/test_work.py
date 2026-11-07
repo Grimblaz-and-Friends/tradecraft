@@ -12504,6 +12504,10 @@ def test_938_a_returned_cloud_review_disposition_routes_its_replies_to_the_holde
     assert (decision.stage, decision.reason, decision.dispatch) == (
         "cloud-replies", "cloud-review-disposition-replies-unposted", False)
     assert "holder posts its replies" in decision.detail
+    # A holder reading on the work's issue is no reply.
+    fixture.issue_comments.append({"id": 90, "body": "reading", "created_at": "2026-09-20T11:00:00Z",
+                                   "user": {"login": PRODUCER}})
+    assert work.decide(fixture, RULES).stage == "cloud-replies"
     # Once the holder has posted, a reply the run missed goes back to the builder.
     fixture.review_comments.append({"id": 42, "in_reply_to_id": 41, "body": "fixed",
                                     "created_at": "2026-09-20T11:00:00Z", "user": {"login": PRODUCER}})
