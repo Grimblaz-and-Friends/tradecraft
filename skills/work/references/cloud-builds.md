@@ -2,7 +2,7 @@
 
 **Loaded when** setting a repository up for cloud builds, switching one off, or reading a cloud attempt's route, profile mark, practice drift, attempt checks or cost.
 
-For a set-up repository, the Claude implementer's launches run as a Claude Code cloud session that the launcher starts through that repository's routine. The route carries the artifact, build, review-disposition and floor stages; any other Claude implementer stage, such as a source-verification account, stays local. A resume follows its session, so the switch has two exceptions: a session started locally before the repository was set up resumes locally, and a `cse_` cloud session resumes in the cloud after the switch entry is removed. A cloud builder cannot reach the owner's machine, which is the route's reason. A failed launch stops and says why; it never falls back to a local builder. A Codex implementer is untouched.
+For a set-up repository, the Claude implementer's launches run as a Claude Code cloud session that the launcher starts through that repository's routine. The route carries the artifact, build, review-disposition and floor stages; any other Claude implementer stage, such as a source-verification account, stays local. A resume follows its session, so the switch has two exceptions: a session started locally before the repository was set up resumes locally, and a `cse_` cloud session resumes in the cloud after the switch entry is removed. Both exceptions are ratified as transitional, because the alternative either starts a fresh builder, which would lose the session that holds the change's context, or stalls the change. A cloud builder cannot reach the owner's machine, which is the route's reason. A failed launch stops and says why; it never falls back to a local builder. A Codex implementer is untouched.
 
 ## The switch
 
@@ -44,7 +44,9 @@ The practice's `Stop` hook acts only when `CLAUDE_CODE_REMOTE` is set, and outsi
 
 The launcher then keeps the report as the published output, posts it whole on the issue (in labelled parts past GitHub's comment limit), deletes only the report branch it named for that dispatch, and fast-forwards the local implementation tree.
 
-**Untested premises.** Whether a cloud review-disposition run can post its reply dispositions on the pull request, and whether the product's own `CLAUDE.md` or `AGENTS.md` loads natively in the cloud, are untested; the task tells the run to read them, and `instructions_loaded` is the evidence. Who posts a cloud review-disposition's replies is the owner's to rule.
+**Untested premise.** Whether the product's own `CLAUDE.md` or `AGENTS.md` loads natively in the cloud is untested; the task tells the run to read them, and `instructions_loaded` is the evidence.
+
+**A cloud review-disposition's replies.** A cloud review-disposition run posts nothing on the pull request and resolves no thread: it returns every reply in its report's `tradecraft-cloud-replies` block, and the holder posts each exactly as returned, resolves each thread it answers, and posts the completion marker a reply carries. A cloud run's own GitHub posts may be refused by its safety screen, and loosening that screen is out of scope, so the holder posts what the run returns, as it already posts the floor and builder-session markers a builder returns. Until the holder posts them, the entrance names that step (`cloud-review-disposition-replies-unposted`) rather than relaunching the builder.
 
 ## Follow-ups
 

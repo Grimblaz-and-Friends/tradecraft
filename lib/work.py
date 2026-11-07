@@ -335,6 +335,19 @@ THREAD_RESOLUTION_INSTRUCTION = (
     "Resolve no thread you did not answer in this turn, except a thread listed below as already "
     "answered; a body finding has no thread."
 )
+# A cloud run's own GitHub posts may be refused by its safety screen, so the holder posts what it
+# returns (the owner's ruling, D-938). Design: lib/DESIGN.md#the-cloud-route
+CLOUD_REPLIES_FENCE = "tradecraft-cloud-replies"
+CLOUD_REPLY_INSTRUCTION = (
+    " This run is a cloud session: post nothing on the pull request and resolve no thread; the holder "
+    "posts your replies exactly as you return them and resolves each thread it answers. End your report "
+    "with every reply, in one fenced block whose info string is `" + CLOUD_REPLIES_FENCE + "`, holding one "
+    "JSON object: {\"schema_version\": 1, \"replies\": [...]}. Each reply is {\"target\": T, \"body\": B}. "
+    "T is {\"thread\": ROOT_COMMENT_ID} for an inline thread, the id of the thread's root comment, or "
+    "{\"conversation\": true} for a body finding or an unidentified review. B is the reply's whole exact "
+    "text, opening with its bare disposition word, with any finding identity and source link the contract "
+    "requires, and with the connected-reviewer completion marker on that reviewer's final reply."
+)
 # GitHub's mergeable_state words it will merge on; `unstable` means only non-required checks fail.
 MERGEABLE_STATES = frozenset({"clean", "has_hooks", "unstable"})
 NON_FAILING_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
@@ -4751,6 +4764,38 @@ def _reviewer_ran(state: WorkState) -> bool:
     return all(item["result"] == "present" for item in _reviewer_receipts(state))
 
 
+def _cloud_replies_pending(state: WorkState) -> str | None:
+    """The holder's step after a cloud review-disposition returns, until its replies are posted.
+
+    A cloud run posts nothing (the owner's ruling, D-938), so its replies wait in its report. Any
+    reply or comment a marker producer posts after the run completed counts as the holder's posting,
+    so a reply the run missed goes back to the builder rather than to the holder again.
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    if state.pr is None:
+        return None
+    bundles = _matching_bundles(f"{state.repo}#{state.issue_number}", {"review-disposition"},
+                                state.record_root or records.default_record_root())
+    if not bundles:
+        return None
+    completed, path, request, run = bundles[-1]
+    if request.get("route") != "cloud":
+        return None
+    finished = _time(run.get("completed_at"))
+    if finished is None:
+        return None
+    for item in [*state.review_comments, *state.issue_comments]:
+        posted = _time(item.get("created_at") if isinstance(item.get("created_at"), str) else None)
+        if _author(item) in state.config.marker_producers and posted is not None and posted > finished:
+            return None
+    output = (run.get("result") or {}).get("published_output") or path
+    return (f"The cloud review-disposition {path} returned its replies in {output}, in its "
+            f"`{CLOUD_REPLIES_FENCE}` block. Post each reply exactly as returned, to the thread or the "
+            "pull-request conversation it names, resolve each thread you answer, and post the completion "
+            "marker where a reply carries it. A cloud run posts nothing on the pull request, so the holder "
+            "posts its replies.")
+
+
 def _undisposed_threads(state: WorkState) -> tuple[list[int], list[str]]:
     replies: dict[int, list[dict[str, object]]] = {}
     for item in state.review_comments:
@@ -5516,6 +5561,10 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if reviewers and not _reviewer_ran(state):
         return result("waiting", False, None, "required-connected-reviewer-has-not-run")
     threads, _ignored_dispositions = _undisposed_threads(state)
+    pending = _cloud_replies_pending(state)
+    if pending is not None:
+        return result("cloud-replies", False, None, "cloud-review-disposition-replies-unposted", pending,
+                      status="holder-owned")
     if threads:
         return result(
             "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
@@ -6178,7 +6227,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
                   merge_obligation: MergeObligation | None = None,
                   version_instruction: str = "",
                   resumed: ResumeSource | None = None,
-                  merge_script: str | None = None) -> bytes:
+                  merge_script: str | None = None, cloud: bool = False) -> bytes:
     if decision.stage == "use":
         raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
@@ -6246,7 +6295,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             "Repairs renew this duty even on an already-ready pull request."
         )
     if decision.stage == "review-disposition":
-        instruction += _thread_resolution_clause(state)
+        # A cloud run returns its replies for the holder to post; a local one posts and resolves them.
+        instruction += CLOUD_REPLY_INSTRUCTION if cloud else _thread_resolution_clause(state)
     explicit_artifact = decision.stage == "artifact"
     phase = state.artifact_phase or _artifact_phase(state)
     problem = _artifact_source_problem(state, decision.stage)
@@ -9407,6 +9457,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     merge_obligation=obligation,
                     version_instruction=version_instruction, resumed=resume_source,
                     merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source),
+                    cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source) is not None,
                 )
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
@@ -9579,6 +9630,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         merge_obligation=obligation,
                         version_instruction=version_instruction, resumed=resume_source,
                         merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source),
+                        cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source) is not None,
                     )
                 except WorkError as exc:
                     if getattr(exc, "version_obligation", None) is not None:

@@ -12456,3 +12456,60 @@ def test_884_review_disposition_resumes_a_source_bundle_from_0_197_0():
                               request={"producer_version": "0.153.0"}, run={}, session="builder")
     refused = work._version_refusal(fixture, decision, older)
     assert refused is not None and refused.reason == "unsafe-source-version-for-review-disposition"
+
+
+def test_938_a_cloud_review_disposition_returns_its_replies_and_a_local_one_is_unchanged():
+    transport = ThreadTransport({RULES_ENDPOINT: DAEMON_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED},
+                                pages=[_thread_page([_thread("PRRT_x", 701, "reviewer-fixture"),
+                                                     _thread("PRRT_y", 702, "reviewer-fixture")])])
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True, draft=False)
+    fixture.review_comments = [
+        {"id": 701, "body": "finding one", "user": {"login": REVIEWER}},
+        {"id": 702, "body": "finding two", "user": {"login": REVIEWER}},
+    ]
+    fixture.synchronization = work._collect_synchronization(transport, state(pr=True).pr)
+    decision = work.Decision("review-disposition", True, "resume",
+                             "reviewer-thread-lacks-disposition", "701,702")
+    local = work._stage_prompt(fixture, decision, floor_command="python fixture-check.py").decode()
+    cloud = work._stage_prompt(fixture, decision, floor_command="python fixture-check.py", cloud=True).decode()
+    assert local == _disposition_prompt(fixture.synchronization)  # the local prompt is unchanged
+    assert work.CLOUD_REPLY_INSTRUCTION in cloud and "post nothing on the pull request" in cloud
+    for posting in (work.THREAD_RESOLUTION_INSTRUCTION, work.RESOLVE_THREAD_COMMAND,
+                    "after posting each inline disposition reply", "resolveReviewThread"):
+        assert posting not in cloud
+    # Only the reply clause differs; every other byte of the task is the local one.
+    assert cloud.replace(work.CLOUD_REPLY_INSTRUCTION, work._thread_resolution_clause(fixture)) == local
+
+
+def test_938_a_returned_cloud_review_disposition_routes_its_replies_to_the_holder(tmp_path, monkeypatch):
+    fixture = state(
+        MECHANICAL, FLOOR,
+        f"<!-- tradecraft:no-use:v1 head={SHA} -->\nUse: not required - mechanical.",
+        pr=True, draft=False, reviewer_ran=True,
+    )
+    fixture.review_comments = [
+        {"id": 41, "body": "finding", "commit_id": SHA, "user": {"login": REVIEWER, "type": "Bot"}},
+        {"id": 43, "body": "another", "commit_id": SHA, "user": {"login": REVIEWER, "type": "Bot"}},
+    ]
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="review-disposition", completed_at="2026-09-20T10:00:00+00:00")
+    request_path = store / "review-disposition" / "result.md.request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request_path.write_text(json.dumps({**request, "route": "cloud"}), encoding="utf-8")
+    matching = work._matching_bundles
+    monkeypatch.setattr(work, "_matching_bundles", lambda work_value, stages, root, **kw: (
+        matching(work_value, stages, store, **kw) if set(stages) == {"review-disposition"}
+        else matching(work_value, stages, root, **kw)))
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason, decision.dispatch) == (
+        "cloud-replies", "cloud-review-disposition-replies-unposted", False)
+    assert "holder posts its replies" in decision.detail
+    # Once the holder has posted, a reply the run missed goes back to the builder.
+    fixture.review_comments.append({"id": 42, "in_reply_to_id": 41, "body": "fixed",
+                                    "created_at": "2026-09-20T11:00:00Z", "user": {"login": PRODUCER}})
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.detail) == ("review-disposition", "43")
+    # A local review-disposition is routed as before.
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    fixture.review_comments.pop()
+    assert work.decide(fixture, RULES).stage == "review-disposition"

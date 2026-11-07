@@ -229,7 +229,7 @@ The object and publication contract are `proof.md`. The gate evaluates only an a
 
 - **Exact form:** `<!-- tradecraft:connected-reviewer:v1 name=NAME status=STATUS -->`.
 - **Attributes and lawful values:** `name` is the reviewer's nonempty integration identifier; `status=complete`.
-- **Producer, surface, moment:** the builder, in the final disposition reply on the pull request, once that connected review has run and every comment from it is dispositioned.
+- **Producer, surface, moment:** the builder, in the final disposition reply on the pull request, once that connected review has run and every comment from it is dispositioned; for a cloud review-disposition, the holder, posting the final reply the cloud run returned.
 
 ```text
 <!-- tradecraft:connected-reviewer:v1 name=review-bot status=complete -->
