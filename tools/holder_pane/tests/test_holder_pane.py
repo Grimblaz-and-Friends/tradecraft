@@ -1130,7 +1130,7 @@ def test_core_runs_as_a_script(home):
     assert json.loads(completed.stdout)["waiting_on"] == "ci"
 
 
-# --- the holder's own steps, worked out by the pane (row 1) ----------------------------------
+# --- D-976 row 1: the holder's own steps, worked out by the pane ---------------------------
 #
 # Replays of a real holder's recorded calls: stages run in the background with their output
 # redirected, a release report and use markers posted from files, and catch-up run seconds
@@ -1504,6 +1504,21 @@ def test_940_c1_8_title_line_read_from_every_body_form(home, tmp_path, form, hea
     assert recorded == (HEAD if head else HEAD2)
 
 
+def test_940_c1_8_an_input_body_larger_than_a_body_files_cap_is_read_whole(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    title = f"**Release report: #95 {ARROW} PR #116** at head `{HEAD}`"
+    payload = holder.scratch / "rr.json"
+    payload.write_text(json.dumps({"body": title + "\n" + "x" * (core.BODY_LIMIT_BYTES * 2)}),
+                       encoding="utf-8")
+    holder.observe(at("06:58:32"), f"gh api repos/{DAEMON}/issues/116/comments --input "
+                                   f"{payload.as_posix()}", "")
+    view = holder.tick(at("06:58:40"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+
+
 @pytest.mark.parametrize("command", [
     'gh pr comment 116 --body-file "$(pwd)/x.md"',
     'gh pr comment 116 --body "**Release report: #95 ' + ARROW + ' PR #116** at head `git rev-parse HEAD`"',
@@ -1632,6 +1647,19 @@ def test_940_c1_9_a_new_head_another_stage_or_new_work_ends_it(home, tmp_path, c
         assert holder.remind(at("07:10:02")) is None
 
 
+def test_940_c1_9_dispatch_for_another_change_leaves_this_changes_report(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    other = (f"python C:/cache/lib/work.py run build --repo {DAEMON} --issue 96 "
+             f"--root {holder.wt.as_posix()}")
+    holder.observe(at("07:00:00"), other, "12345")
+    assert holder.tick(at("07:00:10"))["next_step"] != "merge"  # the session now shows #96
+    holder.observe(at("07:05:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    view = holder.tick(at("07:05:10"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+    assert holder.remind(at("07:05:11")) is None
+
+
 def test_940_c1_9_without_at_head_the_reading_in_forces_head_is_recorded(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
@@ -1699,7 +1727,7 @@ def test_940_k3_redirect_targets(tmp_path, command, expected):
     assert (found.name if found else None) == expected
 
 
-# --- #940 row 2: the desktop app's session records -------------------------------------------
+# --- D-976 row 2: the desktop app's session records ------------------------------------------
 
 def current_desktop(tmp_path: Path, source: str | None = "tool", title: str = "Start 888",
                     session: str = SID) -> dict:
@@ -1763,7 +1791,7 @@ def test_940_c2_2_no_record_anywhere_says_rename_off(home, tmp_path):
     assert later["rename"] is not None and later["view"]["rename_note"] is None
 
 
-# --- #940 row 3: every repository's Steward -------------------------------------------------
+# --- D-976 row 3: every repository's Steward ------------------------------------------------
 
 @pytest.mark.parametrize("name", ["Daemon Steward", "Steward", " daemon steward "])
 def test_940_c3_1_a_steward_draws_nothing_and_writes_nothing(home, tmp_path, name):
@@ -1803,13 +1831,44 @@ def test_940_c3_1_a_session_retitled_steward_is_unbound_and_its_files_removed(ho
     assert not core.session_path(ctx_at(home, T0), SID).exists()
 
 
+def _bound_and_written(home):
+    assert bind(home)["bound"] is True
+    tick(home, T0 + 1)
+    ctx = ctx_at(home, T0)
+    status = core.status_path(ctx, core.change_key(REPO_NAME, 888))
+    assert core.binding_path(ctx, SID).exists() and core.session_path(ctx, SID).exists()
+    assert status.exists()
+    return ctx, status
+
+
+def test_940_c3_1_a_steward_met_at_a_stage_call_leaves_no_files(home):
+    ctx, status = _bound_and_written(home)
+    assert bind(home, now=T0 + 60, title=allow_title("Daemon Steward", "user")) == {
+        "bound": False}
+    assert not core.binding_path(ctx, SID).exists()
+    assert not core.session_path(ctx, SID).exists()
+    assert not status.exists()
+
+
+def test_940_c3_1_a_steward_met_at_any_other_call_leaves_no_files(home, tmp_path):
+    ctx, status = _bound_and_written(home)
+    environ = current_desktop(tmp_path, "user", title="Daemon Steward")
+    later = T0 + core.RECORD_SEARCH_SECONDS + 5  # past the miss the first tick recorded
+    answer = core.observe(core.Ctx(home=home, now=later, environ=environ), {
+        "session_id": SID, "command": 'gh pr comment 900 --body "hello"', "output": ""})
+    assert answer == {"bound": False}
+    assert not core.binding_path(ctx, SID).exists()
+    assert not core.session_path(ctx, SID).exists()
+    assert not status.exists()
+
+
 @pytest.mark.parametrize("name", ["Start #95: M6 finals", "Steward review", "Stewardship"])
 def test_940_c3_1_other_titles_still_bind(home, name):
     assert not core.is_steward(name)
     assert bind(home, title=allow_title(name, "auto"))["bound"] is True
 
 
-# --- #940 row 4: restart binds by the session's own id -------------------------------------
+# --- D-976 row 4: restart binds by the session's own id ------------------------------------
 
 OTHER = "c5f2f6e3-0000-4000-8000-000000000000"
 
@@ -1850,7 +1909,7 @@ def test_940_c4_2_a_restarted_holder_gets_its_own_change_back(home, tmp_path):
         "bound"] is True
 
 
-# --- #940 row 5: the installer across checkouts --------------------------------------------
+# --- D-976 row 5: the installer across checkouts -------------------------------------------
 
 class FakeClaude(FakeTools):
     """The CLI's local-scope effects on the checkout's local file, as the real CLI makes them."""
@@ -1987,11 +2046,15 @@ def test_940_c5_2_an_unparseable_file_or_snapshot_says_so(tmp_path, records):
     assert any("isn't a JSON object now" in message for message in messages)
     path.write_text('{"permissions": {}}', encoding="utf-8")
     installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
-    record = json.loads(records.read_text())
-    record[str(root)]["local_before"] = "bm90IGpzb24="  # "not json"
-    records.write_text(json.dumps(record), encoding="utf-8")
-    messages = installer.uninstall(root, Path("claude.exe"), tools)
-    assert any("copy taken at the install" in message for message in messages)
+    for snapshot in ("bm90IGpzb24=", "!!not base64!!"):  # "not json", then not base64 at all
+        record = json.loads(records.read_text())
+        record[str(root)]["local_before"] = snapshot
+        records.write_text(json.dumps(record), encoding="utf-8")
+        messages = installer.uninstall(root, Path("claude.exe"), tools)
+        assert any("copy taken at the install" in message for message in messages)
+        # Left as it is: the installer's own opt-in is still there.
+        assert json.loads(path.read_text())["env"] == {installer.OPT_IN: "1"}
+        assert json.loads(records.read_text())[str(root)]["local_before"] == snapshot
 
 
 def test_940_c5_3_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):
@@ -2010,7 +2073,7 @@ def test_940_c5_3_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):
     assert installer.newest_desktop_claude({}) is None
 
 
-# --- #940 row 6: the trial checklist --------------------------------------------------------
+# --- D-976 row 6: the trial checklist -------------------------------------------------------
 
 def test_940_c6_1_the_checklist_carries_the_new_checks_and_their_split():
     text = README.read_text(encoding="utf-8")

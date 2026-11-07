@@ -179,30 +179,36 @@ def set_opt_in(path: Path) -> bool:
     return added
 
 
-def restore_local(path: Path, record: dict[str, Any] | None) -> str | None:
+def restore_local(path: Path, record: dict[str, Any] | None) -> tuple[str | None, bool]:
     """Put the checkout's local file back as the first install found it.
 
     The pane's own keys are removed from what the file holds now, with any
     container they leave empty that the snapshot didn't hold. When the result
     is the snapshot, its exact bytes go back (or the file goes, if the install
-    created it); otherwise the result is kept and the answer says why.
+    created it); otherwise the result is kept and the answer says why. Answers
+    the note and whether the install record may go: it stays whenever the file
+    was left as it is, so the snapshot is never lost.
     """
     record = record or {}
     # Three states: bytes (the file as it was), None (it was absent), and False for a record
     # kept before snapshots were, which can only have its keys removed.
     snapshot = record.get("local_before", False)
-    before_bytes = base64.b64decode(snapshot) if isinstance(snapshot, str) else None
     try:
+        before_bytes = base64.b64decode(snapshot, validate=True) if isinstance(
+            snapshot, str) else None
         before = json.loads(before_bytes.decode("utf-8")) if before_bytes is not None else {}
-    except ValueError:
-        before = None
+    except ValueError:  # bad base64, bad UTF-8 and bad JSON alike
+        before_bytes, before = None, None
+    if snapshot is not False and not isinstance(before, dict):
+        return (f"{path}: left as it is, because the copy taken at the install can't be read "
+                f"as a JSON object; the install record is kept"), False
     if not path.exists():
-        return None
+        return None, True
     try:
         settings = _read_settings(path)
     except (Refused, ValueError):
-        return (f"{path}: left as it is, because it isn't a JSON object now; "
-                f"remove the pane's keys from it by hand")
+        return (f"{path}: left as it is, because it isn't a JSON object now; remove the pane's "
+                f"keys from it by hand; the install record is kept"), False
     removals = [("enabledPlugins", PLUGIN_REF), ("extraKnownMarketplaces", MARKETPLACE)]
     if record.get("added_opt_in") is True:
         removals.append(("env", OPT_IN))
@@ -218,15 +224,12 @@ def restore_local(path: Path, record: dict[str, Any] | None) -> str | None:
             path.unlink()
         else:
             path.write_bytes(before_bytes)
-        return None
+        return None, True
     _write_settings(path, settings)
     if snapshot is False:
-        return None
-    if not isinstance(before, dict):
-        return (f"{path}: not restored byte for byte, because the copy taken at the install "
-                f"isn't a JSON object; the pane's keys were removed and the rest kept")
+        return None, True
     return (f"{path}: not restored byte for byte, because it changed after the install; "
-            f"the pane's keys were removed and every other change kept")
+            f"the pane's keys were removed and every other change kept"), True
 
 
 def _claude(runner: Runner, claude: Path, checkout: Path, *args: str) -> None:
@@ -268,7 +271,9 @@ def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> 
                 "--scope", "local")
         messages.append(f"removed the shared marketplace {MARKETPLACE}: no other checkout has it")
     # Other function hooks in the checkout may rely on an opt-in that predates this install.
-    note = restore_local(checkout / LOCAL, _forget(checkout))
+    note, done = restore_local(checkout / LOCAL, _install_records().get(str(checkout)))
+    if done:
+        _forget(checkout)
     if note:
         messages.append(note)
     return messages

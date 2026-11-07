@@ -510,6 +510,18 @@ def unbind(ctx: Ctx, session_id: str) -> None:
     _remove(binding_path(ctx, session_id))
 
 
+def forget_steward(ctx: Ctx, session_id: str) -> None:
+    """A Steward keeps nothing of the pane's: its binding, its session state and its status file."""
+    binding = load_binding(ctx, session_id)
+    if binding is not None:
+        path = status_path(ctx, change_key(binding["repository"], binding["issue"]))
+        record = _read_json(path)
+        if isinstance(record, dict) and record.get("session_id") == session_id:
+            _remove(path)
+    unbind(ctx, session_id)
+    _remove(session_path(ctx, session_id))
+
+
 def _desktop_record_dirs(ctx: Ctx) -> list[Path]:
     """Where the desktop app keeps its session records: its current place first, then the old."""
     dirs = []
@@ -769,15 +781,17 @@ def running_overlay(bundle: dict[str, Any], now: float) -> dict[str, Any]:
 def bind(ctx: Ctx, session_id: str, binding: dict[str, Any], title: dict[str, Any]) -> bool:
     """Bind unless the session is a Steward. Returns whether bound."""
     if title.get("steward"):
-        unbind(ctx, session_id)
+        forget_steward(ctx, session_id)
         return False
     previous = load_binding(ctx, session_id)
     state = load_session(ctx, session_id)
     if previous is None or (previous.get("repository"), previous.get("issue")) != (
             binding["repository"], binding["issue"]):
-        # A new change: nothing from the previous one carries over but the rename record.
+        # A new change: nothing from the previous one carries over but the rename record, and
+        # a posted release report, which no read would restore when the session comes back.
         state = {key: state[key] for key in ("desktop_record", "desktop_miss_at", "last_label",
-                                              "last_title_set", "rename_disabled") if key in state}
+                                              "last_title_set", "rename_disabled",
+                                              "release_report_posted") if key in state}
     entrance = binding.get("entrance") or newest_cached_entrance(ctx)
     record = {
         "repository": binding["repository"], "issue": int(binding["issue"]),
@@ -858,10 +872,14 @@ TITLE_HEAD = re.compile(r"\s*at head\s+`?([0-9a-fA-F]{7,40})`?(?![0-9a-fA-F])")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
 PS_VARIABLE = re.compile(r"^\$([A-Za-z_][A-Za-z0-9_]*)$")
 STDOUT_REDIRECT = re.compile(r"^(1?>>?|&>>?|\*>>?)(?!&)")
-# Reads are capped so a stray large file can't stall a hook. Only a body's opening line
-# matters, and a report past its cap reads as no report, which the next entrance read
-# corrects, as for any report the pane can't find.
+# Reads are capped so a stray large file can't stall a hook.
+# A body file needs only its opening line, which holds the title line.
 BODY_LIMIT_BYTES = 65536
+# An `--input` file is JSON that must parse whole: room for GitHub's largest comment body
+# (262,144 bytes) and the JSON around it.
+INPUT_LIMIT_BYTES = 1024 * 1024
+# A report past its cap reads as no report, which the next entrance read corrects, as for
+# any report the pane can't find.
 REPORT_LIMIT_BYTES = 8 * 1024 * 1024
 # gh options that take no value, so the word after them is not theirs.
 GH_SWITCHES = frozenset({"--web", "-w", "--edit-last", "--editor", "-e", "--yes",
@@ -1254,7 +1272,8 @@ class Commands:
         if source.value == "-":
             text = self.heredoc(segment)
         else:
-            text = None if source.unresolved else _read_text(_path(source.value, cwd))
+            text = None if source.unresolved else _read_text(_path(source.value, cwd),
+                                                             INPUT_LIMIT_BYTES)
         try:
             parsed = json.loads(text) if text is not None else None
         except ValueError:
@@ -1329,13 +1348,13 @@ def _tee_target(found: list[Word], cwd: str | None) -> Path | None:
     return None
 
 
-def _read_text(path: Path | None) -> str | None:
-    """A body file's first BODY_LIMIT_BYTES as UTF-8 (a BOM stripped); None when it can't be read."""
+def _read_text(path: Path | None, limit: int = BODY_LIMIT_BYTES) -> str | None:
+    """A body file's first `limit` bytes as UTF-8 (a BOM stripped); None when it can't be read."""
     if path is None:
         return None
     try:
         with open(path, "rb") as stream:
-            data = stream.read(BODY_LIMIT_BYTES)
+            data = stream.read(limit)
     except OSError:
         return None
     return data.decode("utf-8", errors="replace").removeprefix(BOM)
@@ -1394,7 +1413,8 @@ def report_file(path: Path | None, since: float) -> tuple[dict[str, Any] | None,
 
 
 def _same_head(first: Any, second: Any) -> bool:
-    # Title lines and reports may carry an abbreviated SHA; Git never abbreviates below 7.
+    # Title lines and reports may carry an abbreviated SHA. The floor keeps a short shared
+    # prefix from matching an unrelated head and keeping the owner's merge showing.
     if not (isinstance(first, str) and isinstance(second, str)):
         return False
     first, second = first.lower(), second.lower()
@@ -1424,7 +1444,7 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     if binding is None:
         return {"bound": False}
     if title.get("steward"):
-        unbind(ctx, session_id)
+        forget_steward(ctx, session_id)
         return {"bound": False}
     # Binding may have reset the session's state for a new change, so it is read again; only
     # the desktop-record lookup the title read just made is kept, so it isn't repeated.
@@ -1441,7 +1461,7 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
         launch = BACKGROUND_LAUNCH.search(output)
         state.pop("background", None)  # a new stage call ends a background run's display
         if stage in DISPATCHING:
-            _observe_launch(ctx, binding, state, stage, output, started, ended, pr)
+            _observe_launch(ctx, binding, state, stage, output, started, ended, pr, call)
         elif payload.get("background") is True or launch is not None:
             # Run in the background: its report comes later, in a file (README "How it behaves").
             state["background"] = {
@@ -1490,9 +1510,9 @@ def _observe_posts(binding: dict[str, Any], state: dict[str, Any], change: dict[
             continue
         title = release_report_title(post["body"], issue, known)
         target = post["target"]
-        # Until the pane knows the change's pull request, any `gh pr` target counts: the real
-        # release report names no pull request the pane could check, and any other wrong
-        # mark corrects itself at the next read.
+        # Until the pane knows the change's pull request, any `gh pr` target counts: the
+        # entrance's release-report stage output names no pull request the pane could check,
+        # and any other wrong mark corrects itself at the next read.
         if known is not None:
             ours = target in (issue, known)
         else:
@@ -1503,7 +1523,7 @@ def _observe_posts(binding: dict[str, Any], state: dict[str, Any], change: dict[
         if title is not None:
             head = title["head"] or (in_force.get("head") if isinstance(in_force, dict) else None)
             state["release_report_posted"] = {"at": ended, "pull_request": title["pull_request"],
-                                              "head": head}
+                                              "head": head, "change": _change_of(binding)}
             continue
         posted = state.get("posted") if isinstance(state.get("posted"), dict) else {}
         state["posted"] = {"at": ended, "unreadable_at": ended if post["body"] is None
@@ -1512,10 +1532,13 @@ def _observe_posts(binding: dict[str, Any], state: dict[str, Any], change: dict[
 
 def _observe_launch(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any], stage: str,
                     output: str, started: float, ended: float,
-                    pr: dict[str, Any] | None = None) -> None:
+                    pr: dict[str, Any] | None = None,
+                    call: dict[str, Any] | None = None) -> None:
     state.pop("tracked", None)
-    # New dispatched work means the posted report is no longer the last step before the merge.
-    state.pop("release_report_posted", None)
+    # New dispatched work for the posted report's own change means it is no longer the last
+    # step before that change's merge.
+    if call is None or _posted_report(state, call) is not None:
+        state.pop("release_report_posted", None)
     state.pop("posted", None)
     work = f"{binding['repository']}#{binding['issue']}"
     match = _matching_bundle(bundles_for(ctx, work), stage, started)
@@ -1614,11 +1637,31 @@ def _settle_background(state: dict[str, Any], change: dict[str, Any]) -> None:
         state.pop("background", None)
 
 
-def _end_report_post(state: dict[str, Any], change: dict[str, Any]) -> None:
-    """A posted release report holds until a reading after it shows a new head, or the entrance
-    decides another stage; a same-head stage call never ends it (README "How it behaves")."""
+def _change_of(binding: dict[str, Any]) -> list[Any]:
+    return [str(binding["repository"]), int(binding["issue"]), binding.get("instalment")]
+
+
+def _posted_report(state: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any] | None:
+    """The posted release report, when it is this change's: same repository and issue, and the
+    same instalment when it was posted under one."""
     posted = state.get("release_report_posted")
     if not isinstance(posted, dict):
+        return None
+    ours = posted.get("change")
+    if not isinstance(ours, list) or len(ours) != 3:
+        return posted  # recorded before reports carried their change: the bound one
+    repository, issue, instalment = _change_of(binding)
+    if str(ours[0]).casefold() != repository.casefold() or ours[1] != issue:
+        return None
+    return posted if ours[2] is None or ours[2] == instalment else None
+
+
+def _end_report_post(state: dict[str, Any], change: dict[str, Any],
+                     binding: dict[str, Any]) -> None:
+    """A posted release report holds until a reading after it shows a new head, or the entrance
+    decides another stage; a same-head stage call never ends it (README "How it behaves")."""
+    posted = _posted_report(state, binding)
+    if posted is None:
         return
     at = posted.get("at")
     # A posted-report record with no post time is dated before every reading, so any
@@ -1684,7 +1727,7 @@ def compute_view(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any]) -> di
                 state["reading"] = reading_from_return(
                     bundle["stage"], None, now, bundle.get("dispatch_id"))
     _settle_background(state, change)
-    _end_report_post(state, change)
+    _end_report_post(state, change, binding)
     reading = _newer(state.get("reading"), change.get("reading"))
     failure = state.get("failure")
     if isinstance(failure, dict) and isinstance(reading, dict) and float(
@@ -1737,7 +1780,7 @@ def compute_view(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any]) -> di
                      "status": "running",
                      "waiting_on": "reviewer" if stage in SEAT_STAGES else "builder",
                      "next_step": f"wait for the {stage} {'seat' if stage in SEAT_STAGES else 'run'}"})
-    elif view["final"] is None and isinstance(state.get("release_report_posted"), dict):
+    elif view["final"] is None and _posted_report(state, binding) is not None:
         view.update({"stage": "release-report", "waiting_on": "owner", "next_step": "merge"})
     elif view["final"] is None and background is not None and not background.get("ended_at"):
         stage = str(background["stage"])
@@ -1799,9 +1842,7 @@ def tick(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     state = load_session(ctx, session_id)
     title = title_info(ctx, session_id, payload.get("title"), state)
     if title.get("steward"):
-        # A Steward keeps nothing of the pane's: no binding, no session state.
-        unbind(ctx, session_id)
-        _remove(session_path(ctx, session_id))
+        forget_steward(ctx, session_id)
         return {"bound": False}
     view = compute_view(ctx, binding, state)
     rename, note = _rename_decision(view, title, state)
