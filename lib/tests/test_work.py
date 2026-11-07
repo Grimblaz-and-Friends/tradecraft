@@ -9771,6 +9771,21 @@ def test_run_use_refuses_a_tree_with_a_record_beside_it_naming_the_file_and_the_
     assert "work.py tree" in report["detail"]
 
 
+def test_run_use_refuses_a_tree_whose_folder_holds_a_sibling_trees_former_record(
+        tmp_path, monkeypatch, capsys):
+    holder, _records_home = registered_consumer(tmp_path, monkeypatch)
+    output = tmp_path / "trees" / "before"
+    metadata = built_tree(holder, output, capsys)
+    # The older sibling tree kept its record beside it; it names that tree's change.
+    sibling = work.recipient_tree.former_record_path(tmp_path / "trees" / "after")
+    sibling.write_bytes(metadata.read_bytes())
+    launches, report = launch_use(holder, metadata, tmp_path, monkeypatch, capsys)
+    assert launches == [] and report["reason"] == "consumer-tree-unproved-for-use"
+    assert str(sibling.resolve()) in report["detail"] and "rebuild" in report["detail"]
+    with pytest.raises(work.WorkError, match="remove that file"):
+        built_tree(holder, tmp_path / "trees" / "third", capsys)
+
+
 def test_tree_refuses_to_rebuild_beside_the_entrances_former_record_until_it_is_removed(
         tmp_path, monkeypatch, capsys):
     holder, records_home = registered_consumer(tmp_path, monkeypatch)

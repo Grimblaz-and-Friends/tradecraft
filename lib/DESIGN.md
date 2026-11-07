@@ -56,9 +56,9 @@ The reading tree is built in a temporary folder of its own, holding only the tre
 Before anything is built or launched:
 
 - `tree` refuses an output that exists, one inside the source, one inside the entrance's records, and one whose folder holds those records at any depth;
-- `tree` refuses an output with the entrance's record file, `<tree>.tradecraft-tree.json`, beside its path, naming that file and saying to remove it;
+- `tree` refuses an output whose folder holds an entrance tree record file, `<tree>.tradecraft-tree.json` for this tree or any other, naming that file and saying to remove it;
 - `tree` refuses an output whose own name, or the name of the folder it sits in, carries the change's issue number or an open pull request's number as a whole run of digits, checking the issue number first, without the network; a merged pull request's number is not checked, folders higher up are not examined, and when the issue, its comments or its pull requests can't be read, `tree` refuses;
-- `run use` refuses a tree that has that record file beside it, naming the file and saying to remove it and rebuild the tree, without opening it; any other file beside a tree, such as a job fixture or a second tree, is lawful;
+- `run use` refuses a tree whose folder holds such a record file, naming the file and saying to remove it and rebuild the tree it records, without opening it; any other file beside a tree, such as a job fixture or a second tree, is lawful;
 - `run use` refuses a record that isn't at the path derived from the tree it names, one whose digest doesn't match, and every mismatch of source, revision, bytes or repository shape.
 
 `tree` replaces a record left at its path by a tree since deleted, so a deleted tree can be rebuilt where it was; a reading's record is never replaced.
@@ -67,7 +67,7 @@ Before anything is built or launched:
 
 - The tree's folder is the consumer's working space: a consumer lists it and works in it, so a record there would tell it which change it is judging, where the holder's checkout is, and what was withheld.
 - The record's name is derived from the tree's resolved path, compared as the platform compares paths, so a record still proves which tree it belongs to without sitting next to it, and one copied to another tree's path is refused.
-- Only the entrance's own record beside a tree is refused, because a tree built before the record moved, or one with its record put back, keeps the exposure, while side-by-side trees and job fixtures are layouts a job needs.
+- Only the entrance's own records beside a tree are refused, because a tree built before the record moved, or one with its record put back, keeps the exposure, while side-by-side trees and job fixtures are layouts a job needs. A sibling tree's record counts too: it names its change as plainly to a consumer listing the folder.
 - `tree` refuses a path with the record file beside it, because a tree built there would meet `run use`'s refusal again; removing the file is the holder's, since the entrance never opens it to tell whose it is.
 - Only an open pull request's number is checked, because an open pull request is the change under test, while a merged one belongs to work already landed, such as an earlier instalment.
 - Only the tree's folder and the folder it sits in are checked for the change's numbers, because those two names appear in every command the consumer runs and are the ones a holder chooses; folders higher up are usually named by the runtime, and the random digits of a session id would refuse holders by chance.

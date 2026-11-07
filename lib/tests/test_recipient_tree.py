@@ -297,6 +297,21 @@ def test_a_tree_with_a_record_beside_it_is_refused_naming_the_file_and_the_rebui
     assert "remove that file" in str(raised.value)
 
 
+def test_a_sibling_trees_former_record_in_the_folder_refuses_both_build_and_use(source, tmp_path):
+    output, metadata = _consumer_tree(source, tmp_path, "before")
+    # An older sibling tree, laid out as entrances before this layout built it: its record beside it.
+    sibling = recipient_tree.former_record_path(tmp_path / "work" / "after")
+    sibling.write_bytes(metadata.read_bytes())
+    with pytest.raises(recipient_tree.RecipientTreeError) as raised:
+        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source,
+                                              records_home=tmp_path / "entrance")
+    assert str(sibling.resolve()) in str(raised.value) and "remove that file" in str(raised.value)
+    with pytest.raises(recipient_tree.RecipientTreeError) as raised:
+        _consumer_tree(source, tmp_path, "third")
+    assert str(sibling.resolve()) in str(raised.value)
+    assert not (tmp_path / "work" / "third").exists()
+
+
 def test_a_tree_is_not_built_beside_the_entrances_former_record(source, tmp_path):
     output = tmp_path / "work" / "beside"
     former = recipient_tree.former_record_path(output)

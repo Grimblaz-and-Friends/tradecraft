@@ -37,6 +37,16 @@ def former_record_path(tree_root: Path) -> Path:
     return tree_root.with_name(tree_root.name + RECORD_SUFFIX)
 
 
+def records_beside(tree_root: Path) -> list[Path]:
+    """Every entrance tree record in the folder a tree sits in, whichever tree it records."""
+    # A sibling tree's former record names its change as plainly as this tree's own would.
+    folder = tree_root.parent
+    if not folder.is_dir():
+        return []
+    return sorted(entry for entry in folder.iterdir()
+                  if entry.name.lower().endswith(RECORD_SUFFIX) and (entry.is_symlink() or not entry.is_dir()))
+
+
 def refuse_records_placement(output: Path, records_home: Path) -> None:
     """Refuse a tree whose folder would hold the entrance's records, or one inside them."""
     home = records_home.expanduser().resolve()
@@ -269,11 +279,12 @@ def create_consumer_tree(
     output = output.expanduser().resolve()
     if output.exists() or output.is_symlink():
         raise RecipientTreeError(f"refusing existing recipient output: {output}")
-    former = former_record_path(output)
+    beside = records_beside(output)
     # A tree built here would be refused for that file, and the consumer could read it.
-    if former.exists() or former.is_symlink():
+    if beside:
         raise RecipientTreeError(
-            f"a record sits beside the tree's path: {former}; remove that file, then build the tree"
+            "a record sits beside the tree's path: " + ", ".join(map(str, beside))
+            + "; remove that file, then build the tree"
         )
     if _inside(output, source):
         raise RecipientTreeError("recipient output must be outside the source repository")
@@ -371,12 +382,13 @@ def validate_consumer_tree(
     source = source.expanduser().resolve()
     if not root.is_dir():
         raise RecipientTreeError(f"consumer tree is absent: {root}")
-    former = former_record_path(root)
+    beside = records_beside(root)
     # Never opened: whatever change it names, the consumer could read it from its folder.
-    if former.exists() or former.is_symlink():
+    if beside:
         raise RecipientTreeError(
-            f"a record sits beside the consumer tree: {former}; remove that file and rebuild the "
-            "tree with work.py tree, which keeps its record in the entrance's records"
+            "a record sits beside the consumer tree: " + ", ".join(map(str, beside))
+            + "; remove that file and rebuild the tree it records with work.py tree, which keeps its "
+            "record in the entrance's records"
         )
     if not _same_path(metadata, record_path(root, records_home)):
         raise RecipientTreeError("consumer-tree record is not the entrance's record of its tree")

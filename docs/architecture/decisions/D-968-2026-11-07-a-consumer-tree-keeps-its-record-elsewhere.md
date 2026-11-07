@@ -32,6 +32,10 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **`tree` refuses an output with the entrance's former record file beside its path, naming it and saying to remove it, and `run use`'s refusal says to remove that file and rebuild.** Row 2 tells the holder to rebuild, and a tree rebuilt at the same path would otherwise meet the same refusal, since the entrance never removes a file it doesn't open.
 - **A reading whose record is in neither place is reported at its path in the entrance's records,** where it belongs, rather than beside its tree.
 
+## Answered connected-review findings
+
+- **A sibling tree's former record is refused too.** The lab reviewer found that `tree` and `run use` checked only `<tree>.tradecraft-tree.json`, so a tree rebuilt beside an older sibling tree kept that sibling's record, which names its change, in the consumer's folder. Both now refuse any entrance tree record in the tree's folder, naming it. Tree folders, job fixtures and other files stay lawful, as row 2 requires.
+
 ## What this supersedes
 
 [D-726](D-726-2026-09-22-entrance-as-holder-instrument.md) holds consumer trees to "adjacent digest-bound metadata". That clause is superseded: the record now lives in the entrance's records, bound to its tree by a name derived from the tree's path rather than by adjacency. Everything else in D-726's consumer trees, and [D-736](D-736-2026-09-23-truthful-entrance-and-launch.md)'s landed-commit source, stays in force.
