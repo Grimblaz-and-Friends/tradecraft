@@ -46,7 +46,7 @@ The reading tree is built in a temporary folder of its own, holding only the tre
 - The reader works in its tree's folder, so that folder holds the tree alone; a record or prompt there would name the change.
 - A reading recorded before the records kept it still counts, because pull requests open when that layout changed hold such readings.
 
-**Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons; D-0, a consumer tree keeps its record elsewhere.
+**Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons; D-968, a consumer tree keeps its record elsewhere.
 
 ## Consumer trees
 
@@ -73,4 +73,4 @@ Before anything is built or launched:
 - Every record is written to a temporary file and then moved into place, so a partial record never stands.
 - This keeps the record out of the consumer's folder only. A consumer whose shell reaches the rest of the machine can still find the entrance's records, which is a separate exposure.
 
-**Decisions in force:** D-0, a consumer tree keeps its record elsewhere.
+**Decisions in force:** D-968, a consumer tree keeps its record elsewhere.

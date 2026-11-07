@@ -1,4 +1,4 @@
-# D-0 — A consumer tree keeps its record elsewhere
+# D-968 — A consumer tree keeps its record elsewhere
 
 **Purpose:** record why #897 moves the entrance's record of a consumer's tree out of the folder around it, for both trees the entrance builds, and what was chosen over what. **Audience:** a future session changing `work.py tree`, `run use`, the cold reader's tree, or where the entrance keeps what it records about a tree. **Success:** that reader can recover what was chosen over what without the issue.
 
