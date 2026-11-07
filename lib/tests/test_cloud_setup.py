@@ -161,3 +161,49 @@ def test_verify_requires_the_owners_ruled_profile(machine, capsys, monkeypatch):
     assert verify(machine, readback()) == 1
     err = capsys.readouterr().err
     assert "setup FAILED: model: required claude-ruled" in err and "effort_level: required max" in err
+
+
+def after_editor_save():
+    """A read-back after a save in the routine's editor: the practice source keeps only its url."""
+    value = readback()
+    context = value["job_config"]["ccr"]["session_context"]
+    context["sources"][1] = {"git_repository": {"url": f"https://github.com/{PRACTICE}"}}
+    context["outcomes"] = [{"git_repository": {"git_info": {"branches": ["claude/default"]}}}]
+    value["job_config"]["ccr"]["autofix_on_pr_create"] = False
+    return value
+
+
+def test_verify_reads_the_get_answer_as_saved(machine):
+    path = machine["tmp"] / "saved.json"
+    path.write_text("HTTP 200\n" + json.dumps({"trigger": readback()}))
+    args = argparse.Namespace(repo=REPO, environment="env_1", practice_repo=PRACTICE,
+                              practice_branch="cloud-practice", readback=str(path), phase="complete",
+                              token_file=str(machine["token"]), routine_id=None)
+    assert setup.verify(args, home=machine["home"], transport=Pins(True), plugin=machine["plugin"],
+                        install_path=machine["install"]) == 0
+
+
+def test_a_dropped_practice_source_fails_naming_the_restore_step(machine, capsys):
+    assert verify(machine, after_editor_save()) == 1
+    err = capsys.readouterr().err
+    assert "setup FAILED: sources:" in err and "cloud_setup.py restore" in err and "RemoteTrigger update" in err
+    assert not cloud.record_path(machine["home"]).exists()
+
+
+def test_restore_replaces_only_the_sources(machine, capsys):
+    saved = after_editor_save()
+    path = machine["tmp"] / "after-visit.json"
+    path.write_text("HTTP 200\n" + json.dumps({"trigger": saved}))
+    assert setup.main(["restore", "--repo", REPO, "--environment", "env_1", "--readback", str(path)]) == 0
+    body = json.loads(capsys.readouterr().out)
+    sent = setup.create_body(REPO, "env_1", PRACTICE, "cloud-practice")
+    want = json.loads(json.dumps(saved["job_config"]))
+    want["ccr"]["session_context"]["sources"] = sent["job_config"]["ccr"]["session_context"]["sources"]
+    assert body == {"job_config": want}
+    context = body["job_config"]["ccr"]["session_context"]
+    assert (context["model"], context["effort_level"]) == ("claude-opus-5-5", "high")
+    assert body["job_config"]["ccr"]["events"] == saved["job_config"]["ccr"]["events"]
+    # Once the update lands, the read-back passes.
+    restored = json.loads(json.dumps(saved))
+    restored["job_config"] = body["job_config"]
+    assert verify(machine, restored) == 0

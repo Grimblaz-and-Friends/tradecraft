@@ -6,7 +6,13 @@ Usage: python <plugin-root>/lib/cloud_setup.py body --repo OWNER/REPO --environm
        python <plugin-root>/lib/cloud_setup.py verify --repo OWNER/REPO --environment ENV_ID
            --readback FILE --phase created|complete [--token-file PATH] [--routine-id ID]
            [--practice-repo R] [--practice-branch B]
+       python <plugin-root>/lib/cloud_setup.py restore --repo OWNER/REPO --environment ENV_ID
+           --readback FILE [--practice-repo R] [--practice-branch B]
        python <plugin-root>/lib/cloud_setup.py profile
+
+``restore`` prints the `RemoteTrigger update` body that puts the practice source's pin and
+exclusions back after a save in the routine's editor dropped them; everything else stays as
+read back.
 
 ``profile`` prints the model and effort the owner sets in the routine's editor, from
 the launch default the cloud run is checked against, and the environment variables the
@@ -100,6 +106,36 @@ def _sources(value: object) -> list[dict] | None:
     return result
 
 
+def read_readback(path: str | Path) -> dict:
+    """A routine's read-back as `RemoteTrigger get` answers it, saved whole."""
+    text = Path(path).read_text("utf-8")
+    # A saved tool response opens with its status line.
+    value = json.loads(text[text.index("{"):] if text.lstrip().startswith("HTTP") else text)
+    if isinstance(value, dict) and isinstance(value.get("data"), list) and len(value["data"]) == 1:
+        value = value["data"][0]
+    if isinstance(value, dict) and set(value) == {"trigger"} and isinstance(value["trigger"], dict):
+        value = value["trigger"]
+    if not isinstance(value, dict):
+        raise SetupError(f"read-back {path} holds no routine object")
+    return value
+
+
+# A save in the routine's editor drops the practice source's pin and exclusions, so the read-back
+# after the owner's visit needs them sent again.
+RESTORE_STEP = ("a save in the routine's editor drops the practice source's pin and exclusions; restore them "
+                "with the body `python <plugin-root>/lib/cloud_setup.py restore` prints from this read-back, "
+                "sent through `RemoteTrigger update`, then read the routine back and verify again")
+
+
+def restore_body(sent: dict, readback: dict) -> dict[str, object]:
+    """The update that puts the create body's sources back, keeping everything else as read back."""
+    job = json.loads(json.dumps(readback.get("job_config") or {}))
+    context = job.setdefault("ccr", {}).setdefault("session_context", {})
+    # The update API replaces sources whole, so the whole list is sent.
+    context["sources"] = json.loads(json.dumps(sent["job_config"]["ccr"]["session_context"]["sources"]))
+    return {"job_config": job}
+
+
 def compare(sent: dict, readback: dict, *, phase: str, token_file: str | None) -> list[str]:
     """Every difference between the sent body and the read-back, by field.
 
@@ -124,7 +160,10 @@ def compare(sent: dict, readback: dict, *, phase: str, token_file: str | None) -
            _get(readback, "job_config", "ccr", "environment_id"))
     differ("prompt", _get(sent, "job_config", "ccr", "events", 0, "data", "message", "content"),
            _get(readback, "job_config", "ccr", "events", 0, "data", "message", "content"))
+    before = len(faults)
     differ("sources", _sources(_get(sent, *context, "sources")), _sources(_get(readback, *context, "sources")))
+    if len(faults) > before:
+        faults[-1] += "; " + RESTORE_STEP
     tools = _get(readback, *context, "disallowed_tools")
     missing = [tool for tool in cloud.ROUTINE_DISALLOWED_TOOLS
                if not isinstance(tools, list) or tool not in tools]
@@ -169,11 +208,7 @@ def ensure_pin(transport, practice: str, branch: str, commit: str) -> str:
 def verify(args, *, home: Path | None = None, transport=None, plugin: Path | None = None,
            install_path: Path | None = None) -> int:
     sent = create_body(args.repo, args.environment, args.practice_repo, args.practice_branch)
-    text = Path(args.readback).read_text("utf-8")
-    # A saved `RemoteTrigger get` response opens with its status line.
-    readback = json.loads(text[text.index("{"):] if text.lstrip().startswith("HTTP") else text)
-    if isinstance(readback, dict) and isinstance(readback.get("data"), list) and len(readback["data"]) == 1:
-        readback = readback["data"][0]
+    readback = read_readback(args.readback)
     faults = compare(sent, readback, phase=args.phase, token_file=args.token_file)
     home = home or Path.home()
     owner, name = args.repo.split("/", 1)
@@ -222,14 +257,15 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("profile")
-    for name in ("body", "verify"):
+    for name in ("body", "verify", "restore"):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
         command.add_argument("--environment", required=True)
         command.add_argument("--practice-repo", default=DEFAULT_PRACTICE)
         command.add_argument("--practice-branch", default=cloud.DEFAULT_PIN_BRANCH)
-        if name == "verify":
+        if name in {"verify", "restore"}:
             command.add_argument("--readback", required=True)
+        if name == "verify":
             command.add_argument("--phase", choices=("created", "complete"), required=True)
             command.add_argument("--token-file")
             command.add_argument("--routine-id")
@@ -249,6 +285,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "body":
             print(json.dumps(create_body(args.repo, args.environment, args.practice_repo,
                                          args.practice_branch), indent=2))
+            return 0
+        if args.command == "restore":
+            sent = create_body(args.repo, args.environment, args.practice_repo, args.practice_branch)
+            print(json.dumps(restore_body(sent, read_readback(args.readback)), indent=2))
             return 0
         return verify(args)
     except (SetupError, cloud.CloudError) as exc:
