@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""One-time cloud setup for a product repository: the create body and its read-back check.
+
+Usage: python <plugin-root>/lib/cloud_setup.py body --repo OWNER/REPO --environment ENV_ID
+           [--practice-repo R] [--practice-branch B]
+       python <plugin-root>/lib/cloud_setup.py verify --repo OWNER/REPO --environment ENV_ID
+           --readback FILE --phase created|complete [--token-file PATH] [--routine-id ID]
+           [--practice-repo R] [--practice-branch B]
+       python <plugin-root>/lib/cloud_setup.py restore --repo OWNER/REPO --environment ENV_ID
+           --readback FILE [--practice-repo R] [--practice-branch B]
+       python <plugin-root>/lib/cloud_setup.py profile
+
+``restore`` prints the `RemoteTrigger update` body that puts the practice source's pin and
+exclusions back after a save in the routine's editor dropped them; everything else stays as
+read back.
+
+``profile`` prints the model and effort the owner sets in the routine's editor, from
+the launch default the cloud run is checked against, and the environment variables the
+owner sets once on the cloud environment, so the steps carry no copy.
+
+The holder creates and reads the routine with its RemoteTrigger tool; this
+script writes what is sent and makes "differs from what was sent" mechanical.
+Only a clean ``complete`` writes the machine record entry.
+Design: lib/DESIGN.md#the-cloud-route
+"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import sys
+import uuid
+
+import cloud_build as cloud
+from winio import utf8_stdio
+
+DEFAULT_PRACTICE = cloud.DEFAULT_PRACTICE
+
+
+def excludes() -> list[str]:
+    """The practice clone's sparse exclusions: the hook's doctrine files, rooted at the clone."""
+    return ["/" + name for name in cloud.EXCLUDED]
+
+
+class SetupError(RuntimeError):
+    pass
+
+
+def refuse_practice(repo: str, practice: str) -> None:
+    if cloud.is_practice_repository(repo, practice):
+        raise SetupError(cloud.PRACTICE_OWN_REFUSAL)
+
+
+def _source(repository: str, revision: str | None = None, excludes: list[str] | None = None) -> dict:
+    value: dict[str, object] = {"url": f"https://github.com/{repository}"}
+    if revision is not None:
+        value["revision"] = revision
+    if excludes is not None:
+        value["sparse_checkout_exclude_patterns"] = list(excludes)
+    return {"git_repository": value}
+
+
+def create_body(repo: str, environment: str, practice: str, branch: str) -> dict[str, object]:
+    """The routine as the API stores it: no schedule, no connectors, two sources."""
+    refuse_practice(repo, practice)
+    prompt = cloud.ROUTINE_PROMPT.format(practice_name=cloud.practice_name(practice))
+    return {
+        "name": f"tradecraft builder: {repo}",
+        "cron_expression": "",
+        # A create attaches every account connector unless cleared; a builder needs none.
+        "clear_mcp_connections": True,
+        "job_config": {"ccr": {
+            "environment_id": environment,
+            "events": [{"data": {
+                "message": {"content": prompt, "role": "user"}, "parent_tool_use_id": None,
+                "session_id": "", "type": "user",
+                # Stable per repository, so `verify` rebuilds exactly the body that was sent.
+                "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tradecraft-builder:{repo}"))}}],
+            "session_context": {
+                "sources": [_source(repo), _source(practice, branch, excludes())],
+                "disallowed_tools": list(cloud.ROUTINE_DISALLOWED_TOOLS),
+            },
+        }},
+    }
+
+
+def _get(value: object, *path: object) -> object:
+    for key in path:
+        if isinstance(key, int):
+            value = value[key] if isinstance(value, list) and len(value) > key else None
+        else:
+            value = value.get(key) if isinstance(value, dict) else None
+    return value
+
+
+def _sources(value: object) -> list[dict] | None:
+    """Each source's url, revision and exclusions, whichever of the two forms it reads in."""
+    if not isinstance(value, list):
+        return None
+    result = []
+    for row in value:
+        row = row.get("git_repository", row) if isinstance(row, dict) else {}
+        result.append({"url": row.get("url"), "revision": row.get("revision") or None,
+                       "sparse_checkout_exclude_patterns": sorted(row.get("sparse_checkout_exclude_patterns") or [])})
+    return result
+
+
+def read_readback(path: str | Path) -> dict:
+    """A routine's read-back as `RemoteTrigger get` answers it, saved whole."""
+    text = Path(path).read_text("utf-8")
+    # A saved tool response opens with its status line.
+    value = json.loads(text[text.index("{"):] if text.lstrip().startswith("HTTP") else text)
+    if isinstance(value, dict) and isinstance(value.get("data"), list) and len(value["data"]) == 1:
+        value = value["data"][0]
+    if isinstance(value, dict) and set(value) == {"trigger"} and isinstance(value["trigger"], dict):
+        value = value["trigger"]
+    if not isinstance(value, dict):
+        raise SetupError(f"read-back {path} holds no routine object")
+    return value
+
+
+# A save in the routine's editor drops the practice source's pin and exclusions, so the read-back
+# after the owner's visit needs them sent again.
+RESTORE_STEP = ("a save in the routine's editor drops the practice source's pin and exclusions; restore them "
+                "with the body `python <plugin-root>/lib/cloud_setup.py restore` prints from this read-back, "
+                "sent through `RemoteTrigger update`, then read the routine back and verify again")
+
+
+def restore_body(sent: dict, readback: dict) -> dict[str, object]:
+    """The update that puts the create body's sources back, keeping everything else as read back."""
+    job = json.loads(json.dumps(readback.get("job_config") or {}))
+    context = job.setdefault("ccr", {}).setdefault("session_context", {})
+    # The update API replaces sources whole, so the whole list is sent.
+    context["sources"] = json.loads(json.dumps(sent["job_config"]["ccr"]["session_context"]["sources"]))
+    return {"job_config": job}
+
+
+def compare(sent: dict, readback: dict, *, phase: str, token_file: str | None) -> list[str]:
+    """Every difference between the sent body and the read-back, by field.
+
+    The paths are those `RemoteTrigger get` returns. No field shows the API
+    trigger, so the first launch's fire proves it instead.
+    """
+    faults = []
+    context = ("job_config", "ccr", "session_context")
+
+    def differ(field, want, got):
+        if want != got:
+            faults.append(f"{field}: sent {json.dumps(want)[:200]}, read back {json.dumps(got)[:200]}")
+
+    differ("name", sent["name"], readback.get("name"))
+    if readback.get("mcp_connections") or _get(readback, "session_request", "config", "mcp_servers"):
+        faults.append("connectors: sent none, read back " + json.dumps(
+            readback.get("mcp_connections") or _get(readback, "session_request", "config", "mcp_servers"))[:200])
+    for key in ("cron_expression", "run_once_at"):
+        if readback.get(key):
+            faults.append(f"{key}: sent none, read back {readback[key]}")
+    differ("environment_id", _get(sent, "job_config", "ccr", "environment_id"),
+           _get(readback, "job_config", "ccr", "environment_id"))
+    differ("prompt", _get(sent, "job_config", "ccr", "events", 0, "data", "message", "content"),
+           _get(readback, "job_config", "ccr", "events", 0, "data", "message", "content"))
+    before = len(faults)
+    differ("sources", _sources(_get(sent, *context, "sources")), _sources(_get(readback, *context, "sources")))
+    if len(faults) > before:
+        faults[-1] += "; " + RESTORE_STEP
+    tools = _get(readback, *context, "disallowed_tools")
+    missing = [tool for tool in cloud.ROUTINE_DISALLOWED_TOOLS
+               if not isinstance(tools, list) or tool not in tools]
+    if missing:
+        faults.append(f"disallowed_tools: sent {list(cloud.ROUTINE_DISALLOWED_TOOLS)}, read back {tools}")
+    if phase == "complete":
+        model, effort = _get(readback, *context, "model"), _get(readback, *context, "effort_level")
+        want_model, want_effort = cloud.builder_profile()
+        if model != want_model:
+            faults.append(f"model: required {want_model}, read back {model}")
+        if effort != want_effort:
+            faults.append(f"effort_level: required {want_effort}, read back {effort}")
+        if token_file is None:
+            faults.append("token_file: required at complete")
+        else:
+            try:
+                cloud.read_token(token_file)
+            except cloud.CloudError as exc:
+                faults.append(f"token_file: {exc}")
+    return faults
+
+
+def _write(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes((json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+
+
+def ensure_pin(transport, practice: str, branch: str, commit: str) -> str:
+    """Create the shared pin at the installed commit when it is absent; never move it here."""
+    status, _value = transport.github("GET", f"repos/{practice}/git/ref/heads/{branch}")
+    if status == 200:
+        return "existing"
+    if status != 404:
+        raise SetupError(f"cannot read pin {practice}@{branch}: HTTP {status}")
+    status, value = transport.github("POST", f"repos/{practice}/git/refs",
+                                     {"ref": f"refs/heads/{branch}", "sha": commit})
+    if status // 100 != 2:
+        raise SetupError(f"cannot create pin {practice}@{branch}: HTTP {status} {str(value)[:200]}")
+    return f"created at {commit}"
+
+
+def verify(args, *, home: Path | None = None, transport=None, plugin: Path | None = None,
+           install_path: Path | None = None) -> int:
+    sent = create_body(args.repo, args.environment, args.practice_repo, args.practice_branch)
+    readback = read_readback(args.readback)
+    faults = compare(sent, readback, phase=args.phase, token_file=args.token_file)
+    home = home or Path.home()
+    owner, name = args.repo.split("/", 1)
+    setup_path = home / ".tradecraft" / "cloud-setup" / f"{owner}__{name}.json"
+    _write(setup_path, {"phase": args.phase, "sent": sent, "readback": readback, "diff": faults,
+                        "verified_at": datetime.now(timezone.utc).isoformat()})
+    if faults:
+        for fault in faults:
+            print(f"setup FAILED: {fault}", file=sys.stderr)
+        return 1
+    if args.phase == "created":
+        print(f"setup created: read-back matches; record {setup_path}")
+        return 0
+    routine = args.routine_id or readback.get("id")
+    if args.routine_id and readback.get("id") != args.routine_id:
+        print(f"setup FAILED: routine id: given {args.routine_id}, read back {readback.get('id')}",
+              file=sys.stderr)
+        return 1
+    if not isinstance(routine, str) or not routine:
+        print("setup FAILED: routine id: none given or read back", file=sys.stderr)
+        return 1
+    practice = cloud.installed_practice(plugin or cloud.plugin_root(),
+                                        install_path or cloud.install_record_path())
+    pin = ensure_pin(transport or cloud.Transport(), args.practice_repo, args.practice_branch,
+                     practice["commit"])
+    path = cloud.record_path(home)
+    record = cloud.read_record(path) or {"schema_version": cloud.RECORD_SCHEMA,
+                                         "practice": {"repository": args.practice_repo,
+                                                      "branch": args.practice_branch},
+                                         "repositories": {}}
+    if record["practice"] != {"repository": args.practice_repo, "branch": args.practice_branch}:
+        print(f"setup FAILED: practice: record names {record['practice']}, setup names "
+              f"{args.practice_repo}@{args.practice_branch}", file=sys.stderr)
+        return 1
+    for key in [key for key in record["repositories"] if key.lower() == args.repo.lower()]:
+        del record["repositories"][key]  # one entry per repository, whatever its case
+    record["repositories"][args.repo] = {
+        "routine_id": routine, "token_file": str(Path(args.token_file).resolve()),
+        "setup_record": str(setup_path), "set_up_at": datetime.now(timezone.utc).isoformat()}
+    _write(path, record)
+    print(f"setup complete: {args.repo} builds in the cloud; pin {pin}; record {path}")
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    commands = result.add_subparsers(dest="command", required=True)
+    commands.add_parser("profile")
+    for name in ("body", "verify", "restore"):
+        command = commands.add_parser(name)
+        command.add_argument("--repo", required=True)
+        command.add_argument("--environment", required=True)
+        command.add_argument("--practice-repo", default=DEFAULT_PRACTICE)
+        command.add_argument("--practice-branch", default=cloud.DEFAULT_PIN_BRANCH)
+        if name in {"verify", "restore"}:
+            command.add_argument("--readback", required=True)
+        if name == "verify":
+            command.add_argument("--phase", choices=("created", "complete"), required=True)
+            command.add_argument("--token-file")
+            command.add_argument("--routine-id")
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
+    args = parser().parse_args(argv)
+    try:
+        if args.command == "profile":
+            model, effort = cloud.builder_profile()
+            print(f"model: {model}\neffort: {effort}")
+            for name, value in cloud.CLOUD_ENVIRONMENT.items():
+                print(f"environment: {name}={value}")
+            return 0
+        if args.command == "body":
+            print(json.dumps(create_body(args.repo, args.environment, args.practice_repo,
+                                         args.practice_branch), indent=2))
+            return 0
+        if args.command == "restore":
+            sent = create_body(args.repo, args.environment, args.practice_repo, args.practice_branch)
+            print(json.dumps(restore_body(sent, read_readback(args.readback)), indent=2))
+            return 0
+        return verify(args)
+    except (SetupError, cloud.CloudError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

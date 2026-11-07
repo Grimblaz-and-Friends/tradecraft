@@ -114,7 +114,10 @@ def cell_sources(root: Path) -> dict[str, str]:
 
 def check_harness_tokens(root: Path) -> list[str]:
     """Apply the shipped token predicate to this repository's live contracts."""
-    roots = [root / dirname for dirname in SHIPPED_DIRS]
+    roots = [root / dirname for dirname in SHIPPED_DIRS if dirname != "hooks"]
+    # The plugin's hook manifest is Claude-native config, read by the one
+    # runtime that resolves this token for its commands, like .claude/.
+    roots += [path for path in sorted((root / "hooks").glob("*")) if path.name != "hooks.json"]
     roots.append(root / REPO_CELLS)
     return _check_harness_tokens(root, roots)
 

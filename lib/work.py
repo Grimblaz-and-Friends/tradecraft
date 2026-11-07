@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shlex
@@ -55,6 +55,7 @@ import artifact_tree
 import launch_bound
 import run_lifecycle as lifecycle
 import work_recovery
+import cloud_build
 import dispatch_implementer
 import dispatch_seat
 import launch_settings as setting_resolution
@@ -129,6 +130,26 @@ ISSUE_URL = re.compile(
 REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?\Z")
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
+
+
+def _session_shaped(session: object, request: object = None, *, vendor: object = None) -> bool:
+    """A resumable session id: a UUID, or a Claude cloud session's id from a cloud source.
+
+    A cloud id is accepted from a bundle the cloud route recorded, or from a Claude
+    builder-session marker, and its resume always continues that cloud session.
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    if not isinstance(session, str):
+        return False
+    if SESSION_ID.fullmatch(session):
+        return True
+    if isinstance(request, dict):
+        cloud = request.get("route") == "cloud"
+    else:
+        cloud = vendor == "claude"
+    return cloud and cloud_build.CLOUD_SESSION.fullmatch(session) is not None
+
+
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
@@ -313,6 +334,19 @@ THREAD_RESOLUTION_INSTRUCTION = (
     "THREAD_ID:\n" + RESOLVE_THREAD_COMMAND + "\n"
     "Resolve no thread you did not answer in this turn, except a thread listed below as already "
     "answered; a body finding has no thread."
+)
+# A cloud run's own GitHub posts may be refused by its safety screen, so the holder posts what it
+# returns. Design: lib/DESIGN.md#the-cloud-route
+CLOUD_REPLIES_FENCE = "tradecraft-cloud-replies"
+CLOUD_REPLY_INSTRUCTION = (
+    " This run is a cloud session: post nothing on the pull request and resolve no thread; the holder "
+    "posts your replies exactly as you return them and resolves each thread it answers. End your report "
+    "with every reply, in one fenced block whose info string is `" + CLOUD_REPLIES_FENCE + "`, holding one "
+    "JSON object: {\"schema_version\": 1, \"replies\": [...]}. Each reply is {\"target\": T, \"body\": B}. "
+    "T is {\"thread\": ROOT_COMMENT_ID} for an inline thread, the id of the thread's root comment, or "
+    "{\"conversation\": true} for a body finding or an unidentified review. B is the reply's whole exact "
+    "text, opening with its bare disposition word, with any finding identity and source link the contract "
+    "requires, and with the connected-reviewer completion marker on that reviewer's final reply."
 )
 # GitHub's mergeable_state words it will merge on; `unstable` means only non-required checks fail.
 MERGEABLE_STATES = frozenset({"clean", "has_hooks", "unstable"})
@@ -1499,9 +1533,9 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "holder-reading" and values.get("result") not in {
             "no-amendment", "amended"}:
         return "holder reading result is invalid"
-    if marker.name == "builder-session" and SESSION_ID.fullmatch(
-            values.get("session", "")) is None:
-        return "builder session is not UUID-shaped"
+    if marker.name == "builder-session" and not _session_shaped(
+            values.get("session", ""), vendor=values.get("vendor")):
+        return "builder session is neither UUID-shaped nor a Claude cloud session id"
     if marker.name == "builder-session" and values.get("vendor", "codex") not in {
             "codex", "claude"}:
         return "builder session vendor is invalid"
@@ -2278,7 +2312,7 @@ def _bundle_sessions(request: dict[str, object], run: dict[str, object], *, nati
     for attempt in attempts if isinstance(attempts, list) else []:
         observed = attempt.get("observed") if isinstance(attempt, dict) else None
         session = observed.get("session_id") if isinstance(observed, dict) else None
-        if isinstance(session, str) and SESSION_ID.fullmatch(session):
+        if _session_shaped(session, request):
             sessions.append(session)
         if native and isinstance(observed, dict) and isinstance(observed.get("thread_ids"), list):
             sessions.extend(value for value in observed["thread_ids"]
@@ -2543,7 +2577,7 @@ def _validate_builder_turn(state: WorkState, turn: tuple, *, include_released: b
     # Session-bearing successes still owe the existing identity consistency check.
     if run.get("outcome") != "success_uncontinuable":
         session = lifecycle.recovery_session(request, run)
-        if SESSION_ID.fullmatch(session) is None:
+        if not _session_shaped(session, request):
             raise WorkError("builder session identity is invalid")
 
 
@@ -3576,6 +3610,27 @@ def implementer_preamble(vendor: str, plugin_root: Path) -> bytes:
     ).encode("utf-8")
 
 
+def cloud_preamble(practice: str) -> bytes:
+    """The launcher context ahead of a cloud implementer's task, which runs on a remote machine.
+
+    It tells the run to read the product's instruction files itself, since their native loading in
+    the cloud is untested.
+
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    ceiling = int(cloud_build.CLOUD_ENVIRONMENT["BASH_MAX_TIMEOUT_MS"]) // 1000
+    return (
+        "You are the implementer for this stage, running as a Claude Code cloud session. Before "
+        "acting, read the product clone's root CLAUDE.md, or its AGENTS.md where it has no CLAUDE.md, "
+        "and the files it imports; before editing a file, read any CLAUDE.md or AGENTS.md inside the "
+        "clone that applies to it. "
+        f"The shipped tradecraft practice is at {cloud_build.cloud_practice_path(practice)}. "
+        "This session runs on a remote machine that cannot reach the owner's: no write guard, launch "
+        "comparison or memory setting applies to it. Its environment switches background work off and "
+        f"lets one command run at most {ceiling} seconds, for every stage.\n"
+    ).encode("utf-8")
+
+
 def _instruction_report(observed):
     """Each instruction file a launch recorded, without its content."""
     categories = observed.get("categories") if isinstance(observed.get("categories"), dict) else {}
@@ -3599,9 +3654,15 @@ def _launch_controls_report(request, run, attempt):
     """What a Claude launch applied (#887); an older record says it holds nothing."""
     if (attempt.get("vendor") or (request.get("requested") or {}).get("vendor")) != "claude":
         return None
+    if request.get("route") == "cloud":
+        # A cloud launch's controls live in its routine. Design: lib/DESIGN.md#the-cloud-route
+        check = ((attempt.get("cloud") or {}).get("cloud_checks") or {}).get("environment") or {}
+        return {"status": "cloud-environment", "reason": cloud_build.ROUTINE_CONTROLS_REASON,
+                "expected": dict(cloud_build.CLOUD_ENVIRONMENT), "seen": check.get("seen"),
+                "disallowed_tools": list(cloud_build.ROUTINE_DISALLOWED_TOOLS)}
     controls = request.get("launch_controls")
     if not isinstance(controls, dict):
-        # Controls are written with the request, before launch, so only an
+        # Controls are written with the request, before a local launch, so only an
         # unlaunched attempt or an older launcher leaves them absent.
         return {"status": NOT_LAUNCHED if attempt.get("launched") is not True else NOT_RECORDED}
     return {"status": "recorded", **{key: controls.get(key) for key in (
@@ -3612,6 +3673,9 @@ def _launch_controls_report(request, run, attempt):
 def _stream_check_report(run, attempt):
     if attempt.get("vendor") != "claude":
         return None
+    if attempt.get("source_format") == "claude-cloud-routine":
+        # The cloud route reads the report branch, not a stream. Design: lib/DESIGN.md#the-cloud-route
+        return {"status": "not-applicable", "reason": "the cloud route reads no runtime stream"}
     check = attempt.get("stream_check")
     if not isinstance(check, dict):
         return {"status": _unrecorded_status(run, attempt)}
@@ -3671,6 +3735,7 @@ def _implementer_environments(state):
                 "stream_check": _stream_check_report(run, attempt),
                 "write_bound": _write_bound_report(request, run, attempt),
                 "launch_comparison": _launch_comparison_report(request, run, attempt),
+                **_cloud_report(request, attempt),
                 "environment": observed})
     return {"status": "known", "attempts": values}
 
@@ -3808,11 +3873,49 @@ def _reach_refusal(state: WorkState, stage: str) -> Decision | None:
 
 # `none-found`: the holder inspected what the finding names and found no change
 # needing a party, which is the true account of an uncompared or unrecorded one.
+# `cloud-check`: a failed cloud attempt check the holder verified; its basis names the check.
 LAUNCH_ACCOUNT_PARTIES = frozenset({"owner", "plugin-update", "session", "builder-damage",
-                                    "none-found"})
+                                    "none-found", "cloud-check"})
 LAUNCH_ACCOUNT_FIELDS = frozenset({"id", "party", "basis", "session", "owner_report", "practice_issue"})
 LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposition", "use"})
-LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched"})
+# `cloud-not-run`: a cloud builder cannot reach this machine, so it has nothing to compare.
+LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched", "cloud-not-run"})
+
+
+def _cloud_check_findings(run: dict, request: dict | None = None) -> list[dict]:
+    # Design: lib/DESIGN.md#the-cloud-route
+    """A failed cloud attempt check holds the next stage like a launch finding."""
+    findings = []
+    for attempt in run.get("attempts") or []:
+        cloud = attempt.get("cloud") if isinstance(attempt, dict) else None
+        checks = cloud.get("cloud_checks") if isinstance(cloud, dict) else None
+        for name, check in sorted((checks or {}).items()):
+            if isinstance(check, dict) and check.get("ok") is False:
+                if name == "local_tree":
+                    # Only the tree releases this hold: an account can't make a stale tree current.
+                    if _tree_contains_tip(request, check.get("tip")):
+                        continue
+                    findings.append({"id": "cloud-check:local_tree", "item": "cloud_checks.local_tree",
+                                     "path": str(cloud.get("report_branch") or ""), "change": "failed",
+                                     "reason": json.dumps(check.get("reason") or "failed", ensure_ascii=True),
+                                     "released_by": "tree"})
+                    continue
+                detail = (check.get("faults") or check.get("commits_without_marker")
+                          or check.get("reason") or "failed")
+                findings.append({"id": f"cloud-check:{name}", "item": f"cloud_checks.{name}",
+                                 "path": str(cloud.get("report_branch") or ""), "change": "failed",
+                                 "reason": json.dumps(detail, ensure_ascii=True, sort_keys=True)})
+    return findings
+
+
+def _tree_contains_tip(request: dict | None, tip: object) -> bool:
+    """Whether the launch's local tree now contains the branch tip the cloud returned."""
+    root = (request or {}).get("root")
+    if not isinstance(tip, str) or not isinstance(root, str) or not Path(root).is_dir():
+        return False
+    return _git(["merge-base", "--is-ancestor", tip, "HEAD"], Path(root)).returncode == 0
+
+
 PRACTICE_ISSUE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*\Z")
 
 
@@ -3848,6 +3951,9 @@ def launch_account_payload(body: str) -> dict[str, object]:
                 raise ValueError(f"launch account {party} finding requires {name}")
         if party == "builder-damage" and PRACTICE_ISSUE.fullmatch(entry["practice_issue"]) is None:
             raise ValueError("launch account practice_issue must be owner/repo#n")
+        if party == "cloud-check" and (not identity.startswith("cloud-check:")
+                                       or identity.split(":", 1)[1] not in entry["basis"]):
+            raise ValueError("a cloud-check account answers a cloud-check finding and its basis names the check")
     return value
 
 
@@ -3883,17 +3989,20 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             bundles.append({**entry, "state": "running",
                             "status": "not yet recorded: the launch is running"})
             continue
+        # Read once, so a tree that moves mid-evaluation can't leave a held bundle with no findings.
+        cloud_findings = _cloud_check_findings(run, request) if isinstance(comparison, dict) else []
         if not isinstance(comparison, dict):
             findings = [{"id": "unrecorded", "item": "comparison", "path": "",
                          "change": "unrecorded",
                          "reason": "the request has a write-bound baseline but the run record has no comparison"}]
             status = "unrecorded"
-        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES:
+        elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not cloud_findings:
             bundles.append({**entry, "state": "clear", "findings": [],
                             "attributed": comparison.get("attributed") or [], "account": None})
             continue
         else:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
+            findings += cloud_findings
             status = "account-required"
         ids = {finding.get("id") for finding in findings}
         # An account counts only once its findings exist: after the run completed,
@@ -3908,7 +4017,7 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             if recorded_at is None or posted is None or posted <= recorded_at:
                 continue
             named = {finding["id"] for finding in launch_account_payload(marker.body)["findings"]}
-            if named == ids:
+            if named == ids and not any(finding.get("released_by") == "tree" for finding in findings):
                 account = {"source": f"{marker.surface}:{marker.source_id}", "author": marker.author}
         bundles.append({**entry, "state": "accounted" if account else status, "findings": findings,
                         "attributed": (comparison or {}).get("attributed") or [], "account": account})
@@ -3933,6 +4042,28 @@ def _launch_account_refusal(state: WorkState, stage: str) -> Decision | None:
                   "and the practice's product-incident filing.")
     return Decision("launch-account", False, None, "launch-findings-unaccounted", detail,
                     status="holder-owned")
+
+
+def _cloud_report(request, attempt):
+    # Design: lib/DESIGN.md#the-cloud-route
+    """A cloud attempt's route, profile mark, checks and practice drift."""
+    if request.get("route") != "cloud":
+        return {"route": "local"} if (attempt.get("vendor") == "claude") else {}
+    cloud = attempt.get("cloud") if isinstance(attempt.get("cloud"), dict) else {}
+    practice = (request.get("cloud") or {}).get("practice") or {}
+    profile = cloud.get("profile") if isinstance(cloud.get("profile"), dict) else {}
+    value = {"route": "cloud", "cloud_session": cloud.get("session_id"),
+             "cloud_profile": profile or None, "off_profile": profile.get("off_profile"),
+             "permission_mode": profile.get("permission_mode"),
+             "cloud_checks": cloud.get("cloud_checks"), "ledger_check": cloud.get("ledger_check"),
+             "attempt_fault": attempt.get("fault"),
+             "instructions_applied": request.get("instructions_applied"),
+             "instructions_loaded": cloud.get("instructions_loaded")}
+    if "session_loaded" in practice:
+        value["practice_drift"] = {"drift": practice.get("drift"),
+                                   "session_loaded": practice.get("session_loaded"),
+                                   "installed_at_send": practice.get("installed_at_send")}
+    return value
 
 
 def _write_bound_report(request, run, attempt):
@@ -4634,6 +4765,79 @@ def _reviewer_receipts(state: WorkState) -> list[dict[str, object]]:
 
 def _reviewer_ran(state: WorkState) -> bool:
     return all(item["result"] == "present" for item in _reviewer_receipts(state))
+
+
+def cloud_replies(text: str) -> list[dict]:
+    """The replies a cloud review-disposition returned, from its report's one reply block."""
+    blocks = re.findall(r"(?ms)^```" + re.escape(CLOUD_REPLIES_FENCE) + r"[ \t]*\r?\n(.*?)^```[ \t]*\r?$", text)
+    if len(blocks) != 1:
+        raise ValueError(f"the report holds {len(blocks)} `{CLOUD_REPLIES_FENCE}` blocks, not one")
+    try:
+        value = json.loads(blocks[0])
+    except ValueError as exc:
+        raise ValueError(f"the `{CLOUD_REPLIES_FENCE}` block is not JSON: {exc}") from exc
+    replies = value.get("replies") if isinstance(value, dict) and value.get("schema_version") == 1 else None
+    if not isinstance(replies, list):
+        raise ValueError(f"the `{CLOUD_REPLIES_FENCE}` block has no schema 1 `replies` list")
+    for reply in replies:
+        target = reply.get("target") if isinstance(reply, dict) else None
+        thread = target.get("thread") if isinstance(target, dict) else None
+        conversation = target.get("conversation") if isinstance(target, dict) else None
+        if (not isinstance(reply, dict) or not isinstance(reply.get("body"), str) or not reply["body"].strip()
+                or not ((isinstance(thread, int) and not isinstance(thread, bool)) or conversation is True)):
+            raise ValueError(f"a `{CLOUD_REPLIES_FENCE}` reply needs a thread or conversation target and a body")
+    return replies
+
+
+def _cloud_replies_pending(state: WorkState) -> str | None:
+    """The holder's step after a cloud review-disposition returns, while a returned reply is unposted.
+
+    A cloud run posts nothing, so its replies wait in its report's reply block. A reply counts as
+    posted once a marker producer has replied in its thread, or posted its text in the pull
+    request's conversation, after the run completed. A thread left unresolved is the thread check's.
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    if state.pr is None:
+        return None
+    bundles = _matching_bundles(f"{state.repo}#{state.issue_number}", {"review-disposition"},
+                                state.record_root or records.default_record_root())
+    if not bundles:
+        return None
+    completed, path, request, run = bundles[-1]
+    if request.get("route") != "cloud":
+        return None
+    finished = _time(run.get("completed_at"))
+    if finished is None:
+        return None
+    result = run.get("result") or {}
+    output = result.get("published_output") or result.get("source_output")
+    step = (f"The cloud review-disposition {path} returned its replies in {output}, in its "
+            f"`{CLOUD_REPLIES_FENCE}` block. Post each reply exactly as returned, to the thread or the "
+            "pull-request conversation it names, resolve each thread you answer, and post the completion "
+            "marker where a reply carries it. A cloud run posts nothing on the pull request, so the holder "
+            "posts its replies.")
+    try:
+        replies = cloud_replies(Path(output).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        return f"{step} Its replies can't be read: {exc}."
+    producer_posts = [
+        item for item in [*state.review_comments, *state.pr_comments]
+        if _author(item) in state.config.marker_producers
+        and (_time(item.get("created_at") if isinstance(item.get("created_at"), str) else None)
+             or finished) > finished]
+    unposted = []
+    for reply in replies:
+        thread = reply["target"].get("thread")
+        if thread is not None:
+            posted = any(item.get("in_reply_to_id") == thread for item in producer_posts)
+        else:
+            posted = any(item.get("in_reply_to_id") is None and isinstance(item.get("body"), str)
+                         and item["body"].strip() == reply["body"].strip() for item in producer_posts)
+        if not posted:
+            unposted.append(f"thread {thread}" if thread is not None else "the conversation")
+    if not unposted:
+        return None
+    return f"{step} Not yet posted: {', '.join(unposted)}."
 
 
 def _undisposed_threads(state: WorkState) -> tuple[list[int], list[str]]:
@@ -5401,6 +5605,10 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if reviewers and not _reviewer_ran(state):
         return result("waiting", False, None, "required-connected-reviewer-has-not-run")
     threads, _ignored_dispositions = _undisposed_threads(state)
+    pending = _cloud_replies_pending(state)
+    if pending is not None:
+        return result("cloud-replies", False, None, "cloud-review-disposition-replies-unposted", pending,
+                      status="holder-owned")
     if threads:
         return result(
             "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
@@ -6062,7 +6270,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
                   branch: str | None = None, *, floor_command: str | None = None,
                   merge_obligation: MergeObligation | None = None,
                   version_instruction: str = "",
-                  resumed: ResumeSource | None = None) -> bytes:
+                  resumed: ResumeSource | None = None,
+                  merge_script: str | None = None, cloud: bool = False) -> bytes:
     if decision.stage == "use":
         raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
@@ -6130,7 +6339,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             "Repairs renew this duty even on an already-ready pull request."
         )
     if decision.stage == "review-disposition":
-        instruction += _thread_resolution_clause(state)
+        instruction += CLOUD_REPLY_INSTRUCTION if cloud else _thread_resolution_clause(state)
     explicit_artifact = decision.stage == "artifact"
     phase = state.artifact_phase or _artifact_phase(state)
     problem = _artifact_source_problem(state, decision.stage)
@@ -6200,7 +6409,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         + "\n--- affirmed implementation brief end ---",
     ]
     if merge_obligation is not None:
-        sections.insert(0, merge_obligation.prompt(branch or BRANCH_PLACEHOLDER))
+        sections.insert(0, merge_obligation.prompt(branch or BRANCH_PLACEHOLDER, merge_script))
     if artifact is not None:
         artifact_label = "artifact under revision" if explicit_artifact else "settled artifact"
         draft_explanation = _settled_draft_explanation(phase) if not explicit_artifact else None
@@ -6801,6 +7010,18 @@ def _unverifiable_declaration(stage: str, reason: str) -> dict[str, object]:
     }
 
 
+def _cloud_declared_profile(attempt) -> tuple[str | None, str | None]:
+    """The one model and effort a cloud attempt's own transcript showed, or None where it showed several.
+
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    seen = ((attempt.get("cloud") or {}).get("profile") or {}) if isinstance(attempt, dict) else {}
+    models = seen.get("model") if isinstance(seen.get("model"), list) else []
+    effort = seen.get("effort")
+    return (models[0] if len(models) == 1 else None,
+            effort if isinstance(effort, str) and effort != cloud_build.NO_EFFORT_LABEL else None)
+
+
 def _marker_declaration(state: WorkState, marker: Marker | None,
                         stage: str) -> dict[str, object]:
     if marker is None:
@@ -6838,6 +7059,7 @@ def _marker_declaration(state: WorkState, marker: Marker | None,
     observed = actual.get("observed") if isinstance(actual, dict) else None
     usage = actual.get("usage") if isinstance(actual, dict) else None
     usage_dispatch = usage.get("dispatch") if isinstance(usage, dict) else None
+    cloud_model, cloud_effort = _cloud_declared_profile(actual)
     qualification = native if native else run.get("staffing_qualification")
     staffing_status = native["staffing_status"] if native else run.get("staffing_status")
     if native is None and staffing_status is None and isinstance(usage_dispatch, dict):
@@ -6864,12 +7086,12 @@ def _marker_declaration(state: WorkState, marker: Marker | None,
         ),
         "actual_model": (
             str(actual.get("model")) if isinstance(actual, dict) and actual.get("model")
-            else None
+            else cloud_model
         ),
         "actual_effort": (
             str(observed.get("effort")) if isinstance(observed, dict) and observed.get("effort")
             else str(actual.get("effort")) if isinstance(actual, dict) and actual.get("effort")
-            else None
+            else cloud_effort
         ),
         "fallback_reason": (
             str(run.get("fallback_reason")) if run.get("fallback_reason") else None
@@ -7110,7 +7332,7 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
             session = lifecycle.recovery_session(request, run)
         except ValueError as exc:
             raise WorkError(f"stopped bundle {path}: {exc}") from exc
-        if not SESSION_ID.fullmatch(session):
+        if not _session_shaped(session, request):
             raise WorkError(f"stopped bundle {path}: invalid session identity")
         if stage == "artifact":
             try:
@@ -7256,10 +7478,11 @@ def resume_session(state: WorkState, stage: str, record_root: Path | None = None
         return bundled
     if stage == "artifact":
         return None
-    sessions = [marker.attributes.get("session") for marker in state.issue_markers
+    sessions = [(marker.attributes.get("session"), marker.attributes.get("vendor"))
+                for marker in state.issue_markers
                 if marker.name == "builder-session" and marker.attributes.get("vendor")]
-    return next((session for session in reversed(sessions)
-                 if isinstance(session, str) and SESSION_ID.fullmatch(session)), None)
+    return next((session for session, vendor in reversed(sessions)
+                 if _session_shaped(session, vendor=vendor)), None)
 
 
 def _session_settings(source: ResumeSource) -> dict[str, object]:
@@ -8131,6 +8354,50 @@ def _merge_version_decision(root: Path, start: str, pinned: str, spec: dict | No
             "value": value, "reason": reason}
 
 
+def _cloud_practice(state, stage, vendor, resumed=None, session=None) -> str | None:
+    """The practice repository a launch's cloud session runs from, or None for a local launch.
+
+    It reads the launcher's own routing decision. Design: lib/DESIGN.md#the-cloud-route
+    """
+    if vendor != "claude":
+        return None
+    session = session or getattr(resumed, "session", None)
+    route = cloud_build.launch_route(stage, session, f"{state.repo}#{state.issue_number}")
+    if route is None:
+        return None
+    entry, _source, refusal = route
+    if entry is not None:
+        return entry["practice"]["repository"]
+    if refusal is not None:
+        return None  # the launcher refuses a broken switch, so nothing runs
+    return _session_practice(state, session, resumed)
+
+
+def _session_practice(state, session: str, resumed=None) -> str:
+    """The practice a cloud session runs from: its own records first, as the switch may be gone."""
+    def recorded():
+        yield ((getattr(resumed, "request", None) or {}).get("cloud") or {}).get("practice") or {}
+        try:
+            root = getattr(state, "record_root", None) or records.default_record_root()
+            for request, _run in cloud_build.session_attempts(root, session):
+                yield (request.get("cloud") or {}).get("practice") or {}
+            yield (cloud_build.read_record(cloud_build.record_path()) or {}).get("practice") or {}
+        except (OSError, cloud_build.CloudError):
+            return
+
+    for practice in recorded():
+        if isinstance(practice.get("repository"), str) and practice["repository"]:
+            return practice["repository"]
+    return cloud_build.DEFAULT_PRACTICE
+
+
+def _cloud_merge_script(state, stage, vendor, resumed=None, session=None) -> str | None:
+    """The persist script's path in a cloud run's practice clone, when the launch goes to the cloud."""
+    practice = _cloud_practice(state, stage, vendor, resumed, session)
+    return None if practice is None else cloud_build.cloud_practice_path(
+        practice, "skills", "persist-changes", "scripts", "persist.py")
+
+
 @dataclass(frozen=True)
 class MergeObligation:
     head: str
@@ -8140,8 +8407,10 @@ class MergeObligation:
     conflicts: tuple[str, ...]
     version_adjustment: dict | None
 
-    def prompt(self, branch: str) -> str:
-        script = Path(__file__).resolve().parents[1] / "skills" / "persist-changes" / "scripts" / "persist.py"
+    def prompt(self, branch: str, script: str | None = None) -> str:
+        # A cloud run finds the script in its practice clone, not under this machine's plugin root.
+        script = PurePosixPath(script) if script else (
+            Path(__file__).resolve().parents[1] / "skills" / "persist-changes" / "scripts" / "persist.py")
         lines = [
             "Merge obligation: do this before the implementation or reviewer repairs in this turn.",
             "When nothing else in this dispatch asks for implementation or repairs, "
@@ -9244,6 +9513,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                     merge_obligation=obligation,
                     version_instruction=version_instruction, resumed=resume_source,
+                    merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source, session),
+                    cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source, session) is not None,
                 )
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
@@ -9415,6 +9686,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                         merge_obligation=obligation,
                         version_instruction=version_instruction, resumed=resume_source,
+                        merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source, session),
+                        cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source, session) is not None,
                     )
                 except WorkError as exc:
                     if getattr(exc, "version_obligation", None) is not None:
@@ -9565,7 +9838,11 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     command.extend(("--retry-of", handover_retry_of))
                 if selected_vendor in {"claude", "codex"}:
                     context = Path(temporary) / "context.txt"
-                    preamble = implementer_preamble(selected_vendor, here.parent)
+                    cloud_practice = _cloud_practice(state, decision.stage, selected_vendor, resume_source,
+                                                     session)
+                    # A cloud run's task file describes the cloud; a local run's describes this machine.
+                    preamble = (cloud_preamble(cloud_practice) if cloud_practice
+                                else implementer_preamble(selected_vendor, here.parent))
                     window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])
                               if recovery_info else
                               f"Available recipient time is at most {metadata['recipient_allocation_seconds']:g} seconds. Leave useful work in the tree if the window ends. Perform only the named stage.\n".encode("utf-8"))
@@ -9582,7 +9859,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                            else "Claude starts here. Its file tools write only in this copy and its "
                            "session scratchpad; shell commands have no OS fence, and the launch "
                            "compares covered items before and after.\n")
-                    ).encode("utf-8") if artifact_run else b"")
+                    ).encode("utf-8") if artifact_run and not cloud_practice else b"")
                     context.write_bytes(preamble + handover_context + copy_context + window)
                     command.extend(("--context", str(context)))
                 if handover_record is not None:
