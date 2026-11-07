@@ -336,7 +336,7 @@ THREAD_RESOLUTION_INSTRUCTION = (
     "answered; a body finding has no thread."
 )
 # A cloud run's own GitHub posts may be refused by its safety screen, so the holder posts what it
-# returns (the owner's ruling, D-938). Design: lib/DESIGN.md#the-cloud-route
+# returns. Design: lib/DESIGN.md#the-cloud-route
 CLOUD_REPLIES_FENCE = "tradecraft-cloud-replies"
 CLOUD_REPLY_INSTRUCTION = (
     " This run is a cloud session: post nothing on the pull request and resolve no thread; the holder "
@@ -4764,12 +4764,34 @@ def _reviewer_ran(state: WorkState) -> bool:
     return all(item["result"] == "present" for item in _reviewer_receipts(state))
 
 
-def _cloud_replies_pending(state: WorkState) -> str | None:
-    """The holder's step after a cloud review-disposition returns, until its replies are posted.
+def cloud_replies(text: str) -> list[dict]:
+    """The replies a cloud review-disposition returned, from its report's one reply block."""
+    blocks = re.findall(r"(?ms)^```" + re.escape(CLOUD_REPLIES_FENCE) + r"[ \t]*\r?\n(.*?)^```[ \t]*\r?$", text)
+    if len(blocks) != 1:
+        raise ValueError(f"the report holds {len(blocks)} `{CLOUD_REPLIES_FENCE}` blocks, not one")
+    try:
+        value = json.loads(blocks[0])
+    except ValueError as exc:
+        raise ValueError(f"the `{CLOUD_REPLIES_FENCE}` block is not JSON: {exc}") from exc
+    replies = value.get("replies") if isinstance(value, dict) and value.get("schema_version") == 1 else None
+    if not isinstance(replies, list):
+        raise ValueError(f"the `{CLOUD_REPLIES_FENCE}` block has no schema 1 `replies` list")
+    for reply in replies:
+        target = reply.get("target") if isinstance(reply, dict) else None
+        thread = target.get("thread") if isinstance(target, dict) else None
+        conversation = target.get("conversation") if isinstance(target, dict) else None
+        if (not isinstance(reply, dict) or not isinstance(reply.get("body"), str) or not reply["body"].strip()
+                or not ((isinstance(thread, int) and not isinstance(thread, bool)) or conversation is True)):
+            raise ValueError(f"a `{CLOUD_REPLIES_FENCE}` reply needs a thread or conversation target and a body")
+    return replies
 
-    A cloud run posts nothing (the owner's ruling, D-938), so its replies wait in its report. Any
-    reply or comment a marker producer posts after the run completed counts as the holder's posting,
-    so a reply the run missed goes back to the builder rather than to the holder again.
+
+def _cloud_replies_pending(state: WorkState) -> str | None:
+    """The holder's step after a cloud review-disposition returns, while a returned reply is unposted.
+
+    A cloud run posts nothing, so its replies wait in its report's reply block. A reply counts as
+    posted once a marker producer has replied in its thread, or posted its text in the pull
+    request's conversation, after the run completed. A thread left unresolved is the thread check's.
     Design: lib/DESIGN.md#the-cloud-route
     """
     if state.pr is None:
@@ -4784,17 +4806,35 @@ def _cloud_replies_pending(state: WorkState) -> str | None:
     finished = _time(run.get("completed_at"))
     if finished is None:
         return None
-    # Only the pull request's own surfaces: a holder reading on the work's issue posts no reply.
-    for item in [*state.review_comments, *state.pr_comments]:
-        posted = _time(item.get("created_at") if isinstance(item.get("created_at"), str) else None)
-        if _author(item) in state.config.marker_producers and posted is not None and posted > finished:
-            return None
-    output = (run.get("result") or {}).get("published_output") or path
-    return (f"The cloud review-disposition {path} returned its replies in {output}, in its "
+    result = run.get("result") or {}
+    output = result.get("published_output") or result.get("source_output")
+    step = (f"The cloud review-disposition {path} returned its replies in {output}, in its "
             f"`{CLOUD_REPLIES_FENCE}` block. Post each reply exactly as returned, to the thread or the "
             "pull-request conversation it names, resolve each thread you answer, and post the completion "
             "marker where a reply carries it. A cloud run posts nothing on the pull request, so the holder "
             "posts its replies.")
+    try:
+        replies = cloud_replies(Path(output).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        return f"{step} Its replies can't be read: {exc}."
+    producer_posts = [
+        item for item in [*state.review_comments, *state.pr_comments]
+        if _author(item) in state.config.marker_producers
+        and (_time(item.get("created_at") if isinstance(item.get("created_at"), str) else None)
+             or finished) > finished]
+    unposted = []
+    for reply in replies:
+        thread = reply["target"].get("thread")
+        if thread is not None:
+            posted = any(item.get("in_reply_to_id") == thread for item in producer_posts)
+        else:
+            posted = any(item.get("in_reply_to_id") is None and isinstance(item.get("body"), str)
+                         and item["body"].strip() == reply["body"].strip() for item in producer_posts)
+        if not posted:
+            unposted.append(f"thread {thread}" if thread is not None else "the conversation")
+    if not unposted:
+        return None
+    return f"{step} Not yet posted: {', '.join(unposted)}."
 
 
 def _undisposed_threads(state: WorkState) -> tuple[list[int], list[str]]:

@@ -12481,7 +12481,7 @@ def test_938_a_cloud_review_disposition_returns_its_replies_and_a_local_one_is_u
     assert cloud.replace(work.CLOUD_REPLY_INSTRUCTION, work._thread_resolution_clause(fixture)) == local
 
 
-def test_938_a_returned_cloud_review_disposition_routes_its_replies_to_the_holder(tmp_path, monkeypatch):
+def _cloud_disposition(tmp_path, monkeypatch, replies):
     fixture = state(
         MECHANICAL, FLOOR,
         f"<!-- tradecraft:no-use:v1 head={SHA} -->\nUse: not required - mechanical.",
@@ -12492,7 +12492,10 @@ def test_938_a_returned_cloud_review_disposition_routes_its_replies_to_the_holde
         {"id": 43, "body": "another", "commit_id": SHA, "user": {"login": REVIEWER, "type": "Bot"}},
     ]
     store = tmp_path / "dispatches"
-    dispatch_bundle(store, stage="review-disposition", completed_at="2026-09-20T10:00:00+00:00")
+    block = ("" if replies is None else
+             f"```{work.CLOUD_REPLIES_FENCE}\n" + json.dumps({"schema_version": 1, "replies": replies}) + "\n```\n")
+    dispatch_bundle(store, stage="review-disposition", completed_at="2026-09-20T10:00:00+00:00",
+                    returned="Report.\n\n" + block)
     request_path = store / "review-disposition" / "result.md.request.json"
     request = json.loads(request_path.read_text(encoding="utf-8"))
     request_path.write_text(json.dumps({**request, "route": "cloud"}), encoding="utf-8")
@@ -12500,20 +12503,51 @@ def test_938_a_returned_cloud_review_disposition_routes_its_replies_to_the_holde
     monkeypatch.setattr(work, "_matching_bundles", lambda work_value, stages, root, **kw: (
         matching(work_value, stages, store, **kw) if set(stages) == {"review-disposition"}
         else matching(work_value, stages, root, **kw)))
+    return fixture, request_path, request
+
+
+def _holder_post(fixture, **fields):
+    fixture.review_comments.append({"created_at": "2026-09-20T11:00:00Z", "user": {"login": PRODUCER}, **fields})
+
+
+def test_938_the_holder_posts_each_returned_cloud_reply(tmp_path, monkeypatch):
+    replies = [{"target": {"thread": 41}, "body": "fixed - one"},
+               {"target": {"thread": 43}, "body": "declined - two"}]
+    fixture, request_path, request = _cloud_disposition(tmp_path, monkeypatch, replies)
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.reason, decision.dispatch) == (
         "cloud-replies", "cloud-review-disposition-replies-unposted", False)
-    assert "holder posts its replies" in decision.detail
+    assert "holder posts its replies" in decision.detail and "thread 41, thread 43" in decision.detail
     # A holder reading on the work's issue is no reply.
     fixture.issue_comments.append({"id": 90, "body": "reading", "created_at": "2026-09-20T11:00:00Z",
                                    "user": {"login": PRODUCER}})
     assert work.decide(fixture, RULES).stage == "cloud-replies"
-    # Once the holder has posted, a reply the run missed goes back to the builder.
-    fixture.review_comments.append({"id": 42, "in_reply_to_id": 41, "body": "fixed",
-                                    "created_at": "2026-09-20T11:00:00Z", "user": {"login": PRODUCER}})
+    # One reply posted out of two leaves the step named for the other.
+    _holder_post(fixture, id=42, in_reply_to_id=41, body="fixed - one")
     decision = work.decide(fixture, RULES)
-    assert (decision.stage, decision.detail) == ("review-disposition", "43")
-    # A local review-disposition is routed as before.
+    assert decision.stage == "cloud-replies" and "Not yet posted: thread 43." in decision.detail
+    # Both posted: the step clears.
+    _holder_post(fixture, id=44, in_reply_to_id=43, body="declined - two")
+    assert work.decide(fixture, RULES).stage != "cloud-replies"
+    # A local review-disposition's replies are its builder's: no holder step.
     request_path.write_text(json.dumps(request), encoding="utf-8")
-    fixture.review_comments.pop()
+    fixture.review_comments = fixture.review_comments[:2]
     assert work.decide(fixture, RULES).stage == "review-disposition"
+
+
+def test_938_an_empty_reply_block_names_no_holder_step(tmp_path, monkeypatch):
+    fixture, _path, _request = _cloud_disposition(tmp_path, monkeypatch, [])
+    # The resolve-only case: both threads answered, nothing returned, the thread check governs.
+    _holder_post(fixture, id=42, in_reply_to_id=41, body="fixed", created_at="2026-09-20T09:00:00Z")
+    _holder_post(fixture, id=44, in_reply_to_id=43, body="fixed", created_at="2026-09-20T09:00:00Z")
+    assert work.decide(fixture, RULES).stage != "cloud-replies"
+    fixture.review_comments = fixture.review_comments[:2]
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.detail) == ("review-disposition", "41,43")
+
+
+@pytest.mark.parametrize("replies", [None, [{"target": {"thread": "41"}, "body": "fixed"}]])
+def test_938_a_missing_or_malformed_reply_block_names_the_step_with_its_fault(tmp_path, monkeypatch, replies):
+    fixture, _path, _request = _cloud_disposition(tmp_path, monkeypatch, replies)
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "cloud-replies" and "can't be read" in decision.detail
