@@ -1,4 +1,7 @@
-"""Build and validate neutral recipient repositories from committed bytes."""
+"""Build and validate neutral recipient repositories from committed bytes.
+
+Design: lib/DESIGN.md#consumer-trees
+"""
 from __future__ import annotations
 
 from io import BytesIO
@@ -17,8 +20,57 @@ class RecipientTreeError(RuntimeError):
     """A recipient tree cannot be proved against its committed source."""
 
 
-def metadata_path(output: Path) -> Path:
-    return output.with_name(output.name + ".tradecraft-tree.json")
+RECORD_SUFFIX = ".tradecraft-tree.json"
+
+
+def record_path(tree_root: Path, records_home: Path) -> Path:
+    """Where the entrance keeps a tree's record: in its own records, never in the tree's folder."""
+    # Named from the tree's path, so a record still proves which tree it belongs to.
+    key = hashlib.sha256(
+        os.path.normcase(str(tree_root.expanduser().resolve())).encode("utf-8")
+    ).hexdigest()
+    return records_home.expanduser().resolve() / "trees" / f"{key}{RECORD_SUFFIX}"
+
+
+def former_record_path(tree_root: Path) -> Path:
+    """Where entrances before this layout wrote a tree's record, which the consumer could read."""
+    return tree_root.with_name(tree_root.name + RECORD_SUFFIX)
+
+
+def records_beside(tree_root: Path) -> list[Path]:
+    """Every entrance tree record in the folder a tree sits in, whichever tree it records."""
+    # A sibling tree's former record names its change as plainly as this tree's own would.
+    folder = tree_root.parent
+    if not folder.is_dir():
+        return []
+    return sorted(entry for entry in folder.iterdir()
+                  if entry.name.lower().endswith(RECORD_SUFFIX) and (entry.is_symlink() or not entry.is_dir()))
+
+
+def refuse_records_placement(output: Path, records_home: Path) -> None:
+    """Refuse a tree whose folder would hold the entrance's records, or one inside them."""
+    home = records_home.expanduser().resolve()
+    if _inside(output, home):
+        raise RecipientTreeError(f"tree output must be outside the entrance's records: {home}")
+    # The consumer works in the tree's folder, so the records may not sit anywhere below it.
+    if _inside(home, output.parent):
+        raise RecipientTreeError(
+            f"tree output's folder holds the entrance's records ({home}); "
+            "choose a folder that doesn't hold them"
+        )
+
+
+def write_record(record: Path, content: bytes) -> None:
+    """Write a record whole: a partial record never stands at its path."""
+    record.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=".record-", suffix=".tmp", dir=record.parent)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(content)
+        os.replace(temporary, record)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def _run(command: list[str], *, cwd: Path | None = None,
@@ -220,15 +272,23 @@ def create_consumer_tree(
     *, source: Path, output: Path, work: str, producer_version: str, mode: str,
     paths: list[str], loading_surfaces: list[str], front_page: str | None,
     root_instructions: str | None, directed_paths: list[str],
-    exclusions: list[str], deny_texts: list[str], source_revision: str | None = None,
-    registration_used: bool = True,
+    exclusions: list[str], deny_texts: list[str], records_home: Path,
+    source_revision: str | None = None, registration_used: bool = True,
 ) -> Path:
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
-    if output.exists() or output.is_symlink() or metadata_path(output).exists():
+    if output.exists() or output.is_symlink():
         raise RecipientTreeError(f"refusing existing recipient output: {output}")
+    beside = records_beside(output)
+    # A tree built here would be refused for that file, and the consumer could read it.
+    if beside:
+        raise RecipientTreeError(
+            "a record sits beside the tree's path: " + ", ".join(map(str, beside))
+            + "; remove that file, then build the tree"
+        )
     if _inside(output, source):
         raise RecipientTreeError("recipient output must be outside the source repository")
+    refuse_records_placement(output, records_home)
     if not _same_path(Path(_text(source, "rev-parse", "--show-toplevel")), source):
         raise RecipientTreeError("source root is not its Git top level")
     if _text(source, "status", "--porcelain"):
@@ -278,16 +338,18 @@ def create_consumer_tree(
         "verification": "raw-object-ids-match",
     }
     value["metadata_sha256"] = _digest(value)
+    record = record_path(output, records_home)
     try:
-        metadata_path(output).write_bytes(_json_bytes(value))
+        # A record already here belonged to a tree since deleted, and proves nothing without it.
+        write_record(record, _json_bytes(value))
     except OSError:
         shutil.rmtree(output, ignore_errors=True)
         raise
-    return metadata_path(output)
+    return record
 
 
 def load_consumer_tree_metadata(metadata: Path, *, work: str) -> dict[str, object]:
-    """Validate adjacent metadata integrity before a caller trusts its source claim."""
+    """Validate a tree record's integrity before a caller trusts its source claim."""
     metadata = metadata.expanduser().resolve()
     try:
         value = json.loads(metadata.read_bytes())
@@ -305,7 +367,7 @@ def load_consumer_tree_metadata(metadata: Path, *, work: str) -> dict[str, objec
 
 
 def validate_consumer_tree(
-    metadata: Path, *, work: str, source: Path,
+    metadata: Path, *, work: str, source: Path, records_home: Path,
     claim: dict[str, object] | None = None,
 ) -> Path:
     metadata = metadata.expanduser().resolve()
@@ -318,8 +380,18 @@ def validate_consumer_tree(
         raise RecipientTreeError("consumer-tree metadata lacks its root or files")
     root = Path(root_value).expanduser().resolve()
     source = source.expanduser().resolve()
-    if not root.is_dir() or metadata != metadata_path(root):
-        raise RecipientTreeError("consumer-tree metadata is not adjacent to its tree")
+    if not root.is_dir():
+        raise RecipientTreeError(f"consumer tree is absent: {root}")
+    beside = records_beside(root)
+    # Never opened: whatever change it names, the consumer could read it from its folder.
+    if beside:
+        raise RecipientTreeError(
+            "a record sits beside the consumer tree: " + ", ".join(map(str, beside))
+            + "; remove that file and rebuild the tree it records with work.py tree, which keeps its "
+            "record in the entrance's records"
+        )
+    if not _same_path(metadata, record_path(root, records_home)):
+        raise RecipientTreeError("consumer-tree record is not the entrance's record of its tree")
     revision = value.get("source_revision")
     if not isinstance(revision, str):
         raise RecipientTreeError("consumer-tree metadata lacks its source revision")
