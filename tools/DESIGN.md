@@ -1,0 +1,31 @@
+# Design of the repository's own tools
+
+**Purpose:** say what this repository's own tools do now and why, for whoever changes them next. **Audience:** a session or person opening a tool here that points at one of these sections. **Success:** that reader finds the reasons behind the tool here, without the issue that built it.
+
+Nothing here ships. Each section names the decisions in force behind its code by links into the decision log. Code added under the code-reasons standard opens with a pointer to its section; existing tools are brought in by the repository's catch-up.
+
+## The standing page
+
+**What it does now.** `tools/steward_page.py` is the only route by which the Steward edits the lab's standing page, #683. The page's issue body is the pickup part: the rulings a holder applies, an index linking every other part, and a note on how the page is used. Six Steward comments on the same issue each hold one other part, in this order: the Steward's part, the latest read, the ready list, in flight, the traps and the residues. Each part comment opens with the wake's `post` marker and carries `<!-- lab:steward-part:v1 part=NAME -->` on its second line; the body opens with `<!-- lab:steward-part:v1 part=body archive=N -->`, naming the archive issue.
+
+- **Entries.** Every entry is one top-level list item whose first line ends with `<!-- lab:steward-entry:v1 id=ID kind=KIND issue=REF -->`, plus ` kept=yes` once it is kept. The kind decides the part: `ruling` lives only in the body, and every other kind only in its own comment part. `REF` is `none` or `REPO#N` in one of the lab's six repositories. Entry text comes from a UTF-8 file, and the tool adds the list prefix, the marker and the indentation. A ready entry is one line, and the ready list is renumbered on every write.
+- **Faults.** An unmarked top-level list item after the first entry, a duplicate id, a part carried by two comments, a kind in the wrong part, a misplaced marker or a repository outside the lab is a fault. `status` names each one, and every writing command refuses while any stands; the Steward repairs it by hand and then accepts the part.
+- **The limit.** Each part, the body included, is held to 20,000 bytes of the exact text the tool would write. A write leaving a part over is refused unless `--over-reason` is given, and the part then shows that reason, with its size, in a visible blockquote under a hidden `lab:steward-over:v1` line until a write brings it back under. Every command that writes a part takes the flag, `same` restates the reason already shown, and a write that still leaves the part over needs a reason even when it shrinks it.
+- **The saved copy and the write window.** After each write the tool reads the part back and, only if it matches, saves it as `page-<PAGE>/<part>.json` in the Steward's state directory. Immediately before each write it re-reads the live part and refuses, printing a diff, if it differs from that copy; with no copy it refuses and prints the live part and its SHA-256, which `accept PART --sha SHA` records as the baseline. GitHub has no conditional update for a comment or an issue body, so a hand edit that lands between the tool's last re-read and its write is overwritten. It survives only in GitHub's edit history, and the tool does not detect it.
+- **Closed entries.** `status` reads each entry's issue or pull request through GraphQL, fifty at a time, and lists three things: entries whose reference closed; rulings whose carrying change closed without landing; and kept entries. Only a merged pull request or an issue closed as completed has landed. A reference that cannot be resolved is reported as an error, never as open.
+- **The archive.** `archive --read N` refuses while any ruling's change closed without landing, until each is re-pointed with `replace --issue` or kept with its reason. It stale-checks every affected part, posts the removed entries word for word, marker included, as read N's one comment on the closed archive issue, and appends to that comment on a re-run. It reads the comment back, and only when every entry is there does it rewrite each part, re-reading each first and stopping at the first that changed. `--closed` removes closed entries that are not kept, but a ruling only once its change landed; `--ids` removes exactly the entries named. Nothing else removes an entry. `archive --move` posts the move's file whole as one comment before the move removes anything.
+- **The move.** `init-archive`, `create-part`, `load` (the body included) and `body` exist for the one-time move from the old single-body page; `body` writes only the preamble, page marker and index, and refuses a body that already carries the page marker.
+
+**Why.**
+
+- The page stays on #683 and keeps the wake's `post` marker on line one because the wake and the intake route read only that marker and compare comment ids: a part comment, new or edited, is never intake, and any other `lab:steward` kind would read as unmarked and wake the Steward.
+- The page is its own data, not generated from files, because a replacement Steward elsewhere would not have those files; the live page stays the record, and the saved copy only lets the tool notice another hand's edit.
+- A replacement with no copy must accept the live part explicitly, because refusing forever would stall it and silently adopting the live page would hide another's edit.
+- The marker ends an entry's first line because a marker at the start of a list item makes GitHub render the rest of the item as raw text.
+- Ids are random so that no second write is needed to keep a counter, and they stay unique against the archive.
+- Each part has a limit because archiving alone leaves current parts long; the reason route keeps a stalled ruling possible without making the overrun silent.
+- A ruling whose change closed without landing never leaves on `--closed`, because only landing retires a ruling and a holder must not lose one in force.
+- Nothing leaves the page before it is in the archive, so nothing the owner ruled disappears without a searchable record.
+- A destination is written before its source on a move between parts, so a failure leaves a duplicate that `status` shows rather than a loss.
+
+**Decisions in force:** [D-891](../docs/architecture/decisions/D-891-2026-11-07-the-standing-page-in-parts.md).
