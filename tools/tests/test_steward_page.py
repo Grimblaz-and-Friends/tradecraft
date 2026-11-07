@@ -60,10 +60,14 @@ class FakeGitHub:
                 hook[1]()
         if endpoint == "graphql":
             return self.graphql(payload["query"])
-        tail = endpoint.split("/")[3:]
+        tail = endpoint.split("?")[0].split("/")[3:]
+        if tail == ["issues"] and method == "GET":
+            return json.dumps([i for i in self.issues.values()
+                               if i.get("user", {}).get("login") == "Grimblaz"])
         if tail == ["issues"] and method == "POST":
             self.next_issue += 1
             made = {"number": self.next_issue, "body": payload["body"], "state": "open",
+                    "user": {"login": "Grimblaz"},
                     "html_url": f"https://github.com/{REPO}/issues/{self.next_issue}"}
             self.issues[self.next_issue] = made
             self.comments[self.next_issue] = []
@@ -477,6 +481,7 @@ def test_body_over_the_limit_with_no_reason_writes_nothing(tmp_path):
     lab = FakeGitHub()
     st = Steward(lab, tmp_path)
     archive = st("init-archive", "--title", "a")["archive"]
+    st("archive", "--move", "--archive", archive, "--file", st.file(OLD_BODY))
     st.accept("body")
     st.refused("body", "--text-file", st.file(BIG), "--archive", archive,
                match="over its 20,000-byte limit")
@@ -615,6 +620,7 @@ def test_a_stale_saved_copy_stops_load_body_and_create_part_too(tmp_path):
     # body writes only a body without the page marker, so its stale copy is of the old page.
     st = Steward(FakeGitHub(), tmp_path / "body")
     archive = st("init-archive", "--title", "a")["archive"]
+    st("archive", "--move", "--archive", archive, "--file", st.file(OLD_BODY))
     st.accept("body")
     st.lab.set_part("body", OLD_BODY.replace("- an old ruling", "- an old ruling, by hand"))
     error = st.refused("body", "--text-file", st.file("How this page is used."),
@@ -872,6 +878,75 @@ def test_every_command_on_its_happy_path(st):
     assert set(entries) == {sid, gid}
     assert entries[sid]["kind"] == "owed" and entries[gid]["kept"] is False
     assert st("status")["faults"] == []
+
+
+def test_body_refuses_until_the_archive_holds_the_move(tmp_path):
+    """The old page can't be overwritten before what leaves it is archived."""
+    st = Steward(FakeGitHub(), tmp_path)
+    archive = st("init-archive", "--title", "a")["archive"]
+    st.accept("body")
+    st.lab.add_comment(archive, sp.MOVE_MARKER + "\nforged by another account\n", login="someone")
+    st.refused("body", "--text-file", st.file("How this page is used."), "--archive", archive,
+               match="holds no move comment")
+    assert st.lab.part_text("body") == OLD_BODY
+    st("archive", "--move", "--archive", archive, "--file", st.file(OLD_BODY))
+    st("body", "--text-file", st.file("How this page is used."), "--archive", archive)
+
+
+def test_init_archive_refuses_while_this_page_has_one_and_ignores_other_pages(tmp_path):
+    """A rerun finds the page's archive, open or closed; another page's archive is not this one's."""
+    st = Steward(FakeGitHub(), tmp_path)
+    st.lab.issues[1500] = {"number": 1500, "state": "closed", "user": {"login": "Grimblaz"},
+                           "body": sp.ARCHIVE_ISSUE_MARKER + "\n"
+                           + sp.ARCHIVE_PAGE_LINE.format(page=964) + "\nA probe's archive.\n"}
+    st.lab.issues[1501] = {"number": 1501, "state": "closed", "user": {"login": "Grimblaz"},
+                           "body": sp.ARCHIVE_ISSUE_MARKER + "\nAn archive naming no page.\n"}
+    first = st("init-archive", "--title", "a")["archive"]
+    st.refused("init-archive", "--title", "again", match=f"archive issue {first} already exists")
+    st.lab.issues[first]["state"] = "open"
+    st.refused("init-archive", "--title", "again", match=f"archive issue {first} already exists")
+    st.refused("archive", "--move", "--archive", 1500, "--file", st.file("x"),
+               match="is not page 683's archive")
+
+
+def test_init_archive_names_the_new_issue_when_closing_it_fails(tmp_path):
+    """A failed close still reports the archive issue it created."""
+    st = Steward(FakeGitHub(), tmp_path)
+
+    def fail_close(method, endpoint):
+        return method == "PATCH" and endpoint.endswith("/issues/2001")
+
+    def boom():
+        raise sw.WatchError("gh api --method PATCH exited 1: HTTP 502")
+
+    st.lab.hooks.append((fail_close, boom))
+    with pytest.raises(sp.PageError, match="502") as info:
+        st("init-archive", "--title", "a")
+    assert [w["url"] for w in info.value.detail["written"]] == [
+        f"https://github.com/{REPO}/issues/2001"]
+
+
+def test_a_github_failure_after_a_write_names_the_write(st):
+    """A gh failure on the read-back after a write still reports what reached GitHub."""
+    flight = st.lab.part_comment("flight")
+    nth_get(st.lab, f"issues/comments/{flight['id']}", 2,
+            lambda: (_ for _ in ()).throw(sw.WatchError("gh api exited 1: HTTP 502")))
+    with pytest.raises(sp.PageError, match="502") as info:
+        st.add("flight", "written, then the read-back failed")
+    assert [w["part"] for w in info.value.detail["written"]] == ["flight"]
+
+
+@pytest.mark.parametrize("ref", ["foo", 'tradecraft"#1'])
+def test_a_malformed_issue_value_is_a_fault_and_never_queried(st, ref):
+    """status names a hand-written issue= value it cannot use, and sends it nowhere."""
+    st.lab.states["tradecraft#890"] = issue("CLOSED", "COMPLETED")
+    st.add("flight", "a real reference", "tradecraft#890")
+    flight = st.lab.part_text("flight").rstrip("\n")
+    hand_edit(st, "flight", flight + f"\n- hand-written <!-- lab:steward-entry:v1 id=0000beef kind=flight issue={ref} -->\n")
+    status = st("status")
+    assert any(ref in f for f in status["faults"])
+    assert [r["issue"] for r in status["closed"]] == ["tradecraft#890"]
+    assert not any(ref in (c[2] or {}).get("query", "") for c in st.lab.calls if c[1] == "graphql")
 
 
 def test_create_part_is_refused_for_an_existing_part_and_body_once_marked(st):

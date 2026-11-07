@@ -66,6 +66,9 @@ OVER_LINE = re.compile(re.escape(f"> **Over its {LIMIT:,}-byte limit at ") + r"[
 INDEX_BEGIN = "<!-- lab:steward-index:v1 begin -->"
 INDEX_END = "<!-- lab:steward-index:v1 end -->"
 ARCHIVE_ISSUE_MARKER = "<!-- lab:steward-archive-issue:v1 -->"
+# The archive's second line names its page, so a probe page's archive is never taken for #683's.
+ARCHIVE_PAGE_LINE = "<!-- lab:steward-archive-page:v1 page={page} -->"
+MOVE_MARKER = "<!-- lab:steward-archive:v1 event=move -->"
 ARCHIVE_MARKER = re.compile(r"<!-- lab:steward-archive:v1 (?:read=(?P<read>\d+)|event=move) -->")
 KEPT_WORDS = "Kept after its issue closed: "
 REF = re.compile(r"(?P<repo>[A-Za-z0-9._-]+)#(?P<number>[1-9]\d*)")
@@ -107,6 +110,8 @@ STRUCTURE = ("lab:steward-part", "lab:steward-entry", "lab:steward-over", "lab:s
 
 def clean(text: str, what: str, markers_ok: bool = False) -> str:
     """Refuse what would put a control character, or a stray structure marker, on the page."""
+    # A control character renders invisibly or garbles the page, and hand-written edits have put
+    # them there before; newline and tab are the only ones Markdown means.
     if sw.BOM in text:
         raise PageError(f"{what} carries a byte-order mark; save it as UTF-8 without one")
     text = normalise(text)
@@ -352,6 +357,7 @@ def render(part: Part, index: list[str], over_line: str | None = None) -> str:
         for number, entry in enumerate(part.entries, 1):
             first = entry.lines[0]
             if part.name == "ready":
+                # Holders take ready work in this order, so an item's number is its place in line.
                 first = f"{number}. " + first[ITEM.match(first).end():]
             lines.extend([first] + entry.lines[1:])
         blocks.append("\n".join(lines))
@@ -482,7 +488,7 @@ def resolve_states(github: sw.GitHub, refs: list[str]) -> tuple[dict, dict]:
     """Each reference's state: open, landed, or closed (without landing); else an error."""
     states: dict[str, str] = {}
     errors: dict[str, str] = {}
-    refs = sorted(set(r for r in refs if r != "none"))
+    refs = sorted(set(r for r in refs if r != "none" and REF.fullmatch(r)))
 
     def query(chunk: list[str]) -> None:
         fields = []
@@ -845,7 +851,9 @@ class PageTool:
         if page.body.marked:
             raise PageError("the body already carries the page marker; change its preamble "
                             "with preamble body")
-        self.check_archive_issue(archive)
+        if not any(sw.first_line(c.get("body")) == MOVE_MARKER for c in self.archive_comments(archive)):
+            raise PageError(f"archive issue {archive} holds no move comment yet; run archive --move "
+                            "first, so the old page is archived before the body is overwritten")
         live = page.body.live
         part = Part("body", None, live)
         part.archive = archive
@@ -858,22 +866,38 @@ class PageTool:
         page = self.load()
         if page.body.marked and page.body.archive:
             raise PageError(f"the page already names archive issue {page.body.archive}")
+        found = self.archives_for_page()
+        if found:
+            raise PageError(f"archive issue {found[0]} already exists for page {self.number}; "
+                            f"name it with body --archive {found[0]}", archives=found)
         made = self.github.send("POST", f"repos/{sw.LAB_REPO}/issues", {
             "title": one_line(title, "--title"),
-            "body": ARCHIVE_ISSUE_MARKER + "\n" + ARCHIVE_ISSUE_PROSE + "\n"})
+            "body": "\n".join([ARCHIVE_ISSUE_MARKER, ARCHIVE_PAGE_LINE.format(page=self.number),
+                               ARCHIVE_ISSUE_PROSE]) + "\n"})
         number = int(made["number"])
+        self.writes.append({"part": "archive", "url": made.get("html_url")})
         # Closed at once so it never sits among open work; completed, as a record and not a declined plan.
         self.github.send("PATCH", f"repos/{sw.LAB_REPO}/issues/{number}",
                          {"state": "closed", "state_reason": "completed"})
-        self.writes.append({"part": "archive", "url": made.get("html_url")})
         return self.result(archive=number)
+
+    def archives_for_page(self) -> list[int]:
+        issues = self.github.get_all(f"repos/{sw.LAB_REPO}/issues?state=all&creator={sw.OWNER_LOGIN}"
+                                     "&per_page=100")
+        return sorted(int(i["number"]) for i in issues if self.is_archive_body(i.get("body")))
+
+    def is_archive_body(self, body: str | None) -> bool:
+        lines = normalise(body).split("\n")
+        return (len(lines) > 1 and lines[0].rstrip() == ARCHIVE_ISSUE_MARKER
+                and lines[1].rstrip() == ARCHIVE_PAGE_LINE.format(page=self.number))
 
     # -- the archive
 
     def check_archive_issue(self, number: int) -> None:
         issue = self.github.get(f"repos/{sw.LAB_REPO}/issues/{number}")
-        if normalise(issue.get("body")).split("\n", 1)[0].rstrip() != ARCHIVE_ISSUE_MARKER:
-            raise PageError(f"issue {number} does not open with {ARCHIVE_ISSUE_MARKER}")
+        if not self.is_archive_body(issue.get("body")):
+            raise PageError(f"issue {number} is not page {self.number}'s archive: it does not open "
+                            f"with {ARCHIVE_ISSUE_MARKER} and its page line")
 
     def archive_comments(self, number: int) -> list[dict]:
         self.check_archive_issue(number)
@@ -1000,7 +1024,8 @@ def build_parser() -> argparse.ArgumentParser:
         one.add_argument("--state-dir", help="local state directory (default: the "
                          f"{sw.STATE_ENV} variable, else ~/.tradecraft-lab/steward)")
         one.add_argument("--page", type=int, default=sw.STANDING_PAGE,
-                         help="standing page issue number; anything but 683 is probe-only")
+                         help=f"standing page issue number; anything but {sw.STANDING_PAGE} is "
+                         "probe-only")
         if writes:
             one.add_argument("--over-reason", help="write the part over its limit, showing this "
                              "reason; `same` restates the reason it already shows")
@@ -1071,6 +1096,10 @@ def run(args: argparse.Namespace, github: sw.GitHub | None = None,
         # A refusal after a write must say what already reached GitHub, or the Steward can't tell.
         if tool.writes:
             exc.detail.setdefault("written", list(tool.writes))
+        raise
+    except sw.WatchError as exc:
+        if tool.writes:
+            raise PageError(str(exc), written=list(tool.writes)) from exc
         raise
 
 

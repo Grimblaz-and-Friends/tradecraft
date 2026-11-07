@@ -54,6 +54,9 @@ Given together on 2026-11-07 ("Take all three"):
 - **`create-part` checks the body's limit and saved copy before posting,** using a longer stand-in comment id for the new index line, so a refusal there rarely comes after the new part exists.
 - **Only an unresolvable reference is retried singly.** gh fails a whole GraphQL query when one number in it is neither an issue nor a pull request, so a failed batch is split to name that reference; any other gh failure, such as an expired login, stops the read with its own error rather than reporting every reference unresolved.
 - **A refusal after a write names what was written,** for every command: a move between parts stopped at its source, `create-part` stopped at the body's rewrite, or an archive stopped at a part.
+- **The archive issue's second line names its page** (`<!-- lab:steward-archive-page:v1 page=N -->`), under the marker C10 names, so a probe page's archive is never taken for #683's. `init-archive` refuses while an archive for the page already exists, open or closed, and reports the new issue before closing it, so a failed close still names it.
+- **`body` refuses until the archive issue holds the move's comment from the owner's account,** so the old page cannot be overwritten before what leaves it is archived, whatever order the Steward runs the move in.
+- **A malformed `issue=` value is a fault and is never sent to GitHub,** so `status` names it rather than failing on it.
 - **`init-archive` refuses once the body names an archive,** and closes the new issue as completed.
 
 ## What the cold rounds changed

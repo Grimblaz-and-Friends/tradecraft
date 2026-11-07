@@ -46,8 +46,8 @@ Every command that writes a part also takes `--over-reason R`.
 | `preamble PART --text-file F` | Replaces a part's preamble; on the body it also rewrites the index. |
 | `create-part PART --text-file F` | Posts a new part comment with F as its preamble; refused if the part exists. |
 | `load PART --file entries.json` | Fills a part that holds no entries from a JSON list of `{kind, issue, text}`. Accepts the body. |
-| `body --text-file F --archive N` | The move only: writes the body's preamble, page marker and index, and no rulings. Refused once the body carries the page marker. |
-| `init-archive --title T` | Creates the archive issue, opening with `<!-- lab:steward-archive-issue:v1 -->`, and closes it. Refused once the body names an archive. |
+| `body --text-file F --archive N` | The move only: writes the body's preamble, page marker and index, and no rulings. Refused once the body carries the page marker, and until archive issue N holds the move's comment. |
+| `init-archive --title T` | Creates the archive issue, opening with `<!-- lab:steward-archive-issue:v1 -->` and a second line `<!-- lab:steward-archive-page:v1 page=N -->` naming its page, and closes it. Refused once the body names an archive, or while an archive issue for this page already exists. |
 | `archive --read N [--closed] [--ids ID ...]` | Archives at read N (below). |
 | `archive --move --archive N --file F` | Posts F whole as the move's one archive comment, before anything is removed. |
 
