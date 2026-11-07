@@ -45,15 +45,20 @@ def source(tmp_path):
     return root.resolve()
 
 
-def test_adopter_tree_carries_committed_bytes_and_adjacent_metadata(source, tmp_path):
-    output = tmp_path / "adopter"
+def test_adopter_tree_carries_committed_bytes_and_keeps_its_record_in_the_entrances_records(
+        source, tmp_path):
+    output = tmp_path / "work" / "adopter"
     metadata = recipient_tree.create_consumer_tree(
-        source=source, output=output, work="acme/widget#7", producer_version="0.151.0",
+        source=source, output=output, work="acme/widget#7", records_home=tmp_path / "entrance",
+        producer_version="0.151.0",
         mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"],
         front_page=None, root_instructions=None, directed_paths=[],
         exclusions=["record.txt"], deny_texts=["SECRET-RECORD"],
     )
-    assert metadata == recipient_tree.metadata_path(output)
+    assert metadata == recipient_tree.record_path(output, tmp_path / "entrance")
+    assert metadata.parent == (tmp_path / "entrance" / "trees").resolve()
+    # The consumer works in the tree's folder, so the tree is all it finds there.
+    assert [entry.name for entry in output.parent.iterdir()] == ["adopter"]
     assert (output / "job/job.md").read_bytes() == b"run the consumer\n"
     assert (output / "skill/SKILL.md").read_bytes() == b"loading surface\n"
     assert not (output / "record.txt").exists()
@@ -69,14 +74,15 @@ def test_adopter_tree_carries_committed_bytes_and_adjacent_metadata(source, tmp_
     assert source_mode == recipient_mode == b"100755"
     assert value["files"]["job/run.sh"]["mode"] == "100755"
     assert recipient_tree.validate_consumer_tree(
-        metadata, work="acme/widget#7", source=source
+        metadata, work="acme/widget#7", source=source, records_home=tmp_path / "entrance"
     ) == output.resolve()
 
 
 def test_repository_session_mode_carries_every_declared_surface(source, tmp_path):
-    output = tmp_path / "repository-session"
+    output = tmp_path / "work" / "repository-session"
     metadata = recipient_tree.create_consumer_tree(
-        source=source, output=output, work="acme/widget#7", producer_version="0.151.0",
+        source=source, output=output, work="acme/widget#7", records_home=tmp_path / "entrance",
+        producer_version="0.151.0",
         mode="repository-session", paths=["job/job.md"], loading_surfaces=[],
         front_page="README.md", root_instructions="AGENTS.md",
         directed_paths=["directed.md"], exclusions=[], deny_texts=[],
@@ -95,9 +101,10 @@ def test_unregistered_tree_can_pin_an_earlier_commit_and_validate_after_head_adv
     git(source, "add", "job/job.md")
     git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "advance")
-    output = tmp_path / "landed"
+    output = tmp_path / "work" / "landed"
     metadata = recipient_tree.create_consumer_tree(
-        source=source, output=output, work="acme/widget#7", producer_version="0.153.0",
+        source=source, output=output, work="acme/widget#7", records_home=tmp_path / "entrance",
+        producer_version="0.153.0",
         mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"],
         front_page=None, root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
         source_revision=revision, registration_used=False,
@@ -107,7 +114,7 @@ def test_unregistered_tree_can_pin_an_earlier_commit_and_validate_after_head_adv
     assert value["registration_used"] is False
     assert (output / "job/job.md").read_bytes() == b"run the consumer\n"
     assert recipient_tree.validate_consumer_tree(
-        metadata, work="acme/widget#7", source=source,
+        metadata, work="acme/widget#7", source=source, records_home=tmp_path / "entrance",
     ) == output.resolve()
 
 
@@ -115,8 +122,8 @@ def test_unregistered_tree_can_pin_an_earlier_commit_and_validate_after_head_adv
 def test_repository_session_refuses_each_missing_required_surface(source, tmp_path, missing):
     with pytest.raises(recipient_tree.RecipientTreeError, match="requires"):
         recipient_tree.create_consumer_tree(
-            source=source, output=tmp_path / missing, work="acme/widget#7",
-            producer_version="0.151.0", mode="repository-session",
+            source=source, output=tmp_path / "work" / missing, work="acme/widget#7",
+            records_home=tmp_path / "entrance", producer_version="0.151.0", mode="repository-session",
             paths=["job/job.md"], loading_surfaces=[],
             front_page=None if missing == "front" else "README.md",
             root_instructions=None if missing == "instructions" else "AGENTS.md",
@@ -132,8 +139,8 @@ def test_tree_refuses_export_omission_archive_transformation_and_leak(source, tm
         "commit", "-m", "ignore")
     with pytest.raises(recipient_tree.RecipientTreeError, match="omitted"):
         recipient_tree.create_consumer_tree(
-            source=source, output=tmp_path / "omitted", work="acme/widget#7",
-            producer_version="0.151.0", mode="adopter", paths=["job/job.md"],
+            source=source, output=tmp_path / "work" / "omitted", work="acme/widget#7",
+            records_home=tmp_path / "entrance", producer_version="0.151.0", mode="adopter", paths=["job/job.md"],
             loading_surfaces=["skill/SKILL.md"], front_page=None,
             root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
         )
@@ -144,8 +151,8 @@ def test_tree_refuses_export_omission_archive_transformation_and_leak(source, tm
         "commit", "-m", "transform")
     with pytest.raises(recipient_tree.RecipientTreeError, match="transformed"):
         recipient_tree.create_consumer_tree(
-            source=source, output=tmp_path / "transformed", work="acme/widget#7",
-            producer_version="0.151.0", mode="adopter", paths=["job/job.md"],
+            source=source, output=tmp_path / "work" / "transformed", work="acme/widget#7",
+            records_home=tmp_path / "entrance", producer_version="0.151.0", mode="adopter", paths=["job/job.md"],
             loading_surfaces=["skill/SKILL.md"], front_page=None,
             root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
         )
@@ -155,8 +162,8 @@ def test_tree_refuses_export_omission_archive_transformation_and_leak(source, tm
         "commit", "-m", "plain")
     with pytest.raises(recipient_tree.RecipientTreeError, match="denied text"):
         recipient_tree.create_consumer_tree(
-            source=source, output=tmp_path / "leak", work="acme/widget#7",
-            producer_version="0.151.0", mode="adopter", paths=["record.txt"],
+            source=source, output=tmp_path / "work" / "leak", work="acme/widget#7",
+            records_home=tmp_path / "entrance", producer_version="0.151.0", mode="adopter", paths=["record.txt"],
             loading_surfaces=["skill/SKILL.md"], front_page=None,
             root_instructions=None, directed_paths=[], exclusions=[],
             deny_texts=["SECRET-RECORD"],
@@ -167,13 +174,14 @@ def test_tree_refuses_source_output_and_altered_metadata(source, tmp_path):
     with pytest.raises(recipient_tree.RecipientTreeError, match="outside"):
         recipient_tree.create_consumer_tree(
             source=source, output=source / "recipient", work="acme/widget#7",
-            producer_version="0.151.0", mode="adopter", paths=["job/job.md"],
+            records_home=tmp_path / "entrance", producer_version="0.151.0", mode="adopter", paths=["job/job.md"],
             loading_surfaces=["skill/SKILL.md"], front_page=None,
             root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
         )
-    output = tmp_path / "valid"
+    output = tmp_path / "work" / "valid"
     metadata = recipient_tree.create_consumer_tree(
-        source=source, output=output, work="acme/widget#7", producer_version="0.151.0",
+        source=source, output=output, work="acme/widget#7", records_home=tmp_path / "entrance",
+        producer_version="0.151.0",
         mode="adopter", paths=["job/job.md"], loading_surfaces=["skill/SKILL.md"],
         front_page=None, root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
     )
@@ -181,13 +189,15 @@ def test_tree_refuses_source_output_and_altered_metadata(source, tmp_path):
     value["mode"] = "repository-session"
     metadata.write_bytes((json.dumps(value) + "\n").encode())
     with pytest.raises(recipient_tree.RecipientTreeError, match="digest"):
-        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source)
+        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source,
+                                                records_home=tmp_path / "entrance")
 
 
 def _consumer_tree(source, tmp_path, name):
-    output = tmp_path / name
+    output = tmp_path / "work" / name
     metadata = recipient_tree.create_consumer_tree(
-        source=source, output=output, work="acme/widget#7", producer_version="0.151.0",
+        source=source, output=output, work="acme/widget#7", records_home=tmp_path / "entrance",
+        producer_version="0.151.0",
         mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"],
         front_page=None, root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
     )
@@ -201,7 +211,8 @@ def test_validation_refuses_an_extra_tracked_file_absent_from_manifest(source, t
     git(output, "commit", "--amend", "--no-edit")
 
     with pytest.raises(recipient_tree.RecipientTreeError, match="manifest"):
-        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source)
+        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source,
+                                                records_home=tmp_path / "entrance")
 
 
 @pytest.mark.parametrize("kind", ["untracked", "ignored"])
@@ -214,7 +225,8 @@ def test_validation_refuses_untracked_and_ignored_entries(source, tmp_path, kind
     extra.write_bytes(b"undeclared\n")
 
     with pytest.raises(recipient_tree.RecipientTreeError, match="undeclared"):
-        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source)
+        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source,
+                                                records_home=tmp_path / "entrance")
 
 
 def test_a_repository_whose_git_converts_line_endings_still_builds_a_consumer_tree(tmp_path):
@@ -229,11 +241,123 @@ def test_a_repository_whose_git_converts_line_endings_still_builds_a_consumer_tr
     git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-m", "plain")
     # No attributes, and a machine setting that converts line endings on checkout and archive.
     git(root, "config", "core.autocrlf", "true")
-    output = tmp_path / "consumer"
+    output = tmp_path / "work" / "consumer"
     recipient_tree.create_consumer_tree(
         source=root.resolve(), output=output, work="acme/widget" + "#" + str(7),
+        records_home=tmp_path / "entrance",
         producer_version="0.151.0",
         mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"], front_page=None,
         root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
     )
     assert (output / "job/job.md").read_bytes() == b"run the consumer\nsecond line\n"
+
+
+def test_a_record_naming_another_tree_is_refused(source, tmp_path):
+    first, first_record = _consumer_tree(source, tmp_path, "first")
+    second, second_record = _consumer_tree(source, tmp_path, "second")
+    second_record.write_bytes(first_record.read_bytes())
+
+    with pytest.raises(recipient_tree.RecipientTreeError, match="not the entrance's record of its tree"):
+        recipient_tree.validate_consumer_tree(second_record, work="acme/widget#7", source=source,
+                                              records_home=tmp_path / "entrance")
+
+
+def test_the_printed_record_path_validates_however_it_is_spelled(source, tmp_path, monkeypatch):
+    output, metadata = _consumer_tree(source, tmp_path, "spelled")
+    monkeypatch.chdir(tmp_path / "entrance")
+    relative = Path(*metadata.relative_to((tmp_path / "entrance").resolve()).parts)
+    assert recipient_tree.validate_consumer_tree(
+        relative, work="acme/widget#7", source=source, records_home=tmp_path / "entrance",
+    ) == output.resolve()
+    assert recipient_tree.validate_consumer_tree(
+        Path(metadata.as_posix()), work="acme/widget#7", source=source, records_home=tmp_path / "entrance",
+    ) == output.resolve()
+
+
+@pytest.mark.parametrize("beside", ["own", "another-change", "former"])
+def test_a_tree_with_a_record_beside_it_is_refused_naming_the_file_and_the_rebuild(
+        source, tmp_path, beside):
+    output, metadata = _consumer_tree(source, tmp_path, "beside")
+    former = recipient_tree.former_record_path(output)
+    if beside == "another-change":
+        value = json.loads(metadata.read_bytes())
+        value["work"] = "acme/widget#8"
+        former.write_bytes(json.dumps(value).encode())
+    else:
+        former.write_bytes(metadata.read_bytes())
+    if beside == "former":
+        # Laid out as entrances before this layout built it: the record beside, none in the records.
+        metadata.unlink()
+        metadata = former
+
+    with pytest.raises(recipient_tree.RecipientTreeError) as raised:
+        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source,
+                                              records_home=tmp_path / "entrance")
+    assert str(former.resolve()) in str(raised.value) and "rebuild" in str(raised.value)
+    assert "remove that file" in str(raised.value)
+
+
+def test_a_sibling_trees_former_record_in_the_folder_refuses_both_build_and_use(source, tmp_path):
+    output, metadata = _consumer_tree(source, tmp_path, "before")
+    # An older sibling tree, laid out as entrances before this layout built it: its record beside it.
+    sibling = recipient_tree.former_record_path(tmp_path / "work" / "after")
+    sibling.write_bytes(metadata.read_bytes())
+    with pytest.raises(recipient_tree.RecipientTreeError) as raised:
+        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source,
+                                              records_home=tmp_path / "entrance")
+    assert str(sibling.resolve()) in str(raised.value) and "remove that file" in str(raised.value)
+    with pytest.raises(recipient_tree.RecipientTreeError) as raised:
+        _consumer_tree(source, tmp_path, "third")
+    assert str(sibling.resolve()) in str(raised.value)
+    assert not (tmp_path / "work" / "third").exists()
+
+
+def test_a_tree_is_not_built_beside_the_entrances_former_record(source, tmp_path):
+    output = tmp_path / "work" / "beside"
+    former = recipient_tree.former_record_path(output)
+    former.parent.mkdir(parents=True)
+    former.write_bytes(b"{}\n")
+    with pytest.raises(recipient_tree.RecipientTreeError) as raised:
+        _consumer_tree(source, tmp_path, "beside")
+    assert str(former.resolve()) in str(raised.value) and "remove that file" in str(raised.value)
+    assert not output.exists() and not (tmp_path / "entrance" / "trees").exists()
+    # Once the holder removes it, the same path builds.
+    former.unlink()
+    rebuilt, record = _consumer_tree(source, tmp_path, "beside")
+    assert recipient_tree.validate_consumer_tree(
+        record, work="acme/widget#7", source=source, records_home=tmp_path / "entrance",
+    ) == rebuilt.resolve()
+
+
+def test_a_job_fixture_and_a_second_tree_beside_a_tree_are_lawful(source, tmp_path):
+    output, metadata = _consumer_tree(source, tmp_path, "one")
+    _consumer_tree(source, tmp_path, "two")
+    (output.parent / "fixture.json").write_bytes(b"{}\n")
+    assert recipient_tree.validate_consumer_tree(
+        metadata, work="acme/widget#7", source=source, records_home=tmp_path / "entrance",
+    ) == output.resolve()
+
+
+@pytest.mark.parametrize("place", ["holds-records", "inside-records"])
+def test_a_tree_whose_folder_holds_the_records_or_inside_them_is_refused_before_building(
+        source, tmp_path, place):
+    records = tmp_path / "home" / ".tradecraft"
+    output = tmp_path / "home" / "tree" if place == "holds-records" else records / "tree"
+    with pytest.raises(recipient_tree.RecipientTreeError, match="entrance's records"):
+        recipient_tree.create_consumer_tree(
+            source=source, output=output, work="acme/widget#7", records_home=records,
+            producer_version="0.151.0", mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"],
+            front_page=None, root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
+        )
+    assert not output.exists() and not (records / "trees").exists()
+
+
+def test_a_deleted_tree_can_be_rebuilt_at_its_path(source, tmp_path):
+    output, metadata = _consumer_tree(source, tmp_path, "again")
+    # Moved rather than removed, since Git's read-only objects resist removal on Windows.
+    output.rename(tmp_path / "gone")
+    rebuilt, record = _consumer_tree(source, tmp_path, "again")
+    assert record == metadata
+    assert recipient_tree.validate_consumer_tree(
+        record, work="acme/widget#7", source=source, records_home=tmp_path / "entrance",
+    ) == rebuilt.resolve()
