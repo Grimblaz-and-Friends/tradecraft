@@ -55,6 +55,7 @@ PART_MARKER = re.compile(
 ENTRY_MARKER = re.compile(
     r"<!-- lab:steward-entry:v1 id=(?P<id>[0-9a-f]{8}) kind=(?P<kind>[a-z-]+) "
     r"issue=(?P<issue>[^\s>]+?)(?P<kept> kept=yes)? -->")
+# A list number runs to nine digits at most, as in CommonMark; a longer one is plain text.
 ITEM = re.compile(r"(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)")
 ENTRY_LINE = re.compile(
     r"(?P<prefix>(?:[-*+]|\d{1,9}[.)])[ \t]+)(?P<content>.*?)[ \t]*"
@@ -86,7 +87,9 @@ class PageError(Exception):
 
 
 def normalise(text: str | None) -> str:
-    return (text or "").replace("\r\n", "\n")
+    # GitHub may keep a leading byte-order mark or CRLF endings; neither is text the Steward sees,
+    # so every read of the page goes through here and neither ever counts as a change.
+    return (text or "").lstrip(sw.BOM).replace("\r\n", "\n")
 
 
 def size(text: str) -> int:
@@ -326,6 +329,11 @@ def parse_part(name: str, text: str, names: list[str], comment_id: int | None = 
             current.lines.append(line)
     for entry in part.entries:
         entry.lines = strip_blank(entry.lines)
+        if entry.kept and entry.kept_reason() is None:
+            # A rewrite would carry no reason forward, so a kept entry whose reason is unreadable
+            # must be repaired before anything writes over it.
+            part.faults.append(f"{name}: kept entry {entry.id} shows no readable "
+                               f"'{KEPT_WORDS.strip()}' reason")
         if entry.kind == "ready" and len(entry.lines) > 1:
             part.faults.append(f"{name}: ready entry {entry.id} spans {len(entry.lines)} lines")
     return part
@@ -375,7 +383,7 @@ class Page:
             self.body.marked = False
         seen: dict[str, int] = {}
         for comment in sorted(comments, key=lambda c: int(c["id"])):
-            text = normalise(comment.get("body")).lstrip(sw.BOM)
+            text = normalise(comment.get("body"))
             lines = text.split("\n")
             match = PART_MARKER.fullmatch(lines[1].rstrip()) if len(lines) > 1 else None
             if not match:
@@ -628,7 +636,6 @@ class PageTool:
             guess = size(text)
 
     def write(self, page: Page, name: str, comment_id: int | None, text: str) -> None:
-        """Re-read, refuse if stale, write, read back; only a confirmed write moves the copy."""
         self.check_copy(name, self.fetch(name, comment_id), comment_id)
         endpoint = (f"repos/{sw.LAB_REPO}/issues/{self.number}" if name == "body"
                     else f"repos/{sw.LAB_REPO}/issues/comments/{comment_id}")
@@ -1107,6 +1114,7 @@ def dispatch(tool: PageTool, args: argparse.Namespace) -> dict:
             if args.closed or args.ids or not args.file or not args.archive:
                 raise PageError("archive --move takes --archive N and --file F, and no "
                                 "--closed or --ids")
+            # The move's file holds the old page word for word, so it may quote this tool's markers.
             return tool.archive_move(args.archive, read_file(args.file, "move file", markers_ok=True))
         if args.file:
             raise PageError("--file applies to archive --move")

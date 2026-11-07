@@ -357,6 +357,34 @@ def test_a_fault_is_named_and_nothing_written(st, fault, match):
     st.refused("keep", fid, "--reason", "r", match="faults")
 
 
+def test_a_kept_entry_whose_reason_is_unreadable_is_a_fault(st):
+    """A hand edit that loses a kept entry's reason blocks every write, so no rewrite drops kept."""
+    fid = st.add("flight", "still read")
+    st("keep", fid, "--reason", "its follow-up is open")
+    flight = st.lab.part_text("flight")
+    hand_edit(st, "flight", flight.replace("Kept after its issue closed: its follow-up is open",
+                                           "the reason, reworded by hand"))
+    assert any(fid in f and "kept" in f for f in st("status")["faults"])
+    st.refused("replace", fid, "--text-file", st.file("new text"), match="faults")
+    st.refused("move", fid, "--kind", "trap", "--text-file", st.file("a trap"), match="faults")
+
+
+def test_a_leading_byte_order_mark_on_the_live_page_is_not_a_change(st):
+    """GitHub's leading BOM is read the same way at load and at each re-read, and never written."""
+    st.add("ruling", "a ruling", "none")
+    st.add("flight", "in flight", "none")
+    for name in ("body", "flight"):
+        st.lab.set_part(name, sw.BOM + st.lab.part_text(name))
+    status = st("status")
+    assert status["faults"] == []
+    assert {status["parts"][n]["copy"] for n in ("body", "flight")} == {"in-step"}
+    assert status["parts"]["body"]["page_marker"] is True
+    st.add("flight", "another", "none")
+    st.add("ruling", "another ruling", "none")
+    assert not st.lab.part_text("flight").startswith(sw.BOM)
+    assert not st.lab.part_text("body").startswith(sw.BOM)
+
+
 def test_an_issue_outside_the_lab_is_refused(st):
     """A repository outside the lab never reaches the page."""
     st.refused("add", "--kind", "flight", "--issue", "Elsewhere#3", "--text-file", st.file("x"),

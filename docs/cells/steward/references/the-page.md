@@ -27,7 +27,7 @@ The kind decides the part, so `add` takes a kind and no part. The tool refuses a
 
 Everything above a part's first entry is its preamble. Entry and preamble text comes from a UTF-8 file you write without the list prefix or any marker; the tool adds both. It refuses a byte-order mark, a control character other than newline and tab, and the structure markers above; it accepts a mention of the wake's own `lab:steward:v1` marker. A ready entry is one line, and the ready list is renumbered on every write.
 
-**A fault blocks every write.** An unmarked top-level list item after the first entry, a duplicate id, a part carried by two comments, a kind in the wrong part, a misplaced marker or a repository outside the lab is one. `status` names it; repair it by hand, then `accept` the part.
+**A fault blocks every write.** An unmarked top-level list item after the first entry, a duplicate id, a part carried by two comments, a kind in the wrong part, a misplaced marker, a repository outside the lab, or a kept entry whose `Kept after its issue closed:` reason can't be read is one. `status` names it; repair it by hand, then `accept` the part.
 
 ## The commands
 
