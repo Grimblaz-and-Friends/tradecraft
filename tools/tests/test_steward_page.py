@@ -1216,6 +1216,25 @@ def test_the_archive_compares_whole_entries_not_text_inside_them(st):
     assert fid not in st.ids()
 
 
+def test_an_archive_run_refuses_when_another_run_rewrote_the_read_comment_first(st):
+    """A run never appends to a stale copy of read N's comment, so another run's entries stay."""
+    first = st.add("flight", "archived earlier")
+    st("archive", "--read", "60", "--ids", first)
+    comment = _archive_comment(st, 60)
+    mine, theirs = st.add("flight", "this run's entry"), st.add("trap", "the other run's entry")
+    nth_get(st.lab, f"issues/comments/{comment['id']}", 1,
+            lambda: st("archive", "--read", "60", "--ids", theirs))
+    with pytest.raises(sp.PageError, match="changed after this command read it"):
+        st("archive", "--read", "60", "--ids", mine)
+    held = sp.archived_entries(_archive_comment(st, 60)["body"])
+    assert _entry_text_of(held, theirs) and not _entry_text_of(held, mine)
+    assert mine in st.ids() and theirs not in st.ids()
+
+
+def _entry_text_of(held: list[str], eid: str) -> bool:
+    return any(f"id={eid} " in text for text in held)
+
+
 def test_archive_read_refuses_archive(st):
     """--archive belongs to the move; a read uses the archive the body names."""
     fid = st.add("flight", "x")

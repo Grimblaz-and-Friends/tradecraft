@@ -22,8 +22,7 @@ LIMIT = 20_000
 ARCHIVE_CAP = 262_144
 # Aliases per GraphQL query: few calls for a whole page, each well inside GitHub's per-query cost.
 GRAPHQL_BATCH = 50
-# What gh reports when a GraphQL query names a number that is neither an issue nor a pull request.
-UNRESOLVED = "Could not resolve to"
+GH_NO_SUCH_NUMBER = "Could not resolve to"
 
 PART_ORDER = ("body", "steward", "read", "ready", "flight", "traps", "residues")
 COMMENT_PARTS = PART_ORDER[1:]
@@ -364,6 +363,8 @@ def archived_entries(text: str) -> list[str]:
             current = [line]
             found.append(current)
         elif line.startswith("#"):
+            # Entries sit under part headings and every continuation line is indented, so a
+            # column-0 heading ends the entry before it.
             current = None
         elif current is not None:
             current.append(line)
@@ -534,7 +535,7 @@ def resolve_states(github: sw.GitHub, refs: list[str]) -> tuple[dict, dict]:
         try:
             answer = github.send("POST", "graphql", {"query": "query { " + " ".join(fields) + " }"})
         except sw.WatchError as exc:
-            if UNRESOLVED not in str(exc):
+            if GH_NO_SUCH_NUMBER not in str(exc):
                 raise PageError(f"issue states could not be read: {exc}") from exc
             # One unresolvable reference fails its whole query, so the batch is retried singly to
             # name it and still resolve the rest.
@@ -979,6 +980,22 @@ class PageTool:
         back = normalise(self.github.get(f"repos/{sw.LAB_REPO}/issues/comments/{cid}").get("body"))
         return {"id": cid, "url": url, "body": back}
 
+    def recheck_read_comment(self, number: int, read: int, mark: str, existing: list[dict],
+                             current: str | None) -> None:
+        # Another run may have rewritten read N's comment since this one read it, and appending to
+        # the text this run read would drop that run's entries from the archive.
+        if existing:
+            live = normalise(self.github.get(
+                f"repos/{sw.LAB_REPO}/issues/comments/{existing[0]['id']}").get("body"))
+        else:
+            now = [c for c in self.archive_comments(number) if sw.first_line(c.get("body")) == mark]
+            live = normalise(now[0]["body"]) if now else None
+        if live != current:
+            raise PageError(f"read {read}'s archive comment changed after this command read it, so "
+                            "nothing was written; run the command again",
+                            diff=unified(current or "", live or "", f"read {read} (as read)",
+                                         f"read {read} (live)"))
+
     def archive_move(self, number: int, text: str) -> dict:
         comments = self.archive_comments(number)
         found = [c for c in comments if ARCHIVE_MARKER.fullmatch(sw.first_line(c.get("body")))
@@ -1027,7 +1044,7 @@ class PageTool:
                 # A re-run after a stopped archive names entries already gone from the page.
                 if eid in held_ids:
                     continue
-                page.find(eid)
+                raise PageError(f"no entry {eid} on the page or in read {read}'s archive comment")
             if eid not in chosen:
                 chosen.append(eid)
         if not chosen:
@@ -1056,12 +1073,14 @@ class PageTool:
         else:
             body = current.rstrip("\n") + ("\n\n" + "\n\n".join(groups) if groups else "") + "\n"
         if current is None or groups:
+            self.recheck_read_comment(number, read, mark, existing, current)
             posted = self.post_archive(number, existing[0] if existing else None, body)
             back, url = posted["body"], posted["url"]
         else:
-            back = current
-            url = (f"https://github.com/{sw.LAB_REPO}/issues/{number}"
-                   f"#issuecomment-{existing[0]['id']}")
+            cid = existing[0]["id"]
+            back = normalise(self.github.get(f"repos/{sw.LAB_REPO}/issues/comments/{cid}")
+                             .get("body"))
+            url = f"https://github.com/{sw.LAB_REPO}/issues/{number}#issuecomment-{cid}"
         back_entries = archived_entries(back)
         missing = [e.id for _, e in removed if e.text not in back_entries]
         if missing:

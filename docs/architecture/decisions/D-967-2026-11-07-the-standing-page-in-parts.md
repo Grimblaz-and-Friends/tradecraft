@@ -54,7 +54,7 @@ Given together on 2026-11-07 ("Take all three"):
 - **`create-part` checks the body's limit and saved copy before posting,** using a longer stand-in comment id for the new index line, so a refusal there rarely comes after the new part exists.
 - **Only an unresolvable reference is retried singly.** gh fails a whole GraphQL query when one number in it is neither an issue nor a pull request, so a failed batch is split to name that reference; any other gh failure, such as an expired login, stops the read with its own error rather than reporting every reference unresolved.
 - **A refusal after a write names what was written,** for every command: a move between parts stopped at its source, `create-part` stopped at the body's rewrite, or an archive stopped at a part.
-- **The archive issue's second line names its page** (`<!-- lab:steward-archive-page:v1 page=N -->`), under the marker C10 names, so a probe page's archive is never taken for #683's. `init-archive` refuses while an archive for the page already exists, open or closed, and reports the new issue before closing it, so a failed close still names it.
+- **The archive issue's second line names its page** (`<!-- lab:steward-archive-page:v1 page=N -->`), under the `lab:steward-archive-issue:v1` marker on its first line, so a probe page's archive is never taken for #683's. `init-archive` refuses while an archive for the page already exists, open or closed, and reports the new issue before closing it, so a failed close still names it.
 - **`body` refuses until the archive issue holds the move's comment from the owner's account,** so the old page cannot be overwritten before what leaves it is archived, whatever order the Steward runs the move in.
 - **A malformed `issue=` value is a fault and is never sent to GitHub,** so `status` names it rather than failing on it.
 - **A run's final re-read must equal the text that run read,** not only the saved copy, so another run's completed edit refuses this one rather than being overwritten.
@@ -67,6 +67,7 @@ Given together on 2026-11-07 ("Take all three"):
 - **`init-archive` records the new archive in the state directory,** because GitHub's issue listing lagged a new issue by seconds in the final-head probe, and a re-run refuses while that record names one.
 - **The archive compares whole entries, and a re-run's `--ids` may name entries read N's comment already holds,** so the documented re-run finishes a stopped archive and an entry inside a longer one is never taken as held.
 - **`archive --read` refuses `--archive`,** which only the move uses.
+- **`archive --read` re-reads read N's comment immediately before its own write, and refuses if it changed since the run read it,** because appending to a stale copy would drop another run's archived entries; only the last-moment window is left, as for the parts.
 - **`init-archive` refuses once the body names an archive,** and closes the new issue as completed.
 
 ## What the cold rounds changed
