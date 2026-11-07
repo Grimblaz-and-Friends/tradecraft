@@ -46,6 +46,7 @@ class FakeGitHub:
         self.calls: list[tuple] = []
         self.hooks: list[tuple] = []
         self.store = lambda endpoint, body: body
+        # Ten-digit ids, as GitHub's are today, so index lines measure what they will on the live page.
         self.next_comment = 7_000_000_000
         self.next_issue = 2000
 
@@ -490,10 +491,14 @@ def test_body_over_the_limit_with_no_reason_writes_nothing(tmp_path):
 def test_create_part_refuses_when_the_new_index_would_put_the_body_over(tmp_path):
     """The index a create-part regenerates counts against the body's limit."""
     st = build(tmp_path, parts=sp.COMMENT_PARTS[:-1])
-    head = sp.size(st.lab.part_text("body"))
-    st("preamble", "body", "--text-file",
-       st.file("How this page is used: read this body at pickup.\n\n" + "y" * (sp.LIMIT - head - 60)))
-    assert sp.size(st.lab.part_text("body")) <= sp.LIMIT
+    title = sp.TITLES["residues"]
+    link = f"https://github.com/{REPO}/issues/{PAGE}#issuecomment-{st.lab.next_comment + 1}"
+    growth = sp.size(f"- [{title}]({link})") - sp.size(f"- {title} (not yet created)")
+    base = "How this page is used: read this body at pickup."
+    st("preamble", "body", "--text-file", st.file(base))
+    room = sp.LIMIT - sp.size(st.lab.part_text("body"))
+    st("preamble", "body", "--text-file", st.file(base + "y" * (room - growth + 1)))
+    assert sp.size(st.lab.part_text("body")) == sp.LIMIT - growth + 1
     st.refused("create-part", "residues", "--text-file", st.file("## Residues"),
                match="body part would be")
 
