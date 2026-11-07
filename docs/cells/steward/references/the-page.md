@@ -25,7 +25,7 @@ The kind decides the part, so `add` takes a kind and no part. The tool refuses a
 - **An entry** is one top-level list item whose first line ends with `<!-- lab:steward-entry:v1 id=ID kind=KIND issue=REF -->`, plus ` kept=yes` once kept. `ID` is eight random hex digits. `REF` is `none` or `REPO#N`, an issue or pull request in tradecraft, change-proof or one of the four products; nothing else is accepted. An entry that seems to wait on two issues is two entries, or names the one whose closing ends it.
 - **An over-limit block** is `<!-- lab:steward-over:v1 -->` under the part's marker lines, then the visible `> **Over its 20,000-byte limit at N bytes:** REASON`.
 
-Everything above a part's first entry is its preamble. Entry and preamble text comes from a UTF-8 file you write without the list prefix or any marker; the tool adds both. It refuses a byte-order mark, a control character (C0 other than newline and tab, delete, or C1), and the structure markers above; it accepts a mention of the wake's own `lab:steward:v1` marker. A ready entry is one line, and the ready list is renumbered on every write.
+Everything above a part's first entry is its preamble. Entry and preamble text comes from a UTF-8 file you write without the list prefix or any marker; the tool adds both. It refuses a byte-order mark, a control character (C0 other than newline and tab, delete, or C1), and the structure markers above; it accepts a mention of the wake's own `lab:steward:v1` marker. The one exception is the move's archive file, read by `archive --move`, which may carry the structure markers because it holds the old page word for word. A ready entry is one line, and the ready list is renumbered on every write.
 
 **A fault blocks every write to a part.** An unmarked top-level list item after the first entry, a duplicate id, a part carried by two comments, a counted comment whose part marker sits anywhere but its second line, a kind in the wrong part, a misplaced marker, index delimiters out of order or missing one end, a body page marker that names no archive issue, a repository outside the lab, or a kept entry whose `Kept after its issue closed:` reason can't be read is one. `status` names it. **Repairing a fault is the one edit you make by hand:** repair the part `status` names, then `accept` it. `init-archive` and `archive --move` write no part, so they run on a faulty page.
 
@@ -48,7 +48,7 @@ Every command that writes a part also takes `--over-reason R`.
 | `load PART --file entries.json` | Fills a part that holds no entries from a JSON list of `{kind, issue, text}`, each field text; it checks every entry before writing. Accepts the body. |
 | `body --text-file F --archive N --rulings R` | The move only: writes the body's preamble, page marker, index and every ruling in R, a JSON list of `{kind, issue, text}`, in one write over the accepted copy; a rulings file that fails its checks writes nothing, and the old body stands. Refused once the body carries the page marker, and until archive issue N holds the move's comment. |
 | `init-archive --title T` | Creates the archive issue, opening with `<!-- lab:steward-archive-issue:v1 -->` and a second line `<!-- lab:steward-archive-page:v1 page=N -->` naming its page, and closes it. It records the new issue's number in the state directory as soon as the issue exists, so it refuses once the body names an archive, or while that record or GitHub's issue listing names an archive for this page; the record covers a quick re-run the listing has not caught up with. |
-| `archive --read N [--closed] [--ids ID ...]` | Archives at read N (below), into the archive issue the body names; `--archive` is refused. |
+| `archive --read N [--closed] [--ids ID ...]` | Archives at read N (below), into the archive issue the body names. It needs `--closed`, `--ids` or both, and `--archive` is refused. |
 | `archive --move --archive N --file F` | Posts F whole, under the line `<!-- lab:steward-archive:v1 event=move -->` and a heading `## The move, DATE`, as the move's one archive comment, before anything is removed. Refused once the archive holds a move comment. |
 
 ## The limit
@@ -57,7 +57,13 @@ Every command that writes a part also takes `--over-reason R`.
 
 ## The saved copy and the write window
 
-The tool keeps each part's last confirmed text as `page-<PAGE>/<part>.json` in the state directory, and moves it only after a write is read back and matches. **Immediately before each write it re-reads the live part:** if the live part differs from the copy, or from the text this command read when it started, as when another run has written it since, it writes nothing to that part and prints a unified diff from the copy to the live text, with the live SHA-256; with no copy it writes nothing and prints the live part and its SHA-256. Review what you are shown, run `accept PART --sha SHA`, and redo the edit. A read-back that differs from what was written is reported and leaves the copy as it was, so your next edit shows you the difference.
+The tool keeps each part's last confirmed text as `page-<PAGE>/<part>.json` in the state directory, and moves it only after a write is read back and matches. **Immediately before each write it re-reads the live part, and writes nothing to that part when:**
+
+- **the live part differs from the copy.** It prints a unified diff from the copy to the live text, with the live SHA-256. Review the difference, run `accept PART --sha SHA`, and redo the edit.
+- **the live part changed since this command read it but still matches the copy,** because another run wrote both the part and the copy. It prints a diff from the text as this command read it to the live text, and says to run the command again. Run it again; no `accept` is needed, because the copy is already in step.
+- **there is no copy.** It prints the live part and its SHA-256. Review it, run `accept PART --sha SHA`, and redo the edit.
+
+A read-back that differs from what was written is reported and leaves the copy as it was, so your next edit shows you the difference.
 
 **The window.** GitHub has no conditional update for a comment or an issue body. A hand edit that lands between the tool's last re-read and its write is overwritten; it survives only in GitHub's edit history, and the tool does not detect it.
 
