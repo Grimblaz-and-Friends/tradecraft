@@ -86,7 +86,8 @@ ROUTINE_CONTROLS_REASON = (
     "set on the cloud environment, not per launch: a cloud session's environment belongs to its "
     "routine; the Stop hook records the values the session saw and the attempt's environment "
     "check compares them, and the routine disallows " + ", ".join(ROUTINE_DISALLOWED_TOOLS))
-INSTRUCTIONS_APPLIED = ("product CLAUDE.md/AGENTS.md from the cloned repository; no repository's "
+INSTRUCTIONS_APPLIED = ("product CLAUDE.md/AGENTS.md from the cloned repository, which the task tells the run to "
+                        "read (their native loading is untested); no repository's "
                         "committed hooks or permission rules apply, because the session starts "
                         "above its clones")
 PRACTICE_OWN_REFUSAL = (
@@ -787,7 +788,6 @@ def launch_route(stage: str, resume: str | None, work: str) -> tuple[dict | None
     return None if entry is None else (entry, source, None)
 
 
-# The stages the cloud route carries: the artifact, the build and the build's repairs.
 CLOUD_STAGES = frozenset({"artifact", "build", "review-disposition", "floor"})
 # The stages that can rightly make no commit: a disposition or a floor turn may change nothing.
 # A resumed build is still a build, so its change branch is checked.

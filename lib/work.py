@@ -3613,6 +3613,9 @@ def implementer_preamble(vendor: str, plugin_root: Path) -> bytes:
 def cloud_preamble(practice: str) -> bytes:
     """The launcher context ahead of a cloud implementer's task, which runs on a remote machine.
 
+    It tells the run to read the product's instruction files itself, since their native loading in
+    the cloud is untested.
+
     Design: lib/DESIGN.md#the-cloud-route
     """
     ceiling = int(cloud_build.CLOUD_ENVIRONMENT["BASH_MAX_TIMEOUT_MS"]) // 1000
@@ -6336,7 +6339,6 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             "Repairs renew this duty even on an already-ready pull request."
         )
     if decision.stage == "review-disposition":
-        # A cloud run returns its replies for the holder to post; a local one posts and resolves them.
         instruction += CLOUD_REPLY_INSTRUCTION if cloud else _thread_resolution_clause(state)
     explicit_artifact = decision.stage == "artifact"
     phase = state.artifact_phase or _artifact_phase(state)

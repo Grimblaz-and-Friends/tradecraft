@@ -62,6 +62,6 @@ The entrance's implementer environments show, per cloud attempt:
 - `cloud_checks`: the change-branch check (a build's run advanced the change branch from its fire-time tip), the `[skip ci]` check, the practice-check record, the `environment` check (the session ran with the cloud environment's background and command-ceiling settings), the permission-mode check (the session ran in `auto`), and the local-tree check (the local tree followed the returned branch). A failure holds the next stage as a launch finding does;
 - `ledger_check`: the hook's ledger re-checked without the transcript. A failure makes the attempt's cost unknown with its faults and shows as an attempt fault; it changes nothing else;
 - for a follow-up, `practice_drift`;
-- `instructions_applied` and `instructions_loaded`: the product's `CLAUDE.md` and `AGENTS.md` load, and no repository's committed hooks or permission rules apply, because the session starts above its clones.
+- `instructions_applied` and `instructions_loaded`: the run is told to read the product's `CLAUDE.md` and `AGENTS.md`, `instructions_loaded` lists the files it reports loading, and no repository's committed hooks or permission rules apply, because the session starts above its clones.
 
 The launch comparison reads `cloud-not-run` with its reason, a clear status. Cost is each attempt's delta of the session's running total, priced per model at the rate card; a model with no rate row is unpriced, never zero.
