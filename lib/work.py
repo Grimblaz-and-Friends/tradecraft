@@ -5174,6 +5174,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     home = _records_home(state)
     place = home / "cold-reader" / uuid.uuid4().hex
     # The reader works in its tree's folder, so that folder holds the tree alone and sits outside the records.
+    # The tree is kept after the run, so what the reader saw can be inspected when a holder disputes a flag.
     reading = Path(tempfile.mkdtemp(prefix="tradecraft-reading-")) / "reading"
     numbers = [state.issue_number] + ([state.pr["number"]] if isinstance(state.pr.get("number"), int) else [])
     try:
@@ -9776,6 +9777,8 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
     try:
         base = f"repos/{args.repo}"
         issue_endpoint = f"{base}/issues/{args.issue}"
+        # Only an open pull request is the change under test; a merged one is work already landed, such as
+        # an earlier instalment.
         open_numbers, _merged = _candidate_pr_classes(
             args.issue, _dict(transport.get(issue_endpoint), issue_endpoint),
             _get_list(transport, f"{issue_endpoint}/comments"),

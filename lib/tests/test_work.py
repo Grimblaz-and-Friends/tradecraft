@@ -9767,7 +9767,25 @@ def test_run_use_refuses_a_tree_with_a_record_beside_it_naming_the_file_and_the_
     launches, report = launch_use(holder, metadata, tmp_path, monkeypatch, capsys)
     assert launches == [] and report["reason"] == "consumer-tree-unproved-for-use"
     assert str(former.resolve()) in report["detail"] and "rebuild" in report["detail"]
+    assert "remove that file" in report["detail"]
     assert "work.py tree" in report["detail"]
+
+
+def test_tree_refuses_to_rebuild_beside_the_entrances_former_record_until_it_is_removed(
+        tmp_path, monkeypatch, capsys):
+    holder, records_home = registered_consumer(tmp_path, monkeypatch)
+    output = tmp_path / "trees" / "consumer"
+    former = work.recipient_tree.former_record_path(output)
+    former.parent.mkdir(parents=True)
+    former.write_bytes(b"{}\n")
+    with pytest.raises(work.WorkError) as raised:
+        built_tree(holder, output, capsys)
+    assert str(former.resolve()) in str(raised.value) and "remove that file" in str(raised.value)
+    assert not output.exists() and not (records_home / "trees").exists()
+    former.unlink()
+    metadata = built_tree(holder, output, capsys)
+    launches, _report = launch_use(holder, metadata, tmp_path, monkeypatch, capsys)
+    assert len(launches) == 1
 
 
 def test_run_use_launches_with_a_job_fixture_and_a_second_tree_beside_the_tree(

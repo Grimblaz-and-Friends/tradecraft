@@ -34,7 +34,7 @@ python <plugin-root>/lib/work.py run use \
   --dispatch JOB --tree-metadata RECORD
 ```
 
-The entrance revalidates the record, source revision, raw bytes and neutral detached root before the consumer launches. An altered record, one naming another tree, a dirty or advanced source, a changed consumer file, a branch, a remote or shared source history refuses the run. So does a tree with the entrance's record beside it, as a tree built before the record moved has; the refusal names that file, and the tree is rebuilt with `tree`.
+The entrance revalidates the record, source revision, raw bytes and neutral detached root before the consumer launches. An altered record, one naming another tree, a dirty or advanced source, a changed consumer file, a branch, a remote or shared source history refuses the run. So does a tree with the entrance's record beside it, as a tree built before the record moved has; the refusal names that file, which you remove before rebuilding the tree with `tree`, since `tree` refuses to build beside it.
 
 **The record exclusion and context rules can collide, and where they do the collision is yours to resolve rather than to discover.** A job may need a directory that also holds the change's record, while a file the job needs may restate that record. Use exclusions where they leave the job coherent; where content cannot be separated, say in the session note what residue the tree carried and weigh the run's coldness accordingly. Omitting a whole required directory is usually the worse horn because its failures are many and indistinguishable from consumer friction.
 

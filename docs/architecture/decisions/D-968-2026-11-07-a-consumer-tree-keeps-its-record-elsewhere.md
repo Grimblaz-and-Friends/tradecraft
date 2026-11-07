@@ -17,8 +17,8 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **C1. The record's name is a digest of the tree's resolved path, over a random id.** `run use` must keep proving that a record belongs to the tree it names, which adjacency proved before; a path-derived name keeps that proof with nothing in the tree's folder. The path is compared as the platform compares paths, so Windows' case-insensitive paths match.
 - **C2. `tree` replaces a stale record whose tree is gone; the cold reader never replaces one.** A holder who deletes a tree can no longer see its record to delete it too, and a record proves nothing without its tree. A reading's record is evidence the gate reads, and each reading's path is unique.
 - **C3. A tree is refused if the entrance's records sit anywhere below its folder, or if it sits inside them.** This is what makes "nothing beside the tree" hold for every tree, including one at `~/tree`; it refuses only outputs placed in the home folder, its parents, or the records.
-- **C4. The open pull-request lookup fails closed.** Without it row 3's pull-request check can't be decided. The issue number is checked first, without the network, and only the open class is checked, because the row names the open pull request.
-- **C5. The cold reader's tree goes in a fresh system temporary folder and is kept after the run.** Row 4 needs it in a folder of its own, outside the records; the gate no longer needs the tree, only its record.
+- **C4. The open pull-request lookup fails closed.** Without it row 3's pull-request check can't be decided. The issue number is checked first, without the network, and only the open class is checked: the row names the open pull request, because an open pull request is the change under test, while a merged one belongs to work already landed, such as an earlier instalment.
+- **C5. The cold reader's tree goes in a fresh system temporary folder and is kept after the run.** Row 4 needs it in a folder of its own, outside the records. The gate needs only its record, but readings have always kept their tree, so what the reader saw can still be inspected when a holder disputes a flag.
 - **C6. The gate looks for a reading's record in the entrance's records first, then beside its tree,** so readings recorded before the move, held by pull requests open when it lands, keep counting without a migration.
 - **C7. `--tree-metadata` and the printed `tree_metadata` keep their names,** because row 1 says holders run `tree` and `run use` as before.
 
@@ -26,6 +26,15 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 
 - **One derivation of the entrance's records serves `tree`, `run use` and the cold reader.** In use they are the same folder; a single helper keeps a test or a future caller from splitting them, which would refuse every tree `tree` printed.
 - **The record path a holder passes is resolved before it is compared,** so the printed path still matches when passed back relative or with other separators.
+
+## Repaired after the cold reading
+
+- **`tree` refuses an output with the entrance's former record file beside its path, naming it and saying to remove it, and `run use`'s refusal says to remove that file and rebuild.** Row 2 tells the holder to rebuild, and a tree rebuilt at the same path would otherwise meet the same refusal, since the entrance never removes a file it doesn't open.
+- **A reading whose record is in neither place is reported at its path in the entrance's records,** where it belongs, rather than beside its tree.
+
+## What this supersedes
+
+[D-726](D-726-2026-09-22-entrance-as-holder-instrument.md) holds consumer trees to "adjacent digest-bound metadata". That clause is superseded: the record now lives in the entrance's records, bound to its tree by a name derived from the tree's path rather than by adjacency. Everything else in D-726's consumer trees, and [D-736](D-736-2026-09-23-truthful-entrance-and-launch.md)'s landed-commit source, stays in force.
 
 ## Rejected
 

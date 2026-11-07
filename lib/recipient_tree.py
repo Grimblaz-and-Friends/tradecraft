@@ -269,6 +269,12 @@ def create_consumer_tree(
     output = output.expanduser().resolve()
     if output.exists() or output.is_symlink():
         raise RecipientTreeError(f"refusing existing recipient output: {output}")
+    former = former_record_path(output)
+    # A tree built here would be refused for that file, and the consumer could read it.
+    if former.exists() or former.is_symlink():
+        raise RecipientTreeError(
+            f"a record sits beside the tree's path: {former}; remove that file, then build the tree"
+        )
     if _inside(output, source):
         raise RecipientTreeError("recipient output must be outside the source repository")
     refuse_records_placement(output, records_home)
@@ -369,8 +375,8 @@ def validate_consumer_tree(
     # Never opened: whatever change it names, the consumer could read it from its folder.
     if former.exists() or former.is_symlink():
         raise RecipientTreeError(
-            f"a record sits beside the consumer tree: {former}; rebuild the tree with "
-            "work.py tree, which keeps its record in the entrance's records"
+            f"a record sits beside the consumer tree: {former}; remove that file and rebuild the "
+            "tree with work.py tree, which keeps its record in the entrance's records"
         )
     if not _same_path(metadata, record_path(root, records_home)):
         raise RecipientTreeError("consumer-tree record is not the entrance's record of its tree")

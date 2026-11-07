@@ -294,6 +294,24 @@ def test_a_tree_with_a_record_beside_it_is_refused_naming_the_file_and_the_rebui
         recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source,
                                               records_home=tmp_path / "entrance")
     assert str(former.resolve()) in str(raised.value) and "rebuild" in str(raised.value)
+    assert "remove that file" in str(raised.value)
+
+
+def test_a_tree_is_not_built_beside_the_entrances_former_record(source, tmp_path):
+    output = tmp_path / "work" / "beside"
+    former = recipient_tree.former_record_path(output)
+    former.parent.mkdir(parents=True)
+    former.write_bytes(b"{}\n")
+    with pytest.raises(recipient_tree.RecipientTreeError) as raised:
+        _consumer_tree(source, tmp_path, "beside")
+    assert str(former.resolve()) in str(raised.value) and "remove that file" in str(raised.value)
+    assert not output.exists() and not (tmp_path / "entrance" / "trees").exists()
+    # Once the holder removes it, the same path builds.
+    former.unlink()
+    rebuilt, record = _consumer_tree(source, tmp_path, "beside")
+    assert recipient_tree.validate_consumer_tree(
+        record, work="acme/widget#7", source=source, records_home=tmp_path / "entrance",
+    ) == rebuilt.resolve()
 
 
 def test_a_job_fixture_and_a_second_tree_beside_a_tree_are_lawful(source, tmp_path):

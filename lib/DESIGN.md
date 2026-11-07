@@ -22,7 +22,7 @@ The holder posts the account whole in one `open` comment with its own review aga
 
 The reader launches on its role's vendor and records a same-vendor reason whenever it lands on the builder's vendor, fallback included, and it never starts until a build bundle or the builder's session marker proves which vendor built the change.
 
-The reading tree is built in a temporary folder of its own, holding only the tree and outside the entrance's records, which keep the reading's record and diff, written as consumer trees' records are, and its prompt. The gate finds a reading's record there or, for a reading recorded before the records kept it, where that reading left it, beside its tree.
+The reading tree is built in a temporary folder of its own, holding only the tree and outside the entrance's records, which keep the reading's record and diff, written as consumer trees' records are, and its prompt. The gate finds a reading's record there or, for a reading recorded before the records kept it, where that reading left it, beside its tree; a record found in neither place is reported at its path in the records. The tree itself is kept after the run.
 
 **Why.**
 
@@ -45,6 +45,7 @@ The reading tree is built in a temporary folder of its own, holding only the tre
 - Every judgement fails closed, so a `clean` can't pass over a flag, a reading or a record the gate can't see.
 - The reader works in its tree's folder, so that folder holds the tree alone; a record or prompt there would name the change.
 - A reading recorded before the records kept it still counts, because pull requests open when that layout changed hold such readings.
+- The reading tree is kept after the run, though the gate needs only its record, so that what the reader saw can still be inspected when a holder disputes a flag.
 
 **Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons; D-968, a consumer tree keeps its record elsewhere.
 
@@ -55,8 +56,9 @@ The reading tree is built in a temporary folder of its own, holding only the tre
 Before anything is built or launched:
 
 - `tree` refuses an output that exists, one inside the source, one inside the entrance's records, and one whose folder holds those records at any depth;
-- `tree` refuses an output whose own name, or the name of the folder it sits in, carries the change's issue number or its open pull request's number as a whole run of digits, checking the issue number first, without the network; folders higher up are not examined, and when the issue, its comments or its pull requests can't be read, `tree` refuses;
-- `run use` refuses a tree that has the entrance's record file, `<tree>.tradecraft-tree.json`, beside it, naming that file and saying to rebuild the tree, without opening it; any other file beside a tree, such as a job fixture or a second tree, is lawful;
+- `tree` refuses an output with the entrance's record file, `<tree>.tradecraft-tree.json`, beside its path, naming that file and saying to remove it;
+- `tree` refuses an output whose own name, or the name of the folder it sits in, carries the change's issue number or an open pull request's number as a whole run of digits, checking the issue number first, without the network; a merged pull request's number is not checked, folders higher up are not examined, and when the issue, its comments or its pull requests can't be read, `tree` refuses;
+- `run use` refuses a tree that has that record file beside it, naming the file and saying to remove it and rebuild the tree, without opening it; any other file beside a tree, such as a job fixture or a second tree, is lawful;
 - `run use` refuses a record that isn't at the path derived from the tree it names, one whose digest doesn't match, and every mismatch of source, revision, bytes or repository shape.
 
 `tree` replaces a record left at its path by a tree since deleted, so a deleted tree can be rebuilt where it was; a reading's record is never replaced.
@@ -66,6 +68,8 @@ Before anything is built or launched:
 - The tree's folder is the consumer's working space: a consumer lists it and works in it, so a record there would tell it which change it is judging, where the holder's checkout is, and what was withheld.
 - The record's name is derived from the tree's resolved path, compared as the platform compares paths, so a record still proves which tree it belongs to without sitting next to it, and one copied to another tree's path is refused.
 - Only the entrance's own record beside a tree is refused, because a tree built before the record moved, or one with its record put back, keeps the exposure, while side-by-side trees and job fixtures are layouts a job needs.
+- `tree` refuses a path with the record file beside it, because a tree built there would meet `run use`'s refusal again; removing the file is the holder's, since the entrance never opens it to tell whose it is.
+- Only an open pull request's number is checked, because an open pull request is the change under test, while a merged one belongs to work already landed, such as an earlier instalment.
 - Only the tree's folder and the folder it sits in are checked for the change's numbers, because those two names appear in every command the consumer runs and are the ones a holder chooses; folders higher up are usually named by the runtime, and the random digits of a session id would refuse holders by chance.
 - An unreadable pull-request lookup refuses, because a check that can't be decided would otherwise pass the path it exists to stop.
 - The entrance's records may not sit in or below the tree's folder, so that nothing but the tree is there for every tree, including one built in the home folder.
@@ -73,4 +77,4 @@ Before anything is built or launched:
 - Every record is written to a temporary file and then moved into place, so a partial record never stands.
 - This keeps the record out of the consumer's folder only. A consumer whose shell reaches the rest of the machine can still find the entrance's records, which is a separate exposure.
 
-**Decisions in force:** D-968, a consumer tree keeps its record elsewhere.
+**Decisions in force:** D-726, the entrance is the holder's instrument, which builds neutral, mode-declared, history-free consumer trees; D-736, a landed commit is a lawful consumer-tree source; D-968, a consumer tree keeps its record elsewhere.

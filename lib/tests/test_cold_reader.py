@@ -803,6 +803,12 @@ def test_a_reading_recorded_before_the_records_kept_it_still_counts(change):
     assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
 
 
+def test_a_lost_reading_record_is_named_where_the_records_keep_it(tmp_path):
+    reading = tmp_path / "readings" / "reading"
+    assert cold_reader.reading_record(reading, tmp_path / "entrance") == recipient_tree.record_path(
+        reading, tmp_path / "entrance")
+
+
 @pytest.mark.cold_reading
 def test_a_reading_recorded_before_the_records_kept_it_is_unverifiable_without_its_record(change):
     change.read(clean())

@@ -337,10 +337,12 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
 
 
 def reading_record(root: Path, records_home: Path) -> Path:
-    """A reading's record: in the entrance's records, or where a reading taken before that layout left it."""
-    # Pull requests open when the layout changed hold readings recorded the former way, and they still count.
+    """A reading's record: in the entrance's records, or beside its tree where the former layout wrote it."""
+    # A reading recorded beside its tree still counts for the pull request that holds it; a record found in
+    # neither place is named where it belongs, so a lost record is reported there.
     record = recipient_tree.record_path(root, records_home)
-    return record if record.exists() else recipient_tree.former_record_path(root)
+    former = recipient_tree.former_record_path(root)
+    return former if not record.exists() and former.exists() else record
 
 
 def load_metadata(path: Path) -> dict:
