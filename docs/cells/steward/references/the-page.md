@@ -22,7 +22,7 @@ The kind decides the part, so `add` takes a kind and no part. The tool refuses a
 
 - **A part comment** opens with `<!-- lab:steward:v1 kind=post -->` and carries `<!-- lab:steward-part:v1 part=NAME -->` on its second line. It counts only from the owner's account; a second comment naming the same part is a fault.
 - **The body** opens with `<!-- lab:steward-part:v1 part=body archive=N -->`, `N` being the archive issue. The tool rewrites the index between `<!-- lab:steward-index:v1 begin -->` and `<!-- lab:steward-index:v1 end -->` on every body write and after every `create-part`, one link per part, and a part not yet created shows `(not yet created)`.
-- **An entry** is one top-level list item whose first line ends with `<!-- lab:steward-entry:v1 id=ID kind=KIND issue=REF -->`, plus ` kept=yes` once kept. `ID` is eight random hex digits. `REF` is `none` or `REPO#N`, an issue or pull request in tradecraft, change-proof or one of the four products; nothing else is accepted. An entry that seems to wait on two issues is two entries, or names the one whose closing ends it.
+- **An entry** is one top-level list item whose first line ends with `<!-- lab:steward-entry:v1 id=ID kind=KIND issue=REF -->`, plus ` kept=yes` once kept. `ID` is eight random hex digits. `REF` is `none` or `REPO#N`, an issue or pull request in tradecraft, change-proof or one of the products; nothing else is accepted. An entry that seems to wait on two issues is two entries, or names the one whose closing ends it.
 - **An over-limit block** is `<!-- lab:steward-over:v1 -->` under the part's marker lines, then the visible `> **Over its 20,000-byte limit at N bytes:** REASON`.
 
 Everything above a part's first entry is its preamble. Entry and preamble text comes from a UTF-8 file you write without the list prefix or any marker; the tool adds both. It refuses a byte-order mark, a control character (C0 other than newline and tab, delete, or C1), and the structure markers above; it accepts a mention of the wake's own `lab:steward:v1` marker. The one exception is the move's archive file, read by `archive --move`, which may carry the structure markers because it holds the old page word for word. A ready entry is one line, and the ready list is renumbered on every write.
@@ -41,7 +41,7 @@ Every command that writes a part also takes `--over-reason R`.
 | `add --kind K --issue REF --text-file F [--position N \| --after ID]` | Adds one entry to its kind's part, at the end unless placed. |
 | `replace ID [--text-file F] [--issue REF] [--clear-kept]` | Replaces an entry's text or its issue. A kept entry keeps its shown reason unless `--clear-kept`. |
 | `move ID (--position N \| --after ID)` | Reorders an entry within its part. |
-| `move ID --kind K --text-file F [--position N \| --after ID]` | Moves an entry to another kind, with new text, writing the destination before removing the source; a failure between leaves a duplicate that `status` shows. |
+| `move ID --kind K --text-file F [--position N \| --after ID]` | Moves an entry to another kind, with new text, writing the destination before removing the source; a failure between leaves a duplicate that `status` shows. A kept entry keeps its shown reason. |
 | `keep ID --reason TEXT` | Sets `kept=yes` and shows `Kept after its issue closed: TEXT`, on a ready entry's one line, otherwise on a continuation line. |
 | `preamble PART --text-file F` | Replaces a part's preamble; on the body it also rewrites the index. |
 | `create-part PART --text-file F` | Posts a new part comment with F as its preamble; refused if the part exists. |
@@ -69,7 +69,7 @@ A read-back that differs from what was written is reported and leaves the copy a
 
 ## The archive and keep rules
 
-**Landed** means a pull request that merged or an issue closed as completed. An issue closed as not planned, as a duplicate or with no reason, and a pull request closed unmerged, closed without landing. `status` reads every entry's reference fifty at a time and lists:
+**Landed** means a pull request that merged or an issue closed as completed. An issue closed as not planned, as a duplicate or with no reason has closed without landing, and so has a pull request closed unmerged. `status` reads every entry's reference and lists:
 
 - **closed:** every entry whose reference closed, except the next two lists;
 - **closed without landing:** every unkept ruling, `ruling` or `steward-ruling`, whose reference closed without landing;
@@ -93,7 +93,7 @@ No other command removes an entry. Keep an entry whose issue has closed but whic
 1. Run `status`.
 2. Review its lists: re-point each ruling under "closed without landing" with `replace --issue`, or keep it with its reason; keep anything else that must stay, with its reason; and collect the ids of retired and declined entries.
 3. Run `archive --read N --closed --ids ...`.
-4. Put the `status` output in the read's job, and ask the read seats to read the body and follow its links, report each part over its limit with its reason, and report any entry listed as closed that is still on the page without a reason.
+4. Put the `status` output in the read's job, the instructions you write for the cross-change read's seats, and ask those read seats to read the body and follow its links, report each part over its limit with its reason, and report any entry listed as closed that is still on the page without a reason.
 
 ## The move
 
@@ -111,6 +111,6 @@ Once, after the change that built the tool merges, with the default state direct
    4. Accept the SHA you recorded at step 1 with `accept body --sha`, not a fresh one from `show body`. If `accept` refuses it, the body changed again: repeat the reconciliation from step 1.
 
    Then `body --text-file <how the page is used> --archive N --rulings rulings.json` with every ruling the ledger sends to the body.
-7. `status`. Every part must be under its limit; a part that cannot get there without dropping something still in force goes to the owner with its size before any `--over-reason` is written. The body's ruling count must equal the ledger's body rows, each row's first words found in one of those entries.
-8. Update your own scripts that parse the old section headings, and the read-job template, to match "At each read".
+7. `status`. Every part must be under its limit; a part that cannot get there without dropping something still in force goes to the owner with its size before any `--over-reason` is written, because the move must end with every part under its limit, and only the owner may let a ruling in force leave its part to make one fit; everywhere else you give the reason yourself. The body's ruling count must equal the ledger's body rows, each row's first words found in one of those entries.
+8. Update your own scripts that parse the old section headings, and the read-job template you keep in your own toolkit, outside this repository, to match "At each read".
 9. Report the moved page to the owner, with each part's size and the ledger.
