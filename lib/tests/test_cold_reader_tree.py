@@ -26,9 +26,10 @@ def source(tmp_path, base_files, head_files, removed=()):
 
 
 def build(tmp_path, root, base, head, name="reading"):
+    # The readings' folder sits apart from the entrance's records, as it must for a reading to build.
     return cold_reader.build_tree(
-        source=root, output=tmp_path / name, work=WORK, producer_version="0.206.0",
-        base_tip=base, head=head, covered=None, branch=BRANCH, numbers=[])
+        source=root, output=tmp_path / "readings" / name, work=WORK, producer_version="0.206.0",
+        base_tip=base, head=head, covered=None, branch=BRANCH, numbers=[], records_home=tmp_path / "entrance")
 
 
 def account(flags, sections="a.py:1 {dash} opens the file; the reason is in its comment."):
@@ -56,8 +57,8 @@ def test_a_deletion_only_change_carries_no_files_and_still_builds(tmp_path):
     metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
     assert metadata["change_set"] == {"a.py": "deleted"}
     assert set(metadata["files"]) <= {cold_reader.DIFF_FILE}
-    assert not (tmp_path / "reading" / "keep.py").exists()
-    assert "-A = 1" in (tmp_path / "reading" / cold_reader.DIFF_FILE).read_text("utf-8")
+    assert not (tmp_path / "readings" / "reading" / "keep.py").exists()
+    assert "-A = 1" in (tmp_path / "readings" / "reading" / cold_reader.DIFF_FILE).read_text("utf-8")
 
 
 def test_a_flag_on_a_covered_deleted_file_passes_the_form_and_stands_until_reread(tmp_path):
@@ -134,7 +135,7 @@ def test_a_renamed_and_edited_file_shows_its_removed_lines(tmp_path):
     head = commit(root, {"new.py": body.replace("LINE_3 = 3\n", "LINE_3 = 33\n")}, "rename")
     metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
     assert metadata["change_set"] == {"new.py": metadata["files"]["new.py"]["oid"]}
-    diff = cold_reader.recipient_tree.metadata_path(tmp_path / "reading").with_suffix(".diff")
+    diff = cold_reader.reading_record(tmp_path / "readings" / "reading", tmp_path / "entrance").with_suffix(".diff")
     text = diff.read_text("utf-8")
     assert "rename from old.py" in text and "-LINE_3 = 3\n" in text and "+LINE_3 = 33\n" in text
 
@@ -145,8 +146,8 @@ def test_a_committed_root_change_diff_is_refused_when_the_diff_travels_as_a_file
     monkeypatch.setattr(cold_reader, "INLINE_DIFF_CHARACTERS", 0)
     with pytest.raises(cold_reader.ColdReaderError, match=cold_reader.DIFF_FILE):
         build(tmp_path, root, base, head)
-    assert not (tmp_path / "reading").exists()
-    assert not cold_reader.recipient_tree.metadata_path(tmp_path / "reading").exists()
+    assert not (tmp_path / "readings" / "reading").exists()
+    assert not (tmp_path / "entrance" / "trees").exists()
 
 
 def test_a_repository_whose_git_converts_line_endings_still_builds_its_reading_tree(tmp_path):
@@ -155,7 +156,7 @@ def test_a_repository_whose_git_converts_line_endings_still_builds_its_reading_t
     # No attributes, and a machine setting that converts line endings on checkout and archive.
     git(root, "config", "core.autocrlf", "true")
     metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
-    assert (tmp_path / "reading" / "a.py").read_bytes() == b"A = 1\nB = 2\n"
+    assert (tmp_path / "readings" / "reading" / "a.py").read_bytes() == b"A = 1\nB = 2\n"
     assert sorted(metadata["files"]) == ["a.py", "notes.md"]
 
 
@@ -169,4 +170,4 @@ def test_a_change_holding_a_symlink_is_refused_naming_it_rather_than_escaping_th
     head = git(root, "rev-parse", "HEAD")
     with pytest.raises(cold_reader.ColdReaderError, match="link.py"):
         build(tmp_path, root, base, head)
-    assert not (tmp_path / "reading").exists()
+    assert not (tmp_path / "readings" / "reading").exists()

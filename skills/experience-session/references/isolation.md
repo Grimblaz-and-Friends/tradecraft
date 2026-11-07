@@ -20,19 +20,21 @@ python <plugin-root>/lib/work.py tree \
   --path JOB_PATH [--path JOB_PATH ...] MODE-SPECIFIC-OPTIONS
 ```
 
-Use repeated `--exclude-record` values for record paths or patterns and repeated `--deny-text` values for leak probes. `OUTSIDE_PATH` must not exist and must be outside the registered implementation repository.
+Use repeated `--exclude-record` values for record paths or patterns and repeated `--deny-text` values for leak probes. `OUTSIDE_PATH` must not exist and must be outside the registered implementation repository. Neither its own name nor the name of the folder it sits in may carry the change's issue number or its open pull request's number as a whole run of digits, because the consumer's commands carry both names; `tree484I1` and `work-484/tree` are refused on issue 484, while `u1484b2/tree` is not. It must not be inside the entrance's records, and the folder it sits in must not hold them.
 
-The command resolves the registered implementation root and its clean committed revision internally. It archives the declared paths without shell-specific tar behavior, refuses a missing required file or `export-ignore` omission, compares every extracted regular file's raw object id with its committed source blob, and refuses archive transformations such as `export-subst` or line-ending conversion. It then makes one neutral commit in a new repository with no remote and detached `HEAD`, and writes the work identifier, source revision, mode, surfaces, exclusions, file object ids and verification digest to adjacent `.tradecraft-tree.json` metadata rather than into the tree.
+**The folder around a use tree is the consumer's working space.** The consumer lists that folder and works in it, so put nothing there it shouldn't read, your own notes and run records included. Fixtures the job needs may sit there, as may a second tree the job compares against.
 
-The holder's use command names both the job and that metadata:
+The command resolves the registered implementation root and its clean committed revision internally. It archives the declared paths without shell-specific tar behavior, refuses a missing required file or `export-ignore` omission, compares every extracted regular file's raw object id with its committed source blob, and refuses archive transformations such as `export-subst` or line-ending conversion. It then makes one neutral commit in a new repository with no remote and detached `HEAD`, and writes the work identifier, source revision, mode, surfaces, exclusions, file object ids and verification digest as its record of the tree to the entrance's own records, never into or beside the tree, and prints that path as `tree_metadata`.
+
+The holder's use command names both the job and that record, by the path `tree` printed:
 
 ```text
 python <plugin-root>/lib/work.py run use \
   --repo OWNER/REPO --issue N --root HOLDER_PATH \
-  --dispatch JOB --tree-metadata OUTSIDE_PATH.tradecraft-tree.json
+  --dispatch JOB --tree-metadata RECORD
 ```
 
-The entrance revalidates the metadata, source revision, raw bytes and neutral detached root before the consumer launches. Altered metadata, a dirty or advanced source, a changed consumer file, a branch, a remote or shared source history refuses the run.
+The entrance revalidates the record, source revision, raw bytes and neutral detached root before the consumer launches. An altered record, one naming another tree, a dirty or advanced source, a changed consumer file, a branch, a remote or shared source history refuses the run. So does a tree whose folder holds an entrance tree record, its own or another tree's, as trees built before the record moved have; the refusal names that file, which you remove before rebuilding the tree with `tree`, since `tree` refuses to build beside it.
 
 **The record exclusion and context rules can collide, and where they do the collision is yours to resolve rather than to discover.** A job may need a directory that also holds the change's record, while a file the job needs may restate that record. Use exclusions where they leave the job coherent; where content cannot be separated, say in the session note what residue the tree carried and weigh the run's coldness accordingly. Omitting a whole required directory is usually the worse horn because its failures are many and indistinguishable from consumer friction.
 
