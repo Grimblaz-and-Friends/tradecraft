@@ -49,8 +49,8 @@ class Refused(Exception):
 def newest_desktop_claude(environ: dict[str, str] | None = None) -> Path | None:
     """The newest desktop-app Claude Code: the runtime holder sessions load in.
 
-    Searched where the app keeps it now (`%LOCALAPPDATA%\\Claude-Data\\*\\claude-code`)
-    and in its old place under `%APPDATA%`; the highest version wins.
+    The app moved its files on some machines and not others, so its current place and its
+    old one are both searched.
     """
     environ = environ if environ is not None else dict(os.environ)
     bases = []
@@ -182,14 +182,10 @@ def set_opt_in(path: Path) -> bool:
 
 
 def restore_local(path: Path, record: dict[str, Any] | None) -> tuple[str | None, bool]:
-    """Put the checkout's local file back as the first install found it.
+    """Put the checkout's local file back as the first install found it (README "Uninstall").
 
-    The pane's own keys are removed from what the file holds now, with any
-    container they leave empty that the snapshot didn't hold. When the result
-    is the snapshot, its exact bytes go back (or the file goes, if the install
-    created it); otherwise the result is kept and the answer says why. Answers
-    the note and whether the install record may go: it stays whenever the file
-    was left as it is, so the snapshot is never lost.
+    Answers a note for the owner, if any, and whether the install record may go: it stays
+    whenever the file was left as it is, so the snapshot is never lost.
     """
     record = record or {}
     # Three states: bytes (the file as it was), None (it was absent), and False for a record
@@ -284,8 +280,14 @@ def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> 
         messages.append(f"kept the shared marketplace {MARKETPLACE}: still installed in "
                         + ", ".join(others))
     else:
-        _claude(runner, claude, checkout, "plugin", "marketplace", "remove", MARKETPLACE,
-                "--scope", "local")
+        try:
+            _claude(runner, claude, checkout, "plugin", "marketplace", "remove", MARKETPLACE,
+                    "--scope", "local")
+        except RuntimeError as error:
+            # A retried uninstall finds the marketplace already gone and still owes the restore.
+            if not re.search(r"not (?:currently )?(?:installed|found)|(?:does not|doesn't) exist",
+                             str(error), re.IGNORECASE):
+                raise
         messages.append(f"removed the shared marketplace {MARKETPLACE}: no other checkout has it")
     # Other function hooks in the checkout may rely on an opt-in that predates this install.
     note, done = restore_local(checkout / LOCAL, _install_records().get(str(checkout)))

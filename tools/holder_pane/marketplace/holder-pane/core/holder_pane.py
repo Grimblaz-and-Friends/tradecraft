@@ -533,7 +533,8 @@ def forget_steward(ctx: Ctx, session_id: str) -> None:
 
 
 def _desktop_record_dirs(ctx: Ctx) -> list[Path]:
-    """Where the desktop app keeps its session records: its current place first, then the old."""
+    """The app moved its session records on some machines and not others, so its current
+    place and the old ones are all searched, the current first."""
     dirs = []
     local = ctx.environ.get("LOCALAPPDATA")
     if local:
@@ -556,7 +557,8 @@ def _desktop_record_dirs(ctx: Ctx) -> list[Path]:
     return dirs
 
 
-def desktop_record(ctx: Ctx, session_id: str, state: dict[str, Any]) -> dict[str, Any] | None:
+def desktop_record(ctx: Ctx, session_id: str, state: dict[str, Any],
+                   search: bool = False) -> dict[str, Any] | None:
     """The desktop's own record of this session, matched by `cliSessionId`. Read only."""
     cached = state.get("desktop_record")
     if isinstance(cached, str):
@@ -564,7 +566,8 @@ def desktop_record(ctx: Ctx, session_id: str, state: dict[str, Any]) -> dict[str
         if isinstance(record, dict) and record.get("cliSessionId") == session_id:
             return record
     missed = state.get("desktop_miss_at")
-    if isinstance(missed, (int, float)) and ctx.now() - float(missed) < RECORD_SEARCH_SECONDS:
+    if not search and isinstance(missed, (int, float)) and (
+            ctx.now() - float(missed) < RECORD_SEARCH_SECONDS):
         return None
     for base in _desktop_record_dirs(ctx):
         for path in sorted(base.glob("*/*/local_*.json")):
@@ -578,7 +581,8 @@ def desktop_record(ctx: Ctx, session_id: str, state: dict[str, Any]) -> dict[str
     return None
 
 
-def title_info(ctx: Ctx, session_id: str, probe: Any, state: dict[str, Any]) -> dict[str, Any]:
+def title_info(ctx: Ctx, session_id: str, probe: Any, state: dict[str, Any],
+               binding: bool = False) -> dict[str, Any]:
     """Resolve the shim's title read (section 5).
 
     `probe` is what the shim saw: `{"decision": allow|ask|deny|absent, "text": ...}`.
@@ -587,7 +591,8 @@ def title_info(ctx: Ctx, session_id: str, probe: Any, state: dict[str, Any]) -> 
     app's session records weren't found, so renaming is off and the pane says so.
     """
     if not isinstance(probe, dict) or probe.get("decision") != "allow":
-        record = desktop_record(ctx, session_id, state)
+        # About to bind, the record is searched even inside the interval: a Steward never binds.
+        record = desktop_record(ctx, session_id, state, search=binding)
         recorded = record.get("title") if isinstance(record, dict) else None
         return {"readable": False, "title": None, "source": None,
                 "steward": is_steward(recorded), "records_missing": False}
@@ -1512,7 +1517,7 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     if call is None and load_binding(ctx, session_id) is None:
         return {"bound": False}
     state = load_session(ctx, session_id)
-    title = title_info(ctx, session_id, payload.get("title"), state)
+    title = title_info(ctx, session_id, payload.get("title"), state, binding=call is not None)
     if call is not None:
         if not bind(ctx, session_id, call, title):
             return {"bound": False}
@@ -2293,7 +2298,7 @@ def _recover_command(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
 def _bind_command(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = str(payload["session_id"])
     state = load_session(ctx, session_id)
-    title = title_info(ctx, session_id, payload.get("title"), state)
+    title = title_info(ctx, session_id, payload.get("title"), state, binding=True)
     candidate = payload.get("binding")
     if not isinstance(candidate, dict):
         return {"bound": False}
