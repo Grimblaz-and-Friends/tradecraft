@@ -564,6 +564,8 @@ def _protected_files() -> tuple[tuple[Path, str], ...]:
     return (
         (registry, "implementation worktree registry"),
         (vendor, "machine vendor choice (implementer-vendor)"),
+        # Written only by lib/cloud_setup.py's verified setup.
+        (canonical(vendor.parent / "cloud-builds.json"), "machine cloud-build switch (cloud-builds.json)"),
     )
 
 

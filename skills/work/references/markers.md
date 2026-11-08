@@ -130,8 +130,8 @@ The head binds the covered flags; initial adoption may cover historical turns at
 
 - **Exact form:** `<!-- tradecraft:launch-account:v1 dispatch=DISPATCH_ID -->`.
 - **Attributes:** only `dispatch`, the 32-digit lowercase hexadecimal dispatch id of the held launch bundle.
-- **Producer, surface, moment:** an authorized marker producer acting as holder, in an issue comment after the entrance reports that bundle's launch findings. It accounts for that bundle's comparison only, never reach, artifact settlement or a whole-change reading.
-- **Payload:** exactly one fenced `json` object with integer `schema_version: 1` and a `findings` list. Each entry has a unique `id`, a `party` of `owner`, `plugin-update`, `session`, `builder-damage` or `none-found`, and a nonempty `basis`; for `none-found`, the basis says what was inspected and how; `session` also requires the session's id in `session`, and `builder-damage` requires `owner_report` (the URL of the notice that told the owner, or another exact locator where it is not on GitHub) and `practice_issue` (`owner/repo#n` of the practice's `product-incident` filing). Any other field or party makes the marker invalid. The party is whatever made the change: `plugin-update` covers the runtime's plugin machinery installing, updating or refreshing a plugin, a marketplace or its cached data, even when the launched runtime did it itself; `builder-damage` is only a tool call or command the launched recipient made.
+- **Producer, surface, moment:** an authorized marker producer acting as holder, in an issue comment after the entrance reports that bundle's launch findings. It accounts for that bundle's comparison findings and its failed cloud attempt checks only, never reach, artifact settlement or a whole-change reading.
+- **Payload:** exactly one fenced `json` object with integer `schema_version: 1` and a `findings` list. Each entry has a unique `id`, a `party` of `owner`, `plugin-update`, `session`, `builder-damage`, `none-found` or `cloud-check`, and a nonempty `basis`; `cloud-check` answers only a `cloud-check:<name>` finding, and its basis names that check and what the holder verified; for `none-found`, the basis says what was inspected and how; `session` also requires the session's id in `session`, and `builder-damage` requires `owner_report` (the URL of the notice that told the owner, or another exact locator where it is not on GitHub) and `practice_issue` (`owner/repo#n` of the practice's `product-incident` filing). Any other field or party makes the marker invalid. The party is whatever made the change: `plugin-update` covers the runtime's plugin machinery installing, updating or refreshing a plugin, a marketplace or its cached data, even when the launched runtime did it itself; `builder-damage` is only a tool call or command the launched recipient made.
 
 ```json
 {
@@ -142,12 +142,12 @@ The head binds the covered flags; initial adoption may cover historical turns at
 }
 ```
 
-The hold releases only when the named ids equal the bundle's finding ids exactly and the comment was posted after the run completed (for an unrecorded comparison, after the launch began); an unrecorded comparison is named by the id `unrecorded`. A partial, extra-id, untrusted or malformed account discharges nothing. The procedure is `launch-findings.md`.
+The hold releases only when the named ids equal the bundle's finding ids exactly and the comment was posted after the run completed (for an unrecorded comparison, after the launch began); an unrecorded comparison is named by the id `unrecorded`. A failed `cloud-check:local_tree` is the exception: only the local tree containing the returned branch tip releases it, never an account, because the next stage builds from that tree. A partial, extra-id, untrusted or malformed account discharges nothing. The procedure is `launch-findings.md`.
 
 ## `builder-session`
 
 - **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.
-- **Attributes and lawful values:** `session` is the UUID-shaped session identity printed by the implementer launcher; optional `vendor` is `codex` or `claude`. A matching dispatch bundle proves the vendor and must agree with a present attribute. Without a bundle, a vendor-qualified marker is the recovery route after the holder verifies the original runtime record; a UUID alone proves no vendor.
+- **Attributes and lawful values:** `session` is the UUID-shaped session identity printed by the implementer launcher, or a Claude cloud session id (`cse_…`) where the vendor is `claude`; optional `vendor` is `codex` or `claude`. A matching dispatch bundle proves the vendor and must agree with a present attribute. Without a bundle, a vendor-qualified marker is the recovery route after the holder verifies the original runtime record; a UUID alone proves no vendor.
 - **Producer, surface, moment:** the holder, in a comment on the issue, when the build return and launcher output arrive.
 
 Reach correlates this claim across the issue's retained native records before scoping it to the selected implementation lineage. A proved sibling or other-lineage session is not this PR's missing turn. An authorized session with no retained attribution anywhere remains visible as its own uncertainty; a later return cannot account for an earlier marker.
@@ -229,7 +229,7 @@ The object and publication contract are `proof.md`. The gate evaluates only an a
 
 - **Exact form:** `<!-- tradecraft:connected-reviewer:v1 name=NAME status=STATUS -->`.
 - **Attributes and lawful values:** `name` is the reviewer's nonempty integration identifier; `status=complete`.
-- **Producer, surface, moment:** the builder, in the final disposition reply on the pull request, once that connected review has run and every comment from it is dispositioned.
+- **Producer, surface, moment:** the builder, in the final disposition reply on the pull request, once that connected review has run and every comment from it is dispositioned; for a cloud review-disposition, the holder, posting the final reply the cloud run returned.
 
 ```text
 <!-- tradecraft:connected-reviewer:v1 name=review-bot status=complete -->
