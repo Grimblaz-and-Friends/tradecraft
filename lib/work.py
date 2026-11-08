@@ -8406,6 +8406,8 @@ def _session_practice(state, session: str, resumed=None) -> str:
     for practice in recorded():
         if isinstance(practice.get("repository"), str) and practice["repository"]:
             return practice["repository"]
+    # No record names it only when the session's starting record is missing, and the launcher then
+    # refuses the follow-up before sending anything, so no run reads this guess.
     return cloud_build.DEFAULT_PRACTICE
 
 

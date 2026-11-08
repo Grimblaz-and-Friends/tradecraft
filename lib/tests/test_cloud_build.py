@@ -256,8 +256,8 @@ def test_artifact_checks_out_the_holder_commit_and_publishes_the_report(machine)
 
 
 def test_a_failed_fire_is_recorded_and_never_falls_back(machine):
-    code, _request, run, _output = launch(machine, Fake(fire_status=500))
-    assert code == 1 and run["outcome"] == "error" and "fire failed: HTTP 500" in run["attempts"][0]["reason"]
+    code, _request, run, _output = launch(machine, Fake(fire_status=403))
+    assert code == 1 and run["outcome"] == "error" and "fire failed: HTTP 403" in run["attempts"][0]["reason"]
     code, _request, run, _output = launch(machine, Fake(), preset="cloud record x is malformed")
     assert run["outcome"] == "refused" and "malformed" in run["attempts"][0]["reason"]
 
@@ -803,9 +803,20 @@ def test_an_ambiguous_fire_is_unresolved_and_blocks_a_replacement(machine, answe
         run_lifecycle.recovery_session(request, run)
 
 
-def test_a_failed_fire_status_is_not_unresolved(machine):
-    _code, _request, run, _output = launch(machine, Fake(fire_status=500))
+def test_a_client_error_fire_is_refused_not_unresolved(machine):
+    _code, request, run, _output = launch(machine, Fake(fire_status=403))
     assert not run.get("launch_unresolved") and run["attempts"][0]["launched"] is False
+    assert request["cloud"]["fire_state"] == "refused"
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_a_server_error_fire_is_unresolved_and_blocks_a_replacement(machine, status):
+    import run_lifecycle
+    _code, request, run, _output = launch(machine, Fake(fire_status=status))
+    assert run["launch_unresolved"] is True and run["attempts"][0]["launched"] is None
+    assert request["cloud"]["fire_state"] == "unresolved" and "resolved on claude.ai" in run["attempts"][0]["reason"]
+    with pytest.raises(ValueError, match="unresolved"):
+        run_lifecycle.recovery_session(request, run)
 
 
 def test_a_second_build_after_a_cloud_build_within_budget_is_not_refused(machine):

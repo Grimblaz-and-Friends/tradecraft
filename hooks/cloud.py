@@ -157,8 +157,8 @@ def tally(transcript_path: Path, session: str) -> dict[str, object]:
 
 
 def _effort(entry: dict) -> object:
-    # The spike's transcripts carried `effort` and `perTurnEffort` on the entry; the transcript
-    # format is undocumented, so the message-level and `{"level": …}` forms are read as well.
+    # Transcripts carry `effort` and `perTurnEffort` as strings on the entry; the format is
+    # undocumented, so the message-level and `{"level": …}` forms are read as well.
     for holder in (entry, entry.get("message") if isinstance(entry.get("message"), dict) else {}):
         for key in ("effort", "perTurnEffort"):
             value = holder.get(key)

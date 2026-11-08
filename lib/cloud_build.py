@@ -1006,6 +1006,11 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     # An accepted fire whose answer names no session may still have started one.
                     cloud["fire_unresolved"] = True
                     raise CloudError(f"fire answered HTTP 200 without a session id: {body[:300]}")
+                if status >= 500:
+                    # A server error, such as a gateway timeout, may come after the routine started a
+                    # session; only a client error is a refusal that started nothing.
+                    cloud["fire_unresolved"] = True
+                    raise CloudError(f"fire answered HTTP {status}: {body[:300]}")
                 if status != 200:
                     cloud["fire_state"] = "refused"
                     raise CloudError(f"fire failed: HTTP {status} {body[:300]}")
