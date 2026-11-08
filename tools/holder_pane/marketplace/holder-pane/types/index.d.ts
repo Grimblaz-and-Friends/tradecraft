@@ -22,6 +22,7 @@ export type HolderPaneView = {
   rename_note?: string | null
   failure?: string | null
   record_pending: boolean
+  posted?: boolean
   final: string | null
 }
 
