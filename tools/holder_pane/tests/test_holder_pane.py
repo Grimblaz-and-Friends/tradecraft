@@ -1482,7 +1482,9 @@ BODY_FORMS = {
     "input-dash": "gh api repos/{repo}/issues/116/comments --input - <<'EOF'\n{json_text}\nEOF",
     "var": "S={dir}; gh pr comment 116 --body-file $S/rr.md",
     "braced-var": "S={dir}; gh pr comment 116 --body-file ${{S}}/rr.md",
-    "env-var": "$S = '{dir}'; gh pr comment 116 --body-file $env:S/rr.md",
+    "env-var": "$env:S = '{dir}'; gh pr comment 116 --body-file $env:S/rr.md",
+    "ps-var": "$S = '{dir}'; gh pr comment 116 --body-file $S/rr.md",
+    "unquoted-heredoc": "T='{plain}'; gh pr comment 116 --body-file - <<EOF\n$T\nEOF",
     "tilde": "gh pr comment 116 --body-file ~/rr.md",
     "relative": "cd {dir} && gh pr comment 116 --body-file rr.md",
     "msys": "gh pr comment 116 --body-file {msys}",
@@ -1746,6 +1748,70 @@ def test_c1_9_reports_posted_for_two_changes_are_both_kept(home, tmp_path):
                    json.dumps(RR_REPORT))
     view = holder.tick(at("07:05:10"))
     assert (view["issue"], view["waiting_on"], view["next_step"]) == (95, "owner", "merge")
+
+
+def test_c1_9_a_refusal_naming_another_stage_ends_the_posted_report(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    moved = {"stage": "catch-up", "status": "refused", "reason": "base-moved"}
+    holder.observe(at("07:00:00"), holder.stage("proof", redirect=False), json.dumps(moved))
+    assert holder.tick(at("07:00:10"))["next_step"] != "merge"
+
+
+def test_c1_9_a_deleted_comment_ends_the_posted_report(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    holder.observe(at("07:00:00"), "gh pr comment 116 --delete-last --yes", "")
+    assert holder.tick(at("07:00:10"))["next_step"] != "merge"
+
+
+def test_c1_9_a_url_target_in_another_repository_is_no_post(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    holder.observe(at("06:58:32"), f"gh pr comment https://github.com/other/repo/pull/116 "
+                                   f"--body-file {body.as_posix()}", shown(116))
+    assert holder.tick(at("06:58:40"))["waiting_on"] == "holder"
+
+
+def test_c1_9_with_the_pr_unknown_the_report_counts_only_on_the_pr_it_names(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    holder.observe(at("06:58:32"), f"gh pr comment 117 --body-file {body.as_posix()}",
+                   shown(117))
+    assert holder.tick(at("06:58:40"))["next_step"] != "merge"
+    holder.observe(at("06:59:00"), f"gh pr comment 116 --body-file {body.as_posix()}",
+                   shown(116))
+    assert holder.tick(at("06:59:10"))["next_step"] == "merge"
+
+
+def test_c1_8_an_unquoted_heredoc_with_an_unknown_variable_is_unreadable(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    command = "gh pr comment 116 --body-file - <<EOF\n$NOPE\nEOF"
+    holder.observe(at("06:58:32"), command, shown(116))
+    assert holder.tick(at("06:58:40"))["posted"] is True
+
+
+def test_c1_10_a_report_for_another_change_is_not_taken_up(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.observe(at("06:41:57"), holder.stage("proof"), holder.launched("bp"),
+                   started=at("06:41:56"), background=True)
+    holder.write_report("proof", {**PROOF_REPORT, "work": f"{DAEMON}#94"}, at("06:49:05"))
+    assert holder.tick(at("06:49:30"))["label"] == "proof running"
+
+
+def test_k2_a_report_past_its_cap_is_no_report(tmp_path, monkeypatch):
+    path = tmp_path / "run.out"
+    path.write_text(json.dumps(RR_REPORT), encoding="utf-8")
+    os.utime(path, (T0, T0))
+    assert core.report_file(path, T0)[0] is not None
+    monkeypatch.setattr(core, "REPORT_LIMIT_BYTES", 40)
+    assert core.report_file(path, T0)[0] is None
 
 
 def test_c1_9_without_at_head_the_reading_in_forces_head_is_recorded(home, tmp_path):
@@ -2143,6 +2209,58 @@ def test_c5_2_an_unparseable_file_or_snapshot_says_so(tmp_path, records):
         # Left as it is: the installer's own opt-in is still there.
         assert json.loads(path.read_text())["env"] == {installer.OPT_IN: "1"}
         assert json.loads(records.read_text())[str(root)]["local_before"] == snapshot
+
+
+class AlreadyGone(FakeClaude):
+    """The CLI answering a retried uninstall: the plugin isn't installed any more."""
+
+    def __init__(self, message):
+        super().__init__()
+        self.message = message
+
+    def __call__(self, argv, **kwargs):
+        if argv[0] != "git" and argv[1:3] == ["plugin", "uninstall"]:
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=self.message.encode())
+        return super().__call__(argv, **kwargs)
+
+
+def test_c5_2_a_retried_uninstall_still_restores(tmp_path, records):
+    root = tmp_path / "a"
+    root.mkdir()
+    installer.install(root, Path("claude.exe"), FakeClaude(), marketplace=Path("M"))
+    installer.uninstall(root, Path("claude.exe"),
+                        AlreadyGone("Plugin holder-pane@x is not installed"))
+    assert not (root / ".claude" / "settings.local.json").exists()
+    installer.install(root, Path("claude.exe"), FakeClaude(), marketplace=Path("M"))
+    with pytest.raises(RuntimeError):
+        installer.uninstall(root, Path("claude.exe"), AlreadyGone("network unreachable"))
+
+
+def test_c5_2_an_opt_in_the_file_held_comes_back_byte_for_byte(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    path = root / ".claude" / "settings.local.json"
+    original = b'{"env": {"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "0"}}'
+    path.write_bytes(original)
+    installer.install(root, Path("claude.exe"), FakeClaude(), marketplace=Path("M"))
+    installer.uninstall(root, Path("claude.exe"), FakeClaude())
+    assert path.read_bytes() == original
+
+
+def test_c5_2_the_snapshot_is_recorded_before_the_file_changes(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    (root / ".claude" / "settings.local.json").write_bytes(b"{}")
+
+    class Failing(FakeClaude):
+        def __call__(self, argv, **kwargs):
+            if argv[0] != "git":
+                return SimpleNamespace(returncode=1, stdout=b"", stderr=b"boom")
+            return super().__call__(argv, **kwargs)
+
+    with pytest.raises(RuntimeError):
+        installer.install(root, Path("claude.exe"), Failing(), marketplace=Path("M"))
+    assert json.loads(records.read_text())[str(root)]["local_before"] == "e30="
 
 
 def test_c5_3_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):

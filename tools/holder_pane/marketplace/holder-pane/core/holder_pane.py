@@ -463,6 +463,13 @@ def _pr_number(pr: Any) -> int | None:
     return int(pr["number"]) if isinstance(pr, dict) and isinstance(pr.get("number"), int) else None
 
 
+def _moved_on(report: dict[str, Any], stage: str) -> bool:
+    """A stage's own report is the entrance's decision about the change only when it names
+    another stage than the one called and than the release report: a `run proof` refused
+    because the base moved names `catch-up`, so the change has moved on."""
+    return str(report.get("stage")) not in (stage, "release-report")
+
+
 def no_launch_reading(stage: str, report: dict[str, Any] | None, output: str, now: float,
                       pr: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """A stage that launches nobody: its own report is the reading.
@@ -481,7 +488,8 @@ def no_launch_reading(stage: str, report: dict[str, Any] | None, output: str, no
         return reading
     if _is_decision(report) and (report["stage"] != stage or report["status"] in (
             "refused", "waiting", "terminal")):
-        return reading_from_decision(report, "stage-return", now, pr, entrance_decision=False)
+        return reading_from_decision(report, "stage-return", now, pr,
+                                     entrance_decision=_moved_on(report, stage))
     if report is not None:
         return reading_from_return(stage, report, now, pr=pr)
     return None
@@ -874,6 +882,7 @@ TITLE_LINE = re.compile(r"\*\*Release report: #(\d+) " + ARROW
 TITLE_HEAD = re.compile(r"\s*at head\s+`?([0-9a-fA-F]{7,40})`?(?![0-9a-fA-F])")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
 PS_VARIABLE = re.compile(r"^\$([A-Za-z_][A-Za-z0-9_]*)$")
+PS_ENV_VARIABLE = re.compile(r"^\$env:([A-Za-z_][A-Za-z0-9_]*)$", re.IGNORECASE)
 STDOUT_REDIRECT = re.compile(r"^(1?>>?|&>>?|\*>>?)(?!&)")
 # Reads are capped so a stray large file can't stall a hook.
 # A body file needs only its opening line, which holds the title line.
@@ -890,7 +899,7 @@ GH_SWITCHES = frozenset({"--web", "-w", "--edit-last", "--editor", "-e", "--yes"
                          "--include", "--silent", "--verbose"})
 
 
-def lift_heredocs(command: str) -> tuple[str, list[str]]:
+def lift_heredocs(command: str) -> tuple[str, list[str], list[bool]]:
     """Lift each heredoc's body out of the command, leaving `<<\\0N\\0` where its operator stood.
 
     Lifted first, so text inside a heredoc (a Python script that mentions `gh`)
@@ -899,6 +908,7 @@ def lift_heredocs(command: str) -> tuple[str, list[str]]:
     lines = command.split("\n")
     kept: list[str] = []
     bodies: list[str] = []
+    quoted: list[bool] = []
     index = 0
     while index < len(lines):
         tags: list[str] = []
@@ -906,6 +916,7 @@ def lift_heredocs(command: str) -> tuple[str, list[str]]:
         def slot(match: re.Match) -> str:
             tags.append(match.group(3))
             bodies.append("")
+            quoted.append(bool(match.group(2)))
             return f"<<\x00{len(bodies) - 1}\x00"
 
         kept.append(HEREDOC_OP.sub(slot, lines[index]))
@@ -918,7 +929,7 @@ def lift_heredocs(command: str) -> tuple[str, list[str]]:
                 index += 1
             index += 1
             bodies[first + offset] = "".join(line + "\n" for line in body)
-    return "\n".join(kept), bodies
+    return "\n".join(kept), bodies, quoted
 
 
 def split_commands(text: str) -> list[list[str]]:
@@ -1018,7 +1029,8 @@ def _lookup(env: dict[str, str], name: str) -> str | None:
     return next((value for key, value in env.items() if key.casefold() == folded), None)
 
 
-def words(segment: str, env: dict[str, str], home: Path) -> list[Word]:
+def words(segment: str, env: dict[str, str], home: Path,
+          shell: dict[str, str] | None = None) -> list[Word]:
     """Split a simple command into words, expanding `$NAME`, `${NAME}`, `$env:NAME` and `~`."""
     found: list[Word] = []
     word: Word | None = None
@@ -1071,7 +1083,7 @@ def words(segment: str, env: dict[str, str], home: Path) -> list[Word]:
             index += 1
             continue
         if char == "$":
-            consumed, expansion = _expand(segment, index, env)
+            consumed, expansion = _expand(segment, index, env, shell)
             word.raw += segment[index:index + consumed]
             if expansion is None:
                 word.unresolved.append(len(word.value))
@@ -1088,8 +1100,14 @@ def words(segment: str, env: dict[str, str], home: Path) -> list[Word]:
     return found
 
 
-def _expand(text: str, index: int, env: dict[str, str]) -> tuple[int, str | None]:
-    """At a `$`: how many characters it spans, and its value (None when unresolved)."""
+def _expand(text: str, index: int, env: dict[str, str],
+            shell: dict[str, str] | None = None) -> tuple[int, str | None]:
+    """At a `$`: how many characters it spans, and its value (None when unresolved).
+
+    `$env:NAME` reads only the environment; `$NAME` reads a PowerShell variable first, so
+    `$S = '…'` never answers `$env:S`.
+    """
+    shell = shell or {}
     rest = text[index + 1:]
     if rest.startswith("("):
         depth, position = 0, 0
@@ -1100,13 +1118,15 @@ def _expand(text: str, index: int, env: dict[str, str]) -> tuple[int, str | None
         return position + 2, None
     braced = re.match(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", rest)
     if braced:
-        return braced.end() + 1, _lookup(env, braced.group(1))
+        name = braced.group(1)
+        return braced.end() + 1, shell.get(name, _lookup(env, name))
     powershell = re.match(r"env:([A-Za-z_][A-Za-z0-9_]*)", rest, re.IGNORECASE)
     if powershell:
         return powershell.end() + 1, _lookup(env, powershell.group(1))
     named = re.match(r"[A-Za-z_][A-Za-z0-9_]*", rest)
     if named:
-        return named.end() + 1, _lookup(env, named.group(0))
+        name = named.group(0)
+        return named.end() + 1, shell.get(name, _lookup(env, name))
     if rest[:1] and (rest[0].isdigit() or rest[0] in "?!#@*-$"):
         return 2, None
     return 1, "$"
@@ -1131,26 +1151,37 @@ class Commands:
     """A shell command read once: its simple commands, with the variables and directory each sees."""
 
     def __init__(self, ctx: Ctx, command: str, root: str | None) -> None:
-        text, self.bodies = lift_heredocs(command)
+        text, self.bodies, quoted = lift_heredocs(command)
         env = dict(ctx.environ)
+        shell: dict[str, str] = {}
         cwd = root or None
         self.pipelines: list[list[tuple[str, list[Word], str | None]]] = []
         for pipeline in split_commands(text):
             read: list[tuple[str, list[Word], str | None]] = []
             for segment in pipeline:
-                found = words(segment, env, ctx.home)
+                found = words(segment, env, ctx.home, shell)
                 read.append((segment, found, cwd))
-                cwd = self._effects(found, env, cwd)
+                for slot in HEREDOC_SLOT.finditer(segment):
+                    number = int(slot.group(1))
+                    if not quoted[number]:
+                        # An unquoted heredoc expands as the shell would; a quoted one is literal.
+                        self.bodies[number] = _expand_text(self.bodies[number], env, shell)
+                cwd = self._effects(found, env, cwd, shell)
             self.pipelines.append(read)
 
     @staticmethod
-    def _effects(found: list[Word], env: dict[str, str], cwd: str | None) -> str | None:
+    def _effects(found: list[Word], env: dict[str, str], cwd: str | None,
+                 shell: dict[str, str]) -> str | None:
         if not found:
             return cwd
         first = found[0]
-        if len(found) >= 3 and PS_VARIABLE.match(first.raw) and found[1].raw == "=":
-            env[PS_VARIABLE.match(first.raw).group(1)] = found[2].value
-            return cwd
+        if len(found) >= 3 and found[1].raw == "=":
+            if PS_ENV_VARIABLE.match(first.raw):
+                env[PS_ENV_VARIABLE.match(first.raw).group(1)] = found[2].value
+                return cwd
+            if PS_VARIABLE.match(first.raw):
+                shell[PS_VARIABLE.match(first.raw).group(1)] = found[2].value
+                return cwd
         names = [word for word in (found[1:] if first.value == "export" else found)]
         if names and all(ASSIGNMENT.match(word.value) and not word.raw.startswith(("'", '"'))
                          for word in names):
@@ -1241,8 +1272,13 @@ class Commands:
         if verb == ["pr", "edit"] and not has_body:
             return None
         repo = _first(options, "-R", "--repo")
-        return {"kind": verb[0], "target": target,
-                "repository": _repository(repo.value) if repo is not None else None,
+        repository = _repository(repo.value) if repo is not None else _url_repository(
+            positional[0].value)
+        if "--delete-last" in options:
+            # A delete, never a post: it may remove the report itself.
+            return {"kind": verb[0], "target": target, "repository": repository,
+                    "body": None, "delete": True}
+        return {"kind": verb[0], "target": target, "repository": repository,
                 "body": self._comment_body(segment, options, cwd)}
 
     def _comment_body(self, segment: str, options: dict[str, list[Word]],
@@ -1294,6 +1330,32 @@ class Commands:
         return value
 
 
+def _expand_text(text: str | None, env: dict[str, str],
+                 shell: dict[str, str]) -> str | None:
+    """An unquoted heredoc's text expanded; None when any expansion can't be resolved."""
+    if text is None:
+        return None
+    out, index = [], 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and text[index + 1:index + 2] in ("$", "`", "\\"):
+            out.append(text[index + 1])
+            index += 2
+            continue
+        if char == "`":
+            return None
+        if char == "$":
+            consumed, value = _expand(text, index, env, shell)
+            if value is None:
+                return None
+            out.append(value)
+            index += consumed
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def _gh_arguments(found: list[Word]) -> tuple[dict[str, list[Word]], list[Word]]:
     """A gh command's options (each with its value) and its positional words."""
     options: dict[str, list[Word]] = {}
@@ -1332,6 +1394,12 @@ def _first(options: dict[str, list[Word]], *names: str) -> Word | None:
 def _target(text: str) -> int | None:
     match = re.match(r"^#?(\d+)$", text) or re.search(r"/(?:pull|issues)/(\d+)(?:[/#?].*)?$", text)
     return int(match.group(1)) if match else None
+
+
+def _url_repository(text: str) -> str | None:
+    """The repository a `…/O/R/pull/N` or `…/O/R/issues/N` target names, if it is a URL."""
+    match = re.search(r"([^/\s]+)/([^/\s]+)/(?:pull|issues)/\d+", text)
+    return f"{match.group(1)}/{match.group(2)}" if match else None
 
 
 def _repository(text: str) -> str:
@@ -1394,9 +1462,12 @@ def report_file(path: Path | None, since: float) -> tuple[dict[str, Any] | None,
         if mtime < since - BUNDLE_MATCH_SLACK_SECONDS:
             return None, None, False
         with open(path, "rb") as stream:
-            text = stream.read(REPORT_LIMIT_BYTES).decode("utf-8", errors="replace")
+            data = stream.read(REPORT_LIMIT_BYTES + 1)
     except OSError:
         return None, None, False
+    if len(data) > REPORT_LIMIT_BYTES:
+        return None, mtime, False  # its truncated prefix must never read as a complete report
+    text = data.decode("utf-8", errors="replace")
     text = text.removeprefix(BOM).rstrip()
     failed = any(line.startswith("work: ") for line in text.splitlines())
     decoder = json.JSONDecoder()
@@ -1528,15 +1599,21 @@ def _observe_posts(binding: dict[str, Any], state: dict[str, Any], change: dict[
             continue
         title = release_report_title(post["body"], issue, known)
         target = post["target"]
-        # Until the pane knows the change's pull request, any `gh pr` target counts: the
-        # entrance's release-report stage output names no pull request the pane could check,
-        # and any other wrong mark corrects itself at the next read.
+        # Until the pane knows the change's pull request, a release report counts on the pull
+        # request its title line names, since a wrong match never corrects itself; any other
+        # `gh pr` post counts, as its wrong mark corrects itself at the next read.
         if known is not None:
             ours = target in (issue, known)
+        elif title is not None:
+            ours = target in (issue, title["pull_request"])
         else:
-            ours = target == issue or post["kind"] == "pr" or (
-                title is not None and title["pull_request"] == target)
+            ours = target == issue or post["kind"] == "pr"
         if not ours:
+            continue
+        if post.get("delete"):
+            # The deleted comment may be the posted report: the next read decides again.
+            _drop_report(state, binding)
+            state.pop("report_post_pending", None)
             continue
         posted = state.get("posted") if isinstance(state.get("posted"), dict) else {}
         if title is not None:
@@ -1582,7 +1659,7 @@ def _observe_launch(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any], st
         # dispatched, so a posted release report stands.
         state.pop("pending", None)
         state["reading"] = reading_from_decision(decision, "stage-return", ended, pr,
-                                                 entrance_decision=False)
+                                                 entrance_decision=_moved_on(decision, stage))
         return
     if _is_decision(decision) and decision.get("dispatch") is True:
         _drop_report(state, owner)
@@ -1641,7 +1718,17 @@ def _mtime(path: Any) -> float | None:
         return None
 
 
-def _settle_background(state: dict[str, Any], change: dict[str, Any]) -> None:
+def _for_change(report: dict[str, Any], work: str | None) -> bool:
+    """Whether a report names this change, by its own `work` or its next decision's. A report
+    naming none (an up-to-date catch-up) can't be told apart, and is taken as this call's."""
+    named = report.get("work")
+    if not isinstance(named, str) and isinstance(report.get("next"), dict):
+        named = report["next"].get("work")
+    return work is None or not isinstance(named, str) or named.casefold() == work.casefold()
+
+
+def _settle_background(state: dict[str, Any], change: dict[str, Any],
+                       work: str | None = None) -> None:
     """A background stage ends at its complete report, an entrance read started after its task
     ended, or a `work:` failure once it has ended; until then it shows running (or ended).
 
@@ -1655,6 +1742,8 @@ def _settle_background(state: dict[str, Any], change: dict[str, Any]) -> None:
     started = float(background.get("started_at") or 0)
     path = background.get("redirect") or background.get("output_file")
     report, written, failed = report_file(Path(path) if path else None, started)
+    if report is not None and not _for_change(report, work):
+        report = None
     reading = no_launch_reading(stage, report, "", float(written or started),
                                 change.get("pull_request")) if report is not None else None
     if reading is not None:
@@ -1805,7 +1894,7 @@ def compute_view(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any]) -> di
             if bundle.get("stage") in RETURN_TABLE:
                 state["reading"] = reading_from_return(
                     bundle["stage"], None, now, bundle.get("dispatch_id"))
-    _settle_background(state, change)
+    _settle_background(state, change, work)
     _settle_report_post(state)
     _end_report_post(state, change, binding)
     reading = _newer(state.get("reading"), change.get("reading"))

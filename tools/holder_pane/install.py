@@ -211,6 +211,12 @@ def restore_local(path: Path, record: dict[str, Any] | None) -> tuple[str | None
     removals = [("enabledPlugins", PLUGIN_REF), ("extraKnownMarketplaces", MARKETPLACE)]
     if record.get("added_opt_in") is True:
         removals.append(("env", OPT_IN))
+    else:
+        held_before = before.get("env") if isinstance(before, dict) else None
+        if isinstance(held_before, dict) and OPT_IN in held_before and isinstance(
+                settings.get("env"), dict):
+            # The file's own opt-in value goes back, so a byte-for-byte restore stays possible.
+            settings["env"][OPT_IN] = held_before[OPT_IN]
     for container, key in removals:
         held = settings.get(container)
         if isinstance(held, dict):
@@ -248,19 +254,28 @@ def install(checkout: Path, claude: Path, runner: Runner = subprocess.run,
         local_before: bytes | None = (checkout / LOCAL).read_bytes()
     except FileNotFoundError:
         local_before = None
+    # The record, with its snapshot, is written before anything changes the local file, so a
+    # failure later never leaves a changed file without its snapshot. A reinstall keeps the
+    # first install's record: the opt-in and file it found then are not its own.
+    if str(checkout) not in _install_records():
+        env = _read_settings(checkout / LOCAL).get("env")
+        _remember(checkout, not (isinstance(env, dict) and OPT_IN in env), local_before)
     _claude(runner, claude, checkout, "plugin", "marketplace", "add", str(marketplace),
             "--scope", "local")
     _claude(runner, claude, checkout, "plugin", "install", PLUGIN_REF, "--scope", "local")
-    added = set_opt_in(checkout / LOCAL)
-    # A reinstall keeps the first install's record: the opt-in and file it found are not its own.
-    if str(checkout) not in _install_records():
-        _remember(checkout, added, local_before)
+    set_opt_in(checkout / LOCAL)
 
 
 def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> list[str]:
     """Uninstall here; keep the shared marketplace while another checkout has the pane."""
     messages = []
-    _claude(runner, claude, checkout, "plugin", "uninstall", PLUGIN_REF, "--scope", "local")
+    try:
+        _claude(runner, claude, checkout, "plugin", "uninstall", PLUGIN_REF, "--scope", "local")
+    except RuntimeError as error:
+        # A retried uninstall finds the plugin already gone and still owes the restore.
+        if not re.search(r"not (?:currently )?installed", str(error), re.IGNORECASE):
+            raise
+        messages.append(f"{PLUGIN_REF} was already uninstalled here")
     others = _still_installed(checkout)
     if others:
         messages.append(f"kept the shared marketplace {MARKETPLACE}: still installed in "
