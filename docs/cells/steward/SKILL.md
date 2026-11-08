@@ -1,6 +1,6 @@
 ---
 name: steward
-description: This repository's Steward—the long-lived session that coordinates the lab without holding a change—and the standing page, intake, handoff and replacement duties it owns. Use before starting work here, when sending evidence to the Steward, or when taking over the role; not for holding or implementing an individual change.
+description: This repository's Steward—the long-lived session that coordinates the lab without holding a change—and the standing page, intake, brief review, handoff and replacement duties it owns. Use before starting work here, when sending evidence to the Steward, or when taking over the role; not for holding or implementing an individual change.
 ---
 
 # The Steward
@@ -18,17 +18,41 @@ The `engagement` cell owns the cross-change read and cross-session intake.
 
 ## What the Steward holds
 
-The Steward holds the cross-change read at its cadence, intake under that standard, the incidents and defects those reads produce, questions the record or a precedent can answer, the rulings prepared for the owner and the standing page. It never holds a change, product or practice; every change has its own holder session.
+The Steward holds the cross-change read at its cadence, intake under that standard, the incidents and defects those reads produce, the review of lab-related draft briefs before they reach the owner, questions the record or a precedent can answer, the rulings prepared for the owner and the standing page. It never holds a change, product or practice; every change has its own holder session.
 
 **After each plugin update, the Steward's notice to in-flight holders names every holder still on an older version.** For a holder with cloud-set-up repositories that reload is required, not optional: its new cloud sessions are refused until it reloads, because a session cannot reload itself and the cloud route has no local fallback. Its revisions and repairs still go into their own sessions on the version those sessions loaded, and each record shows the loaded commit beside the installed one.
 
 **After affirmation, the Steward answers a holder's question from the record or precedent before it reaches the owner.** It escalates only when the answer changes an affirmed row or the expected saving exceeds the cost of asking, through the existing argued ask with that cost stated; otherwise it returns the answer and its source to the holder for the work record.
+
+## Reviewing a draft brief
+
+**The Steward reviews a lab-related draft brief before it reaches the owner** (the owner, 2026-09-30; #793). This covers every tradecraft and change-proof brief, and any product brief whose rows change a practice default, a marker or a launcher, or rest on a ruling made on another change. Lab changes set the defaults every product change runs on, so an error caught here is a second put the owner doesn't spend.
+
+**The holder sends it once, on the converged item.** It designs in turns with the owner until the forks are settled, asking the repository's coordinating session its record-or-precedent questions as it goes, or checking the record itself where there is none. After its own pre-put check, it messages the Steward the whole item. After the put, it re-sends only the rows the owner's push changed that touch the record or the practice, at most once more, because Daemon #94 took nine drafts and seven rounds when every draft went back.
+
+**The Steward answers "aligned", or names each row and the wrong action that row would cause,** with no wording points. The owner still affirms.
+
+**The review never holds the put.** If the Steward hasn't answered within 30 minutes, or the holder's runtime can't message it, the holder puts the brief, tells the owner it wasn't reviewed, and posts the draft for the Steward's next wake: as a comment on #683 when the brief's repository is public, and otherwise, because tradecraft is public, on the brief's own issue, with only a link to that comment on #683. A row the late review names goes back to the owner, as an amendment if he has affirmed. In the Steward's outage of 2026-10-09 and 10-10, #874's and Daemon #78's briefs reached the owner unreviewed, with nothing written for their holders to follow.
+
+**The holder records the review in the brief's history:** whether one ran, the rows it changed, and when the draft was sent and the answer came, each time read from the clock. The review runs in a message only the two sessions see, and cross-change reads from read 12 to read 31 kept finding reviews whose delay no one had recorded.
+
+**The Steward owes the owner one report** of what the reviews caught, and the errors they added, against the delay they added; the owner then decides whether to keep the review. Count the added errors, because #830's and #915's reviews each added a row that later cost a repair.
+
+## The Daemon Steward
+
+**Daemon has its own coordinating session, `Daemon Steward`** (#918; Daemon's [docs/daemon-steward.md](https://github.com/Grimblaz-and-Friends/Daemon/blob/main/docs/daemon-steward.md) is its role). It keeps Daemon's work in flight on Daemon #104, checks each Daemon draft against Daemon's open pull requests and other work in flight, and answers Daemon holders' record-or-precedent questions. A fresh one-off reader that the holder launches reviews each Daemon draft row by row (the owner's A+, 2026-11-07), because in the trial it found 44 real defects on first drafts to the Daemon Steward's 20, at about $1.35 a brief.
+
+**The Steward reviews only the Daemon rows the Daemon Steward forwards:** rows that touch a practice default, a marker, a launcher or another repository, or that change what a dispatched builder, author or seat reads or runs under (Daemon's `AGENTS.md` or `CLAUDE.md`, and the entrance's records). It answers the Daemon Steward, which returns one answer to the holder within the 30 minutes. When the Daemon Steward can't be reached, the holder sends the Steward the draft itself, and the Steward reviews the rows it would have been forwarded.
+
+**The Steward keeps the lab-wide picture.** It sends the Daemon Steward each plugin update and ruling, and writes Daemon's owner-board rows from its messages. Daemon holders still send practice defects straight to the Steward.
 
 ## Practice-defect intake
 
 **For practice defects in this repository, this local route overrides three shipped rules.** The holder files nothing rather than following either the shipped cross-session intake direction to file what it can itself or charter §6's direction to file a practice failure in the practice repository, and the Steward may file the factual defect before purchase rather than following the shipped filing rule that unbought work creates no issue. The owner still buys at pickup. Row 2 of #728's affirmed implementation brief makes all three overrides lab doctrine only and expressly leaves the shipped sentences unchanged, so the exception lives here rather than traveling to adopters.
 
 **A holder who finds a defect in this practice sends the Steward one message carrying the facts, location, evidence and originating change, and does not create the practice issue.** The Steward verifies the record, searches the existing filings, then files, folds into an open match or declines with the reason; the owner buys and designs the work at pickup. This local route prevents duplicate filings and re-filing a declined remedy without making the Steward the solution's owner.
+
+**A holder whose runtime can't message the Steward posts the same facts as a comment on #683, or, for a defect met in a private repository, on that change's own issue with only a link on #683, because tradecraft is public.** The route is the holder's alone: a dispatched builder, author or seat returns what it finds to its holder, like every other return. A builder that posted on #683 directly during Organizations of Verra #440's floor sent a false alarm no holder had checked.
 
 **A product defect remains that product holder's to file in the product repository, with the product harm named.** The lab coordinates the practice; it does not absorb a product's work.
 
