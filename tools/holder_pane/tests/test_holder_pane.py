@@ -1750,6 +1750,17 @@ def test_c1_9_reports_posted_for_two_changes_are_both_kept(home, tmp_path):
     assert (view["issue"], view["waiting_on"], view["next_step"]) == (95, "owner", "merge")
 
 
+def test_c1_10_a_failed_background_call_records_no_running_stage(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.entrance(at("06:00:00"), {"stage": "waiting", "status": "waiting",
+                                     "reason": "latest-check-run-pending"})
+    holder.observe(at("06:10:01"), holder.stage("proof"), "spawn failed",
+                   started=at("06:10:00"), background=True, is_error=True)
+    view = holder.tick(at("06:10:30"))
+    assert view["label"] != "proof running" and view["running"] is None
+    assert view["failure"].startswith("proof failed")
+
+
 def test_c1_9_a_refusal_naming_another_stage_ends_the_posted_report(home, tmp_path):
     holder = posted_holder(home, tmp_path)
     moved = {"stage": "catch-up", "status": "refused", "reason": "base-moved"}
@@ -2261,6 +2272,19 @@ def test_c5_2_the_snapshot_is_recorded_before_the_file_changes(tmp_path, records
     with pytest.raises(RuntimeError):
         installer.install(root, Path("claude.exe"), Failing(), marketplace=Path("M"))
     assert json.loads(records.read_text())[str(root)]["local_before"] == "e30="
+
+
+def test_c5_1_an_unreadable_other_checkout_keeps_the_marketplace(tmp_path, records):
+    first, second = tmp_path / "a", tmp_path / "b"
+    for root in (first, second):
+        (root / ".claude").mkdir(parents=True)
+    tools = FakeClaude()
+    installer.install(first, Path("claude.exe"), tools, marketplace=Path("M"))
+    installer.install(second, Path("claude.exe"), tools, marketplace=Path("M"))
+    (second / ".claude" / "settings.local.json").write_text('{"enabledPlugins": ', encoding="utf-8")
+    messages = installer.uninstall(first, Path("claude.exe"), tools)
+    assert removes(tools) == 0
+    assert any("can't be read" in message for message in messages)
 
 
 def test_c5_3_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):

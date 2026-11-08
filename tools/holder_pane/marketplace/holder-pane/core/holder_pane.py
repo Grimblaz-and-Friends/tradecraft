@@ -1532,14 +1532,17 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     commands = Commands(ctx, command, root)
     same_change = call is not None and (call["repository"], call["issue"]) == (
         binding["repository"], binding["issue"])
+    failed = payload.get("is_error") is True or (
+        (code := EXIT_CODE.match(output)) is not None and int(code.group(1)) != 0)
     if same_change and call["verb"] == "run":
         stage = call["stage"]
         launch = BACKGROUND_LAUNCH.search(output)
         state.pop("background", None)  # a new stage call ends a background run's display
         if stage in DISPATCHING:
             _observe_launch(ctx, binding, state, stage, output, started, ended, pr, call)
-        elif payload.get("background") is True or launch is not None:
+        elif not failed and (payload.get("background") is True or launch is not None):
             # Run in the background: its report comes later, in a file (README "How it behaves").
+            # A call that failed launched nothing, so it reads as a failure below instead.
             state["background"] = {
                 "stage": stage, "started_at": started, "ended_at": None,
                 "task_id": launch.group("id") if launch else None,
@@ -1564,8 +1567,6 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
                 state["failure"] = {"stage": stage, "at": ended}
             state.pop("pending", None)
             state.pop("tracked", None)
-    failed = payload.get("is_error") is True or (
-        (code := EXIT_CODE.match(output)) is not None and int(code.group(1)) != 0)
     if not failed:
         _observe_posts(binding, state, change, commands, ended, output)
     save_session(ctx, session_id, state)

@@ -144,11 +144,13 @@ def _forget(checkout: Path) -> None:
         path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
-def _still_installed(checkout: Path) -> list[Path]:
-    """Every other recorded checkout whose own local file still enables the pane.
+def _still_installed(checkout: Path) -> list[str]:
+    """Every other recorded checkout whose own local file still enables the pane, or can't be read.
 
     The local file is read as well as the record, so a checkout uninstalled by
-    hand or deleted can't keep the shared registration forever.
+    hand or deleted can't keep the shared registration forever. A file that can't
+    be read (locked, partly written) counts as still enabling it: removing a
+    registration another checkout may still use is the harm this guards.
     """
     found = []
     here = os.path.normcase(str(checkout))
@@ -159,10 +161,11 @@ def _still_installed(checkout: Path) -> list[Path]:
         try:
             settings = _read_settings(other / LOCAL)
         except (Refused, OSError, ValueError):
+            found.append(f"{other} (its local file can't be read)")
             continue
         plugins = settings.get("enabledPlugins")
         if isinstance(plugins, dict) and plugins.get(PLUGIN_REF) is True:
-            found.append(other)
+            found.append(str(other))
     return found
 
 
@@ -279,7 +282,7 @@ def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> 
     others = _still_installed(checkout)
     if others:
         messages.append(f"kept the shared marketplace {MARKETPLACE}: still installed in "
-                        + ", ".join(str(other) for other in others))
+                        + ", ".join(others))
     else:
         _claude(runner, claude, checkout, "plugin", "marketplace", "remove", MARKETPLACE,
                 "--scope", "local")
