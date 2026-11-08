@@ -15,7 +15,7 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **Row 3, every `<Name> Steward` is exempt, as `Steward` was.** Daemon's holders reach their Steward by the exact title `Daemon Steward`. A renamed Steward would vanish from their view.
 - **Row 4, a restart binds only the change whose row names the session (#941).** Two holders shared one worktree, so binding by worktree alone would show the newer change in the older holder's session.
 - **Row 5, the installer is safe across checkouts.** One uninstall in a throwaway checkout removed the shared registration and silently turned Daemon's pane off. Uninstall also left an emptied settings file behind, and the installer looked for Claude Code only in the app's old place.
-- **Row 6, the trial checklist gains the kinds of check the first run missed:** a background stage, a holder's own post, and a restart in a worktree another change uses.
+- **Row 6, the trial checklist gains the kinds of check the first run missed:** a background stage, a holder's own post, and a restart in a worktree another change uses. Checks that need no stage call run before the merge. Checks that need a holder's stage calls run on whichever Daemon change is next in flight, before the merge if one is, otherwise right after, because a real holder's stage calls can't be staged on demand.
 
 ## The owner's rulings
 
@@ -32,7 +32,7 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **A posted release report ends only on one of three things, each dated after the post:**
   - a reading at a new head;
   - an entrance decision for a stage other than `release-report`;
-  - a stage that dispatches new work.
+  - a dispatching launch for the same change.
 
   A holder plausibly runs catch-up, or reruns `release-report`, between the post and the merge. Since no read ever sees the posted report, a state cleared at the same head would never come back, which is #961 again.
 - **A restart binds by `holder_session_id`.** Every registry row already carries it. Root narrows only when one id names more than one change.

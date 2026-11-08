@@ -378,6 +378,8 @@ def _pull_request(decision: dict[str, Any]) -> int | None:
 
 
 def _head(decision: dict[str, Any]) -> str | None:
+    # Proof and catch-up reports carry their head at the top level. It is read last, so a
+    # decision's gate, floor or synchronization head wins where both are present.
     for holder in (decision.get("required_gate"), decision.get("floor"),
                    decision.get("synchronization"), decision):
         if isinstance(holder, dict):
@@ -875,8 +877,8 @@ STDOUT_REDIRECT = re.compile(r"^(1?>>?|&>>?|\*>>?)(?!&)")
 # Reads are capped so a stray large file can't stall a hook.
 # A body file needs only its opening line, which holds the title line.
 BODY_LIMIT_BYTES = 65536
-# An `--input` file is JSON that must parse whole: room for GitHub's largest comment body
-# (262,144 bytes) and the JSON around it.
+# An `--input` file is JSON that must parse whole: sized to hold any comment body GitHub
+# accepts, plus its JSON.
 INPUT_LIMIT_BYTES = 1024 * 1024
 # A report past its cap reads as no report, which the next entrance read corrects, as for
 # any report the pane can't find.

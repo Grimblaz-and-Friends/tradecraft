@@ -1130,7 +1130,7 @@ def test_core_runs_as_a_script(home):
     assert json.loads(completed.stdout)["waiting_on"] == "ci"
 
 
-# --- D-976 row 1: the holder's own steps, worked out by the pane ---------------------------
+# --- the holder's own steps: background stages, posts and the release report -----------------
 #
 # Replays of a real holder's recorded calls: stages run in the background with their output
 # redirected, a release report and use markers posted from files, and catch-up run seconds
@@ -1159,7 +1159,8 @@ class Forbidden:
 
 
 class Holder:
-    """Daemon #95's holder session, driven through observe, tick and remind."""
+    """A holder session that runs stages in the background and posts from files, driven
+    through observe, tick and remind at the times its calls were made."""
 
     def __init__(self, home: Path, tmp_path: Path, session: str = HOLDER):
         self.home, self.session = home, session
@@ -1264,7 +1265,7 @@ def rr_decision(head: str | None = HEAD, status: str = "runnable") -> dict:
             "reason": "all-evidence-complete-release-report-ready", "required_gate": gate}
 
 
-def test_940_c1_1_background_stages_and_a_file_posted_report_wait_on_the_owner(home, tmp_path):
+def test_c1_1_background_stages_and_a_file_posted_report_wait_on_the_owner(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.use_return(at("06:30:00"))
     # Proof in the background, its output redirected to a file.
@@ -1303,7 +1304,7 @@ def test_940_c1_1_background_stages_and_a_file_posted_report_wait_on_the_owner(h
 
 
 @pytest.mark.parametrize("form", ["literal", "variable", "relative"])
-def test_940_c1_2_foreground_report_posted_with_gh_pr_comment_body_file(home, tmp_path, form):
+def test_c1_2_foreground_report_posted_with_gh_pr_comment_body_file(home, tmp_path, form):
     holder = Holder(home, tmp_path)
     holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
                    json.dumps(RR_REPORT))
@@ -1324,7 +1325,7 @@ def test_940_c1_2_foreground_report_posted_with_gh_pr_comment_body_file(home, tm
 
 
 @pytest.mark.parametrize("case", ["inline", "other-file", "other-issue", "other-pr"])
-def test_940_c1_3_another_comment_leaves_the_report_the_holders(home, tmp_path, case):
+def test_c1_3_another_comment_leaves_the_report_the_holders(home, tmp_path, case):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
@@ -1363,7 +1364,7 @@ def marker_post(holder: Holder, now: float) -> None:
     holder.observe(now, command, "1 2026-11-06T04:25:58Z https://github.com/x")
 
 
-def test_940_c1_4_a_posted_use_marker_is_not_reminded(home, tmp_path):
+def test_c1_4_a_posted_use_marker_is_not_reminded(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.use_return(at("04:20:00"))
@@ -1380,7 +1381,7 @@ def test_940_c1_4_a_posted_use_marker_is_not_reminded(home, tmp_path):
     assert [block for block in blocks if block] == ["next: run use (yours)"]
 
 
-def test_940_c1_4_recorded_continuations_after_a_marker_post(home, tmp_path):
+def test_c1_4_recorded_continuations_after_a_marker_post(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.use_return(at("04:20:00"))
     marker_post(holder, at("04:25:57"))
@@ -1402,7 +1403,7 @@ def test_940_c1_4_recorded_continuations_after_a_marker_post(home, tmp_path):
     assert holder.remind(at("05:28:55")) is None
 
 
-def test_940_c1_5_an_unposted_holder_step_is_still_reminded_once(home, tmp_path):
+def test_c1_5_an_unposted_holder_step_is_still_reminded_once(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.entrance(at("06:00:00"), {"stage": "proof", "status": "runnable", "reason": "x"})
@@ -1413,7 +1414,7 @@ def test_940_c1_5_an_unposted_holder_step_is_still_reminded_once(home, tmp_path)
     assert blocks == ["next: run proof (yours)", None]
 
 
-def test_940_c1_6_shim_registers_only_the_hook_kinds_it_did():
+def test_c1_6_shim_registers_only_the_hook_kinds_it_did():
     source = REGISTER.read_text(encoding="utf-8")
     kinds = set(re.findall(r"\bon\('([a-zA-Z.]+)'", source))
     assert kinds == {"session.start", "command.run", "tool.call", "turn.complete",
@@ -1421,7 +1422,7 @@ def test_940_c1_6_shim_registers_only_the_hook_kinds_it_did():
 
 
 @pytest.mark.parametrize("stage", ["proof", "ready-reviewers", "release-report", "catch-up"])
-def test_940_c1_7_no_reminder_while_running_ended_or_posted(home, tmp_path, stage):
+def test_c1_7_no_reminder_while_running_ended_or_posted(home, tmp_path, stage):
     holder = Holder(home, tmp_path)
     holder.entrance(at("06:00:00"), {"stage": stage, "status": "runnable", "reason": "x"})
     holder.observe(at("06:10:01"), holder.stage(stage), holder.launched("t1"),
@@ -1439,7 +1440,7 @@ def test_940_c1_7_no_reminder_while_running_ended_or_posted(home, tmp_path, stag
     assert holder.remind(at("06:41:00")) == f"next: run {stage} (yours)"
 
 
-def test_940_c1_7_a_task_id_inside_a_longer_one_is_not_still_running(home, tmp_path):
+def test_c1_7_a_task_id_inside_a_longer_one_is_not_still_running(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.entrance(at("06:00:00"), {"stage": "proof", "status": "runnable", "reason": "x"})
     holder.observe(at("06:10:01"), holder.stage("proof"), holder.launched("t1"),
@@ -1448,7 +1449,7 @@ def test_940_c1_7_a_task_id_inside_a_longer_one_is_not_still_running(home, tmp_p
     assert holder.tick(at("06:11:30"))["status"] == "ended"
 
 
-def test_940_c1_7_posted_state_never_reminds(home, tmp_path):
+def test_c1_7_posted_state_never_reminds(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
@@ -1481,7 +1482,7 @@ BODY_FORMS = {
 
 @pytest.mark.parametrize("form", sorted(BODY_FORMS))
 @pytest.mark.parametrize("head", [f"`{HEAD}`", HEAD, None])
-def test_940_c1_8_title_line_read_from_every_body_form(home, tmp_path, form, head):
+def test_c1_8_title_line_read_from_every_body_form(home, tmp_path, form, head):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     folder = holder.home  # `~` resolves to the Ctx's home
@@ -1504,7 +1505,7 @@ def test_940_c1_8_title_line_read_from_every_body_form(home, tmp_path, form, hea
     assert recorded == (HEAD if head else HEAD2)
 
 
-def test_940_c1_8_an_input_body_larger_than_a_body_files_cap_is_read_whole(home, tmp_path):
+def test_c1_8_an_input_body_larger_than_a_body_files_cap_is_read_whole(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
@@ -1526,7 +1527,7 @@ def test_940_c1_8_an_input_body_larger_than_a_body_files_cap_is_read_whole(home,
     "gh pr comment 116 --body-file D:/no/such/report.md",
     "gh pr comment 116 --body-file $UNKNOWN/report.md",
 ])
-def test_940_c1_8_an_unreadable_body_is_posted_unconfirmed(home, tmp_path, command):
+def test_c1_8_an_unreadable_body_is_posted_unconfirmed(home, tmp_path, command):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
@@ -1540,7 +1541,7 @@ def test_940_c1_8_an_unreadable_body_is_posted_unconfirmed(home, tmp_path, comma
     assert holder.remind(at("07:32:00")) is None
 
 
-def test_940_c1_8_heredoc_text_and_failed_posts_are_not_posts(home, tmp_path):
+def test_c1_8_heredoc_text_and_failed_posts_are_not_posts(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
@@ -1595,7 +1596,7 @@ KEEPS = {
 
 @pytest.mark.parametrize("case", sorted(KEEPS))
 @pytest.mark.parametrize("before", ["use", "proof"])
-def test_940_c1_9_same_head_calls_keep_the_owners_merge(home, tmp_path, case, before):
+def test_c1_9_same_head_calls_keep_the_owners_merge(home, tmp_path, case, before):
     holder = posted_holder(home, tmp_path, before)
     KEEPS[case](holder)
     for now in (at("07:10:00"), at("07:20:00")):
@@ -1604,7 +1605,7 @@ def test_940_c1_9_same_head_calls_keep_the_owners_merge(home, tmp_path, case, be
         assert holder.remind(now + 1) is None
 
 
-def test_940_c1_9_a_background_return_dated_before_the_post_keeps_it(home, tmp_path):
+def test_c1_9_a_background_return_dated_before_the_post_keeps_it(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.observe(at("06:41:57"), holder.stage("proof"), holder.launched("bp"),
@@ -1637,7 +1638,7 @@ ENDS = {
 
 
 @pytest.mark.parametrize("case", sorted(ENDS))
-def test_940_c1_9_a_new_head_another_stage_or_new_work_ends_it(home, tmp_path, case):
+def test_c1_9_a_new_head_another_stage_or_new_work_ends_it(home, tmp_path, case):
     holder = posted_holder(home, tmp_path)
     ENDS[case](holder)
     view = holder.tick(at("07:10:00"))
@@ -1647,7 +1648,7 @@ def test_940_c1_9_a_new_head_another_stage_or_new_work_ends_it(home, tmp_path, c
         assert holder.remind(at("07:10:02")) is None
 
 
-def test_940_c1_9_dispatch_for_another_change_leaves_this_changes_report(home, tmp_path):
+def test_c1_9_dispatch_for_another_change_leaves_this_changes_report(home, tmp_path):
     holder = posted_holder(home, tmp_path)
     other = (f"python C:/cache/lib/work.py run build --repo {DAEMON} --issue 96 "
              f"--root {holder.wt.as_posix()}")
@@ -1660,7 +1661,7 @@ def test_940_c1_9_dispatch_for_another_change_leaves_this_changes_report(home, t
     assert holder.remind(at("07:05:11")) is None
 
 
-def test_940_c1_9_without_at_head_the_reading_in_forces_head_is_recorded(home, tmp_path):
+def test_c1_9_without_at_head_the_reading_in_forces_head_is_recorded(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
@@ -1673,7 +1674,7 @@ def test_940_c1_9_without_at_head_the_reading_in_forces_head_is_recorded(home, t
     assert holder.tick(at("07:40:10"))["waiting_on"] == "holder"
 
 
-def test_940_c1_10_a_background_failure_or_silent_end(home, tmp_path):
+def test_c1_10_a_background_failure_or_silent_end(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.entrance(at("06:00:00"), {"stage": "waiting", "status": "waiting",
                                      "reason": "latest-check-run-pending"})
@@ -1695,7 +1696,7 @@ def test_940_c1_10_a_background_failure_or_silent_end(home, tmp_path):
     assert holder.tick(at("06:22:10"))["waiting_on"] == "reviewer"
 
 
-def test_940_k2_an_incomplete_or_stale_report_file_is_no_return(tmp_path):
+def test_k2_an_incomplete_or_stale_report_file_is_no_return(tmp_path):
     path = tmp_path / "run.out"
     report = json.dumps(RR_REPORT, indent=2)
     path.write_text(report[: len(report) // 2], encoding="utf-8")
@@ -1720,14 +1721,14 @@ def test_940_k2_an_incomplete_or_stale_report_file_is_no_return(tmp_path):
     ("python lib/work.py run proof --repo R/x --issue 1 2> {d}/err.out", None),
     ("python lib/work.py run proof --repo R/x --issue 1 > $NOPE/a.out", None),
 ])
-def test_940_k3_redirect_targets(tmp_path, command, expected):
+def test_k3_redirect_targets(tmp_path, command, expected):
     commands = core.Commands(core.Ctx(home=tmp_path, now=T0, environ={}),
                              command.format(d=tmp_path.as_posix()), None)
     found = commands.redirect()
     assert (found.name if found else None) == expected
 
 
-# --- D-976 row 2: the desktop app's session records ------------------------------------------
+# --- finding the desktop app's session records -----------------------------------------------
 
 def current_desktop(tmp_path: Path, source: str | None = "tool", title: str = "Start 888",
                     session: str = SID) -> dict:
@@ -1742,7 +1743,7 @@ def current_desktop(tmp_path: Path, source: str | None = "tool", title: str = "S
 
 
 @pytest.mark.parametrize("source,renames", [("tool", True), ("auto", True), ("user", False)])
-def test_940_c2_1_records_in_the_apps_current_place_are_found(home, tmp_path, source, renames):
+def test_c2_1_records_in_the_apps_current_place_are_found(home, tmp_path, source, renames):
     environ = current_desktop(tmp_path, source)
     title = allow_title("Start 888")
     core.observe(core.Ctx(home=home, now=T0, environ=environ), {
@@ -1763,7 +1764,7 @@ def test_940_c2_1_records_in_the_apps_current_place_are_found(home, tmp_path, so
     assert again["rename"] == {"label": "holder: build"}
 
 
-def test_940_c2_1_old_places_are_still_searched(home, tmp_path):
+def test_c2_1_old_places_are_still_searched(home, tmp_path):
     environ = desktop(tmp_path, "tool")
     environ["LOCALAPPDATA"] = str(tmp_path / "empty-local")
     core.observe(core.Ctx(home=home, now=T0, environ=environ), {
@@ -1772,7 +1773,7 @@ def test_940_c2_1_old_places_are_still_searched(home, tmp_path):
         "session_id": SID, "title": allow_title("Start 888")})["rename"] is not None
 
 
-def test_940_c2_2_no_record_anywhere_says_rename_off(home, tmp_path):
+def test_c2_2_no_record_anywhere_says_rename_off(home, tmp_path):
     environ = {"LOCALAPPDATA": str(tmp_path / "local"), "APPDATA": str(tmp_path / "roaming")}
     title = allow_title("Start 888")
     core.observe(core.Ctx(home=home, now=T0, environ=environ), {
@@ -1791,10 +1792,10 @@ def test_940_c2_2_no_record_anywhere_says_rename_off(home, tmp_path):
     assert later["rename"] is not None and later["view"]["rename_note"] is None
 
 
-# --- D-976 row 3: every repository's Steward ------------------------------------------------
+# --- every repository's Steward is left alone ------------------------------------------------
 
 @pytest.mark.parametrize("name", ["Daemon Steward", "Steward", " daemon steward "])
-def test_940_c3_1_a_steward_draws_nothing_and_writes_nothing(home, tmp_path, name):
+def test_c3_1_a_steward_draws_nothing_and_writes_nothing(home, tmp_path, name):
     before = tree_files(home)
     assert bind(home, title=allow_title(name, "user")) == {"bound": False}
     holder_root = tmp_path / "holder"
@@ -1812,7 +1813,7 @@ def test_940_c3_1_a_steward_draws_nothing_and_writes_nothing(home, tmp_path, nam
     assert after == before
 
 
-def test_940_c3_1_an_unreadable_title_falls_back_to_the_desktop_record(home, tmp_path):
+def test_c3_1_an_unreadable_title_falls_back_to_the_desktop_record(home, tmp_path):
     environ = current_desktop(tmp_path, "user", title="Daemon Steward")
     answer = core.observe(core.Ctx(home=home, now=T0, environ=environ), {
         "session_id": SID, "command": RUN_BUILD, "output": "",
@@ -1822,7 +1823,7 @@ def test_940_c3_1_an_unreadable_title_falls_back_to_the_desktop_record(home, tmp
     assert not core.session_path(ctx_at(home, T0), SID).exists()
 
 
-def test_940_c3_1_a_session_retitled_steward_is_unbound_and_its_files_removed(home):
+def test_c3_1_a_session_retitled_steward_is_unbound_and_its_files_removed(home):
     assert bind(home)["bound"] is True
     tick(home, T0 + 1)
     assert core.session_path(ctx_at(home, T0), SID).exists()
@@ -1841,7 +1842,7 @@ def _bound_and_written(home):
     return ctx, status
 
 
-def test_940_c3_1_a_steward_met_at_a_stage_call_leaves_no_files(home):
+def test_c3_1_a_steward_met_at_a_stage_call_leaves_no_files(home):
     ctx, status = _bound_and_written(home)
     assert bind(home, now=T0 + 60, title=allow_title("Daemon Steward", "user")) == {
         "bound": False}
@@ -1850,7 +1851,7 @@ def test_940_c3_1_a_steward_met_at_a_stage_call_leaves_no_files(home):
     assert not status.exists()
 
 
-def test_940_c3_1_a_steward_met_at_any_other_call_leaves_no_files(home, tmp_path):
+def test_c3_1_a_steward_met_at_any_other_call_leaves_no_files(home, tmp_path):
     ctx, status = _bound_and_written(home)
     environ = current_desktop(tmp_path, "user", title="Daemon Steward")
     later = T0 + core.RECORD_SEARCH_SECONDS + 5  # past the miss the first tick recorded
@@ -1863,12 +1864,12 @@ def test_940_c3_1_a_steward_met_at_any_other_call_leaves_no_files(home, tmp_path
 
 
 @pytest.mark.parametrize("name", ["Start #95: M6 finals", "Steward review", "Stewardship"])
-def test_940_c3_1_other_titles_still_bind(home, name):
+def test_c3_1_other_titles_still_bind(home, name):
     assert not core.is_steward(name)
     assert bind(home, title=allow_title(name, "auto"))["bound"] is True
 
 
-# --- D-976 row 4: restart binds by the session's own id ------------------------------------
+# --- a restart binds only by the session's own id --------------------------------------------
 
 OTHER = "c5f2f6e3-0000-4000-8000-000000000000"
 
@@ -1878,7 +1879,7 @@ def registry(home: Path, *rows: dict) -> None:
         json.dumps({"schema_version": 1, "worktrees": list(rows)}), encoding="utf-8")
 
 
-def test_940_c4_1_a_worktree_whose_row_names_another_session_stays_empty(home, tmp_path):
+def test_c4_1_a_worktree_whose_row_names_another_session_stays_empty(home, tmp_path):
     root = tmp_path / "start-94-da5419"
     root.mkdir()
     registry(home, {"repository": DAEMON, "issue": 95, "active": True, "instalment": "stage-2",
@@ -1886,7 +1887,7 @@ def test_940_c4_1_a_worktree_whose_row_names_another_session_stays_empty(home, t
     assert core.recover(ctx_at(home, T0), OTHER, str(root)) is None
 
 
-def test_940_c4_2_a_restarted_holder_gets_its_own_change_back(home, tmp_path):
+def test_c4_2_a_restarted_holder_gets_its_own_change_back(home, tmp_path):
     root, elsewhere = tmp_path / "wt", tmp_path / "elsewhere"
     root.mkdir()
     elsewhere.mkdir()
@@ -1909,7 +1910,7 @@ def test_940_c4_2_a_restarted_holder_gets_its_own_change_back(home, tmp_path):
         "bound"] is True
 
 
-# --- D-976 row 5: the installer across checkouts -------------------------------------------
+# --- the installer across several checkouts --------------------------------------------------
 
 class FakeClaude(FakeTools):
     """The CLI's local-scope effects on the checkout's local file, as the real CLI makes them."""
@@ -1949,7 +1950,7 @@ def removes(tools: FakeTools) -> int:
     return sum(argv[1:4] == ["plugin", "marketplace", "remove"] for argv in tools.claude)
 
 
-def test_940_c5_1_the_shared_marketplace_stays_until_the_last_checkout(tmp_path, records):
+def test_c5_1_the_shared_marketplace_stays_until_the_last_checkout(tmp_path, records):
     first, second = tmp_path / "a", tmp_path / "b"
     for root in (first, second):
         (root / ".claude").mkdir(parents=True)
@@ -1967,7 +1968,7 @@ def test_940_c5_1_the_shared_marketplace_stays_until_the_last_checkout(tmp_path,
 
 
 @pytest.mark.parametrize("how", ["gone", "disabled"])
-def test_940_c5_1_a_dead_record_does_not_keep_the_marketplace(tmp_path, records, how):
+def test_c5_1_a_dead_record_does_not_keep_the_marketplace(tmp_path, records, how):
     first, second = tmp_path / "a", tmp_path / "b"
     for root in (first, second):
         (root / ".claude").mkdir(parents=True)
@@ -1983,7 +1984,7 @@ def test_940_c5_1_a_dead_record_does_not_keep_the_marketplace(tmp_path, records,
     assert removes(tools) == 1
 
 
-def test_940_c5_2_an_absent_local_file_is_absent_again(tmp_path, records):
+def test_c5_2_an_absent_local_file_is_absent_again(tmp_path, records):
     root = tmp_path / "a"
     root.mkdir()
     tools = FakeClaude()
@@ -1993,7 +1994,7 @@ def test_940_c5_2_an_absent_local_file_is_absent_again(tmp_path, records):
     assert not (root / ".claude" / "settings.local.json").exists()
 
 
-def test_940_c5_2_a_present_local_file_comes_back_byte_for_byte(tmp_path, records):
+def test_c5_2_a_present_local_file_comes_back_byte_for_byte(tmp_path, records):
     root = tmp_path / "a"
     (root / ".claude").mkdir(parents=True)
     original = b'{\r\n  "permissions": {"allow": ["Bash(ls)"]},\r\n  "env": {"X": "1"}\r\n}'
@@ -2006,7 +2007,7 @@ def test_940_c5_2_a_present_local_file_comes_back_byte_for_byte(tmp_path, record
     assert path.read_bytes() == original
 
 
-def test_940_c5_2_a_file_changed_after_the_install_keeps_the_change(tmp_path, records):
+def test_c5_2_a_file_changed_after_the_install_keeps_the_change(tmp_path, records):
     root = tmp_path / "a"
     (root / ".claude").mkdir(parents=True)
     path = root / ".claude" / "settings.local.json"
@@ -2021,7 +2022,7 @@ def test_940_c5_2_a_file_changed_after_the_install_keeps_the_change(tmp_path, re
     assert any("byte for byte" in message for message in messages)
 
 
-def test_940_c5_2_a_legacy_record_leaves_no_empty_containers(tmp_path, records):
+def test_c5_2_a_legacy_record_leaves_no_empty_containers(tmp_path, records):
     root = tmp_path / "a"
     (root / ".claude").mkdir(parents=True)
     path = root / ".claude" / "settings.local.json"
@@ -2033,7 +2034,7 @@ def test_940_c5_2_a_legacy_record_leaves_no_empty_containers(tmp_path, records):
     assert json.loads(path.read_text()) == {"permissions": {"allow": []}}
 
 
-def test_940_c5_2_an_unparseable_file_or_snapshot_says_so(tmp_path, records):
+def test_c5_2_an_unparseable_file_or_snapshot_says_so(tmp_path, records):
     root = tmp_path / "a"
     (root / ".claude").mkdir(parents=True)
     path = root / ".claude" / "settings.local.json"
@@ -2057,7 +2058,7 @@ def test_940_c5_2_an_unparseable_file_or_snapshot_says_so(tmp_path, records):
         assert json.loads(records.read_text())[str(root)]["local_before"] == snapshot
 
 
-def test_940_c5_3_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):
+def test_c5_3_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):
     local, roaming = tmp_path / "local", tmp_path / "roaming"
     for base, version in ((local / "Claude-Data" / "claude_x" / "claude-code", "2.1.317"),
                           (local / "Claude-Data" / "claude_x" / "claude-code", "2.1.309"),
@@ -2073,9 +2074,9 @@ def test_940_c5_3_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):
     assert installer.newest_desktop_claude({}) is None
 
 
-# --- D-976 row 6: the trial checklist -------------------------------------------------------
+# --- the trial checklist's checks and their split --------------------------------------------
 
-def test_940_c6_1_the_checklist_carries_the_new_checks_and_their_split():
+def test_c6_1_the_checklist_carries_the_new_checks_and_their_split():
     text = README.read_text(encoding="utf-8")
     checklist = text[text.index("## Trial checklist"):]
     for number in range(1, 14):

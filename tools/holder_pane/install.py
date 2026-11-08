@@ -135,14 +135,13 @@ def _remember(checkout: Path, added_opt_in: bool, local_before: bytes | None) ->
     path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
-def _forget(checkout: Path) -> dict[str, Any] | None:
-    """Drop the checkout's install record; uninstall restores from what it held."""
+def _forget(checkout: Path) -> None:
+    """Drop the checkout's install record, once uninstall has restored from it."""
     records = _install_records()
-    record = records.pop(str(checkout), None)
+    records.pop(str(checkout), None)
     path = _install_record_path()
     if path.exists():
         path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
-    return record if isinstance(record, dict) else None
 
 
 def _still_installed(checkout: Path) -> list[Path]:
