@@ -541,3 +541,33 @@ def test_sibling_copy_conflict_cannot_hide_selected_dispatch(stopped_build, monk
     assert not decision.dispatch and "conflicting copied requests" in decision.detail
     row[3].pop("recovery_error")
     assert recovery.latest_stopped(fixture, "build") is None
+
+
+def test_an_interrupted_cloud_build_resumes_its_session_through_the_entrance(stopped_build, monkeypatch):
+    import subprocess
+    fixture, root, request, run, save = stopped_build
+    session = "cse_STOPPED01"
+    request.update(route="cloud", transport="claude-cloud-routine",
+                   requested={"vendor": "claude", "session_id": None, "continuity": "fresh"},
+                   cloud={"session_id": session, "session_url": f"https://claude.ai/code/{session}"})
+    run.update(actual_vendor="claude", session_identity={"session_id": session}, lifecycle="completed",
+               completed_at="2026-10-03T11:00:00Z", outcome="interrupted", interruption_cause="ceiling",
+               attempts=[{"vendor": "claude", "launched": True, "elapsed_seconds": 1000,
+                          "cloud": {"session_id": session}}])
+    save()
+    assert recovery.stopped_source(fixture, "build").session == session
+    commands = []
+    original = subprocess.run
+    def capture(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return original(command, *args, **kwargs)
+    monkeypatch.setattr(work.subprocess, "run", capture)
+    monkeypatch.setattr(work, "_recipient_run", capture, raising=False)
+    result = work.execute_stage(fixture, work.Decision("build", True, "resume", "holder-named-stage"),
+                                fixture.holder_root, None, "holder-session", codex_path=Path(sys.executable))
+    assert result == 0 and len(commands) == 1
+    command = commands[0]
+    assert command[command.index("--resume") + 1] == session
+    assert command[command.index("--vendor") + 1] == "claude"

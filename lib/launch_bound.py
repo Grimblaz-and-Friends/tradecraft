@@ -299,6 +299,8 @@ def coverage_plan(*, root: Path, home: Path, env: dict[str, str], launcher_plugi
     tradecraft = home / ".tradecraft"
     plan = [
         {"item": "switch", "path": str(tradecraft / "implementer-vendor"), "method": "sha256"},
+        # The cloud route's machine switch; a local build that edits it is caught.
+        {"item": "cloud-switch", "path": str(tradecraft / "cloud-builds.json"), "method": "sha256"},
         {"item": "rulings", "path": str(tradecraft / "model-rulings.json"), "method": "sha256"},
         {"item": "claude-settings", "path": str(config / "settings.json"), "method": "sha256"},
         {"item": "claude-md", "path": str(config / "CLAUDE.md"), "method": "sha256"},
@@ -686,6 +688,20 @@ def unrecorded(reason: str) -> dict[str, object]:
             "findings": [{"id": "unrecorded", "item": "comparison",
                           "path": "", "change": "unrecorded", "reason": reason}],
             "attributed": []}
+
+
+CLOUD_NOT_RUN_REASON = "not run: a cloud builder runs on a remote machine and cannot reach this one"
+
+
+def cloud_not_run() -> dict[str, object]:
+    """A cloud builder cannot reach this machine, so the comparison is not run.
+
+    Design: lib/DESIGN.md#the-cloud-route
+    """
+    return {"schema_version": SCHEMA_VERSION, "status": "cloud-not-run", "before_at": None,
+            "after_at": now(), "elapsed_seconds": 0.0, "coverage": [], "findings": [],
+            "attributed": [],
+            "reason": CLOUD_NOT_RUN_REASON}
 
 
 def not_launched() -> dict[str, object]:

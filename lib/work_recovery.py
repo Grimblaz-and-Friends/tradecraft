@@ -188,7 +188,7 @@ def stopped_source(state, stage):
         session = lifecycle.recovery_session(request, run)
     except ValueError as exc:
         raise work.WorkError(f"stopped bundle {path}: {exc}") from exc
-    if not work.SESSION_ID.fullmatch(session):
+    if not work._session_shaped(session, request):
         raise work.WorkError(f"stopped bundle {path}: invalid session identity")
     validate_target(state, stage, request, path)
     return work.ResumeSource(order, path, request, run, session)
