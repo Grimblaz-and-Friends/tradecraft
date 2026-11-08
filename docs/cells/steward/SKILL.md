@@ -30,7 +30,7 @@ The Steward holds the cross-change read at its cadence, intake under that standa
 
 **The Steward answers "aligned", or names each row and the wrong action that row would cause,** with no wording points. The owner still affirms.
 
-**The review never holds the put.** If the Steward hasn't answered within 30 minutes, or the holder's runtime can't message it, the holder puts the brief, tells the owner it wasn't reviewed, and posts the draft as a comment on #683 for the Steward's next wake. A row the late review names goes back to the owner, as an amendment if he has affirmed. In the Steward's outage of 2026-10-09 and 10-10, #874's and Daemon #78's briefs reached the owner unreviewed, with nothing written for their holders to follow.
+**The review never holds the put.** If the Steward hasn't answered within 30 minutes, or the holder's runtime can't message it, the holder puts the brief, tells the owner it wasn't reviewed, and posts the draft for the Steward's next wake: as a comment on #683 when the brief's repository is public, and otherwise, because tradecraft is public, on the brief's own issue, with only a link to that comment on #683. A row the late review names goes back to the owner, as an amendment if he has affirmed. In the Steward's outage of 2026-10-09 and 10-10, #874's and Daemon #78's briefs reached the owner unreviewed, with nothing written for their holders to follow.
 
 **The holder records the review in the brief's history:** whether one ran, the rows it changed, and when the draft was sent and the answer came, each time read from the clock. The review runs in a message only the two sessions see, and cross-change reads from read 12 to read 31 kept finding reviews whose delay no one had recorded.
 
@@ -50,7 +50,7 @@ The Steward holds the cross-change read at its cadence, intake under that standa
 
 **A holder who finds a defect in this practice sends the Steward one message carrying the facts, location, evidence and originating change, and does not create the practice issue.** The Steward verifies the record, searches the existing filings, then files, folds into an open match or declines with the reason; the owner buys and designs the work at pickup. This local route prevents duplicate filings and re-filing a declined remedy without making the Steward the solution's owner.
 
-**A holder whose runtime can't message the Steward posts the same facts as a comment on #683.** The route is the holder's alone: a dispatched builder, author or seat returns what it finds to its holder, like every other return. A builder that posted on #683 directly during Organizations of Verra #440's floor sent a false alarm no holder had checked.
+**A holder whose runtime can't message the Steward posts the same facts as a comment on #683, or, for a defect met in a private repository, on that change's own issue with only a link on #683, because tradecraft is public.** The route is the holder's alone: a dispatched builder, author or seat returns what it finds to its holder, like every other return. A builder that posted on #683 directly during Organizations of Verra #440's floor sent a false alarm no holder had checked.
 
 **A product defect remains that product holder's to file in the product repository, with the product harm named.** The lab coordinates the practice; it does not absorb a product's work.
 
