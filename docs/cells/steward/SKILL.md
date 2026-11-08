@@ -20,6 +20,8 @@ The `engagement` cell owns the cross-change read and cross-session intake.
 
 The Steward holds the cross-change read at its cadence, intake under that standard, the incidents and defects those reads produce, the review of lab-related draft briefs before they reach the owner, questions the record or a precedent can answer, the rulings prepared for the owner and the standing page. It never holds a change, product or practice; every change has its own holder session.
 
+**After each plugin update, the Steward's notice to in-flight holders names every holder still on an older version.** For a holder with cloud-set-up repositories that reload is required, not optional: its new cloud sessions are refused until it reloads, because a session cannot reload itself and the cloud route has no local fallback. Its revisions and repairs still go into their own sessions on the version those sessions loaded, and each record shows the loaded commit beside the installed one.
+
 **After affirmation, the Steward answers a holder's question from the record or precedent before it reaches the owner.** It escalates only when the answer changes an affirmed row or the expected saving exceeds the cost of asking, through the existing argued ask with that cost stated; otherwise it returns the answer and its source to the holder for the work record.
 
 ## Reviewing a draft brief

@@ -2,7 +2,7 @@
 
 **Loaded when** the entrance holds a change on `launch-findings-unaccounted`, its report's `launch_findings` names a held bundle, or the holder quotes a Claude launch's write bound in a release report.
 
-A Claude author or builder can write, and so can a use consumer given a shell. Exactly these launches are bound: Claude author and builder launches, and the Claude use consumer given a shell. Other Claude seats given a shell are not compared, and Codex launches are unchanged. Its file-editing tools (Write, Edit, MultiEdit and NotebookEdit) are confined by a launch-owned check on each target path: a target outside its tree and its own session scratchpad is refused, names the path and fails the turn. Memory is switched off in its process environment, and a file-tool write to the memory store is refused regardless, because the store lies outside both. Shell commands have no OS fence on this route. So each of those launches also compares what it must not touch before and after its run, because a shell write lands and can only be found afterwards.
+A Claude author or builder can write, and so can a use consumer given a shell. Exactly these launches are bound: local Claude author and builder launches, and the Claude use consumer given a shell. Other Claude seats given a shell are not compared, and Codex launches are unchanged. Its file-editing tools (Write, Edit, MultiEdit and NotebookEdit) are confined by a launch-owned check on each target path: a target outside its tree and its own session scratchpad is refused, names the path and fails the turn. Memory is switched off in its process environment, and a file-tool write to the memory store is refused regardless, because the store lies outside both. Shell commands have no OS fence on this route. So each of those launches also compares what it must not touch before and after its run, because a shell write lands and can only be found afterwards.
 
 ## What the comparison covers
 
@@ -15,9 +15,13 @@ A checkout's comparison leaves out its `.git` and stops at any nested worktree o
 
 The request's `write_bound` states what applied: the guarded tools and allowed paths, the scratchpad form, the guard's self-test, the memory request and fallback, the planned coverage, and `shell: no OS fence`. The run record's `launch_comparison` carries each item's status and every finding with its `id`; an author's or builder's run record also carries `write_guard` (refusals, calls completed with no guard decision, and calls the runtime rejected before they ran). Quote that bound in the release report.
 
+**A cloud build is not compared.** A cloud builder runs on a remote machine and cannot reach this one, so its run record's comparison reads `cloud-not-run` with that reason, a clear status that holds nothing; a local build still runs its comparison. The work cell's cloud-builds reference owns the route.
+
 ## The hold
 
 Any bundle for this change whose comparison has findings, or whose request has a write-bound baseline but whose stopped launch left no comparison (`unrecorded`), holds every next stage, the holder-named `run <stage>` included. A launch still running owes no account: its report entry reads `running`, because its comparison is written when it stops, and the live-launch routing governs it meanwhile. The run itself is untouched: a finding never fails or discards it.
+
+**A failed cloud attempt check holds the same way.** A cloud attempt whose change-branch check, `[skip ci]` check, practice-check record, `environment` check, permission-mode check or local-tree check failed carries a `cloud-check:<name>` finding, and its account names that id with the `cloud-check` party, whose basis names the check and what the holder verified, except the local-tree check: only the local tree containing the returned branch tip releases it, never an account, because the next stage builds from that tree. The report is still kept and posted.
 
 The hold releases when a trusted `launch-account` marker for that bundle's dispatch, posted after its findings exist, names exactly its finding ids (the `launch-account` contract in `markers.md`). An account posted before the run completed, or for an unrecorded comparison before the launch began, counts for nothing. Name each finding's party by what made the change, from what you know, never by default:
 
