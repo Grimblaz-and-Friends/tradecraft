@@ -39,6 +39,7 @@ installer = _load("holder_pane_install", PANE / "install.py")
 REPO_NAME = "Grimblaz-and-Friends/tradecraft"
 SID = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000.0
+ARROW = chr(0x2192)  # built at runtime so the source stays ASCII
 
 
 class Entrance:
@@ -719,28 +720,44 @@ def seed_pull_request(home, number=900, state="OPEN", merged=False):
     core._write_json(path, change)
 
 
-def test_c5_4_release_report_posted_waits_on_the_owner(home):
+def shown(target: int) -> str:
+    """The comment URL a successful post prints (`gh pr comment`, or `gh api --jq .html_url`)."""
+    return f"https://github.com/o/r/pull/{target}#issuecomment-6712"
+
+
+def report_body(tmp_path: Path, issue: int = 888, pr: int = 900, head: str | None = None,
+                name: str = "r.md") -> Path:
+    path = tmp_path / name
+    tail = f" at head `{head}`" if head else ""
+    path.write_text(f"**Release report: #{issue} {ARROW} PR #{pr}**{tail}\n\nBody.\n",
+                    encoding="utf-8")
+    return path
+
+
+def test_c5_4_release_report_posted_waits_on_the_owner(home, tmp_path):
     seed_pull_request(home, 900)
+    body = report_body(tmp_path)
     command = f"python lib/work.py run release-report --repo {REPO_NAME} --issue 888 --root D:/r"
     bind(home, command=command, output=RELEASE_REPORT_OUTPUT)
-    core.observe(ctx_at(home, T0 + 10), {"session_id": SID, "command": "gh pr comment 901 -F x",
-                                         "output": ""})
+    core.observe(ctx_at(home, T0 + 10), {"session_id": SID, "output": "",
+                                         "command": f"gh pr comment 901 -F {body.as_posix()}"})
     assert tick(home, T0 + 11)["view"]["waiting_on"] == "holder"
-    core.observe(ctx_at(home, T0 + 12), {"session_id": SID,
-                                         "command": "gh pr comment 900 --body-file r.md",
-                                         "output": ""})
+    core.observe(ctx_at(home, T0 + 12), {"session_id": SID, "output": shown(900),
+                                         "command": f"gh pr comment 900 --body-file "
+                                                    f"{body.as_posix()}"})
     view = tick(home, T0 + 13)["view"]
     assert view["waiting_on"] == "owner" and view["next_step"] == "merge"
     assert view["label"] == "waiting on you"
 
 
-def test_c5_4_release_report_handoff_with_the_pr_unknown_takes_the_named_pr(home):
+def test_c5_4_release_report_handoff_with_the_pr_unknown_takes_the_named_pr(home, tmp_path):
     # The real report carries no PR number (thread 4255043360): with none cached
     # either, the holder's own `gh pr comment <n>` names it.
+    body = report_body(tmp_path)
     command = f"python lib/work.py run release-report --repo {REPO_NAME} --issue 888 --root D:/r"
     bind(home, command=command, output=RELEASE_REPORT_OUTPUT)
-    core.observe(ctx_at(home, T0 + 1), {"session_id": SID, "output": "",
-                                        "command": "gh pr comment 900 --body-file r.md"})
+    core.observe(ctx_at(home, T0 + 1), {"session_id": SID, "output": shown(900),
+                                        "command": f"gh pr comment 900 --body-file {body}"})
     view = tick(home, T0 + 2)["view"]
     assert view["waiting_on"] == "owner" and view["next_step"] == "merge"
 
@@ -1116,3 +1133,1224 @@ def test_core_runs_as_a_script(home):
         capture_output=True, env={**os.environ, "HOME": str(home), "USERPROFILE": str(home)})
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout)["waiting_on"] == "ci"
+
+
+# --- the holder's own steps: background stages, posts and the release report -----------------
+#
+# Replays of a real holder's recorded calls: stages run in the background with their output
+# redirected, a release report and use markers posted from files, and catch-up run seconds
+# after a post. Fixtures are synthesized in the recorded shapes (command strings, minimal
+# reports with stage, status, reason, head and `next`, and title-line body files); nothing is
+# copied from the recorded output.
+
+from datetime import datetime  # noqa: E402
+
+DAEMON = "Grimblaz-and-Friends/Daemon"
+HOLDER = "ea06bae1-665b-4ae3-a362-8b97ccd26630"
+HEAD = "f53375268c52d70680370be0dba89b7f856e11fe"
+HEAD2 = "0123456789abcdef0123456789abcdef01234567"
+
+
+def at(clock: str, day: int = 6) -> float:
+    return datetime.fromisoformat(f"2026-11-{day:02d}T{clock}+00:00").timestamp()
+
+
+class Forbidden:
+    """A runner for every path but `read()`: working out the holder's steps must start no
+    subprocess, so nothing new reaches GitHub or a model."""
+
+    def __call__(self, argv, **kwargs):
+        raise AssertionError(f"no subprocess outside read(): {argv}")
+
+
+class Holder:
+    """A holder session that runs stages in the background and posts from files, driven
+    through observe, tick and remind at the times its calls were made."""
+
+    def __init__(self, home: Path, tmp_path: Path, session: str = HOLDER):
+        self.home, self.session = home, session
+        self.wt = tmp_path / "wt"
+        self.scratch = tmp_path / "scratch"
+        self.tasks = tmp_path / "tasks"
+        for folder in (self.wt, self.scratch / "inst1", self.tasks):
+            folder.mkdir(parents=True, exist_ok=True)
+        self.statuses: list[dict] = []
+        core.bind(self.ctx(at("00:00:00")), session, {
+            "repository": DAEMON, "issue": 95, "root": str(self.wt),
+            "entrance": "C:/cache/lib/work.py"}, {"readable": False})
+
+    def ctx(self, now: float):
+        return core.Ctx(home=self.home, now=now, runner=Forbidden(), environ={},
+                        liveness=lambda identity: "unresolved")
+
+    def observe(self, now: float, command: str, output: str = "", *, started: float | None = None,
+                **extra):
+        return core.observe(self.ctx(now), {
+            "session_id": self.session, "command": command, "output": output,
+            "started_at": started if started is not None else now - 1, "ended_at": now,
+            "title": allow_title("Start #95", "auto"), "root": str(self.wt), **extra})
+
+    def tick(self, now: float) -> dict:
+        answer = core.tick(self.ctx(now), {"session_id": self.session,
+                                           "title": allow_title("Start #95", "auto")})
+        key = core.change_key(DAEMON, 95)
+        self.statuses.append(json.loads(core.status_path(self.ctx(now), key).read_text()))
+        return answer["view"]
+
+    def remind(self, now: float, tasks=None) -> str | None:
+        payload = {"session_id": self.session, "stop_hook_active": False}
+        if tasks is not None:
+            payload["background_tasks"] = tasks
+        return core.remind(self.ctx(now), payload)["block"]
+
+    def stage(self, stage: str, *, redirect: bool = True) -> str:
+        tail = (f" > {self.scratch.as_posix()}/inst1/run-{stage}.out 2>&1; echo \"exit=$?\"; "
+                f"date -u +%H:%M:%S") if redirect else ""
+        return (f"cd {self.wt.as_posix()} && date -u +%H:%M:%S && python C:/cache/lib/work.py "
+                f"run {stage} --repo {DAEMON} --issue 95 --root {self.wt.as_posix()} "
+                f"--holder-session-id {self.session}{tail}")
+
+    def launched(self, task: str) -> str:
+        return (f"Command running in background with ID: {task}. Output is being written to: "
+                f"{self.tasks}\\{task}.output. You will be notified when it completes.")
+
+    def write_report(self, stage: str, report: dict, when: float) -> Path:
+        path = self.scratch / "inst1" / f"run-{stage}.out"
+        path.write_text("starting\n" + json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        os.utime(path, (when, when))
+        return path
+
+    def entrance(self, read_at: float, decision: dict) -> None:
+        key = core.change_key(DAEMON, 95)
+        path = core.change_path(self.ctx(read_at), key)
+        change = core.load_change(self.ctx(read_at), key)
+        change["reading"] = core.reading_from_decision(decision, "entrance", read_at,
+                                                       change.get("pull_request"))
+        core._write_json(path, change)
+
+    def pull_request(self, number: int = 116, merged: bool = False) -> None:
+        key = core.change_key(DAEMON, 95)
+        path = core.change_path(self.ctx(0), key)
+        change = core.load_change(self.ctx(0), key)
+        change["pull_request"] = {"number": number, "state": "MERGED" if merged else "OPEN",
+                                  "merged": merged}
+        core._write_json(path, change)
+
+    def post(self, now: float, body: Path, issue: int = 116) -> dict:
+        return self.observe(now, f"cd {self.wt.as_posix()} && gh api --method POST repos/{DAEMON}/"
+                                 f"issues/{issue}/comments -F body=@{body.as_posix()} --jq "
+                                 f"'\"\\(.id) \\(.created_at) \\(.html_url)\"'",
+                            f"6712 2026-11-06T06:58:33Z {shown(issue)}")
+
+    def use_return(self, now: float) -> None:
+        write_bundle(self.home, f"use-{int(now)}", stage="use", launched=now,
+                     lifecycle="completed", work=f"{DAEMON}#95", dispatch_id=f"u{int(now)}")
+        self.observe(now, self.stage("use", redirect=False), "", started=now - 2)
+
+
+def posted_head(holder: Holder) -> str | None:
+    """The head recorded with the session's one posted release report."""
+    reports = core.load_session(holder.ctx(0), HOLDER)["release_reports_posted"]
+    (record,) = reports.values()
+    return record["head"]
+
+
+def title_file(holder: Holder, name: str = "release-report.md", head: str | None = HEAD,
+               issue: int = 95, pr: int = 116) -> Path:
+    path = holder.scratch / "inst1" / name
+    tail = f" at head `{head}`" if head else ""
+    path.write_text(f"**Release report: #{issue} {ARROW} PR #{pr}**{tail}\n\n## What changed\n",
+                    encoding="utf-8")
+    return path
+
+
+PROOF_REPORT = {"schema_version": 1, "work": f"{DAEMON}#95", "stage": "proof",
+                "status": "holder-owned", "head": HEAD, "comment": {"id": 1}}
+RR_REPORT = {"schema_version": 1, "work": f"{DAEMON}#95", "stage": "release-report",
+             "status": "holder-owned", "reason": "holder-named-stage",
+             "required_gate": {"verdict": "green", "head": HEAD}}
+
+
+def rr_decision(head: str | None = HEAD, status: str = "runnable") -> dict:
+    gate = {"verdict": "green", "head": head} if head else {"verdict": "green"}
+    return {"stage": "release-report", "status": status,
+            "reason": "all-evidence-complete-release-report-ready", "required_gate": gate}
+
+
+def test_background_stages_and_a_file_posted_report_wait_on_the_owner(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.use_return(at("06:30:00"))
+    # Proof in the background, its output redirected to a file.
+    holder.observe(at("06:41:57"), holder.stage("proof"), holder.launched("bproof"),
+                   started=at("06:41:56"), background=True)
+    view = holder.tick(at("06:42:30"))
+    assert view["label"] == "proof running" and view["running"] is not None
+    assert holder.remind(at("06:42:38")) is None
+    # The entrance read that started after the launch shows proof as the holder's.
+    holder.entrance(at("06:44:51"), {"stage": "proof", "status": "runnable", "reason": "x"})
+    holder.observe(at("06:49:20"), holder.stage("release-report"), holder.launched("brr"),
+                   started=at("06:49:19"), background=True)
+    holder.write_report("proof", PROOF_REPORT, at("06:49:05"))
+    assert holder.remind(at("06:49:56")) is None
+    holder.write_report("release-report", RR_REPORT, at("06:54:49"))
+    view = holder.tick(at("06:55:30"))
+    assert view["next_step"] == "post the release report" and view["waiting_on"] == "holder"
+    posted_from = len(holder.statuses)
+    holder.post(at("06:58:32"), title_file(holder))
+    for stop in (at("06:58:40"), at("07:30:00")):
+        view = holder.tick(stop)
+        assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+        assert holder.remind(stop) is None
+    for read_at in (at("07:55:49"), at("08:31:00"), at("21:00:00")):
+        holder.entrance(read_at, rr_decision())
+        view = holder.tick(read_at + 30)
+        assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+        assert holder.remind(read_at + 31) is None
+    holder.pull_request(116, merged=True)
+    assert holder.remind(at("21:53:26")) is None
+    assert holder.tick(at("21:53:30"))["waiting_on"] == "owner"
+    assert all(status["waiting_on"] == "owner" for status in holder.statuses[posted_from:])
+    holder.entrance(at("22:30:00"), {"stage": "terminal", "status": "terminal",
+                                     "reason": "issue-or-pull-request-terminal"})
+    assert holder.tick(at("22:30:30"))["final"] == "merged"
+
+
+@pytest.mark.parametrize("form", ["literal", "variable", "relative"])
+def test_foreground_report_posted_with_gh_pr_comment_body_file(home, tmp_path, form):
+    holder = Holder(home, tmp_path)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    assert holder.remind(at("06:50:10")) == "next: post the release report (yours)"
+    body = title_file(holder)
+    command = {
+        "literal": f"gh pr comment 116 --repo {DAEMON} --body-file {body.as_posix()}",
+        "variable": f"S={holder.scratch.as_posix()}; gh pr comment 116 --body-file $S/inst1/"
+                    f"release-report.md",
+        "relative": f"cd {holder.scratch.as_posix()} && gh pr comment 116 --body-file "
+                    f"inst1/release-report.md",
+    }[form]
+    holder.observe(at("06:58:32"), command, shown(116))
+    view = holder.tick(at("06:58:40"))
+    assert (view["waiting_on"], view["next_step"], view["label"]) == ("owner", "merge",
+                                                                      "waiting on you")
+    assert holder.remind(at("06:58:41")) is None
+
+
+@pytest.mark.parametrize("case", ["inline", "other-file", "other-issue", "other-pr"])
+def test_another_comment_leaves_the_report_the_holders(home, tmp_path, case):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    if case == "inline":
+        command = 'gh pr comment 116 --body "Thanks"'
+    elif case == "other-file":
+        other = holder.scratch / "note.md"
+        other.write_text("A note, not the report.\n", encoding="utf-8")
+        command = f"gh pr comment 116 --body-file {other.as_posix()}"
+    else:
+        body = title_file(holder, issue=94) if case == "other-issue" else title_file(holder, pr=117)
+        command = f"gh pr comment 116 --body-file {body.as_posix()}"
+    holder.observe(at("06:55:00"), command, "")
+    view = holder.tick(at("06:55:10"))
+    assert view["waiting_on"] == "holder" and view["posted"] is False
+    assert holder.remind(at("06:55:11")) == "next: post the release report (yours)"
+    assert holder.remind(at("06:55:12")) is None
+
+
+USE_NOTE_COMMAND = (
+    "S={scratch}; python - \"$S\" <<'PY'\n"
+    "import pathlib, sys\n"
+    "# gh pr comment 116 --body 'not a call: this is inside the heredoc'\n"
+    "pathlib.Path(sys.argv[1], 'use95a').mkdir(exist_ok=True)\n"
+    "PY\n"
+    "cd {wt} && gh api --method POST repos/" + DAEMON + "/issues/116/comments "
+    "-F body=@$S/use95a/use-note.md --jq '\"\\(.id) \\(.created_at) \\(.html_url)\"'")
+
+
+def marker_post(holder: Holder, now: float) -> None:
+    (holder.scratch / "use95a").mkdir(exist_ok=True)
+    (holder.scratch / "use95a" / "use-note.md").write_text(
+        "<!-- tradecraft:use:v1 -->\nThe use note.\n", encoding="utf-8")
+    command = USE_NOTE_COMMAND.format(scratch=holder.scratch.as_posix(), wt=holder.wt.as_posix())
+    holder.observe(now, command, "1 2026-11-06T04:25:58Z https://github.com/x")
+
+
+def test_a_posted_use_marker_is_not_reminded(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.use_return(at("04:20:00"))
+    marker_post(holder, at("04:25:57"))
+    view = holder.tick(at("04:26:00"))
+    assert view["label"] == "use posted, unconfirmed" and view["posted"] is True
+    assert view["next_step"].endswith("(posted, unconfirmed)")
+    assert holder.statuses[-1]["waiting_on"] != "holder"
+    assert holder.remind(at("04:26:01")) is None
+    # An entrance read after the post that still shows the step as the holder's restores it.
+    holder.entrance(at("05:00:00"), {"stage": "use", "status": "holder-owned",
+                                     "reason": "use-marker-missing"})
+    blocks = [holder.remind(at("05:01:00")), holder.remind(at("05:02:00"))]
+    assert [block for block in blocks if block] == ["next: run use (yours)"]
+
+
+def test_recorded_continuations_after_a_marker_post(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.use_return(at("04:20:00"))
+    marker_post(holder, at("04:25:57"))
+    catch_up = {"schema_version": 1, "stage": "catch-up", "dispatch": False,
+                "status": "holder-owned", "head": HEAD,
+                "next": {"stage": "waiting", "status": "waiting",
+                         "reason": "latest-check-run-pending"}}
+    holder.write_report("catch-up", catch_up, at("04:26:30"))
+    holder.observe(at("04:26:40"), holder.stage("catch-up"), "", started=at("04:26:10"))
+    view = holder.tick(at("04:27:00"))
+    assert view["waiting_on"] == "ci" and view["failure"] is None
+    assert holder.remind(at("04:28:46")) is None
+    holder.write_report("ready-reviewers", {"stage": "ready-reviewers",
+                                            "status": "holder-owned", "head": HEAD},
+                        at("05:28:30"))
+    holder.observe(at("05:28:40"), holder.stage("ready-reviewers"), "", started=at("05:28:17"))
+    view = holder.tick(at("05:28:50"))
+    assert view["waiting_on"] == "reviewer"
+    assert holder.remind(at("05:28:55")) is None
+
+
+def test_an_unposted_holder_step_is_still_reminded_once(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.entrance(at("06:00:00"), {"stage": "proof", "status": "runnable", "reason": "x"})
+    holder.observe(at("06:10:00"), 'gh pr comment 116 --body "Pushed the fix."', "")
+    view = holder.tick(at("06:10:05"))
+    assert view["waiting_on"] == "holder" and view["posted"] is False
+    blocks = [holder.remind(at("06:10:10")), holder.remind(at("06:11:00"))]
+    assert blocks == ["next: run proof (yours)", None]
+
+
+def test_the_shim_registers_no_prompt_submit_hook():
+    source = REGISTER.read_text(encoding="utf-8")
+    kinds = set(re.findall(r"\bon\('([a-zA-Z.]+)'", source))
+    assert kinds == {"session.start", "command.run", "tool.call", "turn.complete",
+                     "classic.Stop", "ui.render"}
+
+
+@pytest.mark.parametrize("stage", ["proof", "ready-reviewers", "release-report", "catch-up"])
+def test_no_reminder_while_running_ended_or_posted(home, tmp_path, stage):
+    holder = Holder(home, tmp_path)
+    holder.entrance(at("06:00:00"), {"stage": stage, "status": "runnable", "reason": "x"})
+    holder.observe(at("06:10:01"), holder.stage(stage), holder.launched("t1"),
+                   started=at("06:10:00"), background=True)
+    view = holder.tick(at("06:10:30"))
+    assert view["label"] == f"{stage} running"
+    assert holder.remind(at("06:11:00"), tasks=[{"id": "t1", "status": "running"}]) is None
+    assert holder.tick(at("06:11:30"))["label"] == f"{stage} running"
+    assert holder.remind(at("06:12:00"), tasks=[]) is None
+    view = holder.tick(at("06:12:30"))
+    assert view["status"] == "ended" and view["label"] == f"{stage} ended"
+    assert holder.remind(at("06:13:00")) is None
+    # A newer entrance reading ends it, and normal reminding resumes.
+    holder.entrance(at("06:40:00"), {"stage": stage, "status": "runnable", "reason": "x"})
+    assert holder.remind(at("06:41:00")) == f"next: run {stage} (yours)"
+
+
+def test_a_task_id_inside_a_longer_one_is_not_still_running(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.entrance(at("06:00:00"), {"stage": "proof", "status": "runnable", "reason": "x"})
+    holder.observe(at("06:10:01"), holder.stage("proof"), holder.launched("t1"),
+                   started=at("06:10:00"), background=True)
+    assert holder.remind(at("06:11:00"), tasks=[{"id": "t10", "status": "running"}]) is None
+    assert holder.tick(at("06:11:30"))["status"] == "ended"
+
+
+def test_posted_state_never_reminds(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    holder.observe(at("06:55:00"), "gh pr comment 116 --body-file /no/such/file.md", "")
+    assert holder.tick(at("06:55:05"))["posted"] is True
+    assert holder.remind(at("06:55:06")) is None
+
+
+BODY_FORMS = {
+    "inline": "gh pr comment 116 --body '{title}'",
+    "inline-double": 'gh pr comment 116 --body "{plain}"',
+    "heredoc-cat": "gh pr comment 116 --body \"$(cat <<'EOF'\n{title}\nmore\nEOF\n)\"",
+    "body-file-dash": "gh pr comment 116 --body-file - <<'EOF'\n{title}\nEOF",
+    "raw-field": "gh api repos/{repo}/issues/116/comments -f body='{title}'",
+    "field-file": "gh api repos/{repo}/issues/116/comments -F body=@{file}",
+    "input-file": "gh api repos/{repo}/issues/116/comments --input {json}",
+    "input-dash": "gh api repos/{repo}/issues/116/comments --input - <<'EOF'\n{json_text}\nEOF",
+    "var": "S={dir}; gh pr comment 116 --body-file $S/rr.md",
+    "braced-var": "S={dir}; gh pr comment 116 --body-file ${{S}}/rr.md",
+    "env-var": "$env:S = '{dir}'; gh pr comment 116 --body-file $env:S/rr.md",
+    "ps-var": "$S = '{dir}'; gh pr comment 116 --body-file $S/rr.md",
+    "unquoted-heredoc": "T='{plain}'; gh pr comment 116 --body-file - <<EOF\n$T\nEOF",
+    "tilde": "gh pr comment 116 --body-file ~/rr.md",
+    "relative": "cd {dir} && gh pr comment 116 --body-file rr.md",
+    "msys": "gh pr comment 116 --body-file {msys}",
+    "placeholders": "gh api repos/{{owner}}/{{repo}}/issues/116/comments -X POST -F body=@{file}",
+    "issue-comment": "gh issue comment 116 --repo {repo} --body-file {file}",
+    "url-target": "gh pr comment https://github.com/{repo}/pull/116 --body-file {file}",
+    "quoted-attached-body-file": 'R={file}; gh pr comment 116 --body-file="$R"',
+    "quoted-attached-body": 'gh pr comment 116 --body="{plain}"',
+    "quoted-attached-input": 'gh api repos/{repo}/issues/116/comments --input="{json}"',
+    "quoted-field-file": 'gh api repos/{repo}/issues/116/comments -F body=@"{file}"',
+}
+
+
+@pytest.mark.parametrize("form", sorted(BODY_FORMS))
+@pytest.mark.parametrize("head", [f"`{HEAD}`", HEAD, None])
+def test_title_line_read_from_every_body_form(home, tmp_path, form, head):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    folder = holder.home  # `~` resolves to the Ctx's home
+    title = f"**Release report: #95 {ARROW} PR #116**" + (f" at head {head}" if head else "")
+    body = folder / "rr.md"
+    body.write_text(title + "\n\nBody.\n", encoding="utf-8")
+    payload = folder / "rr.json"
+    payload.write_text(json.dumps({"body": title + "\n"}), encoding="utf-8")
+    posix = folder.as_posix()
+    msys = f"/{posix[0].lower()}{posix[2:]}/rr.md" if posix[1:2] == ":" else f"{posix}/rr.md"
+    command = BODY_FORMS[form].format(title=title, repo=DAEMON, file=body.as_posix(),
+                                      json=payload.as_posix(), json_text=json.dumps(
+                                          {"body": title}), dir=posix, msys=msys,
+                                      plain=title.replace("`", ""))
+    holder.entrance(at("06:00:00"), rr_decision(HEAD2))
+    holder.observe(at("06:58:32"), command, shown(116))
+    view = holder.tick(at("06:58:40"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge"), form
+    recorded = posted_head(holder)
+    assert recorded == (HEAD if head else HEAD2)
+
+
+def test_an_input_body_larger_than_a_body_files_cap_is_read_whole(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    title = f"**Release report: #95 {ARROW} PR #116** at head `{HEAD}`"
+    payload = holder.scratch / "rr.json"
+    payload.write_text(json.dumps({"body": title + "\n" + "x" * (core.BODY_LIMIT_BYTES * 2)}),
+                       encoding="utf-8")
+    holder.observe(at("06:58:32"), f"gh api repos/{DAEMON}/issues/116/comments --input "
+                                   f"{payload.as_posix()}", shown(116))
+    view = holder.tick(at("06:58:40"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+
+
+@pytest.mark.parametrize("command", [
+    'gh pr comment 116 --body-file "$(pwd)/x.md"',
+    'gh pr comment 116 --body "**Release report: #95 ' + ARROW + ' PR #116** at head `git rev-parse HEAD`"',
+    "gh api repos/" + DAEMON + "/issues/116/comments -F body=@-",
+    "gh pr comment 116 --body-file D:/no/such/report.md",
+    "gh pr comment 116 --body-file $UNKNOWN/report.md",
+])
+def test_an_unreadable_body_is_posted_unconfirmed(home, tmp_path, command):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    holder.observe(at("06:58:32"), command, "")
+    view = holder.tick(at("06:58:40"))
+    assert view["posted"] is True and view["label"] == "release-report posted, unconfirmed"
+    assert view["waiting_on"] == "unknown" and holder.remind(at("06:58:41")) is None
+    holder.entrance(at("07:30:00"), rr_decision())
+    assert holder.remind(at("07:31:00")) == "next: run release-report (yours)"
+    assert holder.remind(at("07:32:00")) is None
+
+
+def test_heredoc_text_and_failed_posts_are_not_posts(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    holder.observe(at("06:55:00"), "python - <<'PY'\nprint('gh pr comment 116 --body-file "
+                                   f"{body.as_posix()}')\nPY", "")
+    assert holder.tick(at("06:55:05"))["waiting_on"] == "holder"
+    holder.observe(at("06:56:00"), f"gh pr comment 116 --body-file {body.as_posix()}",
+                   "HTTP 502", is_error=True)
+    assert holder.tick(at("06:56:05"))["waiting_on"] == "holder"
+    holder.observe(at("06:57:00"), f"gh pr comment 116 --body-file {body.as_posix()}",
+                   "Exit code 1\nHTTP 502")
+    assert holder.tick(at("06:57:05"))["waiting_on"] == "holder"
+    # Another repository's pull request of the same number is no post to this change.
+    holder.observe(at("06:58:00"), f"gh pr comment 116 -R other/repo --body-file "
+                                   f"{body.as_posix()}", "")
+    assert holder.tick(at("06:58:05"))["waiting_on"] == "holder"
+
+
+def posted_holder(home, tmp_path, before: str = "use") -> Holder:
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    if before == "use":
+        holder.use_return(at("06:00:00"))
+    else:
+        holder.entrance(at("06:00:00"), {"stage": "proof", "status": "runnable", "reason": "x"})
+    holder.post(at("06:58:32"), title_file(holder))
+    view = holder.tick(at("06:58:40"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+    return holder
+
+
+KEEPS = {
+    "catch-up-refused": lambda h: h.observe(at("07:00:00"), h.stage("catch-up", redirect=False),
+                                            json.dumps({"stage": "catch-up", "status": "refused",
+                                                        "reason": "nothing-to-land"})),
+    "catch-up-next-same-head": lambda h: h.observe(
+        at("07:00:00"), h.stage("catch-up", redirect=False),
+        json.dumps({"stage": "catch-up", "status": "holder-owned", "head": HEAD,
+                    "next": rr_decision()})),
+    "release-report-rerun": lambda h: h.observe(
+        at("07:00:00"), h.stage("release-report", redirect=False), json.dumps(RR_REPORT)),
+    "release-report-rerun-background": lambda h: (
+        h.observe(at("07:00:00"), h.stage("release-report"), h.launched("b2"),
+                  background=True),
+        h.write_report("release-report", RR_REPORT, at("07:05:00"))),
+    "entrance-same-head": lambda h: h.entrance(at("07:00:00"), rr_decision()),
+    "entrance-unknown-head": lambda h: h.entrance(at("07:00:00"), rr_decision(None)),
+}
+
+
+@pytest.mark.parametrize("case", sorted(KEEPS))
+@pytest.mark.parametrize("before", ["use", "proof"])
+def test_same_head_calls_keep_the_owners_merge(home, tmp_path, case, before):
+    holder = posted_holder(home, tmp_path, before)
+    KEEPS[case](holder)
+    for now in (at("07:10:00"), at("07:20:00")):
+        view = holder.tick(now)
+        assert (view["waiting_on"], view["next_step"]) == ("owner", "merge"), case
+        assert holder.remind(now + 1) is None
+
+
+def test_a_background_return_dated_before_the_post_keeps_it(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:41:57"), holder.stage("proof"), holder.launched("bp"),
+                   started=at("06:41:56"), background=True)
+    holder.write_report("proof", {**PROOF_REPORT, "head": HEAD2}, at("06:49:05"))
+    holder.post(at("06:58:32"), title_file(holder))
+    view = holder.tick(at("06:59:00"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+    assert holder.remind(at("06:59:01")) is None
+
+
+ENDS = {
+    "entrance-proof": lambda h: h.entrance(at("07:00:00"), {"stage": "proof",
+                                                            "status": "runnable", "reason": "x"}),
+    "entrance-waiting": lambda h: h.entrance(at("07:00:00"), {
+        "stage": "waiting", "status": "waiting", "reason": "latest-check-run-pending"}),
+    "catch-up-lands": lambda h: h.observe(
+        at("07:00:00"), h.stage("catch-up", redirect=False),
+        json.dumps({"stage": "catch-up", "status": "holder-owned", "head": HEAD2,
+                    "next": rr_decision(HEAD2)})),
+    "entrance-new-head": lambda h: h.entrance(at("07:00:00"), rr_decision(HEAD2)),
+    "catch-up-same-head-next-waiting": lambda h: h.observe(
+        at("07:00:00"), h.stage("catch-up", redirect=False),
+        json.dumps({"stage": "catch-up", "status": "holder-owned", "head": HEAD,
+                    "next": {"stage": "waiting", "status": "waiting",
+                             "reason": "latest-check-run-pending"}})),
+    "build-launch": lambda h: h.observe(at("07:00:00"), h.stage("build", redirect=False),
+                                        "12345"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(ENDS))
+def test_a_new_head_another_stage_or_new_work_ends_it(home, tmp_path, case):
+    holder = posted_holder(home, tmp_path)
+    ENDS[case](holder)
+    view = holder.tick(at("07:10:00"))
+    assert (view["waiting_on"], view["next_step"]) != ("owner", "merge"), case
+    if case == "entrance-new-head":
+        assert holder.remind(at("07:10:01")) == "next: run release-report (yours)"
+        assert holder.remind(at("07:10:02")) is None
+
+
+def test_dispatch_for_another_change_leaves_this_changes_report(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    other = (f"python C:/cache/lib/work.py run build --repo {DAEMON} --issue 96 "
+             f"--root {holder.wt.as_posix()}")
+    holder.observe(at("07:00:00"), other, "12345")
+    assert holder.tick(at("07:00:10"))["next_step"] != "merge"  # the session now shows #96
+    holder.observe(at("07:05:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    view = holder.tick(at("07:05:10"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+    assert holder.remind(at("07:05:11")) is None
+
+
+def test_a_read_taken_while_a_background_stage_runs_ends_nothing(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.use_return(at("06:30:00"))
+    holder.observe(at("06:41:57"), holder.stage("proof"), holder.launched("bproof"),
+                   started=at("06:41:56"), background=True)
+    holder.entrance(at("06:44:51"), {"stage": "proof", "status": "runnable", "reason": "x"})
+    view = holder.tick(at("06:46:00"))
+    assert view["label"] == "proof running"
+    assert holder.remind(at("06:46:30")) is None
+    holder.write_report("proof", PROOF_REPORT, at("06:49:05"))
+    view = holder.tick(at("06:49:30"))
+    assert view["next_step"] == "read the entrance's next step (the proof is published)"
+    assert "run proof" not in (holder.remind(at("06:49:56")) or "")
+
+
+def test_a_report_counts_only_when_its_post_is_shown(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    failed = (f"cd {holder.wt.as_posix()} && gh api --method POST repos/{DAEMON}/issues/116/"
+              f"comments -F body=@{body.as_posix()}; echo \"exit=$?\"")
+    holder.observe(at("06:58:32"), failed, "HTTP 502: Bad Gateway\nexit=1")
+    view = holder.tick(at("06:58:40"))
+    assert view["posted"] is True and view["waiting_on"] == "unknown"
+    assert holder.remind(at("06:58:41")) is None
+    holder.entrance(at("07:30:00"), rr_decision())
+    assert holder.remind(at("07:31:00")) == "next: run release-report (yours)"
+
+
+def test_a_backgrounded_report_post_counts_once_its_output_shows_it(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    holder.observe(at("06:58:32"), f"gh pr comment 116 --body-file {body.as_posix()}",
+                   holder.launched("bpost"), background=True)
+    assert holder.tick(at("06:58:40"))["posted"] is True
+    (holder.tasks / "bpost.output").write_text(shown(116) + "\n", encoding="utf-8")
+    view = holder.tick(at("06:59:00"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+    assert holder.remind(at("06:59:01")) is None
+
+
+def test_a_refused_dispatch_leaves_the_posted_report(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    refused = {"stage": "floor", "status": "refused", "reason": "floor-command-missing",
+               "dispatch": False}
+    holder.observe(at("07:00:00"), holder.stage("floor", redirect=False), json.dumps(refused))
+    view = holder.tick(at("07:00:10"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+    assert holder.remind(at("07:00:11")) is None
+
+
+def test_reports_posted_for_two_changes_are_both_kept(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    other = (f"python C:/cache/lib/work.py run release-report --repo {DAEMON} --issue 96 "
+             f"--root {holder.wt.as_posix()}")
+    holder.observe(at("07:00:00"), other, json.dumps({**RR_REPORT, "work": f"{DAEMON}#96"}))
+    body = title_file(holder, name="rr96.md", issue=96, pr=117)
+    holder.observe(at("07:01:00"), f"gh api --method POST repos/{DAEMON}/issues/117/comments "
+                                   f"-F body=@{body.as_posix()}", shown(117))
+    assert holder.tick(at("07:01:10"))["next_step"] == "merge"
+    holder.observe(at("07:05:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    view = holder.tick(at("07:05:10"))
+    assert (view["issue"], view["waiting_on"], view["next_step"]) == (95, "owner", "merge")
+
+
+def test_a_failed_background_call_records_no_running_stage(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.entrance(at("06:00:00"), {"stage": "waiting", "status": "waiting",
+                                     "reason": "latest-check-run-pending"})
+    holder.observe(at("06:10:01"), holder.stage("proof"), "spawn failed",
+                   started=at("06:10:00"), background=True, is_error=True)
+    view = holder.tick(at("06:10:30"))
+    assert view["label"] != "proof running" and view["running"] is None
+    assert view["failure"].startswith("proof failed")
+
+
+def test_a_refusal_naming_another_stage_ends_the_posted_report(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    moved = {"stage": "catch-up", "status": "refused", "reason": "base-moved"}
+    holder.observe(at("07:00:00"), holder.stage("proof", redirect=False), json.dumps(moved))
+    assert holder.tick(at("07:00:10"))["next_step"] != "merge"
+
+
+def test_a_deleted_comment_ends_the_posted_report(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    holder.observe(at("07:00:00"), "gh pr comment 116 --delete-last --yes", "")
+    assert holder.tick(at("07:00:10"))["next_step"] != "merge"
+
+
+def test_with_the_pr_unknown_an_api_post_counts_on_the_pr_its_title_names(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    holder.post(at("06:58:32"), body, issue=117)
+    assert holder.tick(at("06:58:40"))["next_step"] != "merge"
+    holder.post(at("06:59:00"), body, issue=116)
+    assert holder.tick(at("06:59:10"))["next_step"] == "merge"
+
+
+def test_a_url_target_in_another_repository_is_no_post(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    holder.observe(at("06:58:32"), f"gh pr comment https://github.com/other/repo/pull/116 "
+                                   f"--body-file {body.as_posix()}", shown(116))
+    assert holder.tick(at("06:58:40"))["waiting_on"] == "holder"
+
+
+def test_with_the_pr_unknown_the_report_counts_only_on_the_pr_it_names(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    holder.observe(at("06:58:32"), f"gh pr comment 117 --body-file {body.as_posix()}",
+                   shown(117))
+    assert holder.tick(at("06:58:40"))["next_step"] != "merge"
+    holder.observe(at("06:59:00"), f"gh pr comment 116 --body-file {body.as_posix()}",
+                   shown(116))
+    assert holder.tick(at("06:59:10"))["next_step"] == "merge"
+
+
+def test_an_unquoted_heredoc_with_an_unknown_variable_is_unreadable(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    command = "gh pr comment 116 --body-file - <<EOF\n$NOPE\nEOF"
+    holder.observe(at("06:58:32"), command, shown(116))
+    assert holder.tick(at("06:58:40"))["posted"] is True
+
+
+def test_a_report_for_another_change_is_not_taken_up(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.observe(at("06:41:57"), holder.stage("proof"), holder.launched("bp"),
+                   started=at("06:41:56"), background=True)
+    holder.write_report("proof", {**PROOF_REPORT, "work": f"{DAEMON}#94"}, at("06:49:05"))
+    assert holder.tick(at("06:49:30"))["label"] == "proof running"
+
+
+def test_a_report_past_its_cap_is_no_report(tmp_path, monkeypatch):
+    path = tmp_path / "run.out"
+    path.write_text(json.dumps(RR_REPORT), encoding="utf-8")
+    os.utime(path, (T0, T0))
+    assert core.report_file(path, T0)[0] is not None
+    monkeypatch.setattr(core, "REPORT_LIMIT_BYTES", 40)
+    assert core.report_file(path, T0)[0] is None
+
+
+def test_without_at_head_the_reading_in_forces_head_is_recorded(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    holder.post(at("06:58:32"), title_file(holder, head=None))
+    assert posted_head(holder) == HEAD
+    holder.entrance(at("07:00:00"), rr_decision(HEAD[:7].upper()))
+    assert holder.tick(at("07:00:10"))["waiting_on"] == "owner"
+    holder.entrance(at("07:40:00"), rr_decision(HEAD2))
+    assert holder.tick(at("07:40:10"))["waiting_on"] == "holder"
+
+
+def test_a_background_failure_or_silent_end(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.entrance(at("06:00:00"), {"stage": "waiting", "status": "waiting",
+                                     "reason": "latest-check-run-pending"})
+    holder.observe(at("06:10:01"), holder.stage("proof"), holder.launched("t9"),
+                   started=at("06:10:00"), background=True)
+    out = holder.scratch / "inst1" / "run-proof.out"
+    out.write_text("work: GitHub request failed: 502\n", encoding="utf-8")
+    os.utime(out, (at("06:11:00"), at("06:11:00")))
+    assert holder.remind(at("06:12:00"), tasks=[]) is None
+    view = holder.tick(at("06:12:10"))
+    assert view["failure"] == f"proof failed {core.local_hhmm(at('06:12:00'))}"
+    # No `work:` line: ended, never a stale step; a report written later is still taken up.
+    holder.observe(at("06:20:01"), holder.stage("ready-reviewers"), holder.launched("t10"),
+                   started=at("06:20:00"), background=True)
+    assert holder.remind(at("06:21:00"), tasks=[]) is None
+    assert holder.tick(at("06:21:10"))["status"] == "ended"
+    holder.write_report("ready-reviewers", {"stage": "ready-reviewers",
+                                            "status": "holder-owned"}, at("06:22:00"))
+    assert holder.tick(at("06:22:10"))["waiting_on"] == "reviewer"
+
+
+def test_an_incomplete_or_stale_report_file_is_no_return(tmp_path):
+    path = tmp_path / "run.out"
+    report = json.dumps(RR_REPORT, indent=2)
+    path.write_text(report[: len(report) // 2], encoding="utf-8")
+    os.utime(path, (T0, T0))
+    assert core.report_file(path, T0)[0] is None
+    path.write_text("x\n" + report + "\n", encoding="utf-8")
+    os.utime(path, (T0, T0))
+    assert core.report_file(path, T0)[0]["stage"] == "release-report"
+    assert core.report_file(path, T0 + 60)[0] is None  # an earlier run's file
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("python lib/work.py run proof --repo R/x --issue 1 > {d}/a.out 2>&1", "a.out"),
+    ("python lib/work.py run proof --repo R/x --issue 1 >{d}/a.out", "a.out"),
+    ("python lib/work.py run proof --repo R/x --issue 1 >> {d}/a.out", "a.out"),
+    ("python lib/work.py run proof --repo R/x --issue 1 &> {d}/a.out", "a.out"),
+    ("python lib/work.py run proof --repo R/x --issue 1 *> {d}/a.out", "a.out"),
+    ("python lib/work.py run proof --repo R/x --issue 1 | tee -a {d}/a.out", "a.out"),
+    ("python lib/work.py run proof --repo R/x --issue 1 | Tee-Object -FilePath {d}/a.out",
+     "a.out"),
+    ("python lib/work.py run proof --repo R/x --issue 1 | Out-File {d}/a.out", "a.out"),
+    ("python lib/work.py run proof --repo R/x --issue 1 2> {d}/err.out", None),
+    ("python lib/work.py run proof --repo R/x --issue 1 > $NOPE/a.out", None),
+])
+def test_redirect_targets(tmp_path, command, expected):
+    commands = core.Commands(core.Ctx(home=tmp_path, now=T0, environ={}),
+                             command.format(d=tmp_path.as_posix()), None)
+    found = commands.redirect()
+    assert (found.name if found else None) == expected
+
+
+# --- finding the desktop app's session records -----------------------------------------------
+
+def current_desktop(tmp_path: Path, source: str | None = "tool", title: str = "Start 888",
+                    session: str = SID) -> dict:
+    local = tmp_path / "localappdata"
+    folder = local / "Claude-Data" / "claude_x" / "claude-code-sessions" / "a" / "b"
+    folder.mkdir(parents=True, exist_ok=True)
+    record = {"cliSessionId": session, "title": title, "sessionId": "local_1"}
+    if source is not None:
+        record["titleSource"] = source
+    (folder / "local_1.json").write_text(json.dumps(record), encoding="utf-8")
+    return {"LOCALAPPDATA": str(local)}
+
+
+@pytest.mark.parametrize("source,renames", [("tool", True), ("auto", True), ("user", False)])
+def test_records_in_the_apps_current_place_are_found(home, tmp_path, source, renames):
+    environ = current_desktop(tmp_path, source)
+    title = allow_title("Start 888")
+    core.observe(core.Ctx(home=home, now=T0, environ=environ), {
+        "session_id": SID, "command": RUN_BUILD, "output": "", "started_at": T0 - 1,
+        "ended_at": T0, "title": title})
+    answer = core.tick(core.Ctx(home=home, now=T0 + 1, environ=environ),
+                       {"session_id": SID, "title": title})
+    assert (answer["rename"] is not None) is renames
+    if source == "user":
+        assert answer["view"]["rename_note"] == "rename skipped (owner-set title)"
+        return
+    core.renamed(core.Ctx(home=home, now=T0 + 2, environ=environ), {
+        "session_id": SID, "label": answer["rename"]["label"], "title": "#888 x",
+        "outcome": "renamed"})
+    write_bundle(home, "b1", stage="build", launched=T0, lifecycle="completed", dispatch_id="d")
+    again = core.tick(core.Ctx(home=home, now=T0 + 70, environ=environ),
+                      {"session_id": SID, "title": title})
+    assert again["rename"] == {"label": "holder: build"}
+
+
+def test_old_places_are_still_searched(home, tmp_path):
+    environ = desktop(tmp_path, "tool")
+    environ["LOCALAPPDATA"] = str(tmp_path / "empty-local")
+    core.observe(core.Ctx(home=home, now=T0, environ=environ), {
+        "session_id": SID, "command": RUN_BUILD, "output": "", "title": allow_title("Start 888")})
+    assert core.tick(core.Ctx(home=home, now=T0 + 1, environ=environ), {
+        "session_id": SID, "title": allow_title("Start 888")})["rename"] is not None
+
+
+def test_no_record_anywhere_says_rename_off(home, tmp_path):
+    environ = {"LOCALAPPDATA": str(tmp_path / "local"), "APPDATA": str(tmp_path / "roaming")}
+    title = allow_title("Start 888")
+    core.observe(core.Ctx(home=home, now=T0, environ=environ), {
+        "session_id": SID, "command": RUN_BUILD, "output": "", "title": title})
+    answer = core.tick(core.Ctx(home=home, now=T0 + 1, environ=environ),
+                       {"session_id": SID, "title": title})
+    assert answer["rename"] is None
+    assert answer["view"]["rename_note"] == "rename off: the app's session records weren't found"
+    environ.update(current_desktop(tmp_path, "tool"))
+    environ["LOCALAPPDATA"] = str(tmp_path / "localappdata")
+    soon = core.tick(core.Ctx(home=home, now=T0 + 60, environ=environ),
+                     {"session_id": SID, "title": title})
+    assert soon["rename"] is None  # not searched again inside the interval
+    later = core.tick(core.Ctx(home=home, now=T0 + core.RECORD_SEARCH_SECONDS + 2,
+                               environ=environ), {"session_id": SID, "title": title})
+    assert later["rename"] is not None and later["view"]["rename_note"] is None
+
+
+# --- every repository's Steward is left alone ------------------------------------------------
+
+@pytest.mark.parametrize("name", ["Daemon Steward", "Steward", " daemon steward "])
+def test_a_steward_draws_nothing_and_writes_nothing(home, tmp_path, name):
+    before = tree_files(home)
+    assert bind(home, title=allow_title(name, "user")) == {"bound": False}
+    holder_root = tmp_path / "holder"
+    holder_root.mkdir()
+    (home / ".tradecraft" / "implementation-worktrees.json").write_text(json.dumps({
+        "worktrees": [{"repository": REPO_NAME, "issue": 888, "active": True,
+                       "holder_session_id": SID, "holder_root": str(holder_root)}]}),
+        encoding="utf-8")
+    candidate = core.recover(ctx_at(home, T0), SID, str(holder_root))
+    assert candidate is not None
+    assert core._bind_command(ctx_at(home, T0), {"session_id": SID, "binding": candidate,
+                                                "title": allow_title(name, "user")}) == {
+        "bound": False}
+    after = tree_files(home) - {str(Path(".tradecraft") / "implementation-worktrees.json")}
+    assert after == before
+
+
+def test_an_unreadable_title_falls_back_to_the_desktop_record(home, tmp_path):
+    environ = current_desktop(tmp_path, "user", title="Daemon Steward")
+    answer = core.observe(core.Ctx(home=home, now=T0, environ=environ), {
+        "session_id": SID, "command": RUN_BUILD, "output": "",
+        "title": {"decision": "ask", "text": None}})
+    assert answer == {"bound": False}
+    assert not core.binding_path(ctx_at(home, T0), SID).exists()
+    assert not core.session_path(ctx_at(home, T0), SID).exists()
+
+
+def test_a_session_retitled_steward_is_unbound_and_its_files_removed(home):
+    assert bind(home)["bound"] is True
+    tick(home, T0 + 1)
+    assert core.session_path(ctx_at(home, T0), SID).exists()
+    assert tick(home, T0 + 60, title=allow_title("Daemon Steward", "user")) == {"bound": False}
+    assert not core.binding_path(ctx_at(home, T0), SID).exists()
+    assert not core.session_path(ctx_at(home, T0), SID).exists()
+
+
+def _bound_and_written(home):
+    assert bind(home)["bound"] is True
+    tick(home, T0 + 1)
+    ctx = ctx_at(home, T0)
+    status = core.status_path(ctx, core.change_key(REPO_NAME, 888))
+    assert core.binding_path(ctx, SID).exists() and core.session_path(ctx, SID).exists()
+    assert status.exists()
+    return ctx, status
+
+
+def test_a_steward_met_at_a_stage_call_leaves_no_files(home):
+    ctx, status = _bound_and_written(home)
+    assert bind(home, now=T0 + 60, title=allow_title("Daemon Steward", "user")) == {
+        "bound": False}
+    assert not core.binding_path(ctx, SID).exists()
+    assert not core.session_path(ctx, SID).exists()
+    assert not status.exists()
+
+
+def test_a_steward_met_at_any_other_call_leaves_no_files(home, tmp_path):
+    ctx, status = _bound_and_written(home)
+    environ = current_desktop(tmp_path, "user", title="Daemon Steward")
+    later = T0 + core.RECORD_SEARCH_SECONDS + 5  # past the miss the first tick recorded
+    answer = core.observe(core.Ctx(home=home, now=later, environ=environ), {
+        "session_id": SID, "command": 'gh pr comment 900 --body "hello"', "output": ""})
+    assert answer == {"bound": False}
+    assert not core.binding_path(ctx, SID).exists()
+    assert not core.session_path(ctx, SID).exists()
+    assert not status.exists()
+
+
+def test_a_steward_is_found_at_a_stage_call_inside_the_search_interval(home, tmp_path):
+    environ = {"LOCALAPPDATA": str(tmp_path / "localappdata")}
+    unreadable = {"decision": "ask", "text": None}
+    state = {}
+    assert core.desktop_record(core.Ctx(home=home, now=T0, environ=environ), SID, state) is None
+    core._write_json(core.session_path(ctx_at(home, T0), SID), state)  # a miss on record
+    environ.update(current_desktop(tmp_path, "user", title="Daemon Steward"))
+    answer = core.observe(core.Ctx(home=home, now=T0 + 60, environ=environ), {
+        "session_id": SID, "command": RUN_BUILD, "output": "", "title": unreadable})
+    assert answer == {"bound": False}
+    assert not core.binding_path(ctx_at(home, T0), SID).exists()
+
+
+@pytest.mark.parametrize("name", ["Start #95: M6 finals", "Steward review", "Stewardship"])
+def test_other_titles_still_bind(home, name):
+    assert not core.is_steward(name)
+    assert bind(home, title=allow_title(name, "auto"))["bound"] is True
+
+
+# --- a restart binds only by the session's own id --------------------------------------------
+
+OTHER = "c5f2f6e3-0000-4000-8000-000000000000"
+
+
+def registry(home: Path, *rows: dict) -> None:
+    (home / ".tradecraft" / "implementation-worktrees.json").write_text(
+        json.dumps({"schema_version": 1, "worktrees": list(rows)}), encoding="utf-8")
+
+
+def test_a_worktree_whose_row_names_another_session_stays_empty(home, tmp_path):
+    root = tmp_path / "start-94-da5419"
+    root.mkdir()
+    registry(home, {"repository": DAEMON, "issue": 95, "active": True, "instalment": "stage-2",
+                    "holder_session_id": HOLDER, "holder_root": str(root)})
+    assert core.recover(ctx_at(home, T0), OTHER, str(root)) is None
+
+
+def test_a_restarted_holder_gets_its_own_change_back(home, tmp_path):
+    root, elsewhere = tmp_path / "wt", tmp_path / "elsewhere"
+    root.mkdir()
+    elsewhere.mkdir()
+    row = {"repository": DAEMON, "issue": 95, "active": True, "instalment": "stage-2",
+           "holder_session_id": HOLDER, "holder_root": str(root)}
+    registry(home, row)
+    found = core.recover(ctx_at(home, T0), HOLDER, str(root))
+    assert (found["repository"], found["issue"], found["instalment"]) == (DAEMON, 95, "stage-2")
+    # One id on two active changes: narrowed by root, and nothing when still ambiguous.
+    registry(home, row, {**row, "issue": 96, "holder_root": str(elsewhere)})
+    assert core.recover(ctx_at(home, T0), HOLDER, str(root))["issue"] == 95
+    registry(home, row, {**row, "issue": 96})
+    assert core.recover(ctx_at(home, T0), HOLDER, str(root)) is None
+    # No row naming it: empty until its next stage call binds it.
+    registry(home, {**row, "holder_session_id": OTHER})
+    assert core.recover(ctx_at(home, T0), HOLDER, str(root)) is None
+    command = f"python lib/work.py run proof --repo {DAEMON} --issue 95 --root {root.as_posix()}"
+    assert core.observe(ctx_at(home, T0), {"session_id": HOLDER, "command": command,
+                                           "output": "", "title": allow_title("x", "auto")})[
+        "bound"] is True
+
+
+# --- the installer across several checkouts --------------------------------------------------
+
+class FakeClaude(FakeTools):
+    """The CLI's local-scope effects on the checkout's local file, as the real CLI makes them."""
+
+    def __call__(self, argv, **kwargs):
+        answer = super().__call__(argv, **kwargs)
+        if argv[0] == "git":
+            return answer
+        path = Path(kwargs["cwd"]) / ".claude" / "settings.local.json"
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except ValueError:
+            return answer  # a file that isn't JSON is left alone
+        action = argv[1:4]
+        if action[:3] == ["plugin", "marketplace", "add"]:
+            settings.setdefault("extraKnownMarketplaces", {})[installer.MARKETPLACE] = {
+                "source": {"source": "directory", "path": "M"}}
+        elif action[:2] == ["plugin", "install"]:
+            settings.setdefault("enabledPlugins", {})[installer.PLUGIN_REF] = True
+        elif action[:2] == ["plugin", "uninstall"]:
+            settings.get("enabledPlugins", {}).pop(installer.PLUGIN_REF, None)
+        elif action[:3] == ["plugin", "marketplace", "remove"]:
+            settings.get("extraKnownMarketplaces", {}).pop(installer.MARKETPLACE, None)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        return answer
+
+
+@pytest.fixture
+def records(tmp_path, monkeypatch):
+    path = tmp_path / "records" / "installs.json"
+    monkeypatch.setattr(installer, "_install_record_path", lambda: path)
+    return path
+
+
+def removes(tools: FakeTools) -> int:
+    return sum(argv[1:4] == ["plugin", "marketplace", "remove"] for argv in tools.claude)
+
+
+def test_the_shared_marketplace_stays_until_the_last_checkout(tmp_path, records):
+    first, second = tmp_path / "a", tmp_path / "b"
+    for root in (first, second):
+        (root / ".claude").mkdir(parents=True)
+    tools = FakeClaude()
+    installer.install(first, Path("claude.exe"), tools, marketplace=Path("M"))
+    installer.install(second, Path("claude.exe"), tools, marketplace=Path("M"))
+    second_bytes = (second / ".claude" / "settings.local.json").read_bytes()
+    messages = installer.uninstall(first, Path("claude.exe"), tools)
+    assert removes(tools) == 0
+    assert any(str(second) in message for message in messages)
+    assert (second / ".claude" / "settings.local.json").read_bytes() == second_bytes
+    assert str(second) in json.loads(records.read_text())
+    installer.uninstall(second, Path("claude.exe"), tools)
+    assert removes(tools) == 1
+
+
+@pytest.mark.parametrize("how", ["gone", "disabled"])
+def test_a_dead_record_does_not_keep_the_marketplace(tmp_path, records, how):
+    first, second = tmp_path / "a", tmp_path / "b"
+    for root in (first, second):
+        (root / ".claude").mkdir(parents=True)
+    tools = FakeClaude()
+    installer.install(first, Path("claude.exe"), tools, marketplace=Path("M"))
+    installer.install(second, Path("claude.exe"), tools, marketplace=Path("M"))
+    if how == "gone":
+        import shutil
+        shutil.rmtree(second)
+    else:
+        (second / ".claude" / "settings.local.json").write_text("{}", encoding="utf-8")
+    installer.uninstall(first, Path("claude.exe"), tools)
+    assert removes(tools) == 1
+
+
+def test_an_absent_local_file_is_absent_again(tmp_path, records):
+    root = tmp_path / "a"
+    root.mkdir()
+    tools = FakeClaude()
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
+    assert (root / ".claude" / "settings.local.json").exists()
+    installer.uninstall(root, Path("claude.exe"), tools)
+    assert not (root / ".claude" / "settings.local.json").exists()
+
+
+def test_a_present_local_file_comes_back_byte_for_byte(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    original = b'{\r\n  "permissions": {"allow": ["Bash(ls)"]},\r\n  "env": {"X": "1"}\r\n}'
+    path = root / ".claude" / "settings.local.json"
+    path.write_bytes(original)
+    tools = FakeClaude()
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))  # a reinstall
+    installer.uninstall(root, Path("claude.exe"), tools)
+    assert path.read_bytes() == original
+
+
+def test_a_file_changed_after_the_install_keeps_the_change(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    path = root / ".claude" / "settings.local.json"
+    path.write_text('{"permissions": {"allow": []}}', encoding="utf-8")
+    tools = FakeClaude()
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
+    settings = json.loads(path.read_text())
+    settings["permissions"]["allow"].append("Bash(git status)")
+    path.write_text(json.dumps(settings), encoding="utf-8")
+    messages = installer.uninstall(root, Path("claude.exe"), tools)
+    assert json.loads(path.read_text()) == {"permissions": {"allow": ["Bash(git status)"]}}
+    assert any("byte for byte" in message for message in messages)
+
+
+def test_a_legacy_record_leaves_no_empty_containers(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    path = root / ".claude" / "settings.local.json"
+    path.write_text('{"permissions": {"allow": []}}', encoding="utf-8")
+    tools = FakeClaude()
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
+    records.write_text(json.dumps({str(root): {"added_opt_in": True}}), encoding="utf-8")
+    installer.uninstall(root, Path("claude.exe"), tools)
+    assert json.loads(path.read_text()) == {"permissions": {"allow": []}}
+
+
+def test_an_unparseable_file_or_snapshot_says_so(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    path = root / ".claude" / "settings.local.json"
+    path.write_text('{"permissions": {}}', encoding="utf-8")
+    tools = FakeClaude()
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
+    path.write_text("not json", encoding="utf-8")
+    messages = installer.uninstall(root, Path("claude.exe"), tools)
+    assert path.read_text(encoding="utf-8") == "not json"
+    assert any("isn't a JSON object now" in message for message in messages)
+    path.write_text('{"permissions": {}}', encoding="utf-8")
+    installer.install(root, Path("claude.exe"), tools, marketplace=Path("M"))
+    for snapshot in ("bm90IGpzb24=", "!!not base64!!"):  # "not json", then not base64 at all
+        record = json.loads(records.read_text())
+        record[str(root)]["local_before"] = snapshot
+        records.write_text(json.dumps(record), encoding="utf-8")
+        messages = installer.uninstall(root, Path("claude.exe"), tools)
+        assert any("copy taken at the install" in message for message in messages)
+        # Left as it is: the installer's own opt-in is still there.
+        assert json.loads(path.read_text())["env"] == {installer.OPT_IN: "1"}
+        assert json.loads(records.read_text())[str(root)]["local_before"] == snapshot
+
+
+class AlreadyGone(FakeClaude):
+    """The CLI answering a retried uninstall: the plugin isn't installed any more."""
+
+    def __init__(self, message):
+        super().__init__()
+        self.message = message
+
+    def __call__(self, argv, **kwargs):
+        if argv[0] != "git" and argv[1:3] == ["plugin", "uninstall"]:
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=self.message.encode())
+        return super().__call__(argv, **kwargs)
+
+
+def test_a_retried_uninstall_still_restores(tmp_path, records):
+    root = tmp_path / "a"
+    root.mkdir()
+    installer.install(root, Path("claude.exe"), FakeClaude(), marketplace=Path("M"))
+    installer.uninstall(root, Path("claude.exe"),
+                        AlreadyGone("Plugin holder-pane@x is not installed"))
+    assert not (root / ".claude" / "settings.local.json").exists()
+    installer.install(root, Path("claude.exe"), FakeClaude(), marketplace=Path("M"))
+    with pytest.raises(RuntimeError):
+        installer.uninstall(root, Path("claude.exe"), AlreadyGone("network unreachable"))
+
+
+class MarketplaceGone(FakeClaude):
+    """The CLI answering a retried uninstall whose marketplace is already removed."""
+
+    def __call__(self, argv, **kwargs):
+        if argv[0] != "git" and argv[1:4] == ["plugin", "marketplace", "remove"]:
+            return SimpleNamespace(returncode=1, stdout=b"",
+                                   stderr=b"Marketplace tradecraft-holder-pane not found")
+        return super().__call__(argv, **kwargs)
+
+
+def test_a_retried_uninstall_past_a_removed_marketplace_still_restores(tmp_path, records):
+    root = tmp_path / "a"
+    root.mkdir()
+    installer.install(root, Path("claude.exe"), FakeClaude(), marketplace=Path("M"))
+    installer.uninstall(root, Path("claude.exe"), MarketplaceGone())
+    assert not (root / ".claude" / "settings.local.json").exists()
+
+
+def test_an_opt_in_the_file_held_comes_back_byte_for_byte(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    path = root / ".claude" / "settings.local.json"
+    original = b'{"env": {"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "0"}}'
+    path.write_bytes(original)
+    installer.install(root, Path("claude.exe"), FakeClaude(), marketplace=Path("M"))
+    installer.uninstall(root, Path("claude.exe"), FakeClaude())
+    assert path.read_bytes() == original
+
+
+def test_the_snapshot_is_recorded_before_the_file_changes(tmp_path, records):
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    (root / ".claude" / "settings.local.json").write_bytes(b"{}")
+
+    class Failing(FakeClaude):
+        def __call__(self, argv, **kwargs):
+            if argv[0] != "git":
+                return SimpleNamespace(returncode=1, stdout=b"", stderr=b"boom")
+            return super().__call__(argv, **kwargs)
+
+    with pytest.raises(RuntimeError):
+        installer.install(root, Path("claude.exe"), Failing(), marketplace=Path("M"))
+    assert json.loads(records.read_text())[str(root)]["local_before"] == "e30="
+
+
+def test_an_unreadable_other_checkout_keeps_the_marketplace(tmp_path, records):
+    first, second = tmp_path / "a", tmp_path / "b"
+    for root in (first, second):
+        (root / ".claude").mkdir(parents=True)
+    tools = FakeClaude()
+    installer.install(first, Path("claude.exe"), tools, marketplace=Path("M"))
+    installer.install(second, Path("claude.exe"), tools, marketplace=Path("M"))
+    (second / ".claude" / "settings.local.json").write_text('{"enabledPlugins": ', encoding="utf-8")
+    messages = installer.uninstall(first, Path("claude.exe"), tools)
+    assert removes(tools) == 0
+    assert any("can't be read" in message for message in messages)
+
+
+def test_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):
+    local, roaming = tmp_path / "local", tmp_path / "roaming"
+    for base, version in ((local / "Claude-Data" / "claude_x" / "claude-code", "2.1.317"),
+                          (local / "Claude-Data" / "claude_x" / "claude-code", "2.1.309"),
+                          (roaming / "Claude" / "claude-code", "2.1.300")):
+        exe = base / version / "abc123" / "claude.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"")
+    found = installer.newest_desktop_claude({"LOCALAPPDATA": str(local), "APPDATA": str(roaming)})
+    assert found == local / "Claude-Data" / "claude_x" / "claude-code" / "2.1.317" / "abc123" \
+        / "claude.exe"
+    assert installer.newest_desktop_claude({"APPDATA": str(roaming)}).parent.parent.name == \
+        "2.1.300"
+    assert installer.newest_desktop_claude({}) is None
+
+
+# --- the trial checklist's checks and their split --------------------------------------------
+
+def test_the_checklist_carries_checks_one_to_thirteen_and_their_split():
+    text = README.read_text(encoding="utf-8")
+    checklist = text[text.index("## Trial checklist"):]
+    for number in range(1, 14):
+        assert re.search(rf"^{number}\. \*\*", checklist, re.MULTILINE), number
+    assert "Needs no stage call:** 6, 7, 9 and 12" in checklist
+    assert "Needs a holder's stage calls:** 1, 2, 3, 4, 5, 8, 10, 11 and 13" in checklist

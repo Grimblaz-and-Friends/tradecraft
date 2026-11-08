@@ -1,4 +1,5 @@
 // The holder pane's hooks module: a shim over core/holder_pane.py (#888, lab-only).
+// Design: tools/holder_pane/README.md#how-it-behaves
 //
 // Every decision is the core's. This module watches the holder's own shell
 // calls, reads the session's title through the desktop app's session tools,
@@ -27,7 +28,7 @@ const ISSUE = /(?:^|\s)--issue[\s=]/
 export function binds(command: string): boolean {
   return VERB.test(command) && REPO.test(command) && ISSUE.test(command)
 }
-const RELEVANT = /(?:^|\s)(?:run|adopt)(?=\s|$)|(?:^|[\s;&|(])gh\s+(?:pr|api)\s/
+const RELEVANT = /(?:^|\s)(?:run|adopt)(?=\s|$)|(?:^|[\s;&|(])gh\s+(?:pr|api|issue)\s/
 const view = atom({ plugin: 'holder-pane', key: 'view' } as const, null)
 
 type $ = EngineInterface
@@ -246,6 +247,10 @@ export const register: Register = on => {
         started_at: startedAt,
         ended_at: (await $.clock.now()) / 1000,
         title,
+        // A background run's report comes later, in a file; a failed post is no post.
+        background: (e as any).run_in_background === true,
+        is_error: Boolean((ran as any).isError),
+        root: await $.session.root(),
       })
       if (answer.bound && !bound) await becameBound($)
       else if (!answer.bound && bound) {
@@ -277,6 +282,8 @@ export const register: Register = on => {
     const answer = await core($, 'remind', {
       session_id: await $.session.id(),
       stop_hook_active: Boolean((e as any).stop_hook_active),
+      // Read only to see whether a background stage's task has ended.
+      background_tasks: (e as any).background_tasks ?? null,
     })
     return answer.block ? { ...result, block: answer.block } : result
   }).catch(($, e, next) => next(e))
