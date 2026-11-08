@@ -793,6 +793,7 @@ def bind(ctx: Ctx, session_id: str, binding: dict[str, Any], title: dict[str, An
         # a posted release report, which no read would restore when the session comes back.
         state = {key: state[key] for key in ("desktop_record", "desktop_miss_at", "last_label",
                                               "last_title_set", "rename_disabled",
+                                              "release_reports_posted",
                                               "release_report_posted") if key in state}
     entrance = binding.get("entrance") or newest_cached_entrance(ctx)
     record = {
@@ -1300,7 +1301,9 @@ def _gh_arguments(found: list[Word]) -> tuple[dict[str, list[Word]], list[Word]]
     index = 0
     while index < len(found):
         word = found[index]
-        if word.value.startswith("-") and len(word.value) > 1 and not word.quoted:
+        # An option's name is never quoted, though its attached value may be
+        # (`--body-file="$REPORT"`); a quoted word is a positional argument.
+        if word.raw.startswith("-") and len(word.value) > 1:
             name, equals, value = word.value.partition("=")
             if equals:
                 attached = Word()
@@ -1493,14 +1496,27 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     failed = payload.get("is_error") is True or (
         (code := EXIT_CODE.match(output)) is not None and int(code.group(1)) != 0)
     if not failed:
-        _observe_posts(binding, state, change, commands, ended)
+        _observe_posts(binding, state, change, commands, ended, output)
     save_session(ctx, session_id, state)
     return {"bound": True, "binding": binding}
 
 
+def _comment_shown(text: str, target: int) -> bool:
+    """Whether a post's output shows the comment GitHub created on `target`."""
+    return re.search(rf"/(?:issues|pull)/{int(target)}#issuecomment-\d+", text) is not None
+
+
 def _observe_posts(binding: dict[str, Any], state: dict[str, Any], change: dict[str, Any],
-                   commands: Commands, ended: float) -> None:
-    """The holder's own posts to its change: a release report, or a step posted, unconfirmed."""
+                   commands: Commands, ended: float, output: str = "") -> None:
+    """The holder's own posts to its change: a release report, or a step posted, unconfirmed.
+
+    A release report counts only when the post's own output shows the comment GitHub
+    created: no read would ever correct a report counted that was never posted, and a call
+    can succeed while its post fails (`gh …; echo`). A post run in the background shows only
+    its launch, so its task output file is read for that evidence as it fills.
+    """
+    launch = BACKGROUND_LAUNCH.search(output)
+    output_file = launch.group("file").strip() if launch and launch.group("file") else None
     issue = int(binding["issue"])
     in_force = _newer(state.get("reading"), change.get("reading"))
     known = in_force.get("pull_request") if isinstance(in_force, dict) and isinstance(
@@ -1522,12 +1538,20 @@ def _observe_posts(binding: dict[str, Any], state: dict[str, Any], change: dict[
                 title is not None and title["pull_request"] == target)
         if not ours:
             continue
+        posted = state.get("posted") if isinstance(state.get("posted"), dict) else {}
         if title is not None:
             head = title["head"] or (in_force.get("head") if isinstance(in_force, dict) else None)
-            state["release_report_posted"] = {"at": ended, "pull_request": title["pull_request"],
-                                              "head": head, "change": _change_of(binding)}
+            record = {"at": ended, "pull_request": title["pull_request"], "head": head,
+                      "change": _change_of(binding)}
+            if _comment_shown(output, target):
+                _keep_report(state, record)
+                continue
+            if output_file:
+                state["report_post_pending"] = {**record, "target": target,
+                                                "output_file": output_file}
+            # Unshown, the post is unconfirmed until the next read, as any unreadable body is.
+            state["posted"] = {"at": ended, "unreadable_at": ended}
             continue
-        posted = state.get("posted") if isinstance(state.get("posted"), dict) else {}
         state["posted"] = {"at": ended, "unreadable_at": ended if post["body"] is None
                            else posted.get("unreadable_at")}
 
@@ -1537,14 +1561,12 @@ def _observe_launch(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any], st
                     pr: dict[str, Any] | None = None,
                     call: dict[str, Any] | None = None) -> None:
     state.pop("tracked", None)
-    # New dispatched work for the posted report's own change means it is no longer the last
-    # step before that change's merge.
-    if call is None or _posted_report(state, call) is not None:
-        state.pop("release_report_posted", None)
     state.pop("posted", None)
+    owner = call if call is not None else binding
     work = f"{binding['repository']}#{binding['issue']}"
     match = _matching_bundle(bundles_for(ctx, work), stage, started)
     if match is not None:
+        _drop_report(state, owner)
         state.pop("pending", None)
         if match.get("lifecycle") == "running":
             state["tracked"] = match.get("dispatch_id")
@@ -1556,11 +1578,17 @@ def _observe_launch(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any], st
     if _is_decision(decision) and (decision.get("dispatch") is False
                                    or decision["status"] != "runnable"):
         # The entrance launched nobody and no bundle will come: its report is the reading,
-        # whatever its status (a holder-owned budget or scope refusal included).
+        # whatever its status (a holder-owned budget or scope refusal included). Nothing was
+        # dispatched, so a posted release report stands.
         state.pop("pending", None)
-        state["reading"] = reading_from_decision(decision, "stage-return", ended, pr)
+        state["reading"] = reading_from_decision(decision, "stage-return", ended, pr,
+                                                 entrance_decision=False)
         return
-    state["pending"] = {"stage": stage, "started_at": started, "ended_at": ended}
+    if _is_decision(decision) and decision.get("dispatch") is True:
+        _drop_report(state, owner)
+    # Launched, its bundle not yet recorded: the report ends once the bundle shows it ran.
+    state["pending"] = {"stage": stage, "started_at": started, "ended_at": ended,
+                        "change": _change_of(owner)}
 
 
 def _matching_bundle(bundles: list[dict[str, Any]], stage: str, started: float):
@@ -1614,8 +1642,12 @@ def _mtime(path: Any) -> float | None:
 
 
 def _settle_background(state: dict[str, Any], change: dict[str, Any]) -> None:
-    """A background stage ends at its complete report, an entrance read started after it, or a
-    `work:` failure once it has ended; until then it shows running (or ended). Mutates `state`."""
+    """A background stage ends at its complete report, an entrance read started after its task
+    ended, or a `work:` failure once it has ended; until then it shows running (or ended).
+
+    A read that started while the stage still ran can't reflect it, so it ends nothing: the
+    pane keeps looking for the report, which then becomes the newer reading. Mutates `state`.
+    """
     background = state.get("background")
     if not isinstance(background, dict):
         return
@@ -1631,7 +1663,9 @@ def _settle_background(state: dict[str, Any], change: dict[str, Any]) -> None:
         state.pop("background", None)
         return
     entrance = change.get("reading")
-    if isinstance(entrance, dict) and float(entrance.get("read_at") or 0) > started:
+    ended_at = background.get("ended_at")
+    if isinstance(ended_at, (int, float)) and isinstance(entrance, dict) and float(
+            entrance.get("read_at") or 0) > float(ended_at):
         state.pop("background", None)
         return
     if background.get("ended_at") and failed:
@@ -1643,19 +1677,56 @@ def _change_of(binding: dict[str, Any]) -> list[Any]:
     return [str(binding["repository"]), int(binding["issue"]), binding.get("instalment")]
 
 
+def _report_key(change: list[Any]) -> str:
+    return f"{str(change[0]).casefold()}#{int(change[1])}#{change[2] or ''}"
+
+
+def _reports(state: dict[str, Any]) -> dict[str, Any]:
+    """Posted release reports by change, so a session's report for one change never overwrites
+    another's; a single report recorded without its change is the bound change's."""
+    reports = state.get("release_reports_posted")
+    reports = dict(reports) if isinstance(reports, dict) else {}
+    legacy = state.pop("release_report_posted", None)
+    if isinstance(legacy, dict):
+        ours = legacy.get("change")
+        key = _report_key(ours) if isinstance(ours, list) and len(ours) == 3 else ""
+        reports[key] = legacy
+    state["release_reports_posted"] = reports
+    return reports
+
+
+def _keep_report(state: dict[str, Any], record: dict[str, Any]) -> None:
+    _reports(state)[_report_key(record["change"])] = record
+
+
+def _report_keys(state: dict[str, Any], binding: dict[str, Any]) -> list[str]:
+    """This change's report keys: same repository and issue, and the same instalment when it
+    was posted under one."""
+    change = _change_of(binding)
+    keys = [_report_key(change), _report_key([change[0], change[1], None])]
+    return [key for key in dict.fromkeys(keys + [""]) if key in _reports(state)]
+
+
 def _posted_report(state: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any] | None:
-    """The posted release report, when it is this change's: same repository and issue, and the
-    same instalment when it was posted under one."""
-    posted = state.get("release_report_posted")
-    if not isinstance(posted, dict):
-        return None
-    ours = posted.get("change")
-    if not isinstance(ours, list) or len(ours) != 3:
-        return posted  # recorded before reports carried their change: the bound one
-    repository, issue, instalment = _change_of(binding)
-    if str(ours[0]).casefold() != repository.casefold() or ours[1] != issue:
-        return None
-    return posted if ours[2] is None or ours[2] == instalment else None
+    keys = _report_keys(state, binding)
+    return _reports(state)[keys[0]] if keys else None
+
+
+def _drop_report(state: dict[str, Any], binding: dict[str, Any]) -> None:
+    for key in _report_keys(state, binding):
+        _reports(state).pop(key, None)
+
+
+def _settle_report_post(state: dict[str, Any]) -> None:
+    """A report posted in the background counts once its task output shows the comment."""
+    pending = state.get("report_post_pending")
+    if not isinstance(pending, dict):
+        return
+    text = _read_text(Path(str(pending.get("output_file"))), REPORT_LIMIT_BYTES)
+    if text is not None and _comment_shown(text, int(pending.get("target") or 0)):
+        record = {key: pending[key] for key in ("at", "pull_request", "head", "change")}
+        _keep_report(state, record)
+        state.pop("report_post_pending", None)
 
 
 def _end_report_post(state: dict[str, Any], change: dict[str, Any],
@@ -1678,7 +1749,7 @@ def _end_report_post(state: dict[str, Any], change: dict[str, Any],
         if (decided and reading.get("stage") != "release-report") or (
                 isinstance(head, str) and isinstance(posted.get("head"), str)
                 and not _same_head(head, posted["head"])):
-            state.pop("release_report_posted", None)
+            _drop_report(state, binding)
             return
 
 
@@ -1713,6 +1784,12 @@ def compute_view(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any]) -> di
     if isinstance(pending, dict):
         match = _matching_bundle(bundles, pending["stage"], float(pending["started_at"]))
         if match is not None:
+            launched = pending.get("change")
+            if isinstance(launched, list) and len(launched) == 3:
+                _drop_report(state, {"repository": launched[0], "issue": launched[1],
+                                     "instalment": launched[2]})
+            else:
+                _drop_report(state, binding)
             state.pop("pending", None)
             pending = None
             if match.get("lifecycle") == "running":
@@ -1729,6 +1806,7 @@ def compute_view(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any]) -> di
                 state["reading"] = reading_from_return(
                     bundle["stage"], None, now, bundle.get("dispatch_id"))
     _settle_background(state, change)
+    _settle_report_post(state)
     _end_report_post(state, change, binding)
     reading = _newer(state.get("reading"), change.get("reading"))
     failure = state.get("failure")

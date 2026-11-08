@@ -720,6 +720,11 @@ def seed_pull_request(home, number=900, state="OPEN", merged=False):
     core._write_json(path, change)
 
 
+def shown(target: int) -> str:
+    """The comment URL a successful post prints (`gh pr comment`, or `gh api --jq .html_url`)."""
+    return f"https://github.com/o/r/pull/{target}#issuecomment-6712"
+
+
 def report_body(tmp_path: Path, issue: int = 888, pr: int = 900, head: str | None = None,
                 name: str = "r.md") -> Path:
     path = tmp_path / name
@@ -737,7 +742,7 @@ def test_c5_4_release_report_posted_waits_on_the_owner(home, tmp_path):
     core.observe(ctx_at(home, T0 + 10), {"session_id": SID, "output": "",
                                          "command": f"gh pr comment 901 -F {body.as_posix()}"})
     assert tick(home, T0 + 11)["view"]["waiting_on"] == "holder"
-    core.observe(ctx_at(home, T0 + 12), {"session_id": SID, "output": "",
+    core.observe(ctx_at(home, T0 + 12), {"session_id": SID, "output": shown(900),
                                          "command": f"gh pr comment 900 --body-file "
                                                     f"{body.as_posix()}"})
     view = tick(home, T0 + 13)["view"]
@@ -751,7 +756,7 @@ def test_c5_4_release_report_handoff_with_the_pr_unknown_takes_the_named_pr(home
     body = report_body(tmp_path)
     command = f"python lib/work.py run release-report --repo {REPO_NAME} --issue 888 --root D:/r"
     bind(home, command=command, output=RELEASE_REPORT_OUTPUT)
-    core.observe(ctx_at(home, T0 + 1), {"session_id": SID, "output": "",
+    core.observe(ctx_at(home, T0 + 1), {"session_id": SID, "output": shown(900),
                                         "command": f"gh pr comment 900 --body-file {body}"})
     view = tick(home, T0 + 2)["view"]
     assert view["waiting_on"] == "owner" and view["next_step"] == "merge"
@@ -1235,12 +1240,19 @@ class Holder:
         return self.observe(now, f"cd {self.wt.as_posix()} && gh api --method POST repos/{DAEMON}/"
                                  f"issues/{issue}/comments -F body=@{body.as_posix()} --jq "
                                  f"'\"\\(.id) \\(.created_at) \\(.html_url)\"'",
-                            "6712 2026-11-06T06:58:33Z https://github.com/x")
+                            f"6712 2026-11-06T06:58:33Z {shown(issue)}")
 
     def use_return(self, now: float) -> None:
         write_bundle(self.home, f"use-{int(now)}", stage="use", launched=now,
                      lifecycle="completed", work=f"{DAEMON}#95", dispatch_id=f"u{int(now)}")
         self.observe(now, self.stage("use", redirect=False), "", started=now - 2)
+
+
+def posted_head(holder: Holder) -> str | None:
+    """The head recorded with the session's one posted release report."""
+    reports = core.load_session(holder.ctx(0), HOLDER)["release_reports_posted"]
+    (record,) = reports.values()
+    return record["head"]
 
 
 def title_file(holder: Holder, name: str = "release-report.md", head: str | None = HEAD,
@@ -1317,7 +1329,7 @@ def test_c1_2_foreground_report_posted_with_gh_pr_comment_body_file(home, tmp_pa
         "relative": f"cd {holder.scratch.as_posix()} && gh pr comment 116 --body-file "
                     f"inst1/release-report.md",
     }[form]
-    holder.observe(at("06:58:32"), command, "https://github.com/x#issuecomment-1")
+    holder.observe(at("06:58:32"), command, shown(116))
     view = holder.tick(at("06:58:40"))
     assert (view["waiting_on"], view["next_step"], view["label"]) == ("owner", "merge",
                                                                       "waiting on you")
@@ -1477,6 +1489,10 @@ BODY_FORMS = {
     "placeholders": "gh api repos/{{owner}}/{{repo}}/issues/116/comments -X POST -F body=@{file}",
     "issue-comment": "gh issue comment 116 --repo {repo} --body-file {file}",
     "url-target": "gh pr comment https://github.com/{repo}/pull/116 --body-file {file}",
+    "quoted-attached-body-file": 'R={file}; gh pr comment 116 --body-file="$R"',
+    "quoted-attached-body": 'gh pr comment 116 --body="{plain}"',
+    "quoted-attached-input": 'gh api repos/{repo}/issues/116/comments --input="{json}"',
+    "quoted-field-file": 'gh api repos/{repo}/issues/116/comments -F body=@"{file}"',
 }
 
 
@@ -1498,10 +1514,10 @@ def test_c1_8_title_line_read_from_every_body_form(home, tmp_path, form, head):
                                           {"body": title}), dir=posix, msys=msys,
                                       plain=title.replace("`", ""))
     holder.entrance(at("06:00:00"), rr_decision(HEAD2))
-    holder.observe(at("06:58:32"), command, "")
+    holder.observe(at("06:58:32"), command, shown(116))
     view = holder.tick(at("06:58:40"))
     assert (view["waiting_on"], view["next_step"]) == ("owner", "merge"), form
-    recorded = core.load_session(holder.ctx(0), HOLDER)["release_report_posted"]["head"]
+    recorded = posted_head(holder)
     assert recorded == (HEAD if head else HEAD2)
 
 
@@ -1515,7 +1531,7 @@ def test_c1_8_an_input_body_larger_than_a_body_files_cap_is_read_whole(home, tmp
     payload.write_text(json.dumps({"body": title + "\n" + "x" * (core.BODY_LIMIT_BYTES * 2)}),
                        encoding="utf-8")
     holder.observe(at("06:58:32"), f"gh api repos/{DAEMON}/issues/116/comments --input "
-                                   f"{payload.as_posix()}", "")
+                                   f"{payload.as_posix()}", shown(116))
     view = holder.tick(at("06:58:40"))
     assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
 
@@ -1661,13 +1677,84 @@ def test_c1_9_dispatch_for_another_change_leaves_this_changes_report(home, tmp_p
     assert holder.remind(at("07:05:11")) is None
 
 
+def test_c1_1_a_read_taken_while_a_background_stage_runs_ends_nothing(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.use_return(at("06:30:00"))
+    holder.observe(at("06:41:57"), holder.stage("proof"), holder.launched("bproof"),
+                   started=at("06:41:56"), background=True)
+    holder.entrance(at("06:44:51"), {"stage": "proof", "status": "runnable", "reason": "x"})
+    view = holder.tick(at("06:46:00"))
+    assert view["label"] == "proof running"
+    assert holder.remind(at("06:46:30")) is None
+    holder.write_report("proof", PROOF_REPORT, at("06:49:05"))
+    view = holder.tick(at("06:49:30"))
+    assert view["next_step"] == "read the entrance's next step (the proof is published)"
+    assert "run proof" not in (holder.remind(at("06:49:56")) or "")
+
+
+def test_c1_9_a_report_counts_only_when_its_post_is_shown(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    failed = (f"cd {holder.wt.as_posix()} && gh api --method POST repos/{DAEMON}/issues/116/"
+              f"comments -F body=@{body.as_posix()}; echo \"exit=$?\"")
+    holder.observe(at("06:58:32"), failed, "HTTP 502: Bad Gateway\nexit=1")
+    view = holder.tick(at("06:58:40"))
+    assert view["posted"] is True and view["waiting_on"] == "unknown"
+    assert holder.remind(at("06:58:41")) is None
+    holder.entrance(at("07:30:00"), rr_decision())
+    assert holder.remind(at("07:31:00")) == "next: run release-report (yours)"
+
+
+def test_c1_9_a_backgrounded_report_post_counts_once_its_output_shows_it(home, tmp_path):
+    holder = Holder(home, tmp_path)
+    holder.pull_request(116)
+    holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    body = title_file(holder)
+    holder.observe(at("06:58:32"), f"gh pr comment 116 --body-file {body.as_posix()}",
+                   holder.launched("bpost"), background=True)
+    assert holder.tick(at("06:58:40"))["posted"] is True
+    (holder.tasks / "bpost.output").write_text(shown(116) + "\n", encoding="utf-8")
+    view = holder.tick(at("06:59:00"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+    assert holder.remind(at("06:59:01")) is None
+
+
+def test_c1_9_a_refused_dispatch_leaves_the_posted_report(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    refused = {"stage": "floor", "status": "refused", "reason": "floor-command-missing",
+               "dispatch": False}
+    holder.observe(at("07:00:00"), holder.stage("floor", redirect=False), json.dumps(refused))
+    view = holder.tick(at("07:00:10"))
+    assert (view["waiting_on"], view["next_step"]) == ("owner", "merge")
+    assert holder.remind(at("07:00:11")) is None
+
+
+def test_c1_9_reports_posted_for_two_changes_are_both_kept(home, tmp_path):
+    holder = posted_holder(home, tmp_path)
+    other = (f"python C:/cache/lib/work.py run release-report --repo {DAEMON} --issue 96 "
+             f"--root {holder.wt.as_posix()}")
+    holder.observe(at("07:00:00"), other, json.dumps({**RR_REPORT, "work": f"{DAEMON}#96"}))
+    body = title_file(holder, name="rr96.md", issue=96, pr=117)
+    holder.observe(at("07:01:00"), f"gh api --method POST repos/{DAEMON}/issues/117/comments "
+                                   f"-F body=@{body.as_posix()}", shown(117))
+    assert holder.tick(at("07:01:10"))["next_step"] == "merge"
+    holder.observe(at("07:05:00"), holder.stage("release-report", redirect=False),
+                   json.dumps(RR_REPORT))
+    view = holder.tick(at("07:05:10"))
+    assert (view["issue"], view["waiting_on"], view["next_step"]) == (95, "owner", "merge")
+
+
 def test_c1_9_without_at_head_the_reading_in_forces_head_is_recorded(home, tmp_path):
     holder = Holder(home, tmp_path)
     holder.pull_request(116)
     holder.observe(at("06:50:00"), holder.stage("release-report", redirect=False),
                    json.dumps(RR_REPORT))
     holder.post(at("06:58:32"), title_file(holder, head=None))
-    assert core.load_session(holder.ctx(0), HOLDER)["release_report_posted"]["head"] == HEAD
+    assert posted_head(holder) == HEAD
     holder.entrance(at("07:00:00"), rr_decision(HEAD[:7].upper()))
     assert holder.tick(at("07:00:10"))["waiting_on"] == "owner"
     holder.entrance(at("07:40:00"), rr_decision(HEAD2))

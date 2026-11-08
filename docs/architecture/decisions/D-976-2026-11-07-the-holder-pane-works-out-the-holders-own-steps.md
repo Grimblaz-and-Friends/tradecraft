@@ -27,14 +27,15 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 
 ## Calls made inside the rows
 
-- **No `prompt.submit` hook.** The API's `task-notification` turn would report a background stage's end, but hooking prompts would breach #888's rule that the mod never touches a turn. Instead the core reads the stage's report from the file the call's output went to, on each tick and Stop, and Stop's `background_tasks` list says when the task has ended.
+- **No `prompt.submit` hook.** The API's `task-notification` turn would report a background stage's end, but hooking prompts would breach #888's rule that the mod never touches a turn. Instead the core reads the stage's report from the file the call's output went to, on each tick and Stop, and Stop's `background_tasks` list says when the task has ended. An entrance read ends the running display only when it started after that end: a read taken while the stage ran can't reflect it, and ending there would remind the holder to rerun a stage already running.
 - **A post marks only a step a stage call doesn't finish.** A `run` step is finished by the stage call, which the pane sees. Treating an unrelated comment as finishing `run proof` would silence a reminder that's owed. At the release report, only an unreadable body marks the step, since a readable one either carries the title line or isn't the report.
 - **A posted release report ends only on one of three things, each dated after the post:**
   - a reading at a new head;
   - an entrance decision for a stage other than `release-report`;
-  - a dispatching launch for the same change.
+  - a dispatching launch for the same change, one matched to its launched bundle or whose decision says it dispatched. A refused call launched nothing.
 
   A holder plausibly runs catch-up, or reruns `release-report`, between the post and the merge. Since no read ever sees the posted report, a state cleared at the same head would never come back, which is #961 again.
+- **A report counts only when its post's own output shows the comment GitHub created.** A call can succeed while its post fails (`gh …; echo`), and a report counted that was never posted would never be corrected. Without that evidence the post is "posted, unconfirmed", which the next read corrects. Reports are kept by change, so one change's report never overwrites another's.
 - **A restart binds by `holder_session_id`.** Every registry row already carries it. Root narrows only when one id names more than one change.
 - **Uninstall keeps the shared marketplace while another checkout has the pane.**
   - Another checkout counts only when its own local file still enables the pane, not when it is merely recorded. Otherwise a checkout uninstalled by hand, or deleted, would keep the registration forever.
