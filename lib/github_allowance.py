@@ -118,7 +118,7 @@ def sentence(allowance: dict, *, vendor: str = "claude") -> str:
              f"`--bare` and without changing `{CONNECTORS}`; it may make no GitHub write. "
              "Start no Codex session.")
     return (f"GitHub writes this step may make: {_writes(allowance)}. Make no other GitHub write "
-            "— no comment, pull request, branch, branch deletion, tag, release, workflow run or "
+            "- no comment, pull request, branch, branch deletion, tag, release, workflow run or "
             "setting. GitHub reads (`gh api --method GET`, fetches) stay open. " + start
             + " If the work needs any other write, do not make it: end your return with a "
             "**Write requests** section naming each write, why the work needs it, and what it "

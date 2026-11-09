@@ -179,7 +179,8 @@ def test_text_that_cannot_be_parsed_is_refused_only_with_a_signature(tree):
     assert decision('grep "git push" notes.txt', tree, "none") == "allow"
 
 
-PERSIST = "python skills/persist-changes/scripts/persist.py --expect-branch tradecraft/894-ab"
+# The landing script's route: a message passed by -m, whatever it names.
+PERSIST = "python scripts/persist.py --expect-branch tradecraft/894-ab"
 
 
 @pytest.mark.parametrize("command", [
