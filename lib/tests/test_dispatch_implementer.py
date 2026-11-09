@@ -2174,3 +2174,39 @@ def test_a_stage_the_route_does_not_carry_stays_local(job, monkeypatch):
     assert implementer._cloud_route(args) is None
     args.stage = "build"
     assert implementer._cloud_route(args)[0]["routine_id"] == "trig_1"
+
+
+# --- #963 AC17a: every author and builder comparison reads its own record ----
+
+@pytest.mark.parametrize("stage", ["artifact", "build"])
+def test_963_ac17a_the_claude_stdout_log_reaches_finish(job, monkeypatch, stage):
+    args, _ = claude_job(job, monkeypatch)
+    # The refs reads go through the process-tree worker, slow on a loaded Windows machine.
+    args.stage, args.timeout_seconds = stage, 600
+    if stage == "artifact":
+        supply_artifact_brief(args)
+    seen = []
+    original = implementer.launch_bound.Comparison.finish
+
+    def capture(self, seconds, **kwargs):
+        seen.append((kwargs.get("record"), any(item["method"] == "git-refs" for item in self.plan)))
+        return original(self, seconds, **kwargs)
+
+    monkeypatch.setattr(implementer.launch_bound.Comparison, "finish", capture)
+    implementer.run_implementer(args)
+    assert seen == [(implementer.records.sidecar(args.output, ".claude.stdout.log"), True)]
+    assert record(args)["launch_comparison"]["run_record"]["status"] == "read"
+
+
+def test_963_ac17a_a_refs_comparison_without_its_record_is_held_unrecorded():
+    comparison = object.__new__(implementer.launch_bound.Comparison)
+    comparison.plan = [{"item": "refs:x", "path": "x", "method": "git-refs"}]
+    comparison.before = {}
+
+    class Window:
+        def probe(self, *_args, **_kwargs):
+            return 5.0
+
+    result = implementer._finish_comparison(comparison, None, Window())
+    assert result["status"] == "findings" and result["findings"][0]["id"] == "unrecorded"
+    assert "refs comparison needs the run's record" in result["findings"][0]["reason"]

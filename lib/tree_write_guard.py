@@ -30,12 +30,11 @@ ENVIRONMENT_FORM = re.compile(r"%[^%]*%|\$[A-Za-z_{]")
 DRIVE_RELATIVE = re.compile(r"[A-Za-z]:(?![\\/])")
 LONG_SLUG_SUFFIX = re.compile(r"[0-9a-z]+")
 WORKTREE_TOOLS = ("Agent", "Task", "EnterWorktree")
-HELPER_TOOLS = ("Agent", "Task")
 DEFAULT_AGENT_TYPE = "general-purpose"
-# Built-in agent types a live launch on the named runtime is to confirm make no
-# working copy when allowed. These were read from a 2.1.280 session's offered
-# list and await that launch (#963 section 6). A type the runtime adds later is refused until
-# it is confirmed here, because an unknown type may carry its own isolation.
+# Built-in agent types a live launch on the named runtime offered, called once
+# each with no isolation, and confirmed made no working copy. A type the runtime
+# adds later is refused until it is confirmed here, because an unknown type may
+# carry its own isolation.
 BUILTIN_SAFE_TYPES = {
     "general-purpose": "2.1.280",
     "Explore": "2.1.280",

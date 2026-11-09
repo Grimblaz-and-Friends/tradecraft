@@ -3997,8 +3997,10 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
                          "reason": "the request has a write-bound baseline but the run record has no comparison"}]
             status = "unrecorded"
         elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not cloud_findings:
+            # Copies and branches the run's record doesn't name are listed, never held (#963).
             bundles.append({**entry, "state": "clear", "findings": [],
-                            "attributed": comparison.get("attributed") or [], "account": None})
+                            "attributed": comparison.get("attributed") or [],
+                            "listed": comparison.get("listed") or [], "account": None})
             continue
         else:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
@@ -4020,7 +4022,8 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             if named == ids and not any(finding.get("released_by") == "tree" for finding in findings):
                 account = {"source": f"{marker.surface}:{marker.source_id}", "author": marker.author}
         bundles.append({**entry, "state": "accounted" if account else status, "findings": findings,
-                        "attributed": (comparison or {}).get("attributed") or [], "account": account})
+                        "attributed": (comparison or {}).get("attributed") or [],
+                        "listed": (comparison or {}).get("listed") or [], "account": account})
     held = [value for value in bundles if value["state"] in {"account-required", "unrecorded"}]
     return {"schema_version": 1, "status": "held" if held else "clear", "bundles": bundles}
 

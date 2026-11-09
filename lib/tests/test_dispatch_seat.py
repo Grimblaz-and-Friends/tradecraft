@@ -1874,3 +1874,20 @@ def test_906_a_seat_whose_planning_failed_records_not_launched_unless_it_ran(
         assert [finding["id"] for finding in comparison["findings"]] == ["unrecorded"]
     else:
         assert comparison["status"] == "not-launched" and comparison["findings"] == []
+
+
+def test_963_ac17_the_use_consumers_stdout_log_reaches_finish(job, tmp_path, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    seen = []
+    original = seat.launch_bound.Comparison.finish
+
+    def capture(self, seconds, **kwargs):
+        seen.append((kwargs.get("record"), any(item["method"] == "git-refs" for item in self.plan)))
+        return original(self, seconds, **kwargs)
+
+    monkeypatch.setattr(seat.launch_bound.Comparison, "finish", capture)
+    assert seat.run_dispatch(args) == 0
+    assert seen == [(seat.sidecar(args.output, ".claude.stdout.log"), True)]
+    assert record(args)["launch_comparison"]["run_record"]["status"] == "read"

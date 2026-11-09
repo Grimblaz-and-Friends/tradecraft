@@ -194,3 +194,49 @@ def test_ac14_report_repeats_the_bound_and_comparison():
     assert work._launch_comparison_report(request, running, attempt)["status"].startswith("not yet recorded")
     assert work._launch_comparison_report(request, {"lifecycle": "completed"}, attempt) == {"status": "unrecorded"}
     assert work._write_bound_report({"requested": {"vendor": "codex"}}, run, {"vendor": "codex"}) is None
+
+
+# --- #963: a working copy or branch the run's record names ---------------------
+
+REFS_HELD = {"id": "5e1d0c2b9a87", "kind": "working-copy", "item": "refs:D:/product/.git",
+             "path": "D:/copy-x", "change": "added", "branch_before": None, "branch_after": "helper-b",
+             "tip_before": None, "tip_after": "c" * 40,
+             "folded_branch": {"branch": "helper-b", "change": "added", "tip_before": None,
+                               "tip_after": "c" * 40},
+             "reason": "named in the run's record: Bash call toolu_1"}
+REFS_LISTED = {"id": "7a6b5c4d3e2f", "kind": "branch", "item": "refs:D:/product/.git",
+               "path": "refs/heads/session-b", "branch": "session-b", "change": "added",
+               "tip_before": None, "tip_after": "d" * 40, "checked_out_at": None,
+               "reason": "not named in the run's record"}
+
+
+def refs_comparison(findings):
+    return {"schema_version": 1, "status": "findings" if findings else "clean", "findings": findings,
+            "attributed": [], "listed": [REFS_LISTED], "coverage": [],
+            "run_record": {"path": "x.md.claude.stdout.log", "status": "read", "reason": None},
+            "record_lines_skipped": 0}
+
+
+@pytest.mark.parametrize("party", [
+    {"id": "5e1d0c2b9a87", "party": "builder-damage", "basis": "a helper's git worktree add",
+     "owner_report": "told the owner on the issue", "practice_issue": "Grimblaz-and-Friends/tradecraft#999"},
+    {"id": "5e1d0c2b9a87", "party": "session", "basis": "another session's copy",
+     "session": "89abcdef-0123-4567-89ab-cdef01234567"}])
+def test_ac16_a_held_refs_entry_releases_only_on_an_account_naming_it(tmp_path, party):
+    comparison = refs_comparison([REFS_HELD])
+    unaccounted = fixture_with(tmp_path / "a", comparison=comparison)
+    refusal = held(unaccounted)
+    assert refusal is not None and "5e1d0c2b9a87" in refusal.detail
+    assert "7a6b5c4d3e2f" not in refusal.detail  # A listed entry is never owed an account.
+    assert held(fixture_with(tmp_path / "b", account(OWNER), comparison=comparison)) is not None
+    accounted = fixture_with(tmp_path / "c", account(party), comparison=comparison)
+    assert held(accounted) is None
+    [bundle] = work._evaluate_launch_findings(accounted)["bundles"]
+    assert bundle["state"] == "accounted" and bundle["listed"] == [REFS_LISTED]
+
+
+def test_ac16_listed_entries_ride_a_clear_bundle_without_holding(tmp_path):
+    fixture = fixture_with(tmp_path, comparison=refs_comparison([]))
+    assert held(fixture) is None
+    [bundle] = work._evaluate_launch_findings(fixture)["bundles"]
+    assert bundle["state"] == "clear" and bundle["listed"] == [REFS_LISTED]
