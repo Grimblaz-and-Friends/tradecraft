@@ -32,8 +32,9 @@ LONG_SLUG_SUFFIX = re.compile(r"[0-9a-z]+")
 WORKTREE_TOOLS = ("Agent", "Task", "EnterWorktree")
 HELPER_TOOLS = ("Agent", "Task")
 DEFAULT_AGENT_TYPE = "general-purpose"
-# Built-in agent types confirmed, by a live launch on the named runtime, to make
-# no working copy when allowed. A type the runtime adds later is refused until
+# Built-in agent types a live launch on the named runtime is to confirm make no
+# working copy when allowed. These were read from a 2.1.280 session's offered
+# list and await that launch (#963 section 6). A type the runtime adds later is refused until
 # it is confirmed here, because an unknown type may carry its own isolation.
 BUILTIN_SAFE_TYPES = {
     "general-purpose": "2.1.280",
