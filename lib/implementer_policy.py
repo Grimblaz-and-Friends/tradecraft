@@ -150,8 +150,14 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
     guard = None
     if write_guard is not None:
         try:
+            # Built-in plugins stay enabled, so their agent definitions are looked up too (#963).
+            builtins = [(entry["id"].split("@", 1)[0], entry["installPath"]) for entry in entries
+                        if str(entry.get("id")).endswith("@builtin")
+                        and isinstance(entry.get("installPath"), str) and entry["installPath"]]
+            agents = launch_bound.agent_dirs(Path(write_guard["root"]), child, Path(plugin_root),
+                                             builtins)
             guard = launch_bound.prepare_guard(Path(temporary), Path(write_guard["root"]),
-                                               write_guard["session"], child, deadline)
+                                               write_guard["session"], child, deadline, agents)
         except launch_bound.BoundError as exc:
             raise PreparationError(str(exc)) from exc
         settings["hooks"] = guard["hooks"]

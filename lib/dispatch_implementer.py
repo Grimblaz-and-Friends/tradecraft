@@ -97,6 +97,20 @@ def read_machine_vendor(setting_path: Path | None = None) -> tuple[str, str]:
 
 
 INSTRUCTION_SHIM_PREFIX = environments.INSTRUCTION_SHIM_PREFIX
+# Every Claude launch's own instruction file opens with this rule, so a
+# hand-written dispatch carries it too (#963).
+# Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
+LAUNCH_HELPER_RULE = (
+    "**This launch keeps every helper in this tree (tradecraft #963).** Run each helper agent "
+    "inside this tree: give no Agent call an `isolation` value, use `general-purpose` (or no "
+    "`subagent_type`) unless a type's definition is known to set no isolation, and do not use "
+    "EnterWorktree. Do not make another working copy or branch from the shell either. The runtime "
+    "would put a separate copy under the repository's main checkout, outside this launch's write "
+    "bound, where its work goes unchecked. This launch refuses such a call before it runs, and a "
+    "refused call fails this turn. Where any other instruction says to give a file-editing helper "
+    "its own working copy, this launch's rule governs here. Keep two helpers off the same file at "
+    "the same time instead."
+)
 
 
 def _import_path(path: str) -> str:
@@ -105,20 +119,22 @@ def _import_path(path: str) -> str:
 
 
 def instruction_shim_plan(tree: Path, git_dir: Path | None) -> list[tuple[Path | None, str]]:
-    """Where an AGENTS.md-only tree's one-line CLAUDE.md shim may live, in order.
+    """Where the launch's own instruction file may live, in order, with its import line.
 
-    The runtime loads a tree's own CLAUDE.md through ``--add-dir``; a tree whose
-    rules live only in AGENTS.md gets a shim importing it (#893 R2). The first
-    placement is the tree's git directory with a relative import; the second is
-    the invocation's temporary directory (``None``) with an absolute import. An
+    Every Claude launch gets one carrying ``LAUNCH_HELPER_RULE`` (#963). The
+    runtime loads a tree's own CLAUDE.md through ``--add-dir``, so such a tree's
+    file goes in the invocation's temporary directory (``None``) with no import.
+    A tree whose rules live only in AGENTS.md gets an import of it (#893 R2): the
+    first placement is the tree's git directory with a relative import; the
+    second is the invocation's temporary directory with an absolute import. An
     import containing ``#`` did not deliver in any spiked form, so it is never
-    offered. A tree that needs a shim and has no placement refuses the launch.
+    offered. A tree that needs an import and has no placement refuses the launch.
     """
     if (tree / "CLAUDE.md").exists() or (tree / ".claude" / "CLAUDE.md").exists():
-        return []
+        return [(None, "")]
     target = tree / "AGENTS.md"
     if not target.exists():
-        return []
+        return [(None, "")]
     candidates: list[tuple[Path | None, str]] = []
     if git_dir is not None:
         try:
@@ -139,7 +155,7 @@ def instruction_shim_plan(tree: Path, git_dir: Path | None) -> list[tuple[Path |
 
 @contextmanager
 def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path, dispatch_id: str):
-    """Write the shim for this invocation only and remove it when it ends."""
+    """Write the launch's own instruction file for this invocation only, and remove it when it ends."""
     if not candidates:
         yield None
         return
@@ -152,12 +168,13 @@ def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path,
             errors.append(f"{directory}: {exc}")
             continue
         try:
-            (directory / "CLAUDE.md").write_bytes((line + "\n").encode("utf-8"))
+            text = LAUNCH_HELPER_RULE + "\n" + (f"\n{line}\n" if line else "")
+            (directory / "CLAUDE.md").write_bytes(text.encode("utf-8"))
             yield directory
         finally:
             shutil.rmtree(directory, ignore_errors=True)
         return
-    raise ImplementerError("cannot write the AGENTS.md instruction shim: " + "; ".join(errors))
+    raise ImplementerError("cannot write the launch's instruction file: " + "; ".join(errors))
 
 
 def build_command(args: argparse.Namespace, executable: list[str], last_message: Path) -> list[str]:
@@ -210,7 +227,7 @@ def _claude_result(raw: bytes, check: dict | None = None) -> tuple[bool, bytes, 
     return True, message.encode("utf-8"), session, ""
 
 
-def _finish_comparison(comparison, error, deadline, *, process_started=True) -> dict[str, object]:
+def _finish_comparison(comparison, error, deadline, *, process_started=True, record=None) -> dict[str, object]:
     """The after-snapshot; one that cannot run is held as unrecorded (#906).
 
     A launch that failed before its process call ran nothing, so it records
@@ -226,7 +243,8 @@ def _finish_comparison(comparison, error, deadline, *, process_started=True) -> 
     except TimeoutError as exc:
         return launch_bound.unrecorded(f"after-snapshot had no cleanup window: {exc}")
     try:
-        return comparison.finish(seconds)
+        # The run's own stream names what it made (#963).
+        return comparison.finish(seconds, record=record)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         return launch_bound.unrecorded(f"comparison failed: {type(exc).__name__}: {exc}")
 
@@ -688,7 +706,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     comparison = launch_bound.Comparison(
                         root=root, env=child_env, launcher_plugin=Path(__file__).resolve().parent.parent,
                         own_output=output, own_request=request_path,
-                        holder_session_id=args.holder_session_id, dispatch_id=dispatch_id)
+                        holder_session_id=args.holder_session_id, dispatch_id=dispatch_id, refs=True)
                 except (OSError, ValueError, TypeError) as exc:
                     comparison, comparison_error = None, f"coverage could not be planned: {exc}"
                 request["write_bound"] = {
@@ -1050,7 +1068,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     if "write_bound" in request:
                         # After recovery's own evidence, with whatever cleanup window remains.
                         record["launch_comparison"] = _finish_comparison(
-                            comparison, comparison_error, deadline, process_started=process_started)
+                            comparison, comparison_error, deadline, process_started=process_started,
+                            record=stdout_path)
                 records.add_usage_record(
                     attempt, request, completed_at=record["completed_at"],
                     staffing_status=(

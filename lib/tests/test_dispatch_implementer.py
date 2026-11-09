@@ -475,6 +475,8 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
         "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
         "--strict-mcp-config", "--no-chrome", "--add-dir", str(args.root.resolve()),
         "--disallowedTools=Monitor,ScheduleWakeup,CronCreate,Workflow",
+        # Every Claude launch carries its own instruction file (#963).
+        "--add-dir", str(args.instruction_shim),
         "--settings", args.launch_settings_path,
     ]
     if resume:
@@ -1712,7 +1714,10 @@ def test_every_claude_route_loads_the_tree_through_the_same_command(job, monkeyp
     observed = seen_claude(args)
     flags = observed["argv"]
     assert flags[flags.index("--setting-sources") + 1] == "user"
-    assert [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"] == [str(args.root.resolve())]
+    assert [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"] == [
+        str(args.root.resolve()), str(args.instruction_shim)]
+    # AC6 (#963): the launch's own instruction file carries the helper rule on every route.
+    assert observed["add_dirs"][str(args.instruction_shim)] == implementer.LAUNCH_HELPER_RULE + "\n"
     assert observed["additional_claude_md"] == "1"
 
 
@@ -1731,12 +1736,13 @@ def agents_only(tree):
 
 
 @pytest.mark.parametrize("present", ["CLAUDE.md", ".claude/CLAUDE.md"])
-def test_a_tree_with_its_own_claude_md_gets_no_shim(tmp_path, present):
+def test_a_tree_with_its_own_claude_md_gets_an_instruction_file_with_no_import(tmp_path, present):
+    # AC6 (#963): every Claude launch gets its own instruction file.
     tree = agents_only(tmp_path / "tree")
     (tree / present).parent.mkdir(parents=True, exist_ok=True)
     (tree / present).write_bytes(b"@AGENTS.md\n")
-    assert implementer.instruction_shim_plan(tree, tree / ".git") == []
-    assert implementer.instruction_shim_plan(tmp_path / "empty", None) == []
+    assert implementer.instruction_shim_plan(tree, tree / ".git") == [(None, "")]
+    assert implementer.instruction_shim_plan(tmp_path / "empty", None) == [(None, "")]
 
 
 @pytest.mark.parametrize("segment", ["space dir/tree one", "a #1 b", "caf" + chr(0xE9) + " (x86) o'k"])
@@ -1799,7 +1805,8 @@ def test_agents_only_tree_launch_carries_its_shim_and_removes_it(job, monkeypatc
     observed = seen_claude(args)
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
     shim = implementer.records.git_directory(args.root) / (implementer.INSTRUCTION_SHIM_PREFIX + request["dispatch_id"])
-    assert observed["add_dirs"] == {str(args.root.resolve()): None, str(shim): "@../../AGENTS.md\n"}
+    assert observed["add_dirs"] == {str(args.root.resolve()): None,
+                                    str(shim): implementer.LAUNCH_HELPER_RULE + "\n\n@../../AGENTS.md\n"}
     assert not shim.exists()
     status = git(args.root, "status", "--porcelain", "--untracked-files=all").stdout.decode()
     assert "tradecraft-instructions" not in status
@@ -2004,7 +2011,7 @@ def test_906_ac1_ac13_refused_or_unproved_write_fails_the_turn_and_is_recorded(j
     attempt = logged["attempts"][0]
     assert logged["outcome"] == attempt["outcome"] == "error"
     if decided:
-        assert attempt["reason"] == f"launch write bound refused Write {outside}"
+        assert attempt["reason"] == f"launch bound refused Write {outside}"
         assert logged["write_guard"]["refusals"][0]["canonical"] == outside
     else:
         assert "write bound unproved: Write" in attempt["reason"]
