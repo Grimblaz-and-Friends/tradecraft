@@ -109,10 +109,14 @@ def _writes(allowance: dict) -> str:
 
 
 def sentence(allowance: dict, *, vendor: str = "claude") -> str:
-    """The instruction every bounded step receives, in its prompt or launcher notice."""
+    """The instruction every bounded step receives, in its prompt or launcher notice.
+
+    One sentence for both vendors: a Codex launch's children get the same child
+    settings, so the same child start is checked there too.
+    """
     start = (f"Start a Claude session only as `{CHILD_START} ...`, without `--safe-mode` or "
-             f"`--bare` and without changing `{CONNECTORS}`; it may make no GitHub write."
-             if vendor == "claude" else "Start no Claude or Codex session.")
+             f"`--bare` and without changing `{CONNECTORS}`; it may make no GitHub write. "
+             "Start no Codex session.")
     return (f"GitHub writes this step may make: {_writes(allowance)}. Make no other GitHub write "
             "— no comment, pull request, branch, branch deletion, tag, release, workflow run or "
             "setting. GitHub reads (`gh api --method GET`, fetches) stay open. " + start
@@ -315,22 +319,42 @@ def prepare(temporary, allowance: dict, *, carrier: str, root, env: dict[str, st
             "child_settings": str(child_settings)}
 
 
-def prepare_codex(allowance: dict, env: dict[str, str], version: str | None) -> dict[str, object]:
-    """The Codex block: environment removal and an honest record that no command check ran.
+def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
+                  temporary=None, root=None) -> dict[str, object]:
+    """The Codex block: environment removal, child settings, and a record that no check ran.
 
-    The installed Codex offers no per-launch rule source a launch can supply
-    without writing into the product tree or the owner's Codex home.
+    Codex 0.167 loads execpolicy rules only from user or project ``.rules``
+    files and ``requirements.toml``; no source can be supplied for one launch
+    without writing into the product tree, the owner's Codex home or the
+    machine's policy, so the parent's own commands go unchecked and its record
+    says so. A Claude session it starts carries the same child settings.
     """
     child = dict(env)
     child[CONNECTORS] = "false"
+    child_settings = None
+    if temporary is not None:
+        temporary = Path(temporary)
+        child_settings = temporary / "child-settings.json"
+        log = temporary / "github-write.log.jsonl"
+        child_path = temporary / "github-write-child.json"
+        child_allowance = {"kind": "none", "repository": allowance.get("repository"), "branch": None,
+                           "pull_request": None, "grants": []}
+        _write_json(child_path, _config(child_allowance, scope="child", root=root, log=log,
+                                        child_settings=child_settings))
+        _write_json(child_settings, {"disableAllHooks": False,
+                                     "hooks": {"PreToolUse": [hook_entry(child_path)]}})
+        log.write_bytes(b"")
+        child[CHILD_VARIABLE] = str(child_settings)
     keep = permits_push(allowance)
     if not keep:
         child = without_push_credential(child)
     record = bound_record(allowance, carrier="none", status="not-run",
                           reason=f"the installed Codex ({version or 'version unknown'}) offers no "
                                  "per-launch rule source", self_test=None,
-                          push_credential="kept" if keep else "removed", child_settings=None)
-    return {"env": child, "record": record}
+                          push_credential="kept" if keep else "removed",
+                          child_settings=str(child_settings) if child_settings else None)
+    return {"env": child, "record": record,
+            "log": str(Path(temporary) / "github-write.log.jsonl") if temporary is not None else None}
 
 
 def bound_record(allowance: dict, *, carrier: str, status: str, reason, self_test,

@@ -34,6 +34,7 @@ import cold_draft
 from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claude_launch_notice,
                                 claude_stream_check, claude_terminal, stream_check_reason,
                                 stream_check_record)
+import github_allowance
 import launch_bound
 import launch_settings
 import run_lifecycle as lifecycle
@@ -437,6 +438,23 @@ def compared_launch(args, vendor):
     return vendor == "claude" and args.stage == "use" and args.requires == "execute"
 
 
+def use_consumer_bound(args, root, temporary, allocation_seconds):
+    """Prepare the use consumer's GitHub write bound, or refuse the launch (#894).
+
+    Design: lib/DESIGN.md#the-github-write-bound
+    """
+    allowance = github_allowance.allowance_for(
+        "use", repository=github_allowance.repository_of(args.work), branch=None, pull_request=None)
+    base = claude_launch_env(os.environ, allocation_seconds)
+    try:
+        bound = github_allowance.prepare(temporary, allowance, carrier="shell-prefix", root=root, env=base)
+    except github_allowance.BoundError as exc:
+        raise DispatchError(f"the use consumer's GitHub write check could not be prepared: {exc}") from exc
+    prompt = args.dispatch.expanduser().read_bytes()
+    told = github_allowance.sentence(allowance).encode("utf-8") in prompt
+    return {**bound, "notice": b"" if told else github_allowance.notice(allowance)}
+
+
 def request_permission_boundary(args, root, windows_sandbox):
     boundary = permission_boundary(
         args.vendor, args.requires, root,
@@ -725,6 +743,14 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             attempt["runtime_version_unavailable_reason"] = (
                                 None if attempt["runtime_version"] else "runtime version command returned no value"
                             )
+                            github_bound = None
+                            if compared_launch(args, vendor):
+                                # The use consumer's GitHub write bound (#894): no write
+                                # allowed. Settings hooks don't run under --safe-mode, so
+                                # its check rides the shell prefix.
+                                github_bound = use_consumer_bound(
+                                    args, root, Path(temp), request["recipient_allocation_seconds"])
+                                record["github_write_bound"] = github_bound["record"]
                             returned = False
                             started = time.monotonic()
                             try:
@@ -744,6 +770,11 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                     launch_input = prompt + b"\n\n" + claude_notice
                                     launch_env = claude_launch_env(
                                         os.environ, request["recipient_allocation_seconds"])
+                                if github_bound is not None:
+                                    launch_env = github_bound["env"]
+                                    if github_bound["notice"]:
+                                        launch_input = launch_input + b"\n\n" + github_bound["notice"]
+                                        record["github_write_notice"] = github_bound["notice"].decode("utf-8")
                                 if compared_launch(args, vendor):
                                     process_started = True
                                 result = run_process(command, input=launch_input, cwd=root, timeout=allocation,
@@ -792,6 +823,10 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
                             elapsed = time.monotonic() - started
+                            if github_bound is not None:
+                                # A refusal is reported, not held: it changes no outcome.
+                                record["github_write_refusals"] = github_allowance.refusals(
+                                    github_bound["log"])
                             if record.get("interruption_cause") == "ceiling":
                                 reason = lifecycle.ceiling_reason(vendor, caller_limit=args.timeout_seconds,
                                                                   allocation=allocation, elapsed=elapsed) + "; no fallback"

@@ -611,10 +611,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         args.launch_settings_path = intent["settings_path"]
                     else:
                         codex_bound = github_allowance.prepare_codex(
-                            allowance, dict(os.environ if child_env is None else child_env), None)
+                            allowance, dict(os.environ if child_env is None else child_env), None,
+                            temporary=temporary, root=root)
                         child_env = codex_bound["env"]
                         intent = policy.codex_prepare(executable, root, deadline, env=child_env)
-                        intent["github_write_bound"] = {"record": codex_bound["record"], "log": None}
+                        intent["github_write_bound"] = {"record": codex_bound["record"],
+                                                        "log": codex_bound["log"]}
                         config = native_codex.read_config(build_command(args, executable, last_message),
                                                          root, deadline, env=child_env)
                         intent["thread_config"] = policy.restriction_config(config, intent)

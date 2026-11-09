@@ -1874,3 +1874,67 @@ def test_906_a_seat_whose_planning_failed_records_not_launched_unless_it_ran(
         assert [finding["id"] for finding in comparison["findings"]] == ["unrecorded"]
     else:
         assert comparison["status"] == "not-launched" and comparison["findings"] == []
+
+
+@pytest.mark.parametrize("refuse", [False, True])
+def test_894_a_use_consumer_is_bounded_and_its_refusals_reach_its_run_record(
+        job, tmp_path, monkeypatch, refuse):
+    import github_allowance
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    args.work = "o/r#894"
+    original = seat.run_process
+    seen = {}
+
+    def claude_runs_a_command(command, **kwargs):
+        env = kwargs["env"]
+        seen.update(env)
+        if refuse:
+            # As the runtime does: the shell prefix receives the wrapped command.
+            ran = subprocess.run(
+                [github_allowance.bash_executable(), env["CLAUDE_CODE_SHELL_PREFIX"],
+                 github_allowance.harness_string("gh issue comment 1 -R o/r --body x")],
+                capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+            assert ran.returncode == 126 and b"refused" in ran.stderr
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(seat, "run_process", claude_runs_a_command)
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    bound = logged["github_write_bound"]
+    assert bound["allowance"]["kind"] == "none" and bound["allowance"]["repository"] == "o/r"
+    assert bound["command_check"] == {"carrier": "shell-prefix", "status": "armed", "reason": None,
+                                      "self_test": "passed"}
+    assert bound["push_credential"] == "removed"
+    assert seen["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false" and seen["TRADECRAFT_CHILD_SETTINGS"]
+    assert "Write requests" in logged["github_write_notice"]
+    assert logged["outcome"] == "success"
+    refusals = logged["github_write_refusals"]
+    if refuse:
+        assert [entry["command"] for entry in refusals] == ["gh issue comment 1 -R o/r --body x"]
+        assert refusals[0]["entry"] == "prefix" and refusals[0]["allowance"]["kind"] == "none"
+    else:
+        assert refusals == []
+
+
+@pytest.mark.parametrize("stage, requires", [("cold-read", "read"), ("cold-reader", "read"),
+                                             ("use", "read")])
+def test_894_a_seat_without_a_shell_carries_no_github_write_bound(job, tmp_path, monkeypatch, stage, requires):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires = stage, requires
+    if stage in ("use", "cold-reader"):
+        args.classification = "cold"
+    seen = {}
+    original = seat.run_process
+
+    def capture(command, **kwargs):
+        seen.update(kwargs["env"] or {})
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(seat, "run_process", capture)
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    assert "github_write_bound" not in logged and "github_write_refusals" not in logged
+    assert "ENABLE_CLAUDEAI_MCP_SERVERS" not in seen and "TRADECRAFT_CHILD_SETTINGS" not in seen
