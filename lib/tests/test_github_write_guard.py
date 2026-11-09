@@ -173,9 +173,38 @@ def test_connectors_cannot_be_turned_back_on(tree, command):
 
 
 def test_text_that_cannot_be_parsed_is_refused_only_with_a_signature(tree):
-    assert decision("cat <<EOF\ngh issue comment 1\nEOF", tree, "none") == "deny"
-    assert decision("cat <<EOF\nhello\nEOF", tree, "none") == "allow"
+    assert decision("cat <<EOF\nunterminated gh issue comment 1", tree, "none") == "deny"
+    assert decision("cat <<EOF\nunterminated hello", tree, "none") == "allow"
+    assert decision('echo "unbalanced gh issue comment 1', tree, "none") == "deny"
     assert decision('grep "git push" notes.txt', tree, "none") == "allow"
+
+
+PERSIST = "python skills/persist-changes/scripts/persist.py --expect-branch tradecraft/894-ab"
+
+
+@pytest.mark.parametrize("command", [
+    # The commit and persist routes a builder is shown, with messages naming the writes.
+    "git commit -m \"$(cat <<'EOF'\nDon't git push; gh api repos/o/r (#894)\n\n"
+    "Co-Authored-By: x <x@y>\nEOF\n)\"",
+    PERSIST + " -m \"$(cat <<'EOF'\nIt's a gh issue comment and git push fix (#894)\nEOF\n)\" lib/a.py",
+    PERSIST + " -m 'One line naming git push and gh pr comment' lib/a.py",
+    PERSIST + ' -m "Multi-line\nnaming git push origin main\nand gh api -X POST" lib/a.py',
+    "git commit -F - <<'EOF'\ngit push origin main\ngh issue comment 683\nEOF",
+    "cat > msg.txt <<EOF\ngh issue comment 3\nEOF\ngit commit -F msg.txt",
+])
+def test_commit_and_persist_routes_pass_whatever_the_message_names(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+    assert decision(command, tree, "none") == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    "bash <<'EOF'\ngh issue comment 683\nEOF",
+    "bash -s <<EOF\ngit push origin HEAD:refs/heads/other\nEOF",
+    "cat <<EOF\nx\nEOF\ngh issue comment 1",
+    'git commit -m "line `gh issue comment 1`"',
+])
+def test_a_shell_reading_a_here_document_or_a_substitution_is_judged(tree, command):
+    assert decision(command, tree, "branch") == "deny"
 
 
 def test_a_push_grant_permits_exactly_its_ref(tree):

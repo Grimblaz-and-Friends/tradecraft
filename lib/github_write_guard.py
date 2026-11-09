@@ -81,6 +81,7 @@ class Context:
     assigned: dict[str, str | None] = field(default_factory=dict)
     cleared: bool = False
     depth: int = 0
+    docs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -91,18 +92,29 @@ class Finding:
 
 # --- splitting ----------------------------------------------------------------
 
-def _scan(text: str) -> tuple[str, list[str], bool]:
-    """Turn unquoted newlines into ';', lift out $(...) and backtick bodies.
+HEREDOC_WORD = "__tradecraft_heredoc_{}__"
+HEREDOC = re.compile(r"__tradecraft_heredoc_(\d+)__")
+DELIMITER = re.compile(r"[ \t]*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\?([^\s;&|<>()'\"]+))")
 
-    Returns the outer text with each substitution replaced by a placeholder
-    word, the substitution bodies (each judged as its own command text), and
-    whether a here-document was seen.
+
+def _scan(text: str, start: int = 0, closer: str | None = None
+          ) -> tuple[str, list[str], list[str], int]:
+    """Turn unquoted newlines into ';', and lift out substitutions and here-documents.
+
+    Returns the outer text with each ``$( )`` or backtick body replaced by a
+    placeholder word and each here-document operator replaced by a numbered
+    placeholder word; the substitution bodies (each judged as its own command
+    text); the here-document bodies, by number; and where scanning stopped.
+    A here-document body is data unless a shell reads it, so a commit message
+    that mentions ``git push`` is never mistaken for one.
     """
     out: list[str] = []
     subs: list[str] = []
-    heredoc = False
+    docs: list[str] = []
+    pending: list[tuple[str, bool, int]] = []
     quote = None
-    i = 0
+    depth = 0
+    i = start
     while i < len(text):
         char = text[i]
         if quote == "'":
@@ -119,25 +131,10 @@ def _scan(text: str) -> tuple[str, list[str], bool]:
             i += 2
             continue
         if char == "$" and text[i + 1:i + 2] == "(":
-            depth, j = 1, i + 2
-            inner_quote = None
-            while j < len(text) and depth:
-                c = text[j]
-                if inner_quote:
-                    if c == inner_quote:
-                        inner_quote = None
-                elif c in "'\"":
-                    inner_quote = c
-                elif c == "(":
-                    depth += 1
-                elif c == ")":
-                    depth -= 1
-                j += 1
-            if depth:
-                raise Unparsed("unbalanced $( )")
-            subs.append(text[i + 2:j - 1])
+            _out, _subs, _docs, end = _scan(text, i + 2, ")")
+            subs.append(text[i + 2:end])
             out.append("__tradecraft_substitution__")
-            i = j
+            i = end + 1
             continue
         if char == "`":
             end = text.find("`", i + 1)
@@ -153,26 +150,61 @@ def _scan(text: str) -> tuple[str, list[str], bool]:
                 quote = None
             i += 1
             continue
+        if closer and char == "(":
+            depth += 1
+        elif closer and char == ")":
+            if depth == 0:
+                if pending:
+                    raise Unparsed("a here-document with no body")
+                return "".join(out), subs, docs, i
+            depth -= 1
         if char in "'\"":
             quote = char
-        elif char == "\n":
-            out.append(";")
-            i += 1
-            continue
         elif char == "<" and text[i + 1:i + 2] == "<" and text[i + 2:i + 3] != "<":
-            heredoc = True
+            j = i + 2
+            strip = text[j:j + 1] == "-"
+            if strip:
+                j += 1
+            match = DELIMITER.match(text, j)
+            if not match:
+                raise Unparsed("a here-document with no delimiter")
+            delimiter = match.group(1) or match.group(2) or match.group(3)
+            pending.append((delimiter, strip, len(docs)))
+            docs.append("")
+            out.append(" " + HEREDOC_WORD.format(len(docs) - 1) + " ")
+            i = match.end()
+            continue
+        elif char == "\n":
+            i += 1
+            for delimiter, strip, index in pending:
+                body: list[str] = []
+                while True:
+                    if i >= len(text):
+                        raise Unparsed("an unterminated here-document")
+                    end = text.find("\n", i)
+                    line = text[i:] if end < 0 else text[i:end]
+                    i = len(text) if end < 0 else end + 1
+                    if (line.lstrip("\t") if strip else line) == delimiter:
+                        break
+                    body.append(line)
+                docs[index] = "\n".join(body)
+            pending = []
+            out.append(";")
+            continue
         out.append(char)
         i += 1
     if quote:
         raise Unparsed("unbalanced quote")
-    return "".join(out), subs, heredoc
+    if closer:
+        raise Unparsed("unbalanced $( )")
+    if pending:
+        raise Unparsed("a here-document with no body")
+    return "".join(out), subs, docs, i
 
 
-def split_commands(text: str) -> tuple[list[list[str]], list[str]]:
-    """Simple commands as word lists, and the command substitutions inside them."""
-    outer, subs, heredoc = _scan(text)
-    if heredoc:
-        raise Unparsed("a here-document")
+def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str]]:
+    """Simple commands as word lists, their command substitutions, and here-document bodies."""
+    outer, subs, docs, _end = _scan(text)
     lexer = shlex.shlex(outer, posix=True, punctuation_chars="();<>|&")
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -199,7 +231,7 @@ def split_commands(text: str) -> tuple[list[list[str]], list[str]]:
             current.append(token)
     if current:
         commands.append(current)
-    return commands, subs
+    return commands, subs, docs
 
 
 def program(word: str) -> str:
@@ -250,15 +282,17 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
     if ctx.depth > 8:
         return [Finding("deeply nested command", "the command nests shells too deeply to judge")]
     try:
-        commands, subs = split_commands(text)
+        commands, subs, docs = split_commands(text)
     except Unparsed as exc:
         return _tripwire(text, str(exc))
+    outer_docs, ctx.docs = ctx.docs, docs
     findings: list[Finding] = []
     for sub in subs:
         findings.extend(judge_text(sub, Context(ctx.cwd, ctx.config, ctx.assigned, ctx.cleared,
                                                 ctx.depth + 1)))
     for words in commands:
         findings.extend(judge_simple(words, ctx, text))
+    ctx.docs = outer_docs
     return findings
 
 
@@ -377,7 +411,13 @@ def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
                 if index + 1 < len(words):
                     return _inner(ctx, words[index + 1])
                 return []
-        return []
+        # A shell reading a here-document runs its body; any other program reads it as data.
+        found: list[Finding] = []
+        for word in words[1:]:
+            match = HEREDOC.fullmatch(word)
+            if match and int(match.group(1)) < len(ctx.docs):
+                found.extend(_inner(ctx, ctx.docs[int(match.group(1))]))
+        return found
     if name in POWERSHELLS:
         for index, word in enumerate(words[1:], 1):
             if word.lower() in ("-c", "-command", "/c", "/command"):
