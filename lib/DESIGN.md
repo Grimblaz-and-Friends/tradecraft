@@ -103,3 +103,38 @@ Before anything is built or launched:
 - This keeps the record out of the consumer's folder only. A consumer whose shell reaches the rest of the machine can still find the entrance's records, which is a separate exposure.
 
 **Decisions in force:** D-726, the entrance is the holder's instrument, which builds neutral, mode-declared, history-free consumer trees; D-736, a landed commit is a lawful consumer-tree source; D-968, a consumer tree keeps its record elsewhere.
+
+## The GitHub write bound
+
+A dispatched session that can write (the artifact author, the builder, the use consumer) makes only
+the GitHub writes its own step needs, and returns any other as a request in a **Write requests**
+section; a session one of them starts makes none (#894). Code: `github_allowance.py` (allowance,
+sentence, launch preparation, grants) and `github_write_guard.py` (the command check).
+
+Decisions in force (D-894):
+
+- **The allowance comes from the stage.** `build` and `floor`: a push to the registered branch.
+  `review-disposition`: that push, plus a reply on and a resolve of a thread of its own pull request
+  and a conversation comment there. Every other stage, the use consumer and any started child:
+  none. Reads (`gh api --method GET`, GraphQL queries, fetches) stay open to every step.
+- **Instructions and a launch block together.** Every bounded launch is told the allowance sentence
+  (in the launcher's notice unless the dispatch already carries it). The launch turns claude.ai
+  connectors off with `ENABLE_CLAUDEAI_MCP_SERVERS=false`, names its child settings in
+  `TRADECRAFT_CHILD_SETTINGS`, and, when the allowance permits no push, clears git's credential
+  helpers and ssh agent; the `gh` login stays because reads need it.
+- **The check runs on every shell command.** A Claude implementer carries it as a `PreToolUse` hook
+  on `Bash|PowerShell`; the use consumer, whose `--safe-mode` skips settings hooks, carries it
+  through `CLAUDE_CODE_SHELL_PREFIX`. A refusal fails the command, not the turn, and lands in the
+  run record's `github_write_refusals`; the run record's `github_write_bound` states the allowance
+  and whether the check ran.
+- **A child starts only under the launch's settings.** `claude --setting-sources user --settings
+  "$TRADECRAFT_CHILD_SETTINGS"`, without `--safe-mode`, `--bare` or a connector change; any other
+  Claude start, and every Codex start, is refused.
+- **It is a tripwire, not a fence.** A write from inside a script (persist-changes' own push
+  included) is not seen, and no after-run check of GitHub looks for one.
+- **Codex** gets the instructions and the environment removal; its run record says no command check
+  ran, because the installed Codex offers no per-launch rule source. **A cloud build** records that
+  the launch block did not run.
+- **Grants rest on the affirmed brief.** `github_allowance.validate_grant` accepts a
+  `write-grant` marker only for a resumed turn of its own stage whose quoted words occur in the
+  cited row of the affirmed brief; a push grant keeps git's credential for that turn.

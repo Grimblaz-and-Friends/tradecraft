@@ -25,6 +25,7 @@ import urllib.request
 
 import dispatch_record as records
 from dispatch_lifecycle import CLAUDE_DISALLOWED_TOOLS
+import github_allowance
 import launch_bound
 import run_lifecycle as lifecycle
 
@@ -1056,6 +1057,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                    "published_output_unavailable_reason": "no completed final source return",
                    "assessment": "unassessed"},
         "route": "cloud", "launch_comparison": launch_bound.cloud_not_run(),
+        # The GitHub write bound's launch block cannot run on the remote machine (#894).
+        "github_write_bound": github_allowance.cloud_record(getattr(args, "lineage_branch", None), branch),
     }
     if cloud.get("fire_unresolved"):
         run_record["launch_unresolved"] = True  # recovery refuses another writer until it is resolved
