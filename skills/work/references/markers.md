@@ -144,6 +144,19 @@ The head binds the covered flags; initial adoption may cover historical turns at
 
 The hold releases only when the named ids equal the bundle's finding ids exactly and the comment was posted after the run completed (for an unrecorded comparison, after the launch began); an unrecorded comparison is named by the id `unrecorded`. A failed `cloud-check:local_tree` is the exception: only the local tree containing the returned branch tip releases it, never an account, because the next stage builds from that tree. A partial, extra-id, untrusted or malformed account discharges nothing. The procedure is `launch-findings.md`.
 
+## `write-grant`
+
+- **Exact form:** `<!-- tradecraft:write-grant:v1 brief=COMMENT_ID row=N stage=STAGE write=KIND target=TARGET -->`, followed by a blockquote of the words in that row of the affirmed brief that name the write.
+- **Attributes and lawful values:** `brief` is the affirmed brief comment's numeric id; `row` is the row's number; `stage` is the implementer stage the grant is for (`artifact`, `build`, `floor` or `review-disposition`); `write` is `push`, `comment` or `api`. A `push` target is `owner/name:refs/heads/x` or `owner/name:refs/tags/x`; a `comment` target is `owner/name#n`; an `api` target is `METHOD path`, matched exactly.
+- **Producer, surface, moment:** the holder, in an issue comment, before it resumes the step with `run <stage> --grant <this comment's id>`.
+
+The entrance accepts the grant only for a turn that resumes that stage, when `brief` is the current affirmed brief, the row exists and carries the quoted words, and the target has its form; otherwise it refuses before anything launches. An accepted grant allows exactly that write in that turn, a `push` grant keeps git's credential for it, and the run record's `github_write_bound.allowance.grants` and the release report list it with its brief comment and row. A write the brief does not name has no grant: it goes to the owner as a change to an affirmed row.
+
+```text
+<!-- tradecraft:write-grant:v1 brief=6749088039 row=4 stage=artifact write=push target=owner/product:refs/heads/probe -->
+> The artifact must test a real push
+```
+
 ## `builder-session`
 
 - **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.

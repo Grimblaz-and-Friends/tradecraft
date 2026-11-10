@@ -65,3 +65,5 @@ The entrance's implementer environments show, per cloud attempt:
 - `instructions_applied` and `instructions_loaded`: the run is told to read the product's `CLAUDE.md` and `AGENTS.md`, `instructions_loaded` lists the files it reports loading, and no repository's committed hooks or permission rules apply, because the session starts above its clones.
 
 The launch comparison reads `cloud-not-run` with its reason, a clear status. Cost is each attempt's delta of the session's running total, priced per model at the rate card; a model with no rate row is unpriced, never zero.
+
+A cloud builder is told its route's GitHub write allowance in the routine's own text: it pushes the change branch and its report branch, and posts nothing. The launch block that holds a local launch's allowance runs on this machine, so the cloud run record's `github_write_bound` says its command check is `not-run` and why.
