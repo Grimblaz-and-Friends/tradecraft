@@ -6312,9 +6312,11 @@ def _github_write_report(state: WorkState) -> dict[str, object]:
         # reported here, as unknown with its error, and never stops the report it rides on.
         return {"status": "unknown", "reason": type(exc).__name__ + ": " + str(exc),
                 "refusals": [], "grants": []}
-    refusals, grants = [], []
+    refusals, grants, unread = [], [], []
     for _order, _bundle, request, run in rows:
         identity = {"dispatch_id": request.get("dispatch_id"), "stage": request.get("stage")}
+        if run.get("github_write_refusals_unknown"):
+            unread.append(f"{identity['dispatch_id']}: {run['github_write_refusals_unknown']}")
         for entry in run.get("github_write_refusals") or ():
             if isinstance(entry, dict):
                 refusals.append({**identity, **{key: entry.get(key) for key in (
@@ -6324,6 +6326,10 @@ def _github_write_report(state: WorkState) -> dict[str, object]:
         for grant in (allowance or {}).get("grants") or ():
             if isinstance(grant, dict):
                 grants.append({**identity, **grant})
+    if unread:
+        # A launch whose log was lost may have refused more than its record shows.
+        return {"status": "unknown", "reason": "a launch's refusal log could not be read: "
+                + "; ".join(unread), "refusals": refusals, "grants": grants}
     # "read": the lists are complete for the scoped launches; each refusal was refused, not made.
     return {"status": "read", "refusals": refusals, "grants": grants}
 

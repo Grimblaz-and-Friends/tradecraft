@@ -362,7 +362,7 @@ def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
             while words and words[0].startswith("-"):
                 words.pop(0)
             if name == "timeout" and words:
-                words.pop(0)  # the duration
+                _duration = words.pop(0)
             continue
         if name == "xargs":
             words.pop(0)
@@ -586,6 +586,7 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
         return []
     write = f"git push to {destination}"
     target = (allowance.get("repository") or "").lower()
+    repositories = []
     for url in urls:
         if _is_local(url):
             continue
@@ -595,6 +596,7 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
         grant_refs = _push_grant_refs(allowance, repository)
         if not permits_push(allowance) or (repository != target and not grant_refs):
             return [Finding(write, f"a push to {repository}")]
+        repositories.append(repository)
     if always:
         # No grant lifts these: a grant allows exactly its own ref, and a ref-wide push such as
         # --tags pushes every local ref of its kind, not just the granted one.
@@ -602,14 +604,18 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
     destinations = _destination_refs(refspecs, cwd, destination)
     if destinations is None:
         return [Finding(write, "the push's destination ref could not be resolved")]
-    allowed = set(_push_grant_refs(allowance, target))
-    if allowance.get("kind") in ("branch", "review-disposition") and allowance.get("branch"):
-        allowed.add("refs/heads/" + allowance["branch"])
-    for ref, problem in destinations:
-        if problem:
-            return [Finding(write, problem)]
-        if ref not in allowed:
-            return [Finding(write, f"a push to {ref}")]
+    for repository in repositories:
+        # Each ref counts only on its own repository: a grant's on the grant's, and the step's
+        # branch on the step's, so a grant elsewhere never carries the step's branch there.
+        allowed = set(_push_grant_refs(allowance, repository))
+        if (repository == target and allowance.get("kind") in ("branch", "review-disposition")
+                and allowance.get("branch")):
+            allowed.add("refs/heads/" + allowance["branch"])
+        for ref, problem in destinations:
+            if problem:
+                return [Finding(write, problem)]
+            if ref not in allowed:
+                return [Finding(write, f"a push to {ref}")]
     return []
 
 
@@ -1043,15 +1049,25 @@ def _harness_command(argument: str) -> str:
     return match.group(1).replace("'\\''", "'") if match else argument
 
 
-def _log(config: dict, entry: dict) -> None:
+def _log(config: dict, entry: dict) -> str | None:
+    """Append the decision to the launch's log; return why it could not be, or None."""
     log = config.get("log") if isinstance(config, dict) else None
     if not isinstance(log, str):
-        return
+        return "the check's configuration names no log"
     try:
         with open(log, "ab") as stream:
             stream.write((json.dumps(entry, ensure_ascii=True) + "\n").encode("utf-8"))
-    except OSError:
-        pass
+    except OSError as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _unrecorded(verdict: dict, problem: str | None) -> dict:
+    """A refusal the log lost still refuses, and its own message says it reached no record."""
+    if problem is None or verdict["decision"] != "deny":
+        return verdict
+    return {**verdict, "reason": f"{verdict['reason']} (this refusal could not be recorded in the "
+                                 f"run record: {problem})"}
 
 
 def _entry(config: dict, entry_kind: str, session, tool, command, verdict) -> dict:
@@ -1081,7 +1097,7 @@ def run_hook(config_path: str) -> int:
     except Exception as exc:  # Fail closed: an unjudged command is refused.
         verdict = {"decision": "deny",
                    "reason": f"{REFUSED}: the check could not evaluate this command: {exc}"}
-    _log(config, _entry(config, "hook", session, tool, command, verdict))
+    verdict = _unrecorded(verdict, _log(config, _entry(config, "hook", session, tool, command, verdict)))
     if verdict["decision"] == "deny":
         print(json.dumps(denial(str(verdict["reason"])), ensure_ascii=True, separators=(",", ":")))
     return 0
@@ -1101,7 +1117,8 @@ def run_prefix(config_path: str, arguments: list[str]) -> int:
     except Exception as exc:
         verdict = {"decision": "deny",
                    "reason": f"{REFUSED}: the check could not evaluate this command: {exc}"}
-    _log(config, _entry(config, "prefix", config.get("session"), "Bash", command, verdict))
+    verdict = _unrecorded(verdict, _log(config, _entry(config, "prefix", config.get("session"), "Bash",
+                                                       command, verdict)))
     if verdict["decision"] == "deny":
         sys.stderr.write(str(verdict["reason"]) + "\n")
         sys.stderr.flush()

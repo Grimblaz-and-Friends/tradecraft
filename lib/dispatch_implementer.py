@@ -1080,7 +1080,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 if github_bound is not None and github_bound.get("log"):
                     # A refusal is reported, not held: it changes no outcome.
-                    record["github_write_refusals"] = github_allowance.refusals(github_bound["log"])
+                    github_allowance.record_refusals(record, github_bound["log"])
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)
                     if args.stage != "artifact":

@@ -222,6 +222,47 @@ def test_a_push_grant_permits_exactly_its_ref(tree):
     assert not allowance_module.permits_push(config("none", tree)["allowance"])
 
 
+def test_a_push_grant_counts_only_on_its_own_repository(tree):
+    grant = {"marker": 1, "brief": 2, "row": 4, "stage": "build", "write": "push",
+             "target": "other/repo:refs/heads/probe"}
+    other = "https://github.com/other/repo.git"
+    assert decision(f"git push {other} HEAD:refs/heads/probe", tree, "branch", grants=[grant]) == "allow"
+    # The step's own branch belongs to the step's repository, not to the grant's.
+    assert decision(f"git push {other} HEAD:refs/heads/tradecraft/894-ab", tree, "branch",
+                    grants=[grant]) == "deny"
+    # And the grant's ref belongs to the grant's repository, not to the step's.
+    assert decision("git push origin HEAD:refs/heads/probe", tree, "branch", grants=[grant]) == "deny"
+    assert decision("git push origin HEAD:refs/heads/tradecraft/894-ab", tree, "branch",
+                    grants=[grant]) == "allow"
+
+
+def test_a_refusal_the_log_cannot_take_still_refuses_and_says_so(tmp_path):
+    unwritable = tmp_path / "log-is-a-directory"
+    unwritable.mkdir()
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({**config("none", tmp_path), "log": str(unwritable)}), encoding="utf-8")
+    payload = {"tool_name": "Bash", "tool_input": {"command": "gh issue comment 683"},
+               "cwd": str(tmp_path), "session_id": "s"}
+    result = subprocess.run([sys.executable, str(LIB / "github_write_guard.py"), "--hook",
+                             "--config", str(path)], input=json.dumps(payload).encode(),
+                            capture_output=True, timeout=60)
+    output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "could not be recorded in the run record" in output["permissionDecisionReason"]
+
+
+def test_a_lost_refusal_log_reads_as_unknown_not_clean(tmp_path):
+    clean = tmp_path / "clean.jsonl"
+    clean.write_bytes(b"")
+    record = {}
+    allowance_module.record_refusals(record, clean)
+    assert record == {"github_write_refusals": []}
+    for lost in (tmp_path / "missing.jsonl", tmp_path):
+        record = {}
+        allowance_module.record_refusals(record, lost)
+        assert record["github_write_refusals"] == [] and record["github_write_refusals_unknown"]
+
+
 def test_a_tag_grant_permits_its_tag_and_no_ref_wide_push(tree):
     grant = {"marker": 1, "brief": 2, "row": 4, "stage": "build", "write": "push",
              "target": "o/r:refs/tags/v1"}
@@ -484,10 +525,10 @@ def test_a_prepared_codex_environment_keeps_a_consistent_git_config_set(tmp_path
 
 
 def test_a_self_test_that_ran_and_failed_says_so(tmp_path, monkeypatch):
-    cases = allowance_module._self_test_cases({})
+    cases = allowance_module._self_test_cases()
     label, allowance, command, _expected = cases[0]
     monkeypatch.setattr(allowance_module, "_self_test_cases",
-                        lambda _a: [(label, allowance, command, "deny"), *cases[1:]])
+                        lambda: [(label, allowance, command, "deny"), *cases[1:]])
     allowance = allowance_module.allowance_for("artifact", repository="o/r", branch=None, pull_request=None)
     with pytest.raises(allowance_module.BoundError) as failed:
         allowance_module.prepare(tmp_path, allowance, carrier="pretooluse-hook", root=tmp_path,

@@ -826,8 +826,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             elapsed = time.monotonic() - started
                             if github_bound is not None:
                                 # A refusal is reported, not held: it changes no outcome.
-                                record["github_write_refusals"] = github_allowance.refusals(
-                                    github_bound["log"])
+                                github_allowance.record_refusals(record, github_bound["log"])
                             if record.get("interruption_cause") == "ceiling":
                                 reason = lifecycle.ceiling_reason(vendor, caller_limit=args.timeout_seconds,
                                                                   allocation=allocation, elapsed=elapsed) + "; no fallback"

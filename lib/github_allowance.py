@@ -206,7 +206,7 @@ def bash_executable(env: dict[str, str] | None = None) -> str | None:
     return shutil.which("bash")
 
 
-def _self_test_cases(allowance: dict) -> list[tuple[str, dict, str]]:
+def _self_test_cases() -> list[tuple[str, dict, str, str]]:
     fixture = {"kind": "branch", "repository": "tradecraft-self-test/fixture",
                "branch": "self-test", "pull_request": None, "grants": []}
     none = {**fixture, "kind": "none", "branch": None}
@@ -244,7 +244,7 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
     directory.mkdir()
     failures = []
     entry_case = None
-    for index, (label, allowance, command, expected) in enumerate(_self_test_cases({})):
+    for index, (label, allowance, command, expected) in enumerate(_self_test_cases()):
         config = _config(allowance, scope="self-test", root=directory,
                          log=directory / "self-test.log.jsonl", child_settings=child_settings)
         decided = guard.decide(command, str(directory), config)["decision"]
@@ -419,12 +419,23 @@ def cloud_record(stage: str, change_branch: str | None, report_branch: str | Non
                           "posts": "none"}}
 
 
-def refusals(log) -> list[dict[str, object]]:
-    """The refused decisions in a launch's command-check log."""
+def record_refusals(record: dict, log) -> None:
+    """Fill a run record's ``github_write_refusals`` from the launch's log.
+
+    Preparation creates the log empty, so a missing or unreadable one has lost what it
+    held: the record then says so in ``github_write_refusals_unknown``, and the entrance
+    report reads the bound as unknown rather than as a run in which nothing was refused.
+    """
     try:
-        raw = Path(log).read_bytes()
-    except OSError:
-        return []
+        record["github_write_refusals"] = refusals(log)
+    except OSError as exc:
+        record["github_write_refusals"] = []
+        record["github_write_refusals_unknown"] = f"{type(exc).__name__}: {exc}"
+
+
+def refusals(log) -> list[dict[str, object]]:
+    """The refused decisions in a launch's command-check log; OSError when it cannot be read."""
+    raw = Path(log).read_bytes()
     found = []
     for line in raw.splitlines():
         try:

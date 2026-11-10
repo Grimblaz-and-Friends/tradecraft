@@ -212,6 +212,11 @@ def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkey
     assert report["status"] == "read"
     assert report["refusals"] == [{"dispatch_id": "d1", "stage": "use", **refusal}]
     assert report["grants"] == [{"dispatch_id": "d2", "stage": "artifact", **grant}]
+    rows.append((2, "b3", {"dispatch_id": "d3", "stage": "build"},
+                 {"github_write_refusals": [], "github_write_refusals_unknown": "OSError: lost"}))
+    report = work._github_write_report(fixture)
+    assert report["status"] == "unknown" and "d3: OSError: lost" in report["reason"]
+    assert len(report["refusals"]) == 1
 
 
 def test_ac7_the_cloud_routine_still_names_only_its_two_pushes_and_no_posting():
