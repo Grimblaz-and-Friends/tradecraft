@@ -1552,8 +1552,8 @@ def _marker_value_error(marker: Marker) -> str | None:
             return "launch account dispatch is not a dispatch id"
         try:
             launch_account_payload(marker.body)
-        except ValueError as exc:
-            return str(exc)
+        except Exception as exc:  # any comment's text can raise; it makes that comment malformed, never the read
+            return str(exc) or type(exc).__name__
     if marker.name == "floor" and values.get("status") != "pass":
         return "floor status is invalid"
     if marker.name == "use":
@@ -3986,7 +3986,7 @@ def _account_fault(state: WorkState, marker: Marker) -> tuple[str, str] | None:
 def _account_names(marker: Marker) -> list[str] | None:
     try:
         return [finding["id"] for finding in launch_account_payload(marker.body)["findings"]]
-    except ValueError:
+    except Exception:  # an untrusted comment's text can raise anything; only that comment goes unread
         return None
 
 
@@ -4008,8 +4008,13 @@ def _launch_account_reading(accounts: list[tuple], dispatch: object, findings: l
         if reason is None and other != dispatch:
             reason = "another-launch", f"its dispatch is {other}"
         if reason is None and (recorded_at is None or posted is None or posted <= recorded_at):
-            reason = "before-findings", (f"posted at {marker.timestamp}, not after the findings were recorded at "
-                                         + (recorded_at.isoformat() if recorded_at else "an unknown time"))
+            if posted is None:
+                reason = "before-findings", f"its posting time could not be read: {marker.timestamp!r}"
+            elif recorded_at is None:
+                reason = "before-findings", "the time this launch's findings were recorded could not be read"
+            else:
+                reason = "before-findings", (f"posted at {marker.timestamp}, not after the findings were "
+                                             f"recorded at {recorded_at.isoformat()}")
         if reason is None:
             # A comment naming what its launch didn't flag was most likely written for another, so none of it counts.
             unflagged = sorted(set(names) - flagged)
@@ -4099,7 +4104,9 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
         recorded_at = _time(run.get("completed_at") if isinstance(comparison, dict)
                             else request.get("launched_at"))
         reading = _launch_account_reading(accounts, request.get("dispatch_id"), findings, flagged, recorded_at)
-        bundles.append({**entry, "state": status if reading["owed"] else "accounted", "findings": findings,
+        # A comparison that isn't clear holds even with no findings listed, until a counting comment exists.
+        released = not reading["owed"] and (findings or reading["accounts"])
+        bundles.append({**entry, "state": "accounted" if released else status, "findings": findings,
                         "attributed": (comparison or {}).get("attributed") or [], **reading})
     held = [value for value in bundles if value["state"] in {"account-required", "unrecorded"}]
     return {"schema_version": 1, "status": "held" if held else "clear", "bundles": bundles}

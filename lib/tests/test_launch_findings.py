@@ -313,3 +313,59 @@ def test_a_comment_naming_a_finding_twice_counts_for_nothing(tmp_path):
     entry = entry_of(fixture)
     assert [finding["id"] for finding in entry["owed"]] == [OWNER["id"]]
     assert [(value["source"], value["reason"]) for value in entry["uncounted"]] == [("issue-comment:1", "malformed")]
+
+
+# One comment's text can't break the report; it reads as that comment's fault.
+NESTED = (f"<!-- tradecraft:launch-account:v1 dispatch={DISPATCH} -->\n\n```json\n"
+          + "[" * 100000 + "]" * 100000 + "\n```\n")
+LIST_PARTY = account(OWNER, {**SESSION, "party": []})
+
+
+@pytest.mark.parametrize("body", [LIST_PARTY, NESTED], ids=["list-party", "nested"])
+@pytest.mark.parametrize("author, reason", [("stranger", "untrusted-author"), (PRODUCER, "malformed")])
+def test_a_comment_whose_payload_raises_is_listed_and_the_report_stands(tmp_path, body, author, reason):
+    fixture = posted_in_order(tmp_path, (account(OWNER, SESSION), "2026-11-03T07:00:00Z"),
+                              (body, "2026-11-03T08:00:00Z", {"user": {"login": author}}))
+    report = work._evaluate_launch_findings(fixture)
+    assert report["status"] == "clear" and held(fixture) is None
+    entry = report["bundles"][0]
+    assert entry["state"] == "accounted"
+    assert [(value["source"], value["reason"]) for value in entry["uncounted"]] == [("issue-comment:2", reason)]
+
+
+@pytest.mark.parametrize("body", [LIST_PARTY, NESTED], ids=["list-party", "nested"])
+def test_a_raising_comment_on_a_change_with_no_launch_leaves_the_report_readable(tmp_path, body):
+    fixture = state()
+    fixture.issue_comments = [{"id": 1, "body": body, "user": {"login": "stranger"},
+                               "created_at": "2026-11-03T08:00:00Z"}]
+    fixture.record_root = tmp_path / "empty"
+    fixture.record_root.mkdir()
+    work.validate_marker_claims(fixture)
+    assert work._evaluate_launch_findings(fixture) == {"schema_version": 1, "status": "clear", "bundles": []}
+
+
+@pytest.mark.parametrize("comparison", [
+    {"schema_version": 1, "status": "findings", "findings": [], "attributed": [], "coverage": []},
+    {"schema_version": 1, "status": "findings", "findings": ["not a finding"], "attributed": [], "coverage": []},
+    {"schema_version": 1, "findings": [], "attributed": [], "coverage": []},
+], ids=["empty", "filtered", "no-status"])
+def test_a_comparison_that_is_not_clear_holds_with_no_findings_until_a_comment_counts(tmp_path, comparison):
+    fixture = fixture_with(tmp_path, comparison=comparison)
+    assert held(fixture) is not None
+    assert entry_of(fixture)["state"] == "account-required"
+    released = posted_in_order(tmp_path / "r", (account(), "2026-11-03T07:00:00Z"), comparison=comparison)
+    assert held(released) is None and entry_of(released)["state"] == "accounted"
+
+
+def test_before_findings_says_which_time_could_not_be_read(tmp_path):
+    fixture = posted_in_order(tmp_path, (account(OWNER, SESSION), "not a time"))
+    assert "posting time could not be read" in entry_of(fixture)["uncounted"][0]["detail"]
+    fixture = posted_in_order(tmp_path / "r", (account(OWNER, SESSION), "2026-11-03T07:00:00Z"))
+    run_path = fixture.record_root / "x.md.run.json"
+    run = json.loads(run_path.read_bytes())
+    run["completed_at"] = None
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    entry = entry_of(fixture)
+    assert held(fixture) is not None
+    assert "findings were recorded could not be read" in entry["uncounted"][0]["detail"]
+    assert entry["uncounted"][0]["reason"] == "before-findings"
