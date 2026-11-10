@@ -329,7 +329,9 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
     machine's policy, so the parent's own commands go unchecked and its record
     says so. A Claude session it starts carries the same child settings.
     """
-    child = dict(env)
+    # The Codex launch used to inherit its environment, and Windows drops an empty
+    # inherited variable; an explicit copy keeps that behaviour.
+    child = {key: value for key, value in env.items() if value != "" or os.name != "nt"}
     child[CONNECTORS] = "false"
     child_settings = None
     if temporary is not None:
