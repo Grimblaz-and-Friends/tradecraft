@@ -6304,9 +6304,9 @@ def _github_write_report(state: WorkState) -> dict[str, object]:
             f"{state.repo}#{state.issue_number}",
             frozenset({"artifact", "build", "floor", "review-disposition", "use"}))
         rows = work_recovery.scoped(state, rows, include_released=True)
-    except (OSError, ValueError, TypeError, KeyError, WorkError) as exc:
-        # An unreadable record store must not stop the report it rides on; the report
-        # then says the lists are unknown rather than empty.
+    except Exception as exc:
+        # This rides on every entrance and release report, so any failure reading records is
+        # reported here, as unknown with its error, and never stops the report it rides on.
         return {"status": "unknown", "reason": type(exc).__name__ + ": " + str(exc),
                 "refusals": [], "grants": []}
     refusals, grants = [], []
