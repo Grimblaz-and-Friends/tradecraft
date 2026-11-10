@@ -194,3 +194,118 @@ def test_ac14_report_repeats_the_bound_and_comparison():
     assert work._launch_comparison_report(request, running, attempt)["status"].startswith("not yet recorded")
     assert work._launch_comparison_report(request, {"lifecycle": "completed"}, attempt) == {"status": "unrecorded"}
     assert work._write_bound_report({"requested": {"vendor": "codex"}}, run, {"vendor": "codex"}) is None
+
+
+# An account in parts (#957).
+THIRD = {"id": "9e8d7c6b5a40", "item": "checkout:D:/y", "path": "D:/y/g", "change": "modified", "reason": None}
+THIRD_COMPARISON = {"schema_version": 1, "status": "findings", "findings": FINDINGS + [THIRD],
+                    "attributed": [], "coverage": []}
+
+
+def posted_in_order(tmp_path, *posts, **bundle):
+    """Each post is (body, created_at), or (body, created_at, overrides); ids follow the order given."""
+    fixture = fixture_with(tmp_path, **bundle)
+    fixture.issue_comments = []
+    for number, post in enumerate(posts, start=1):
+        body, created = post[0], post[1]
+        comment = {"id": number, "body": body, "user": {"login": PRODUCER}, "created_at": created}
+        comment.update(post[2] if len(post) > 2 else {})
+        fixture.issue_comments.append(comment)
+    work.validate_marker_claims(fixture)
+    return fixture
+
+
+def entry_of(fixture):
+    return work._evaluate_launch_findings(fixture)["bundles"][0]
+
+
+def test_a_split_account_releases(tmp_path):
+    fixture = posted_in_order(tmp_path, (account(OWNER), "2026-11-03T07:00:00Z"),
+                              (account(SESSION), "2026-11-03T08:00:00Z"))
+    assert held(fixture) is None
+    entry = entry_of(fixture)
+    assert entry["state"] == "accounted" and entry["owed"] == [] and entry["uncounted"] == []
+    assert [value["source"] for value in entry["accounts"]] == ["issue-comment:1", "issue-comment:2"]
+
+
+def test_an_account_over_one_comments_limit_releases_in_parts(tmp_path):
+    findings = [{"id": f"{number:012x}", "item": f"checkout:D:/{number}", "path": f"D:/{number}/f",
+                 "change": "modified", "reason": None} for number in range(3000)]
+    entries = [{**SESSION, "id": finding["id"]} for finding in findings]
+    limit = 262144  # GitHub's comment limit in UTF-8 bytes (D-967)
+    assert len(account(*entries).encode("utf-8")) > limit
+    halves = account(*entries[:1500]), account(*entries[1500:])
+    assert all(len(half.encode("utf-8")) < limit for half in halves)
+    comparison = {"schema_version": 1, "status": "findings", "findings": findings,
+                  "attributed": [], "coverage": []}
+    fixture = posted_in_order(tmp_path, (halves[0], "2026-11-03T07:00:00Z"),
+                              (halves[1], "2026-11-03T08:00:00Z"), comparison=comparison)
+    assert held(fixture) is None
+
+
+def test_a_split_missing_one_finding_holds_and_lists_only_it(tmp_path):
+    fixture = posted_in_order(tmp_path, (account(OWNER), "2026-11-03T07:00:00Z"),
+                              (account(SESSION), "2026-11-03T08:00:00Z"), comparison=THIRD_COMPARISON)
+    refusal = held(fixture)
+    assert refusal is not None
+    assert refusal.stage == "launch-account" and refusal.reason == "launch-findings-unaccounted"
+    assert [finding["id"] for finding in entry_of(fixture)["owed"]] == [THIRD["id"]]
+    assert THIRD["id"] in refusal.detail
+    assert OWNER["id"] not in refusal.detail and SESSION["id"] not in refusal.detail
+
+
+@pytest.mark.parametrize("faulty, reason", [
+    ((account({**SESSION}, {**OWNER, "id": "ffffffffffff"}), "2026-11-03T08:00:00Z"), "names-unflagged"),
+    ((account({k: v for k, v in SESSION.items() if k != "basis"}), "2026-11-03T08:00:00Z"), "malformed"),
+    ((account(SESSION), "2026-11-03T08:00:00Z", {"user": {"login": "stranger"}}), "untrusted-author"),
+    ((account(SESSION, dispatch="c" * 32), "2026-11-03T08:00:00Z"), "another-launch"),
+    ((account(SESSION), "2026-11-03T05:30:00Z"), "before-findings"),
+])
+def test_a_comment_that_does_not_count_adds_nothing_and_is_listed_with_why(tmp_path, faulty, reason):
+    fixture = posted_in_order(tmp_path, (account(OWNER), "2026-11-03T07:00:00Z"), faulty)
+    assert held(fixture) is not None
+    entry = entry_of(fixture)
+    assert [finding["id"] for finding in entry["owed"]] == [SESSION["id"]]
+    assert [(value["source"], value["reason"]) for value in entry["uncounted"]] == [("issue-comment:2", reason)]
+    assert [value["source"] for value in entry["accounts"]] == ["issue-comment:1"]
+
+
+def test_a_finding_named_twice_releases_with_the_later_comment_governing(tmp_path):
+    fixture = posted_in_order(tmp_path, (account(OWNER, SESSION), "2026-11-03T07:00:00Z"),
+                              (account(DAMAGE), "2026-11-03T08:00:00Z"))
+    assert held(fixture) is None
+    entry = entry_of(fixture)
+    assert entry["governing"] == {SESSION["id"]: "issue-comment:2"}
+    assert [value["source"] for value in entry["accounts"]] == ["issue-comment:1", "issue-comment:2"]
+
+
+def test_nothing_posted_after_a_release_holds_again(tmp_path):
+    posts = [(account(OWNER, SESSION), "2026-11-03T07:00:00Z")]
+    assert held(posted_in_order(tmp_path, *posts)) is None
+    posts.append((account(OWNER), "2026-11-03T08:00:00Z"))
+    fixture = posted_in_order(tmp_path / "b", *posts)
+    assert held(fixture) is None and entry_of(fixture)["governing"] == {OWNER["id"]: "issue-comment:2"}
+    posts.append((account(OWNER, {**OWNER, "id": "ffffffffffff"}), "2026-11-03T09:00:00Z"))
+    fixture = posted_in_order(tmp_path / "c", *posts)
+    assert held(fixture) is None
+    assert "issue-comment:3" not in [value["source"] for value in entry_of(fixture)["accounts"]]
+    posts.append((account({k: v for k, v in OWNER.items() if k != "basis"}), "2026-11-03T10:00:00Z"))
+    assert held(posted_in_order(tmp_path / "d", *posts)) is None
+
+
+def test_an_edit_does_not_reorder_comments(tmp_path):
+    # The newer comment has the lower id and comes first, so only created_at can order them.
+    fixture = posted_in_order(tmp_path, (account(OWNER, DAMAGE), "2026-11-03T08:00:00Z"),
+                              (account(OWNER, SESSION), "2026-11-03T07:00:00Z",
+                               {"updated_at": "2026-11-03T09:00:00Z"}))
+    assert held(fixture) is None
+    assert entry_of(fixture)["governing"][SESSION["id"]] == "issue-comment:1"
+
+
+def test_a_comment_naming_a_finding_twice_counts_for_nothing(tmp_path):
+    fixture = posted_in_order(tmp_path, (account(OWNER, SESSION, OWNER), "2026-11-03T07:00:00Z"),
+                              (account(SESSION), "2026-11-03T08:00:00Z"))
+    assert held(fixture) is not None
+    entry = entry_of(fixture)
+    assert [finding["id"] for finding in entry["owed"]] == [OWNER["id"]]
+    assert [(value["source"], value["reason"]) for value in entry["uncounted"]] == [("issue-comment:1", "malformed")]

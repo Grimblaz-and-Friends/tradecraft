@@ -948,6 +948,7 @@ def test_only_the_tree_releases_the_local_tree_hold(tmp_path, monkeypatch):
     import subprocess
     import types
     import work
+    from source_claims import Marker
     root = tmp_path / "tree"
     root.mkdir()
     for command in (["init", "-q"], ["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q",
@@ -956,28 +957,48 @@ def test_only_the_tree_releases_the_local_tree_hold(tmp_path, monkeypatch):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
                           text=True, check=True, stdin=subprocess.DEVNULL).stdout.strip()
-    request = {"dispatch_id": "d1", "stage": "build", "root": str(root), "launched_at": "2026-11-06T10:00:00Z",
-               "write_bound": {"route": "cloud"}}
+    dispatch = "d" * 32
+    request = {"dispatch_id": dispatch, "stage": "build", "root": str(root),
+               "launched_at": "2026-11-06T10:00:00Z", "write_bound": {"route": "cloud"}}
 
-    def run_with(tip):
+    def run_with(tip, practice=False):
+        checks = {"local_tree": {"ok": False, "reason": "not a fast-forward", "tip": tip}}
+        if practice:
+            checks["practice"] = {"ok": False, "reason": "practice clone at the wrong commit"}
         return {"completed_at": "2026-11-06T11:00:00Z", "launch_comparison": {"status": "cloud-not-run"},
-                "attempts": [{"cloud": {"report_branch": "claude/r", "cloud_checks": {
-                    "local_tree": {"ok": False, "reason": "not a fast-forward", "tip": tip}}}}]}
+                "attempts": [{"cloud": {"report_branch": "claude/r", "cloud_checks": checks}}]}
 
-    account = types.SimpleNamespace(attributes={"dispatch": "d1"}, timestamp="2026-11-06T12:00:00Z",
-                                    surface="issue-comment", source_id="1", author="holder",
-                                    body='```json\n{"schema_version": 1, "findings": '
-                                         '[{"id": "cloud-check:local_tree", "party": "holder"}]}\n```\n')
-    state = types.SimpleNamespace(record_root=tmp_path, repo=REPO, issue_number=77, instalment=None)
-    monkeypatch.setattr(work, "_launch_accounts", lambda _state: [account])
-    monkeypatch.setattr(work, "launch_account_payload",
-                        lambda body: {"findings": [{"id": "cloud-check:local_tree"}]})
+    def account(*names):
+        body = ("```json\n" + json.dumps({"schema_version": 1, "findings": [
+            {"id": f"cloud-check:{name}", "party": "cloud-check", "basis": f"{name}: the holder read it"}
+            for name in names]}) + "\n```\n")
+        return Marker("launch-account", {"dispatch": dispatch}, body, "holder", surface="issue-comment",
+                      source_id="1", timestamp="2026-11-06T12:00:00Z", raw_attributes=f"dispatch={dispatch}")
+
+    state = types.SimpleNamespace(record_root=tmp_path, repo=REPO, issue_number=77, instalment=None,
+                                  config=types.SimpleNamespace(marker_producers=frozenset({"holder"})))
+    monkeypatch.setattr(work, "_launch_accounts", lambda _state: [account("local_tree")])
     stale = run_with("f" * 40)
     monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a: [(1, "b", request, stale)])
     assert work._evaluate_launch_findings(state)["status"] == "held"  # an account can't release it
     current = run_with(head)
     monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a: [(1, "b", request, current)])
     assert work._evaluate_launch_findings(state)["status"] == "clear"
+
+    # A named local-tree finding stays owed while the tree lacks the tip (#957 AC-10).
+    monkeypatch.setattr(work, "_launch_accounts", lambda _state: [account("local_tree", "practice")])
+    stale = run_with("f" * 40, practice=True)
+    monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a: [(1, "b", request, stale)])
+    entry = work._evaluate_launch_findings(state)["bundles"][0]
+    assert entry["state"] == "account-required"
+    assert entry["owed"] == [{"id": "cloud-check:local_tree", "item": "cloud_checks.local_tree",
+                              "path": "claude/r", "change": "failed", "released_by": "tree"}]
+    # Once the tree has it, the comment that named it while owed still counts.
+    current = run_with(head, practice=True)
+    monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a: [(1, "b", request, current)])
+    entry = work._evaluate_launch_findings(state)["bundles"][0]
+    assert entry["state"] == "accounted" and entry["owed"] == [] and entry["uncounted"] == []
+    assert [value["source"] for value in entry["accounts"]] == ["issue-comment:1"]
 
 
 def test_a_cloud_resume_names_its_recorded_practice_path_after_the_switch_is_removed(tmp_path, monkeypatch):
