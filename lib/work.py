@@ -9474,6 +9474,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "holder_close": _release_holder_close(state),
             "cold_readings": _cold_reading_measures(state),
         })
+        # The release report lists every granted write and names every refusal (#894).
+        bound = _github_write_report(state)
+        payload["write_grants"] = bound["grants"]
+        payload["write_refusals"] = bound["refusals"]
         _emit_report(payload, state)
         return 0
     if decision.stage == "use" and decision.dispatch:

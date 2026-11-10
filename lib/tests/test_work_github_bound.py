@@ -134,12 +134,60 @@ def test_ac14_a_grant_without_an_affirmed_row_is_refused_before_launch(
         work.validated_grants(fixture, ids, stage, continuity)
 
 
-def test_ac14_run_refuses_a_grant_before_any_executor_runs(monkeypatch, tmp_path):
-    """The entrance validates grants before it calls the stage's executor."""
-    source = (work.__file__)
-    text = open(source, encoding="utf-8").read()
-    run_body = text[text.index("def _run("):text.index("def main(")]
-    assert run_body.index("validated_grants(") < run_body.index("return executor(")
+@pytest.mark.parametrize("grant_brief", [7002, 7001])
+def test_ac14_run_refuses_a_grant_before_any_executor_or_launcher_runs(
+        tmp_path, monkeypatch, capsys, grant_brief):
+    from test_work import FakeTransport, write_policy
+    fixture, brief = _grant_state(_grant_body(brief=grant_brief))
+    git(tmp_path, "init", "-q")
+    write_policy(tmp_path)
+    monkeypatch.setattr(work, "read_state", lambda *_a, **_k: fixture)
+    monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "connected")))
+    launched = []
+    monkeypatch.setattr(work, "_invoke_recipient", lambda *a, **k: launched.append("launcher"))
+
+    def executor(*_a, **kwargs):
+        launched.append(("executor", kwargs.get("github_write_grants")))
+        return 0
+
+    class Transport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint == "repos/example/product/pulls/7":
+                return fixture.pr
+            return FakeTransport({}).get(endpoint, paginate=paginate)
+
+    # A fresh artifact turn: the grant is refused because the turn is not a resume, and,
+    # for 7002, because it cites no affirmed brief comment.
+    args = work.parser().parse_args([
+        "run", "artifact", "--repo", "example/product", "--issue", "12", "--root", str(tmp_path),
+        "--holder-session-id", "holder-session", "--grant", "9001"])
+    monkeypatch.setattr(work, "_named_continuity", lambda *_a: "fresh")
+    with pytest.raises(work.WorkError, match="--grant 9001 refused"):
+        work.run(args, transport=Transport(), executor=executor)
+    assert launched == []
+    # Resumed, the valid grant reaches the executor; the one citing no brief row still launches nothing.
+    monkeypatch.setattr(work, "_named_continuity", lambda *_a: "resume")
+    if grant_brief == 7002:
+        with pytest.raises(work.WorkError, match="--grant 9001 refused"):
+            work.run(args, transport=Transport(), executor=executor)
+        assert launched == []
+    else:
+        assert work.run(args, transport=Transport(), executor=executor) == 0
+        assert [entry[0] for entry in launched] == ["executor"]
+
+
+def test_release_report_lists_grants_and_refusals(tmp_path, capsys, monkeypatch):
+    from test_work import RULES, release_ready, run_release
+    fixture = release_ready("clean")
+    bound = {"status": "refused, not made",
+             "refusals": [{"dispatch_id": "d1", "stage": "use", "command": "gh issue comment 1"}],
+             "grants": [{"dispatch_id": "d2", "stage": "artifact", "marker": 9001, "brief": 7001,
+                         "row": 4, "write": "push", "target": "example/product:refs/heads/probe"}]}
+    monkeypatch.setattr(work, "_github_write_report", lambda _state: bound)
+    report = run_release(fixture, tmp_path, capsys, reason=work.decide(fixture, RULES).reason)
+    assert report["reason"] == "all-evidence-complete"
+    assert report["write_grants"] == bound["grants"]
+    assert report["write_refusals"] == bound["refusals"]
 
 
 def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkeypatch):
