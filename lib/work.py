@@ -10040,7 +10040,8 @@ def parser() -> argparse.ArgumentParser:
     )
     cli.add_argument("--budget-override-reason", help="reason for this build invocation beyond its runtime budget")
     cli.add_argument("--grant", action="append", type=int, default=[],
-                     help="a write-grant marker comment id for a resumed implementer turn (repeatable)")
+                     help="a write-grant marker comment id for a resumed implementer turn, with run or "
+                          "allowance (repeatable)")
     cli.add_argument("--pull-request", type=int,
                      help="allowance only: the pull request a review-disposition sentence names")
     cli.add_argument("--claude", type=Path,
@@ -10189,7 +10190,7 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
     return 0
 
 
-def _allowance_command(args: argparse.Namespace) -> int:
+def _allowance_command(args: argparse.Namespace, grants=()) -> int:
     """Print the allowance sentence a holder-written dispatch for STAGE carries.
 
     It reads the branch from the implementation tree, as the launcher will, and refuses rather
@@ -10212,7 +10213,7 @@ def _allowance_command(args: argparse.Namespace) -> int:
         raise WorkError("allowance review-disposition requires --pull-request, the pull request "
                         "whose threads the step may answer")
     allowance = github_allowance.allowance_for(
-        args.stage, repository=args.repo, branch=branch, pull_request=args.pull_request)
+        args.stage, repository=args.repo, branch=branch, pull_request=args.pull_request, grants=grants)
     print(github_allowance.sentence(allowance))
     return 0
 
@@ -10288,11 +10289,12 @@ def _run(
         return 0
     if args.command == "tree":
         return _tree_command(args, root, github)
-    if args.command == "allowance":
+    if args.command == "allowance" and not getattr(args, "grant", None):
         return _allowance_command(args)
-    if getattr(args, "grant", None) and (args.command != "run" or args.stage not in GITHUB_BOUND_STAGES):
-        raise WorkError("--grant requires run of an implementer stage")
-    if args.command != "run" and args.stage is not None:
+    if getattr(args, "grant", None) and (args.command not in ("run", "allowance")
+                                         or args.stage not in GITHUB_BOUND_STAGES):
+        raise WorkError("--grant requires run or allowance of an implementer stage")
+    if args.command not in ("run", "allowance") and args.stage is not None:
         raise WorkError("a stage is accepted only after the run command")
     if args.command == "run" and args.stage is None:
         raise WorkError("run requires a stage")
@@ -10421,6 +10423,12 @@ def _run(
         state.proof_current = False
     state.collection_diagnostics.extend(policy_diagnostics)
     recommendation = decide(state, rules)
+    if args.command == "allowance":
+        # A granted turn's sentence names its grants; they are read and validated exactly as
+        # run --grant will, so the printed sentence is the one the launch holds.
+        grants = validated_grants(state, args.grant, args.stage,
+                                  _named_continuity(state, args.stage, recommendation))
+        return _allowance_command(args, grants)
     if args.command is None:
         _emit_report(recommendation.as_dict(), state)
         return 0

@@ -255,3 +255,52 @@ def test_the_allowance_command_prints_review_dispositions_own_pull_request(tmp_p
                                      str(tree), "--pull-request", "7"])
     assert work._allowance_command(args) == 0
     assert "example/product#7" in capsys.readouterr().out
+
+
+def _granted_allowance_run(tmp_path, monkeypatch, capsys, *, grant_brief=7001, continuity="resume"):
+    """Drive the documented route: `work.py allowance build --grant ID` for a resumed, granted build."""
+    from test_work import FakeTransport, write_policy
+    fixture, brief = _grant_state(_grant_body(brief=grant_brief, stage="build"))
+    tree = _bound_tree(tmp_path)
+    write_policy(tree)
+    monkeypatch.setattr(work, "read_state", lambda *_a, **_k: fixture)
+    monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "connected")))
+    monkeypatch.setattr(work, "_named_continuity", lambda *_a: continuity)
+
+    class Transport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint == "repos/example/product/pulls/7":
+                return fixture.pr
+            return FakeTransport({}).get(endpoint, paginate=paginate)
+
+    args = work.parser().parse_args([
+        "allowance", "build", "--repo", "example/product", "--issue", "12", "--root", str(tree),
+        "--implementation-root", str(tree), "--grant", "9001"])
+    return work.run(args, transport=Transport()), capsys.readouterr().out
+
+
+def test_a_granted_turns_dispatch_built_by_the_documented_route_is_accepted(tmp_path, monkeypatch, capsys):
+    code, printed = _granted_allowance_run(tmp_path, monkeypatch, capsys)
+    assert code == 0
+    grant = {"marker": 9001, "brief": 7001, "row": 4, "stage": "build", "write": "push",
+             "target": "example/product:refs/heads/probe"}
+    # The allowance the launcher builds for this granted, resumed build.
+    launch = github_allowance.allowance_for("build", repository="example/product", branch=BRANCH,
+                                            pull_request=None, grants=[grant])
+    dispatch = ("Build the change.\n\n" + printed.strip()).encode("utf-8")
+    assert github_allowance.needs_notice(launch, dispatch) is False
+    assert "the granted push example/product:refs/heads/probe" in printed
+
+
+@pytest.mark.parametrize("grant_brief, continuity", [(7002, "resume"), (7001, "fresh")])
+def test_allowance_refuses_a_grant_the_entrance_would_refuse(tmp_path, monkeypatch, capsys,
+                                                             grant_brief, continuity):
+    with pytest.raises(work.WorkError, match="--grant 9001 refused") as refused:
+        _granted_allowance_run(tmp_path, monkeypatch, capsys, grant_brief=grant_brief,
+                               continuity=continuity)
+    # The same reason run --grant gives, from the same validation.
+    fixture, brief = _grant_state(_grant_body(brief=grant_brief, stage="build"))
+    monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "connected")))
+    with pytest.raises(work.WorkError) as entrance:
+        work.validated_grants(fixture, [9001], "build", continuity)
+    assert str(refused.value) == str(entrance.value)
