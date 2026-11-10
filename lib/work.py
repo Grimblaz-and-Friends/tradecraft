@@ -6428,7 +6428,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         instruction += CLOUD_REPLY_INSTRUCTION if cloud else _thread_resolution_clause(state)
     if decision.stage in GITHUB_BOUND_STAGES:
         # Design: lib/DESIGN.md#the-github-write-bound
-        instruction += " " + (github_allowance.cloud_sentence() if cloud else github_allowance.sentence(
+        instruction += " " + (github_allowance.cloud_sentence(decision.stage) if cloud else github_allowance.sentence(
             _stage_allowance(state, decision.stage, branch, grants)))
     explicit_artifact = decision.stage == "artifact"
     phase = state.artifact_phase or _artifact_phase(state)

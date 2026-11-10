@@ -66,4 +66,4 @@ The entrance's implementer environments show, per cloud attempt:
 
 The launch comparison reads `cloud-not-run` with its reason, a clear status. Cost is each attempt's delta of the session's running total, priced per model at the rate card; a model with no rate row is unpriced, never zero.
 
-A cloud builder is told its route's GitHub write allowance in the routine's own text: it pushes the change branch and its report branch, and posts nothing. The launch block that holds a local launch's allowance runs on this machine, so the cloud run record's `github_write_bound` says its command check is `not-run` and why.
+A cloud run is told its stage's GitHub write allowance in its prompt, and posts nothing: a build or repair may push the change branch and its report branch, and an artifact author only its report branch, because that is how its return travels and the author may write nothing else. On the cloud route that sentence is the only bound the run carries. The launch block that holds a local launch's allowance runs on this machine, so the cloud run record's `github_write_bound` says its command check is `not-run` and why.

@@ -240,8 +240,8 @@ def test_prefix_wrapper_refuses_runs_and_passes_through(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(json.dumps({**config("none", tmp_path), "log": str(log)}), encoding="utf-8")
     wrapper = tmp_path / "prefix.sh"
-    allowance_module.write_wrapper(wrapper, path)
     bash = allowance_module.bash_executable()
+    allowance_module.write_wrapper(wrapper, path, bash)
     marker = tmp_path / "ran"
 
     def run(*arguments):
@@ -326,9 +326,37 @@ def test_a_grant_without_an_affirmed_row_is_refused(body, stage, resumed):
 
 
 def test_cloud_record_says_the_block_did_not_run():
-    record = allowance_module.cloud_record("change", "report")
+    record = allowance_module.cloud_record("build", "change", "report")
     assert record["command_check"]["status"] == "not-run"
     assert "remote" in record["command_check"]["reason"]
+    assert record["allowance"]["pushes"] == ["change", "report"]
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+def test_a_cloud_build_or_repair_may_push_the_change_and_report_branches(stage):
+    text = allowance_module.cloud_sentence(stage)
+    assert "a push to the change branch and to its report branch" in text and "post nothing" in text
+
+
+def test_a_cloud_author_may_push_only_its_report_branch():
+    text = allowance_module.cloud_sentence("artifact")
+    assert "change branch" not in text
+    assert "a push to its report branch" in text and "post nothing" in text
+    assert allowance_module.cloud_record("artifact", "change", "report")["allowance"]["pushes"] == ["report"]
+
+
+@pytest.mark.skipif(allowance_module.bash_executable() is None, reason="no bash")
+def test_the_installed_prefix_names_the_bash_its_self_test_ran(tmp_path):
+    env = dict(os.environ)
+    allowance = allowance_module.allowance_for("use", repository="o/r", branch=None, pull_request=None)
+    bound = allowance_module.prepare(tmp_path, allowance, carrier="shell-prefix", root=tmp_path, env=env)
+    wrapper = Path(bound["env"]["CLAUDE_CODE_SHELL_PREFIX"])
+    bash = allowance_module.bash_executable(env)
+    assert f'exec "{bash.replace(chr(92), "/")}" -c "$1"' in wrapper.read_text(encoding="utf-8")
+    # The self-test ran this installed file, and no separate one exists to drift from it.
+    assert sorted(p.name for p in tmp_path.glob("*.sh")) == [wrapper.name]
+    # Its own refusal went to the launch log, which was emptied before the launch.
+    assert Path(bound["log"]).read_bytes() == b""
 
 
 def _prefix_run(tmp_path, argument):

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in native build checks; never run by ordinary CI or dispatch a stage.
 
-Covers the launch-environment procedures and the GitHub write bound's cases
-(credential, connectors, child, author, use).
+Covers the launch-environment procedures and the GitHub write bound's cases (BOUND_CASES).
 """
 from __future__ import annotations
 

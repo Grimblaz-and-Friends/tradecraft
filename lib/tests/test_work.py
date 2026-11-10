@@ -12711,9 +12711,9 @@ def test_938_a_cloud_review_disposition_returns_its_replies_and_a_local_one_is_u
     # byte of the task is the local one.
     import github_allowance
     local_allowance = github_allowance.sentence(work._stage_allowance(fixture, "review-disposition", None))
-    assert github_allowance.cloud_sentence() in cloud and local_allowance in local
+    assert github_allowance.cloud_sentence("review-disposition") in cloud and local_allowance in local
     assert cloud.replace(work.CLOUD_REPLY_INSTRUCTION, work._thread_resolution_clause(fixture)).replace(
-        github_allowance.cloud_sentence(), local_allowance) == local
+        github_allowance.cloud_sentence("review-disposition"), local_allowance) == local
 
 
 def _cloud_disposition(tmp_path, monkeypatch, replies):

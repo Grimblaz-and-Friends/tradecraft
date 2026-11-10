@@ -71,7 +71,7 @@ def test_ac11_every_composed_implementer_prompt_names_its_writes(stage, monkeypa
     allowance = github_allowance.allowance_for(stage, repository="example/product", branch=BRANCH,
                                                pull_request=7)
     for cloud, expected in ((False, github_allowance.sentence(allowance)),
-                            (True, github_allowance.cloud_sentence())):
+                            (True, github_allowance.cloud_sentence(stage))):
         prompt = work._stage_prompt(fixture, work.Decision(stage, True, "fresh", "fixture"),
                                     branch=BRANCH, floor_command="python check.py", cloud=cloud).decode()
         assert expected in prompt and "**Write requests**" in prompt

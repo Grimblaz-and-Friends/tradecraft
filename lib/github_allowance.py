@@ -27,6 +27,8 @@ CONNECTORS = guard.CONNECTORS
 CHILD_VARIABLE = guard.CHILD_VARIABLE
 SHELL_PREFIX = "CLAUDE_CODE_SHELL_PREFIX"
 PUSH_STAGES = {"build", "floor"}
+# The cloud stages that may push the change branch: those that may push it locally.
+CLOUD_CHANGE_STAGES = {"build", "floor", "review-disposition"}
 GRANT_MARKER = re.compile(
     r"<!--\s*tradecraft:write-grant:v1\s+brief=(\d+)\s+row=(\d+)\s+stage=([\w-]+)\s+"
     r"write=(push|comment|api)\s+target=(.+?)\s*-->")
@@ -49,7 +51,7 @@ def repository_of(work: str) -> str:
 
 def allowance_for(stage: str, *, repository: str, branch: str | None,
                   pull_request: int | None, grants=()) -> dict[str, object]:
-    """The step's allowance. Stages other than build, floor and review-disposition get none."""
+    """The step's allowance; a stage that may push gets none without its registered branch."""
     if stage in PUSH_STAGES and branch:
         kind = "branch"
     elif stage == "review-disposition" and branch:
@@ -143,11 +145,18 @@ def needs_notice(allowance: dict, prompt: bytes) -> bool:
     return True
 
 
-def cloud_sentence() -> str:
-    return ("GitHub writes this run may make: a push to the change branch and to its report "
-            "branch, and nothing else; post nothing. If the work needs any other write, do not "
-            "make it: end your report with a **Write requests** section naming each write, why "
-            "the work needs it, and what it would leave behind.")
+def cloud_sentence(stage: str) -> str:
+    """A cloud run's allowance, the only bound it carries, since the launch block runs locally.
+
+    Every cloud run pushes its report branch, because that is how its return travels; only
+    a stage that may push the change branch locally may push it there.
+    """
+    pushes = ("a push to the change branch and to its report branch" if stage in CLOUD_CHANGE_STAGES
+              else "a push to its report branch, which carries its return")
+    return (f"GitHub writes this run may make: {pushes}, and nothing else; post nothing. If the "
+            "work needs any other write, do not make it: end your report with a **Write "
+            "requests** section naming each write, why the work needs it, and what it would "
+            "leave behind.")
 
 
 def notice(allowance: dict) -> bytes:
@@ -223,7 +232,7 @@ def harness_string(command: str) -> str:
 
 
 def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
-              wrapper_for=None, env: dict[str, str] | None = None) -> str:
+              wrapper: dict | None = None, env: dict[str, str] | None = None) -> str:
     """Prove the check allows and refuses as it must, and that the launch's entry carries it.
 
     Every case is judged by the check's own decision; one refusal (and, for the
@@ -252,7 +261,7 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
         if b'"deny"' not in result.stdout:
             failures.append("hook entry: a wrapped comment was not refused")
     else:
-        wrapper = wrapper_for(config_path)
+        # The installed wrapper itself, so the file the launch runs is the file proved.
         result = subprocess.run([wrapper["bash"], wrapper["path"], harness_string(command)],
                                 capture_output=True, timeout=60, cwd=directory, env=env,
                                 stdin=subprocess.DEVNULL)
@@ -269,12 +278,16 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
     return "passed"
 
 
-def write_wrapper(path: Path, config_path: Path) -> None:
-    """The use consumer's single-path shell prefix: judge, then run the original string."""
+def write_wrapper(path: Path, config_path: Path, bash: str) -> None:
+    """The use consumer's single-path shell prefix: judge, then run the original string.
+
+    It names the bash it runs, because on Windows the first bash on PATH can be WSL's,
+    which would run the consumer's commands in another system.
+    """
     text = ("#!/bin/sh\n"
             f"{_quoted(sys.executable)} {_quoted(GUARD)} --prefix --config {_quoted(config_path)} "
             "-- \"$@\" || exit $?\n"
-            'exec bash -c "$1"\n')
+            f'exec {_quoted(bash)} -c "$1"\n')
     path.write_bytes(text.encode("utf-8"))
     if os.name != "nt":
         path.chmod(0o700)
@@ -305,18 +318,19 @@ def prepare(temporary, allowance: dict, *, carrier: str, root, env: dict[str, st
     _write_json(child_settings, {"enabledPlugins": dict(enabled_plugins or {}),
                                  "disableAllHooks": False,
                                  "hooks": {"PreToolUse": [hook_entry(child_path)]}})
-    bash = bash_executable(env) if carrier == "shell-prefix" else None
+    wrapper = None
     wrapper_path = temporary / "github-write-prefix.sh"
-
-    def wrapper_for(config):
+    if carrier == "shell-prefix":
+        bash = bash_executable(env)
         if bash is None:
             raise BoundError("no bash was found to carry the use consumer's command check")
-        write_wrapper(temporary / "github-write-self-test-prefix.sh", config)
-        return {"bash": bash, "path": str(temporary / "github-write-self-test-prefix.sh")}
-
+        write_wrapper(wrapper_path, config_path, bash)
+        wrapper = {"bash": bash, "path": str(wrapper_path)}
     try:
+        # Through the installed wrapper the self-test's refusal lands in the launch's own
+        # log, which is emptied below before the launch starts.
         result = self_test(temporary / "github-write-self-test", root, child_settings,
-                           carrier=carrier, wrapper_for=wrapper_for, env=env)
+                           carrier=carrier, wrapper=wrapper, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         raise BoundError(f"GitHub write check self-test could not run: {exc}") from exc
     log.write_bytes(b"")
@@ -324,7 +338,6 @@ def prepare(temporary, allowance: dict, *, carrier: str, root, env: dict[str, st
     child[CONNECTORS] = "false"
     child[CHILD_VARIABLE] = str(child_settings)
     if carrier == "shell-prefix":
-        write_wrapper(wrapper_path, config_path)
         child[SHELL_PREFIX] = str(wrapper_path)
     keep = permits_push(allowance)
     if not keep:
@@ -389,11 +402,14 @@ def bound_record(allowance: dict, *, carrier: str, status: str, reason, self_tes
             "child_settings": child_settings}
 
 
-def cloud_record(change_branch: str | None, report_branch: str | None) -> dict[str, object]:
+def cloud_record(stage: str, change_branch: str | None, report_branch: str | None
+                 ) -> dict[str, object]:
     return {"schema_version": SCHEMA_VERSION, "route": "cloud",
             "command_check": {"status": "not-run", "reason": CLOUD_NOT_RUN},
             "push_credential": "not-applicable",
-            "allowance": {"kind": "cloud-routine", "pushes": [change_branch, report_branch],
+            "allowance": {"kind": "cloud-routine",
+                          "pushes": ([change_branch, report_branch] if stage in CLOUD_CHANGE_STAGES
+                                     else [report_branch]),
                           "posts": "none"}}
 
 
@@ -455,6 +471,8 @@ def parse_grant(comment_id: int, body: str) -> dict[str, object]:
 def validate_grant(grant: dict, *, brief_comment: int, brief_body: str, stage: str,
                    resumed: bool) -> dict[str, object]:
     """Accept a grant only when it rests on a row of the affirmed brief; raise otherwise."""
+    # A grant answers a request the step itself returned, so only that step's next,
+    # resumed turn can carry it.
     if not resumed:
         raise GrantError("a write grant is accepted only for a turn that resumes its step")
     if grant["brief"] != brief_comment:
