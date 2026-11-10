@@ -176,6 +176,9 @@ def test_text_that_cannot_be_parsed_is_refused_only_with_a_signature(tree):
     assert decision("cat <<EOF\nunterminated gh issue comment 1", tree, "none") == "deny"
     assert decision("cat <<EOF\nunterminated hello", tree, "none") == "allow"
     assert decision('echo "unbalanced gh issue comment 1', tree, "none") == "deny"
+    # Every gh command and API host the check judges is a signature, not just the common ones.
+    assert decision('echo "unbalanced gh codespace delete', tree, "none") == "deny"
+    assert decision('echo "unbalanced https://uploads.github.com/x', tree, "none") == "deny"
     assert decision('grep "git push" notes.txt', tree, "none") == "allow"
 
 
@@ -217,6 +220,15 @@ def test_a_push_grant_permits_exactly_its_ref(tree):
     granted = config("none", tree, grants=[grant])["allowance"]
     assert allowance_module.permits_push(granted)
     assert not allowance_module.permits_push(config("none", tree)["allowance"])
+
+
+def test_a_tag_grant_permits_its_tag_and_no_ref_wide_push(tree):
+    grant = {"marker": 1, "brief": 2, "row": 4, "stage": "build", "write": "push",
+             "target": "o/r:refs/tags/v1"}
+    assert decision("git push origin HEAD:refs/tags/v1", tree, "branch", grants=[grant]) == "allow"
+    for command in ("git push --tags origin", "git push origin --tags",
+                    "git push --follow-tags origin", "git push --all origin"):
+        assert decision(command, tree, "branch", grants=[grant]) == "deny", command
 
 
 def test_hook_entry_refuses_and_logs(tmp_path):

@@ -459,8 +459,6 @@ def legacy_resume(base, root):
 # --- the GitHub write bound's native checks -------------------------------------
 # Design: lib/DESIGN.md#the-github-write-bound. They prove what unit tests can't: that a
 # real runtime honours the launch's hook, environment and child settings.
-# Each prepares a launch the way the shipped launchers do (lib/github_allowance.py),
-# runs a real Claude session or command under it, and prints one JSON summary line.
 # Every write a case tries targets a fixture repository or
 # Grimblaz-and-Friends/tc894-absent-<uuid>, which a GET read must show absent (404)
 # before anything runs. Raw streams stay under --base and are never committed.

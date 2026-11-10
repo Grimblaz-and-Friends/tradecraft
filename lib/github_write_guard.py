@@ -67,8 +67,8 @@ GH_FIELD_FLAGS = {"-f", "--raw-field", "-F", "--field"}
 REVIEW_MUTATIONS = {"resolveReviewThread", "addPullRequestReviewThreadReply"}
 THREAD_ARGUMENTS = ("threadId", "pullRequestReviewThreadId")
 TRIPWIRE = re.compile(
-    r"\bgit\b.*\bpush\b|\bgh\s+(?:api|issue|pr|release|repo|workflow|run|label|gist|secret|"
-    r"variable|ruleset|cache)\b|api\.github\.com|(?:^|[\s;&|(`$])(?:claude|codex)(?:\.exe)?(?:\s|$)",
+    r"\bgit\b.*\bpush\b|\bgh\s+[a-z]|(?:api|uploads)\.github\.com|"
+    r"(?:^|[\s;&|(`$])(?:claude|codex)(?:\.exe)?(?:\s|$)",
     re.IGNORECASE | re.MULTILINE)
 GITHUB_HOSTS = {"github.com", "www.github.com", "ssh.github.com"}
 THREAD_LOOKUP = ("query($n:ID!){node(id:$n){... on PullRequestReviewThread"
@@ -302,6 +302,13 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
 
 
 def _tripwire(text: str, why: str) -> list[Finding]:
+    """Refuse text that cannot be split when it carries a signature of anything the check judges.
+
+    The signatures cover every write and start the check refuses (a git push, any gh
+    command, the GitHub API hosts, a Claude or Codex start), so text carrying none of them
+    holds nothing the check would refuse and passes. An internal error is different: it
+    leaves even a parsed command unjudged, so the entries fail closed on it.
+    """
     if TRIPWIRE.search(text):
         return [Finding("unparsed command",
                         f"the command could not be parsed ({why}) and carries an unparsed "
@@ -589,10 +596,9 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
         if not permits_push(allowance) or (repository != target and not grant_refs):
             return [Finding(write, f"a push to {repository}")]
     if always:
-        tags_granted = any(ref.startswith("refs/tags/") for ref in _push_grant_refs(allowance, target))
-        blocking = [flag for flag in always if not (flag == "--tags" and tags_granted)]
-        if blocking:
-            return [Finding(write, f"git push with {', '.join(sorted(set(blocking)))}")]
+        # No grant lifts these: a grant allows exactly its own ref, and a ref-wide push such as
+        # --tags pushes every local ref of its kind, not just the granted one.
+        return [Finding(write, f"git push with {', '.join(sorted(set(always)))}")]
     destinations = _destination_refs(refspecs, cwd, destination)
     if destinations is None:
         return [Finding(write, "the push's destination ref could not be resolved")]

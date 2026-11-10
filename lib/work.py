@@ -10202,10 +10202,11 @@ def _allowance_command(args: argparse.Namespace, grants=()) -> int:
     than print a sentence for an allowance the launch would not hold: the launcher refuses a
     dispatch stating any other. Design: lib/DESIGN.md#the-github-write-bound
     """
-    if args.stage not in GITHUB_BOUND_STAGES:
-        raise WorkError("allowance requires an implementer stage: " + ", ".join(sorted(GITHUB_BOUND_STAGES)))
+    if args.stage not in GITHUB_BOUND_STAGES | {"use"}:
+        raise WorkError("allowance requires an implementer stage or use: "
+                        + ", ".join(sorted(GITHUB_BOUND_STAGES | {"use"})))
     branch = None
-    if args.stage != "artifact":
+    if args.stage not in ("artifact", "use"):
         if args.implementation_root is None:
             raise WorkError(f"allowance {args.stage} requires --implementation-root, the tree whose "
                             "branch the step may push")

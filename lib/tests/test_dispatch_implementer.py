@@ -2252,6 +2252,20 @@ def test_a_granted_turn_is_told_one_allowance_naming_its_grant(job):
     assert "github_write_notice" not in request
 
 
+def test_a_granted_turn_is_refused_before_a_cloud_launch(job, monkeypatch):
+    args, _ = job
+    _granted_turn(args, [GRANT])
+    args.vendor = "claude"
+    _cloud_record(Path.home(), "o/r")
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("a granted turn must not reach the cloud route")
+
+    monkeypatch.setattr(implementer.cloud_build, "run", forbidden)
+    with pytest.raises(implementer.ImplementerError, match="cannot ride a cloud launch"):
+        implementer.run_implementer(args)
+
+
 def test_a_dispatch_stating_another_allowance_is_refused_before_launch(job):
     args, _ = job
     _granted_turn(args, [])  # the dispatch omits the grant the launch holds

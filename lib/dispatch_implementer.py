@@ -534,6 +534,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     if args.vendor == "claude":
         route = _cloud_route(args)
         if route is not None:
+            if metadata.get("github_write_grants"):
+                # The cloud routine's fixed text forbids every write beyond the change and
+                # report branches, so a cloud turn could not honour a grant.
+                raise ImplementerError(
+                    "a write grant cannot ride a cloud launch: its routine allows no write beyond the "
+                    "change and report branches; run the granted turn locally or return it to the owner")
             entry, route_source, refusal = route
             return cloud_build.run(
                 args, deadline, entry=entry, route_source=route_source,
@@ -599,6 +605,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 args.stage, repository=github_allowance.repository_of(args.work),
                 branch=args.lineage_branch, pull_request=args.lineage_pull_request,
                 grants=metadata.get("github_write_grants") or ())
+            # Read once, before preparation, so the Codex bound record names the same version.
+            runtime_version = records.runtime_version(executable) if executable is not None else None
             if executable is not None and unavailable_reason is None:
                 try:
                     if args.vendor == "claude":
@@ -610,8 +618,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         args.launch_settings_path = intent["settings_path"]
                     else:
                         codex_bound = github_allowance.prepare_codex(
-                            allowance, dict(os.environ if child_env is None else child_env), None,
-                            temporary=temporary, root=root)
+                            allowance, dict(os.environ if child_env is None else child_env),
+                            runtime_version, temporary=temporary, root=root)
                         child_env = codex_bound["env"]
                         intent = policy.codex_prepare(executable, root, deadline, env=child_env)
                         intent["github_write_bound"] = {"record": codex_bound["record"],
@@ -762,9 +770,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     "from_bundle": args.handover_from, "to_vendor": "claude",
                     "replacement_session": None, "phase": "unavailable",
                 }
-            request["runtime_version"] = (
-                records.runtime_version(executable) if executable is not None else None
-            )
+            request["runtime_version"] = runtime_version
             request["runtime_version_unavailable_reason"] = (
                 unavailable_reason if executable is None else
                 None if request["runtime_version"] else "runtime version command returned no value"
@@ -814,12 +820,6 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 record["handover"] = request["handover"]
             if github_bound is not None:
                 record["github_write_bound"] = github_bound["record"]
-                if args.vendor == "codex":
-                    # The runtime version is read only after preparation, so the Codex
-                    # record's reason is completed here.
-                    record["github_write_bound"]["command_check"]["reason"] = (
-                        f"the installed Codex ({request['runtime_version'] or 'version unknown'}) "
-                        "offers no per-launch rule source")
             record["launched_at"] = request["launched_at"]
             growing = records.GrowingRun(record_path, record, streams,
                 expected=args.resume or args.session_id, holder=args.holder_session_id,

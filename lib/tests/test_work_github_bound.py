@@ -248,6 +248,18 @@ def test_the_allowance_command_refuses_rather_than_print_the_wrong_sentence(tmp_
     assert capsys.readouterr().out == ""
 
 
+def test_the_allowance_command_prints_the_sentence_the_use_consumer_launcher_holds(tmp_path, capsys):
+    args = work.parser().parse_args(["allowance", "use", "--repo", "example/product", "--issue", "12",
+                                     "--root", str(tmp_path)])
+    assert work._allowance_command(args) == 0
+    printed = capsys.readouterr().out.strip()
+    # The allowance dispatch_seat.use_consumer_bound holds for this work.
+    held = github_allowance.allowance_for("use", repository=github_allowance.repository_of(
+        "example/product#12"), branch=None, pull_request=None)
+    assert held["kind"] == "none"
+    assert not github_allowance.needs_notice(held, ("Use the change.\n\n" + printed).encode("utf-8"))
+
+
 def test_the_allowance_command_prints_review_dispositions_own_pull_request(tmp_path, capsys):
     tree = _bound_tree(tmp_path)
     args = work.parser().parse_args(["allowance", "review-disposition", "--repo", "example/product",
