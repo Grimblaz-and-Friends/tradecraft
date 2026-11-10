@@ -1876,7 +1876,7 @@ def test_906_a_seat_whose_planning_failed_records_not_launched_unless_it_ran(
         assert comparison["status"] == "not-launched" and comparison["findings"] == []
 
 
-def test_963_ac17_the_use_consumers_stdout_log_reaches_finish(job, tmp_path, monkeypatch):
+def test_the_use_consumers_stdout_log_reaches_finish(job, tmp_path, monkeypatch):
     args, _ = job
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     args.stage, args.requires, args.classification = "use", "execute", "cold"

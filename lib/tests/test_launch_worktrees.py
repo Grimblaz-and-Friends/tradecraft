@@ -1,4 +1,4 @@
-"""A launch's helpers stay in its tree, and its working copies and branches are compared (#963)."""
+"""A launch's helpers stay in its tree, and its working copies and branches are compared."""
 import json
 import os
 from pathlib import Path
@@ -49,14 +49,14 @@ def ask(config, tool="Agent", **tool_input):
 
 
 def three_parts(reason, root):
-    """What was asked and why, where to work, and the alternative (AC1-AC3)."""
+    """What was asked and why, where to work, and the alternative."""
     return ("separate working copy" in reason and f"Work inside {root}" in reason
             and "general-purpose" in reason and "is refused because" in reason)
 
 
 @pytest.mark.parametrize("value", ["worktree", "remote"])
 @pytest.mark.parametrize("tool", ["Agent", "Task"])
-def test_ac1_every_isolation_value_is_refused_with_its_reason(helper_config, value, tool):
+def test_every_isolation_value_is_refused_with_its_reason(helper_config, value, tool):
     result = ask(helper_config["config"], tool, prompt="x", isolation=value)
     assert result["decision"] == "deny" and result["raw"] == value
     assert f'isolation "{value}"' in result["reason"]
@@ -64,7 +64,7 @@ def test_ac1_every_isolation_value_is_refused_with_its_reason(helper_config, val
 
 
 @pytest.mark.parametrize("source", ["user", "tree", "plugin", "builtin"])
-def test_ac2_a_definition_that_sets_isolation_is_refused_in_every_source(helper_config, source):
+def test_a_definition_that_sets_isolation_is_refused_in_every_source(helper_config, source):
     define(helper_config["dirs"][source], "copier", "worktree")
     name = {"plugin": "tradecraft:copier", "builtin": "helper:copier"}.get(source, "copier")
     for asked in {name, "copier"}:
@@ -73,7 +73,7 @@ def test_ac2_a_definition_that_sets_isolation_is_refused_in_every_source(helper_
         assert "copier.md" in result["reason"] and three_parts(result["reason"], helper_config["root"])
 
 
-def test_ac2_an_unknown_type_is_refused_and_known_safe_types_are_allowed(helper_config):
+def test_an_unknown_type_is_refused_and_known_safe_types_are_allowed(helper_config):
     config = helper_config["config"]
     unknown = ask(config, prompt="x", subagent_type="mystery")
     assert unknown["decision"] == "deny" and "unknown type" in unknown["reason"]
@@ -87,14 +87,14 @@ def test_ac2_an_unknown_type_is_refused_and_known_safe_types_are_allowed(helper_
         assert ask(config, **tool_input)["decision"] == "allow", tool_input
 
 
-def test_ac2_an_unparseable_definition_fails_closed(helper_config):
+def test_an_unparseable_definition_fails_closed(helper_config):
     (helper_config["dirs"]["user"] / "broken.md").write_bytes(b"---\nname: broken\n")
     with pytest.raises(guard.Refusal):
         ask(helper_config["config"], prompt="x", subagent_type="anything")
 
 
 @pytest.mark.parametrize("form", [{"name": "x"}, {"path": "/elsewhere/x"}])
-def test_ac3_every_enter_worktree_call_is_refused_with_its_reason(helper_config, form):
+def test_every_enter_worktree_call_is_refused_with_its_reason(helper_config, form):
     result = ask(helper_config["config"], "EnterWorktree", **form)
     assert result["decision"] == "deny"
     assert "entering a working copy" in result["reason"] and str(next(iter(form.values()))) in result["reason"]
@@ -106,7 +106,7 @@ def run_hook(config_path, payload):
                           input=json.dumps(payload).encode("utf-8"), capture_output=True, check=True)
 
 
-def test_ac4_ac5_hook_logs_helper_decisions_and_the_outcome_lists_them(helper_config, tmp_path):
+def test_hook_logs_helper_decisions_and_the_outcome_lists_them(helper_config, tmp_path):
     config = helper_config["config"]
     config_path = tmp_path / "config.json"
     config_path.write_bytes(json.dumps(config).encode("utf-8"))
@@ -135,7 +135,7 @@ def test_ac4_ac5_hook_logs_helper_decisions_and_the_outcome_lists_them(helper_co
     assert set(launch_bound.GUARD_MATCHER.split("|")) >= {"Agent", "Task", "EnterWorktree", "Write"}
 
 
-def test_ac7_a_guard_that_allows_a_helper_copy_fails_its_self_test(tmp_path, monkeypatch):
+def test_a_guard_that_allows_a_helper_copy_fails_its_self_test(tmp_path, monkeypatch):
     root = tmp_path / "Tree"
     root.mkdir()
     env = {**os.environ, "CLAUDE_CODE_TMPDIR": str(tmp_path / "t")}
@@ -210,7 +210,7 @@ def entries(result, kind):
             for entry in result[kind] if "kind" in entry}
 
 
-def test_ac8_a_helpers_named_shell_worktree_holds_with_path_branch_and_tip(repo):
+def test_a_helpers_named_shell_worktree_holds_with_path_branch_and_tip(repo):
     value = start(repo)
     copy = repo["tmp"] / "copy-x"
     command = f"git worktree add {copy} -b helper-b"
@@ -226,7 +226,7 @@ def test_ac8_a_helpers_named_shell_worktree_holds_with_path_branch_and_tip(repo)
     assert git(copy, "rev-parse", "HEAD") == held["tip_after"]
 
 
-def test_ac8a_relative_forms_and_a_named_base_hold(repo):
+def test_relative_forms_and_a_named_base_hold(repo):
     value = start(repo)
     sibling = repo["root"].parent / "x"
     git(repo["root"], "worktree", "add", "-q", str(sibling))
@@ -240,7 +240,7 @@ def test_ac8a_relative_forms_and_a_named_base_hold(repo):
     assert "y" in held
 
 
-def test_ac9_a_named_branch_and_a_moved_copy_in_each_path_form_hold(repo):
+def test_a_named_branch_and_a_moved_copy_in_each_path_form_hold(repo):
     other = repo["tmp"] / "other"
     git(repo["main"], "worktree", "add", "-q", "-b", "other-b", str(other))
     value = start(repo)
@@ -258,7 +258,7 @@ def test_ac9_a_named_branch_and_a_moved_copy_in_each_path_form_hold(repo):
         assert "copy:" + path in named, form
 
 
-def test_ac9_git_bash_and_home_forms_name_a_windows_copy():
+def test_git_bash_and_home_forms_name_a_windows_copy():
     copies = ["D:/Code/product", "D:/Code/product/.claude/worktrees/b", "C:/Users/me/work"]
     for text in ("cd /d/code/product && git commit", "git -C D:\\Code\\Product status",
                  "ls ~/work/sub", "ls $HOME/work", "dir $env:USERPROFILE\\work"):
@@ -268,7 +268,7 @@ def test_ac9_git_bash_and_home_forms_name_a_windows_copy():
         assert any(key in named for key in ("copy:D:/Code/product", "copy:C:/Users/me/work")), text
 
 
-def test_ac10_an_unnamed_copy_or_one_named_only_in_a_result_is_listed(repo):
+def test_an_unnamed_copy_or_one_named_only_in_a_result_is_listed(repo):
     value = start(repo)
     copy = repo["tmp"] / "session-copy"
     git(repo["main"], "worktree", "add", "-q", "-b", "session-b", str(copy))
@@ -282,7 +282,7 @@ def test_ac10_an_unnamed_copy_or_one_named_only_in_a_result_is_listed(repo):
     assert ("working-copy", "session-copy", "added") in entries(result, "listed")
 
 
-def test_ac11_part_of_a_name_never_names(repo):
+def test_part_of_a_name_never_names(repo):
     copies = [str(repo["main"]), str(repo["tmp"] / "top"), str(repo["tmp"] / "top" / "deep")]
     top = str(repo["tmp"] / "top").replace("\\", "/")
     calls = [{"id": "t", "name": "Bash", "agent": None,
@@ -298,7 +298,7 @@ def test_ac11_part_of_a_name_never_names(repo):
 
 @pytest.mark.parametrize("remote", ["origin", "none"])
 @pytest.mark.parametrize("unreadable", [False, True])
-def test_ac12_ac18_the_default_branch_never_holds(repo, remote, unreadable):
+def test_the_default_branch_never_holds(repo, remote, unreadable):
     if remote == "origin":
         git(repo["main"], "update-ref", "refs/remotes/origin/trunk", "HEAD")
         git(repo["main"], "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
@@ -323,7 +323,7 @@ def test_ac12_ac18_the_default_branch_never_holds(repo, remote, unreadable):
         assert all(e["reason"].startswith("run record unreadable") for e in result["findings"])
 
 
-def test_ac13_paths_inside_the_root_do_not_name_the_main_checkout(repo):
+def test_paths_inside_the_root_do_not_name_the_main_checkout(repo):
     git(repo["main"], "checkout", "-q", "-b", "side")
     value = start(repo)
     commit(repo["main"], "moved by another session")
@@ -334,7 +334,7 @@ def test_ac13_paths_inside_the_root_do_not_name_the_main_checkout(repo):
     assert ("working-copy", "product", "moved") in entries(result, "listed")
 
 
-def test_ac14_only_the_root_copy_and_its_branch_are_the_runs_own(repo):
+def test_only_the_root_copy_and_its_branch_are_the_runs_own(repo):
     git(repo["root"], "branch", "unchanged")
     value = start(repo)
     commit(repo["root"], "own work")
@@ -349,7 +349,7 @@ def test_ac14_only_the_root_copy_and_its_branch_are_the_runs_own(repo):
     assert not any(entry.get("branch") in {"feature-b", "unchanged"} for entry in every)
 
 
-def test_ac14a_an_independent_roots_own_repository_is_compared(tmp_path, monkeypatch):
+def test_an_independent_roots_own_repository_is_compared(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".tradecraft").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -374,7 +374,7 @@ def test_ac14a_an_independent_roots_own_repository_is_compared(tmp_path, monkeyp
     assert {Path(entry["path"]).name for entry in result["findings"]} == {"outside"}
 
 
-def test_ac15_another_overlapping_runs_root_is_attributed(repo):
+def test_another_overlapping_runs_root_is_attributed(repo):
     other = repo["tmp"] / "other-run"
     git(repo["main"], "worktree", "add", "-q", "-b", "other-run-b", str(other))
     store = repo["home"] / ".tradecraft" / "dispatches"
@@ -395,13 +395,13 @@ def test_ac15_another_overlapping_runs_root_is_attributed(repo):
     assert {entry["to"]["dispatch_id"] for entry in result["attributed"]} == {"b" * 32}
 
 
-def test_ac17a_finish_without_a_record_raises_on_a_refs_plan(repo):
+def test_finish_without_a_record_raises_on_a_refs_plan(repo):
     value = start(repo)
     with pytest.raises(ValueError, match="needs the run's record"):
         value.finish(60)
 
 
-def test_ac18_a_final_unterminated_line_is_skipped_and_counted(repo):
+def test_a_final_unterminated_line_is_skipped_and_counted(repo):
     record = repo["tmp"] / "killed.log"
     record.write_bytes(b'{"type": "system"}\n{"type": "assist')
     calls, skipped = launch_bound.read_run_record(record)
@@ -410,7 +410,7 @@ def test_ac18_a_final_unterminated_line_is_skipped_and_counted(repo):
         launch_bound.read_run_record(repo["tmp"] / "absent.log")
 
 
-def test_ac18_an_unreadable_refs_item_is_uncompared(repo, monkeypatch):
+def test_an_unreadable_refs_item_is_uncompared(repo, monkeypatch):
     value = start(repo)
 
     def broken(*_args, **_kwargs):
@@ -420,7 +420,7 @@ def test_ac18_an_unreadable_refs_item_is_uncompared(repo, monkeypatch):
     assert any(entry["change"] == "uncompared" for entry in result["findings"])
 
 
-def test_ac17_a_root_outside_any_repository_is_not_a_repository(tmp_path, monkeypatch):
+def test_a_root_outside_any_repository_is_not_a_repository(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".tradecraft").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -435,7 +435,7 @@ def test_ac17_a_root_outside_any_repository_is_not_a_repository(tmp_path, monkey
     assert result["status"] == "clean" and result["coverage"][0]["status"] == "not-a-repository"
 
 
-def test_ac19_the_comparison_runs_no_removing_git_command():
+def test_the_comparison_runs_no_removing_git_command():
     for name in ("launch_bound.py", "dispatch_implementer.py", "dispatch_seat.py"):
         text = (LIB / name).read_text(encoding="utf-8")
         for word in ('"prune"', '"remove"', '"-D"', '"-d"', '"update-ref"', '"gc"'):

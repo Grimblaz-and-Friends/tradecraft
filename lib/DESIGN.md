@@ -88,11 +88,11 @@ The comparison of a Claude launch (`launch_bound.py`) also reads, before and aft
 - `EnterWorktree` with a path moves the session to another copy, where the file guard refuses every edit anyway.
 - The pre-tool check can't stop a copy made from the shell, and the tree walk stops at every nested copy, so only the refs comparison sees one.
 - Holding on every new copy would hold on the sessions and helper copies others start during a long build; the run's record logs every helper's shell commands, so holding on the ones it names finds the run's own leftovers.
-- A whole-name or deepest-copy match keeps a prefix or part of a name from holding. Relative paths resolved against every base an agent named can hold more often than exact working-directory tracking, never less.
+- A whole-name or deepest-copy match keeps a prefix or part of a name from holding. Relative paths resolved against every base an agent named can hold more often than exact working-directory tracking, never less. Every string in a tool call's input counts, text written into files included, so a common branch word or a `..` in file content can hold too; holding too often is the safe direction.
 - Nearly every record names the default branch and other sessions move it, so it never holds, even when the record can't be read.
 - A copy can hold the only record of a helper's work and a branch can belong to another session, so cleanup is the owner's decision.
 
-**Decisions in force:** the owner's rulings "tell and block" and "tied ones hold" (2026-11-09); no decision-log id is assigned yet.
+**Decisions in force:** D-987, a launched Claude author or builder is told to keep helpers in its tree and refused any helper copy, and its comparison holds only on the working copies and branches its record names; D-939, the launch's file-tool guard and before-and-after comparison, which this section extends; D-911, the launch's instruction loading through `--add-dir`, which this section widens to every Claude launch.
 
 ## Consumer trees
 

@@ -475,7 +475,7 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
         "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
         "--strict-mcp-config", "--no-chrome", "--add-dir", str(args.root.resolve()),
         "--disallowedTools=Monitor,ScheduleWakeup,CronCreate,Workflow",
-        # Every Claude launch carries its own instruction file (#963).
+        # Every Claude launch carries its own instruction file.
         "--add-dir", str(args.instruction_shim),
         "--settings", args.launch_settings_path,
     ]
@@ -1021,7 +1021,7 @@ def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeyp
     assert flags[flags.index("--permission-mode") + 1] == "auto"
     assert flags[flags.index("--setting-sources") + 1] == "user"
     # The author's own copy, never the holder checkout it was copied from, then
-    # the launch's own instruction file (#963 AC6), which existed at launch.
+    # the launch's own instruction file, which existed at launch.
     add_dirs = [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"]
     assert add_dirs == [str(args.root), str(args.instruction_shim)]
     assert (observed["add_dirs"][add_dirs[1]] or "").startswith(implementer.LAUNCH_HELPER_RULE)
@@ -1720,7 +1720,7 @@ def test_every_claude_route_loads_the_tree_through_the_same_command(job, monkeyp
     assert flags[flags.index("--setting-sources") + 1] == "user"
     assert [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"] == [
         str(args.root.resolve()), str(args.instruction_shim)]
-    # AC6 (#963): the launch's own instruction file carries the helper rule on every route.
+    # The launch's own instruction file carries the helper rule on every route.
     assert observed["add_dirs"][str(args.instruction_shim)] == implementer.LAUNCH_HELPER_RULE + "\n"
     assert observed["additional_claude_md"] == "1"
 
@@ -1741,7 +1741,7 @@ def agents_only(tree):
 
 @pytest.mark.parametrize("present", ["CLAUDE.md", ".claude/CLAUDE.md"])
 def test_a_tree_with_its_own_claude_md_gets_an_instruction_file_with_no_import(tmp_path, present):
-    # AC6 (#963): every Claude launch gets its own instruction file.
+    # Every Claude launch gets its own instruction file.
     tree = agents_only(tmp_path / "tree")
     (tree / present).parent.mkdir(parents=True, exist_ok=True)
     (tree / present).write_bytes(b"@AGENTS.md\n")
@@ -2180,10 +2180,10 @@ def test_a_stage_the_route_does_not_carry_stays_local(job, monkeypatch):
     assert implementer._cloud_route(args)[0]["routine_id"] == "trig_1"
 
 
-# --- #963 AC17a: every author and builder comparison reads its own record ----
+# --- Every author and builder comparison reads its own record ---------------
 
 @pytest.mark.parametrize("stage", ["artifact", "build"])
-def test_963_ac17a_the_claude_stdout_log_reaches_finish(job, monkeypatch, stage):
+def test_the_claude_stdout_log_reaches_finish(job, monkeypatch, stage):
     args, _ = claude_job(job, monkeypatch)
     # The refs reads go through the process-tree worker, slow on a loaded Windows machine.
     args.stage, args.timeout_seconds = stage, 600
@@ -2202,7 +2202,7 @@ def test_963_ac17a_the_claude_stdout_log_reaches_finish(job, monkeypatch, stage)
     assert record(args)["launch_comparison"]["run_record"]["status"] == "read"
 
 
-def test_963_ac17a_a_refs_comparison_without_its_record_is_held_unrecorded():
+def test_a_refs_comparison_without_its_record_is_held_unrecorded():
     comparison = object.__new__(implementer.launch_bound.Comparison)
     comparison.plan = [{"item": "refs:x", "path": "x", "method": "git-refs"}]
     comparison.before = {}

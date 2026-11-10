@@ -3997,7 +3997,6 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
                          "reason": "the request has a write-bound baseline but the run record has no comparison"}]
             status = "unrecorded"
         elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not cloud_findings:
-            # Copies and branches the run's record doesn't name are listed, never held (#963).
             bundles.append({**entry, "state": "clear", "findings": [],
                             "attributed": comparison.get("attributed") or [],
                             "listed": comparison.get("listed") or [], "account": None})

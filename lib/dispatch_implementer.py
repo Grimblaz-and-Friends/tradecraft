@@ -97,11 +97,12 @@ def read_machine_vendor(setting_path: Path | None = None) -> tuple[str, str]:
 
 
 INSTRUCTION_SHIM_PREFIX = environments.INSTRUCTION_SHIM_PREFIX
-# Every Claude launch's own instruction file opens with this rule, so a
-# hand-written dispatch carries it too (#963).
+# Every Claude launch's own instruction file opens with this rule. The file
+# reaches every launch, including one whose prompt the holder wrote by hand,
+# where a prompt line would reach only a prompt the entrance composed.
 # Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
 LAUNCH_HELPER_RULE = (
-    "**This launch keeps every helper in this tree (tradecraft #963).** Run each helper agent "
+    "**This launch keeps every helper in this tree.** Run each helper agent "
     "inside this tree: give no Agent call an `isolation` value, use `general-purpose` (or no "
     "`subagent_type`) unless a type's definition is known to set no isolation, and do not use "
     "EnterWorktree. Do not make another working copy or branch from the shell either. The runtime "
@@ -121,10 +122,10 @@ def _import_path(path: str) -> str:
 def instruction_shim_plan(tree: Path, git_dir: Path | None) -> list[tuple[Path | None, str]]:
     """Where the launch's own instruction file may live, in order, with its import line.
 
-    Every Claude launch gets one carrying ``LAUNCH_HELPER_RULE`` (#963). The
+    Every Claude launch gets one carrying ``LAUNCH_HELPER_RULE``. The
     runtime loads a tree's own CLAUDE.md through ``--add-dir``, so such a tree's
     file goes in the invocation's temporary directory (``None``) with no import.
-    A tree whose rules live only in AGENTS.md gets an import of it (#893 R2): the
+    A tree whose rules live only in AGENTS.md gets an import of it: the
     first placement is the tree's git directory with a relative import; the
     second is the invocation's temporary directory with an absolute import. An
     import containing ``#`` did not deliver in any spiked form, so it is never
@@ -243,7 +244,7 @@ def _finish_comparison(comparison, error, deadline, *, process_started=True, rec
     except TimeoutError as exc:
         return launch_bound.unrecorded(f"after-snapshot had no cleanup window: {exc}")
     try:
-        # The run's own stream names what it made (#963).
+        # The run's own stream names what it made.
         return comparison.finish(seconds, record=record)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         return launch_bound.unrecorded(f"comparison failed: {type(exc).__name__}: {exc}")

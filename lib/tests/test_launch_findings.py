@@ -69,7 +69,7 @@ def fixture_with(tmp_path, *texts, posted="2026-11-03T07:00:00Z", **bundle):
     return fixture
 
 
-def test_ac11_findings_hold_every_next_stage_and_the_recommendation(tmp_path):
+def test_findings_hold_every_next_stage_and_the_recommendation(tmp_path):
     fixture = fixture_with(tmp_path)
     refusal = held(fixture)
     assert refusal.stage == "launch-account" and refusal.status == "holder-owned"
@@ -86,11 +86,11 @@ def test_ac11_findings_hold_every_next_stage_and_the_recommendation(tmp_path):
     (OWNER, {**SESSION, "extra": "field"}),
     (OWNER, {**SESSION, "party": "nobody"}),
 ])
-def test_ac11_hold_stays_for_an_incomplete_or_invalid_account(tmp_path, entries):
+def test_hold_stays_for_an_incomplete_or_invalid_account(tmp_path, entries):
     assert held(fixture_with(tmp_path, account(*entries))) is not None
 
 
-def test_ac11_hold_stays_for_an_untrusted_author(tmp_path):
+def test_hold_stays_for_an_untrusted_author(tmp_path):
     fixture = state()
     fixture.issue_comments = [{"body": account(OWNER, SESSION), "user": {"login": "stranger"}}]
     fixture.record_root = tmp_path / "store"
@@ -100,7 +100,7 @@ def test_ac11_hold_stays_for_an_untrusted_author(tmp_path):
 
 
 @pytest.mark.parametrize("second", [SESSION, DAMAGE])
-def test_ac11_hold_releases_only_on_an_exact_account(tmp_path, second):
+def test_hold_releases_only_on_an_exact_account(tmp_path, second):
     fixture = fixture_with(tmp_path, account(OWNER, second))
     assert held(fixture) is None
     report = work._evaluate_launch_findings(fixture)
@@ -132,7 +132,7 @@ def test_the_launchers_unrecorded_comparison_shares_the_documented_id(tmp_path, 
     assert held(released) is None
 
 
-def test_ac11_unrecorded_comparison_is_held_until_named(tmp_path):
+def test_unrecorded_comparison_is_held_until_named(tmp_path):
     fixture = fixture_with(tmp_path, comparison=None)
     assert held(fixture) is not None
     released = fixture_with(tmp_path, account({"id": "unrecorded", "party": "owner",
@@ -168,7 +168,7 @@ def test_a_running_launch_owes_no_account_until_it_stops(tmp_path, monkeypatch, 
         assert held(fixture) is not None and entry["state"] == held_state
 
 
-def test_ac12_old_records_neither_hold_nor_clear(tmp_path):
+def test_old_records_neither_hold_nor_clear(tmp_path):
     fixture = fixture_with(tmp_path, write_bound=False, comparison=None)
     assert held(fixture) is None
     entry = work._evaluate_launch_findings(fixture)["bundles"][0]
@@ -181,7 +181,7 @@ def test_clean_and_use_stage_comparisons_are_clear(tmp_path):
     assert held(fixture_with(tmp_path, comparison="clean", stage="use")) is None
 
 
-def test_ac14_report_repeats_the_bound_and_comparison():
+def test_report_repeats_the_bound_and_comparison():
     request = {"requested": {"vendor": "claude"}, "write_bound": {"shell": "no OS fence"}}
     run = {"lifecycle": "completed", "launch_comparison": {"status": "clean"}}
     attempt = {"vendor": "claude", "launched": True}
@@ -196,7 +196,7 @@ def test_ac14_report_repeats_the_bound_and_comparison():
     assert work._write_bound_report({"requested": {"vendor": "codex"}}, run, {"vendor": "codex"}) is None
 
 
-# --- #963: a working copy or branch the run's record names ---------------------
+# --- A working copy or branch the run's record names --------------------------
 
 REFS_HELD = {"id": "5e1d0c2b9a87", "kind": "working-copy", "item": "refs:D:/product/.git",
              "path": "D:/copy-x", "change": "added", "branch_before": None, "branch_after": "helper-b",
@@ -222,7 +222,7 @@ def refs_comparison(findings):
      "owner_report": "told the owner on the issue", "practice_issue": "Grimblaz-and-Friends/tradecraft#999"},
     {"id": "5e1d0c2b9a87", "party": "session", "basis": "another session's copy",
      "session": "89abcdef-0123-4567-89ab-cdef01234567"}])
-def test_ac16_a_held_refs_entry_releases_only_on_an_account_naming_it(tmp_path, party):
+def test_a_held_refs_entry_releases_only_on_an_account_naming_it(tmp_path, party):
     comparison = refs_comparison([REFS_HELD])
     unaccounted = fixture_with(tmp_path / "a", comparison=comparison)
     refusal = held(unaccounted)
@@ -235,7 +235,7 @@ def test_ac16_a_held_refs_entry_releases_only_on_an_account_naming_it(tmp_path, 
     assert bundle["state"] == "accounted" and bundle["listed"] == [REFS_LISTED]
 
 
-def test_ac16_listed_entries_ride_a_clear_bundle_without_holding(tmp_path):
+def test_listed_entries_ride_a_clear_bundle_without_holding(tmp_path):
     fixture = fixture_with(tmp_path, comparison=refs_comparison([]))
     assert held(fixture) is None
     [bundle] = work._evaluate_launch_findings(fixture)["bundles"]

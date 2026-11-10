@@ -9,7 +9,7 @@ log. Every decision, allow or deny, is appended to that log so the launcher can
 prove afterwards that each completed file-tool call was checked (#906).
 
 It also refuses a helper or a session move into a separate working copy, which
-the runtime places outside the tree (#963).
+the runtime places outside the tree.
 Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
 """
 from __future__ import annotations
@@ -155,26 +155,40 @@ def _helper_refusal(config: dict, tool: str, asked: str, why: str) -> str:
             f"no isolation ({DEFAULT_AGENT_TYPE}), and keep two helpers off the same file at once")
 
 
+def logged_raw(tool: object, tool_input: dict) -> object:
+    """What a decision logs as ``raw`` for a call.
+
+    The launcher matches a logged decision without a tool-use id to its call by
+    this value, so both sides derive it here.
+    """
+    if tool in FILE_TOOLS:
+        return tool_input.get(FILE_TOOLS[tool])
+    if tool == "EnterWorktree":
+        return tool_input.get("name") if tool_input.get("name") is not None else tool_input.get("path")
+    isolation = tool_input.get("isolation")
+    if isolation is not None and isolation != "":
+        return isolation
+    return tool_input.get("subagent_type") or DEFAULT_AGENT_TYPE
+
+
 def decide_worktree_tool(payload: dict, config: dict, entry: dict[str, object]) -> dict[str, object]:
     """Refuse every route by which a helper or the recipient would work in another copy."""
     tool = str(payload.get("tool_name"))
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         raise Refusal("hook input has no object tool_input")
+    entry["raw"] = logged_raw(tool, tool_input)
     if tool == "EnterWorktree":
         form = "name" if tool_input.get("name") is not None else "path"
-        entry["raw"] = tool_input.get(form)
         return {**entry, "decision": "deny", "reason": _helper_refusal(
             config, tool, f"entering a working copy ({form} {entry['raw']})",
             "it would move this session into a separate working copy")}
     isolation = tool_input.get("isolation")
     if isolation is not None and isolation != "":
-        entry["raw"] = isolation
         return {**entry, "decision": "deny", "reason": _helper_refusal(
             config, tool, f'isolation "{isolation}"',
             "it asks for a separate working copy for the helper's work")}
-    agent_type = tool_input.get("subagent_type") or DEFAULT_AGENT_TYPE
-    entry["raw"] = agent_type
+    agent_type = entry["raw"]
     if not isinstance(agent_type, str):
         raise Refusal(f"{tool} input names an agent type that is not a string")
     definitions = agent_definitions(config, agent_type)
@@ -207,7 +221,7 @@ def decide(payload: dict, config: dict) -> dict[str, object]:
         return {**entry, "decision": "allow", "reason": "not a file-editing tool"}
     if not isinstance(tool_input, dict):
         raise Refusal("hook input has no object tool_input")
-    raw = tool_input.get(FILE_TOOLS[tool])
+    raw = logged_raw(tool, tool_input)
     entry["raw"] = raw
     if not isinstance(raw, str):
         raise Refusal(f"{tool} input names no target path")

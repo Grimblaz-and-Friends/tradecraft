@@ -182,7 +182,7 @@ def _finish_comparison(comparison, error, deadline, *, process_started=True, rec
     except TimeoutError as exc:
         return launch_bound.unrecorded(f"after-snapshot had no cleanup window: {exc}")
     try:
-        # The run's own stream names what it made (#963).
+        # The run's own stream names what it made.
         return comparison.finish(seconds, record=record)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         return launch_bound.unrecorded(f"comparison failed: {type(exc).__name__}: {exc}")

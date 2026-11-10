@@ -42,7 +42,7 @@ def decide(bound, raw, tool="Write", cwd=None):
 
 
 @pytest.mark.parametrize("tool", ["Write", "Edit", "MultiEdit", "NotebookEdit"])
-def test_ac1_outside_targets_are_denied_for_every_file_tool(bound, tool):
+def test_outside_targets_are_denied_for_every_file_tool(bound, tool):
     home = bound["home"]
     for raw in (str(home / ".claude" / "settings.json"),
                 str(home / ".claude" / "projects" / "x" / "memory" / "MEMORY.md"),
@@ -54,18 +54,18 @@ def test_ac1_outside_targets_are_denied_for_every_file_tool(bound, tool):
         assert raw in result["reason"]
 
 
-def test_ac1_raw_home_form_resolves_to_home_not_under_the_tree(bound):
+def test_raw_home_form_resolves_to_home_not_under_the_tree(bound):
     result = decide(bound, "~/.claude/settings.json")
     assert result["canonical"] == str((bound["home"] / ".claude" / "settings.json").resolve())
 
 
-def test_ac2_tree_new_subdirectory_and_scratchpad_are_allowed(bound):
+def test_tree_new_subdirectory_and_scratchpad_are_allowed(bound):
     for raw in (str(bound["root"] / "a.py"), str(bound["root"] / "new" / "deeper" / "b.py"),
                 "relative/c.py", str(bound["scratchpad"] / "notes.md")):
         assert decide(bound, raw)["decision"] == "allow", raw
 
 
-def test_ac2_scratchpad_derivation_reproduces_both_observed_paths():
+def test_scratchpad_derivation_reproduces_both_observed_paths():
     env = {"CLAUDE_CODE_TMPDIR": r"C:\Users\Micah\AppData\Local\Temp"}
     session = "f3e5084f-7317-4d52-9d4f-fa0cdffc3775"
     for suffix in ("9b67a6805ab241ed8b0368b6b6d44bc7", "9b7706228a8d418db26625c2538293de"):
@@ -76,7 +76,7 @@ def test_ac2_scratchpad_derivation_reproduces_both_observed_paths():
         assert derived["scratchpad"].endswith(os.sep.join(("claude", slug, session, "scratchpad")))
 
 
-def test_ac2_long_slug_is_matched_by_its_narrow_pattern(bound, tmp_path):
+def test_long_slug_is_matched_by_its_narrow_pattern(bound, tmp_path):
     root = tmp_path / ("d" * 230)
     env = {"CLAUDE_CODE_TMPDIR": str(tmp_path / "temp")}
     config = {**bound["config"], **launch_bound.scratchpad(root, SESSION, env), "root": str(root)}
@@ -91,7 +91,7 @@ def test_ac2_long_slug_is_matched_by_its_narrow_pattern(bound, tmp_path):
         assert guard.decide(payload, config)["decision"] == "deny", bad
 
 
-def test_ac3_dotdot_mixed_case_and_slashes(bound):
+def test_dotdot_mixed_case_and_slashes(bound):
     assert decide(bound, "../other-checkout/x.py")["decision"] == "deny"
     assert decide(bound, str(bound["root"] / ".." / "other-checkout" / "x.py"))["decision"] == "deny"
     assert decide(bound, str(bound["root"]).replace("\\", "/") + "/ok.py")["decision"] == "allow"
@@ -103,11 +103,11 @@ def test_ac3_dotdot_mixed_case_and_slashes(bound):
     "", "a\x00b", r"\\?\C:\x", r"\\.\C:\x", r"\\server\share\x", "//server/share/x", "C:foo",
     "~user/x", "~foo", "%APPDATA%\\x", "$HOME/x", "${HOME}/x", "dir/$_x",
 ])
-def test_ac3_ambiguous_forms_are_refused(bound, raw):
+def test_ambiguous_forms_are_refused(bound, raw):
     assert decide(bound, raw)["decision"] == "deny"
 
 
-def test_ac3_home_expansion_decides_by_where_it_lands(bound, monkeypatch):
+def test_home_expansion_decides_by_where_it_lands(bound, monkeypatch):
     assert decide(bound, "~")["decision"] == "deny"
     monkeypatch.setenv("USERPROFILE", str(bound["root"]))
     monkeypatch.setenv("HOME", str(bound["root"]))
@@ -115,7 +115,7 @@ def test_ac3_home_expansion_decides_by_where_it_lands(bound, monkeypatch):
     assert decide(bound, "~\\inside.py")["decision"] == "allow"
 
 
-def test_ac3_link_inside_the_tree_pointing_outside_is_refused(bound):
+def test_link_inside_the_tree_pointing_outside_is_refused(bound):
     link = bound["root"] / "escape"
     try:
         if os.name == "nt":
@@ -130,7 +130,7 @@ def test_ac3_link_inside_the_tree_pointing_outside_is_refused(bound):
     assert "other-checkout" in result["canonical"]
 
 
-def test_ac3_hard_linked_file_is_refused(bound):
+def test_hard_linked_file_is_refused(bound):
     outside = bound["other"] / "real.txt"
     outside.write_bytes(b"x")
     inside = bound["root"] / "alias.txt"
@@ -142,7 +142,7 @@ def test_ac3_hard_linked_file_is_refused(bound):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="8.3 short names exist only on Windows")
-def test_ac3_short_name_of_an_outside_directory_is_refused(bound):
+def test_short_name_of_an_outside_directory_is_refused(bound):
     import ctypes
     long_dir = bound["tmp"] / "a long outside directory"
     long_dir.mkdir()
@@ -160,7 +160,7 @@ def run_hook(config_path, payload, env=None):
                           input=json.dumps(payload).encode(), capture_output=True, env=env)
 
 
-def test_ac1_hook_process_denies_logs_and_fails_closed(bound, tmp_path):
+def test_hook_process_denies_logs_and_fails_closed(bound, tmp_path):
     config_path = tmp_path / "config.json"
     log = Path(bound["config"]["log"])
     config_path.write_text(json.dumps(bound["config"]), encoding="utf-8")
@@ -176,7 +176,7 @@ def test_ac1_hook_process_denies_logs_and_fails_closed(bound, tmp_path):
     assert b"could not evaluate" in broken.stdout
 
 
-def test_ac5_memory_store_write_is_refused_and_memory_is_switched_off(bound):
+def test_memory_store_write_is_refused_and_memory_is_switched_off(bound):
     memory = bound["home"] / ".claude" / "projects" / "x" / "memory" / "note.md"
     assert decide(bound, str(memory))["decision"] == "deny"
     assert decide(bound, "~/.claude/projects/x/memory/note.md")["decision"] == "deny"
@@ -190,7 +190,7 @@ def test_a_double_quote_in_a_guard_path_refuses_preparation(bound, tmp_path):
     assert not (tmp_path / 'temp"base').exists() if os.name != "nt" else True
 
 
-def test_ac4_self_test_has_its_own_log_and_a_broken_guard_refuses_preparation(bound, tmp_path,
+def test_self_test_has_its_own_log_and_a_broken_guard_refuses_preparation(bound, tmp_path,
                                                                                   monkeypatch):
     env = {**os.environ, "CLAUDE_CODE_TMPDIR": str(tmp_path / "temp"),
            "USERPROFILE": str(bound["home"]), "HOME": str(bound["home"])}
@@ -198,7 +198,7 @@ def test_ac4_self_test_has_its_own_log_and_a_broken_guard_refuses_preparation(bo
     temporary.mkdir()
     prepared = launch_bound.prepare_guard(temporary, bound["root"], SESSION, env, None)
     assert Path(prepared["log"]).read_bytes() == b""
-    # The four file-tool cases, then the five helper cases (#963).
+    # The file-tool cases come first, then the helper cases.
     assert [case["observed"] for case in prepared["self_test"]] == [
         "deny", "deny", "allow", "allow", "deny", "allow", "deny", "deny", "deny"]
     assert (temporary / "write-guard-self-test" / "write-guard.log.jsonl").read_bytes().count(b"\n") == 9
@@ -226,7 +226,7 @@ def answer(identity, error=False):
         {"type": "tool_result", "tool_use_id": identity, "is_error": error, "content": "x"}]}}
 
 
-def test_ac4_outcome_cross_check_covers_every_route(tmp_path):
+def test_outcome_cross_check_covers_every_route(tmp_path):
     log = tmp_path / "log.jsonl"
     log.write_bytes(b"")
     completed = stream(use("a", "/t/x"), answer("a"))

@@ -8,7 +8,7 @@ and after the run. Other Claude seats given a shell are not compared.
 A change the launcher cannot attribute to another live recorded run is a
 finding the holder must account for; the entrance holds the change until then.
 A Claude launch also compares each covered repository's working copies and
-branches, and holds only on those its own record names (#963).
+branches, and holds only on those its own record names.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ import time
 from holder_tree_guard import contains, path_key
 import run_lifecycle as lifecycle
 from seat_process import run_process
-from tree_write_guard import BUILTIN_SAFE_TYPES, WORKTREE_TOOLS
+from tree_write_guard import BUILTIN_SAFE_TYPES, WORKTREE_TOOLS, logged_raw
 
 GUARD = Path(__file__).resolve().with_name("tree_write_guard.py")
 FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
@@ -99,7 +99,7 @@ def hook_settings(config_path: Path) -> dict[str, object]:
 
 def agent_dirs(root: Path, env: dict[str, str], launcher_plugin: Path | None,
                builtin_plugins: list[tuple[str, str]] = ()) -> list[dict[str, str | None]]:
-    """Where a launched session's agent definitions can come from (#963).
+    """Where a launched session's agent definitions can come from.
 
     The launch disables every other plugin, so these are the user's agents, the
     tree's, the launcher plugin's and each built-in plugin's.
@@ -147,7 +147,7 @@ SELF_TEST_ISOLATING = "tradecraft-self-test-isolating"
 
 
 def _self_test_helper_cases() -> list[tuple[str, str, dict, str]]:
-    """Helper calls the guard must decide before launch (#963)."""
+    """Helper calls the guard must decide before launch."""
     return [("isolated helper", "Agent", {"prompt": "x", "isolation": "worktree"}, "deny"),
             ("plain helper", "Agent", {"prompt": "x", "subagent_type": "general-purpose"}, "allow"),
             ("isolating definition", "Agent", {"prompt": "x", "subagent_type": SELF_TEST_ISOLATING},
@@ -242,20 +242,6 @@ def _blocks(event: dict) -> list[dict]:
     return [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
 
 
-def _call_raw(name: str, tool_input: dict) -> object:
-    """The ``raw`` the guard logs for a call, so an unlogged decision can still be matched."""
-    if name == "NotebookEdit":
-        return tool_input.get("notebook_path")
-    if name in FILE_TOOLS:
-        return tool_input.get("file_path")
-    if name == "EnterWorktree":
-        return tool_input.get("name") if tool_input.get("name") is not None else tool_input.get("path")
-    isolation = tool_input.get("isolation")
-    if isolation is not None and isolation != "":
-        return isolation
-    return tool_input.get("subagent_type") or "general-purpose"
-
-
 def guard_outcome(stdout: bytes, log: Path | str) -> tuple[dict[str, object], str]:
     """Cross-check the stream's guarded calls against the guard's decisions.
 
@@ -280,7 +266,7 @@ def guard_outcome(stdout: bytes, log: Path | str) -> tuple[dict[str, object], st
             if block.get("type") == "tool_use" and (block.get("name") in FILE_TOOLS
                                                     or block.get("name") in WORKTREE_TOOLS):
                 tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
-                calls.append({"tool": block["name"], "raw": _call_raw(block["name"], tool_input),
+                calls.append({"tool": block["name"], "raw": logged_raw(block["name"], tool_input),
                               "tool_use_id": block.get("id")})
             elif block.get("type") == "tool_result" and block.get("tool_use_id"):
                 results[block["tool_use_id"]] = block.get("is_error") is True
@@ -606,7 +592,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
     """Findings are changes no other live recorded run accounts for (row 2).
 
     Working-copy and branch changes are findings only when the run's record
-    names them; the rest are ``listed`` (#963).
+    names them; the rest are ``listed``.
     """
     started, ended = _moment(before_at), _moment(after_at)
     changes, coverage = [], []
@@ -748,7 +734,7 @@ def _attribute(change: dict, runs: list[dict], started: datetime, ended: datetim
     return None
 
 
-# --- #963: each covered repository's working copies and branches -------------
+# --- Each covered repository's working copies and branches -------------------
 # Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
 
 REFS_METHOD = "git-refs"
@@ -841,7 +827,13 @@ def _short(ref: str | None) -> str | None:
 
 
 def _default_branch(remotes: list[str], copies: dict[str, dict]) -> tuple[str | None, str]:
-    """The repository's default branch, by the first rule that applies."""
+    """The repository's default branch, by the first rule that applies.
+
+    The remote's ``HEAD`` names the branch others share and move, so it comes
+    first: ``origin``'s, else that of the only remote, since with several no one
+    remote is the shared one. A repository with no remote ``HEAD`` falls back to
+    the branch its main working copy has checked out.
+    """
     symbolic = {}
     for line in remotes:
         ref, _, target = line.partition("\0")
@@ -1005,6 +997,8 @@ def _normal_text(text: str, home: str, windows: bool) -> str:
 
 
 def _normal_path(text: str) -> str:
+    # POSIX keeps a leading "//" as its own root, but no path here is one, so it
+    # folds to "/" like any other run of slashes.
     value = posixpath.normpath(text)
     return value[1:] if value.startswith("//") else value
 
@@ -1154,7 +1148,12 @@ class Comparison:
         self.before = snapshot(self.plan, seconds=seconds, own_output=self.own_output)
 
     def finish(self, seconds: float, *, record: Path | None = None) -> dict[str, object]:
-        """The after-snapshot and comparison; a refs plan is never compared without its record."""
+        """The after-snapshot and comparison; a refs plan is never compared without its record.
+
+        No record means the launch never named what its run made, so the whole
+        comparison is recorded unrecorded. A record that exists but can't be read
+        still lets each entry found be held one by one, so the holder sees which.
+        """
         if record is None and any(item["method"] == REFS_METHOD for item in self.plan):
             raise ValueError("refs comparison needs the run's record")
         if self.before is None:
