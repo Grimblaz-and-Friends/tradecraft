@@ -329,3 +329,62 @@ def test_cloud_record_says_the_block_did_not_run():
     record = allowance_module.cloud_record("change", "report")
     assert record["command_check"]["status"] == "not-run"
     assert "remote" in record["command_check"]["reason"]
+
+
+def _prefix_run(tmp_path, argument):
+    log = tmp_path / "log.jsonl"
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({**config("none", tmp_path), "log": str(log)}), encoding="utf-8")
+    return subprocess.run([sys.executable, str(LIB / "github_write_guard.py"), "--prefix", "--config",
+                           str(path), "--", argument], capture_output=True, timeout=60,
+                          stdin=subprocess.DEVNULL), log
+
+
+@pytest.mark.parametrize("argument", [
+    "eval 'echo hi'; gh pr merge 1",
+    "gh pr merge 1 && eval 'echo hi' < /dev/null",
+    "export TEMP=/tmp && eval 'echo hi' < /dev/null && gh issue comment 683",
+])
+def test_the_prefix_judges_the_whole_string_it_runs(tmp_path, argument):
+    result, _log = _prefix_run(tmp_path, argument)
+    assert result.returncode == 126 and guard.REFUSED.encode() in result.stderr
+
+
+def test_the_prefix_allows_the_runtime_wrapper_around_an_allowed_command(tmp_path):
+    result, log = _prefix_run(
+        tmp_path, "export TEMP=/tmp && eval 'git status' < /dev/null && pwd -P >| /tmp/cwd")
+    assert result.returncode == 0
+    assert json.loads(log.read_text().splitlines()[0])["command"] == "git status"
+
+
+@pytest.mark.parametrize("command", [
+    "git push -fu origin HEAD:refs/heads/tradecraft/894-ab",
+    "git push -uf origin HEAD:refs/heads/tradecraft/894-ab",
+    "git push -df origin tradecraft/894-ab",
+    "git push origin +HEAD:refs/heads/tradecraft/894-ab",
+    "git push origin :refs/heads/tradecraft/894-ab",
+    "git push --force-with-lease origin HEAD:refs/heads/tradecraft/894-ab",
+    "git push --force-if-includes --force-with-lease origin HEAD:refs/heads/tradecraft/894-ab",
+    "git push --all origin",
+    "git push --prune origin HEAD:refs/heads/tradecraft/894-ab",
+    "git push --mirror origin",
+    "git push -o ci.skip origin HEAD:refs/heads/other",
+    "git push --push-option ci.skip origin HEAD:refs/heads/other",
+    "git push --push-option=ci.skip origin HEAD:refs/heads/other",
+    "git push origin HEAD:other",
+    "git push origin HEAD:refs/heads/other",
+    "git push origin HEAD:refs/tags/v1",
+])
+def test_judge_push_refuses_every_write_beyond_a_fast_forward_of_the_own_branch(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "git push -u origin HEAD:refs/heads/tradecraft/894-ab",
+    "git push -o ci.skip origin HEAD:refs/heads/tradecraft/894-ab",
+    "git push --push-option ci.skip origin HEAD:refs/heads/tradecraft/894-ab",
+    "git push --push-option=ci.skip origin HEAD:tradecraft/894-ab",
+    "git push -q --set-upstream origin tradecraft/894-ab",
+])
+def test_judge_push_allows_the_own_branch_with_ordinary_options(tree, command):
+    assert decision(command, tree, "branch") == "allow"

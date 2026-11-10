@@ -6286,6 +6286,8 @@ def sweep_registry(transport: GitHubREST) -> None:
         write_registry(current)
 
 
+# The stages whose sessions can write, and so carry a GitHub write allowance.
+# Design: lib/DESIGN.md#the-github-write-bound
 GITHUB_BOUND_STAGES = frozenset({"artifact", "build", "floor", "review-disposition"})
 
 
@@ -6425,8 +6427,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     if decision.stage == "review-disposition":
         instruction += CLOUD_REPLY_INSTRUCTION if cloud else _thread_resolution_clause(state)
     if decision.stage in GITHUB_BOUND_STAGES:
-        # Each step is told the GitHub writes it may make. Design:
-        # lib/DESIGN.md#the-github-write-bound
+        # Design: lib/DESIGN.md#the-github-write-bound
         instruction += " " + (github_allowance.cloud_sentence() if cloud else github_allowance.sentence(
             _stage_allowance(state, decision.stage, branch, grants)))
     explicit_artifact = decision.stage == "artifact"
@@ -10189,14 +10190,27 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
 
 
 def _allowance_command(args: argparse.Namespace) -> int:
-    """Print the allowance sentence a holder-written dispatch for STAGE carries."""
+    """Print the allowance sentence a holder-written dispatch for STAGE carries.
+
+    It reads the branch from the implementation tree, as the launcher will, and refuses rather
+    than print a sentence for an allowance the launch would not hold: the launcher refuses a
+    dispatch stating any other. Design: lib/DESIGN.md#the-github-write-bound
+    """
     if args.stage not in GITHUB_BOUND_STAGES:
         raise WorkError("allowance requires an implementer stage: " + ", ".join(sorted(GITHUB_BOUND_STAGES)))
     branch = None
-    if args.implementation_root is not None:
+    if args.stage != "artifact":
+        if args.implementation_root is None:
+            raise WorkError(f"allowance {args.stage} requires --implementation-root, the tree whose "
+                            "branch the step may push")
         branch = subprocess.run(
             ["git", "-C", str(args.implementation_root.expanduser()), "symbolic-ref", "--short", "-q", "HEAD"],
             capture_output=True, stdin=subprocess.DEVNULL, timeout=30).stdout.decode("utf-8").strip() or None
+        if branch is None:
+            raise WorkError(f"allowance {args.stage}: --implementation-root is on no branch")
+    if args.stage == "review-disposition" and args.pull_request is None:
+        raise WorkError("allowance review-disposition requires --pull-request, the pull request "
+                        "whose threads the step may answer")
     allowance = github_allowance.allowance_for(
         args.stage, repository=args.repo, branch=branch, pull_request=args.pull_request)
     print(github_allowance.sentence(allowance))

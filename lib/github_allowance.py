@@ -361,6 +361,9 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
                            "pull_request": None, "grants": []}
         _write_json(child_path, _config(child_allowance, scope="child", root=root, log=log,
                                         child_settings=child_settings))
+        # No plugin exclusions: a Codex launch runs no Claude plugin discovery to take them
+        # from, so its Claude child keeps the owner's user plugins; the command check, not
+        # the plugin list, is what holds that child's GitHub writes.
         _write_json(child_settings, {"disableAllHooks": False,
                                      "hooks": {"PreToolUse": [hook_entry(child_path)]}})
         log.write_bytes(b"")
@@ -412,7 +415,7 @@ def refusals(log) -> list[dict[str, object]]:
     return found
 
 
-# --- grants (row 4) ----------------------------------------------------------------
+# --- grants ----------------------------------------------------------------------
 
 def _normalized(text: str) -> str:
     return " ".join(re.sub(r"[*_`>]", " ", text).split()).lower()

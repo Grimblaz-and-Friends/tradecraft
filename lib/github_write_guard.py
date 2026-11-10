@@ -529,6 +529,8 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
             break
         if word.startswith("--"):
             stem = word.split("=", 1)[0]
+            # Even onto the step's own branch: a forced or ref-wide push can erase history
+            # others read, and the step needs only a fast-forward.
             if stem in ("--force", "--force-with-lease", "--force-if-includes", "--all",
                         "--mirror", "--tags", "--follow-tags", "--delete", "--prune", "--branches"):
                 always.append(stem)
@@ -1021,7 +1023,11 @@ def describe(allowance: dict) -> str:
 # --- entries ---------------------------------------------------------------------------
 
 def _harness_command(argument: str) -> str:
-    """The command the harness wrapped inside ``eval '<command>'``, or the whole string."""
+    """The command the harness wrapped inside ``eval '<command>'``, or the whole string.
+
+    Used only to name the command in the log: the decision judges the whole string,
+    because the wrapper runs the whole string, eval body and anything around it.
+    """
     match = re.search(r"\beval '((?:[^']|'\\'')*)'", argument)
     return match.group(1).replace("'\\''", "'") if match else argument
 
@@ -1080,7 +1086,7 @@ def run_prefix(config_path: str, arguments: list[str]) -> int:
                        f"({len(arguments)} arguments)"}
         else:
             command = _harness_command(arguments[0])
-            verdict = decide(command, os.getcwd(), config)
+            verdict = decide(arguments[0], os.getcwd(), config)
     except Exception as exc:
         verdict = {"decision": "deny",
                    "reason": f"{REFUSED}: the check could not evaluate this command: {exc}"}

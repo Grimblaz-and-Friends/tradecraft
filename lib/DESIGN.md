@@ -113,7 +113,10 @@ Before anything is built or launched:
 - **The check runs on every shell command.** A Claude implementer carries it as a `PreToolUse` hook on `Bash|PowerShell`; the use consumer carries it through `CLAUDE_CODE_SHELL_PREFIX`. A refusal fails the command, not the turn, and lands in the run record's `github_write_refusals`; the run record's `github_write_bound` states the allowance and whether the check ran.
 - **A child starts only under the launch's settings**: `claude --setting-sources user --settings "$TRADECRAFT_CHILD_SETTINGS"`, without `--safe-mode`, `--bare` or a connector change. Any other Claude start, and every Codex start, is refused.
 - **Codex** gets the instructions, the environment removal and the child settings, and its run record says no command check ran. **A cloud build** records that the launch block did not run.
-- **A grant rests on the affirmed brief.** `validate_grant` accepts a `write-grant` marker only for a resumed turn of its own stage whose quoted words occur in the cited row of the affirmed brief; a push grant keeps git's credential for that turn.
+- **A grant rests on the affirmed brief.** `work.py run <stage> --grant <comment id>` passes `validate_grant`, which accepts a `write-grant` marker only for a resumed turn of its own stage whose quoted words occur in the cited row of the affirmed brief; a push grant keeps git's credential for that turn, and the composed prompt and the launcher both name the grant.
+- **A holder-written dispatch prints its sentence** with `work.py allowance <stage> --implementation-root TREE [--pull-request N]`, which reads the branch from that tree and refuses when the stage needs a branch or pull request it wasn't given.
+- **Refusals and grants are reported.** Every entrance report carries `github_write_bound` (the refusals and grants of the change's launches, or `unknown` with the error that stopped the read), and `run release-report` also returns them as `write_refusals` and `write_grants`.
+- **Which use consumers carry it.** A Claude use consumer given a shell carries the shell-prefix check and the environment. A Claude use consumer without a shell has no tool that runs a command, and a Codex use consumer runs in Codex's read-only sandbox (`--sandbox read-only`, no network access granted), so neither carries the check.
 
 **Why.**
 
@@ -126,5 +129,8 @@ Before anything is built or launched:
 - The check is a tripwire on an unfenced shell, not a fence: a write from inside a script, persist-changes' own push included, is not seen. It is accepted because the run record makes every refusal it does see visible, and an after-run check of GitHub was not bought.
 - A grant must rest on a brief row, not the holder's judgment that a write is reversible, because in a product repository a pushed branch can start workflows or a deploy that deleting it doesn't undo.
 - The installed Codex loads command rules only from user or project `.rules` files and `requirements.toml`, so no source can be supplied for one launch without writing into the product tree, the owner's Codex home or the machine's policy.
+- A refusal is reported, not held: it fails the command and the turn goes on, because the check exists to make a write that didn't happen visible, not to stop work the step can finish another way.
+- The allowance command reads the branch from the implementation tree, as the launcher does, so the sentence it prints is the one the launch will hold; a sentence for any other allowance would be refused at launch.
+- A use consumer with no shell, or in Codex's read-only sandbox, carries no check because it has no route to run a GitHub write; the shell-prefix check exists for the one that does.
 
 **Decisions in force:** D-986, dispatched sessions make only their step's GitHub writes.

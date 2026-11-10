@@ -231,3 +231,27 @@ def test_a_composed_prompt_names_the_grants_in_force(monkeypatch):
                                                pull_request=7, grants=[grant])
     assert github_allowance.sentence(allowance) in prompt
     assert prompt.count(github_allowance.SENTENCE_OPENING) == 1
+
+
+@pytest.mark.parametrize("arguments, missing", [
+    (["allowance", "build"], "--implementation-root"),
+    (["allowance", "floor"], "--implementation-root"),
+    (["allowance", "review-disposition", "--implementation-root", "{tree}"], "--pull-request"),
+])
+def test_the_allowance_command_refuses_rather_than_print_the_wrong_sentence(tmp_path, capsys, arguments, missing):
+    tree = _bound_tree(tmp_path)
+    arguments = [value.replace("{tree}", str(tree)) for value in arguments]
+    args = work.parser().parse_args([*arguments, "--repo", "example/product", "--issue", "12",
+                                     "--root", str(tree)])
+    with pytest.raises(work.WorkError, match=missing):
+        work._allowance_command(args)
+    assert capsys.readouterr().out == ""
+
+
+def test_the_allowance_command_prints_review_dispositions_own_pull_request(tmp_path, capsys):
+    tree = _bound_tree(tmp_path)
+    args = work.parser().parse_args(["allowance", "review-disposition", "--repo", "example/product",
+                                     "--issue", "12", "--root", str(tree), "--implementation-root",
+                                     str(tree), "--pull-request", "7"])
+    assert work._allowance_command(args) == 0
+    assert "example/product#7" in capsys.readouterr().out

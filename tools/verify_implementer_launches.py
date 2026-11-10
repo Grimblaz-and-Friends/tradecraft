@@ -458,6 +458,8 @@ def legacy_resume(base, root):
 
 
 # --- the GitHub write bound's native checks -------------------------------------
+# Design: lib/DESIGN.md#the-github-write-bound. They prove what unit tests can't: that a
+# real runtime honours the launch's hook, environment and child settings.
 # Each prepares a launch the way the shipped launchers do (lib/github_allowance.py),
 # runs a real Claude session or command under it, and prints one JSON summary line.
 # Every write a case tries targets a fixture repository or
@@ -639,7 +641,8 @@ def bound_case_author(args, base):
                 if e.get("type") == "assistant" for block in (e.get("message") or {}).get("content") or ()
                 if isinstance(block, dict) and block.get("type") == "tool_use"]
     # A push the check can see is one its own decision refuses; a push inside a script the
-    # session wrote and ran is the script gap the brief accepts, reported apart.
+    # session wrote and ran is the script gap lib/DESIGN.md#the-github-write-bound accepts,
+    # reported apart.
     seen = [c for c in commands if guard.decide(c, str(tree), config)["decision"] == "deny"]
     refused = [r["command"] for r in refusals]
     result = {"case": "author", "criteria": ["AC13", "AC9 (record half)"],
