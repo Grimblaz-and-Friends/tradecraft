@@ -44,6 +44,9 @@ BUILTIN_SAFE_TYPES = {
     "statusline-setup": "2.1.280",
 }
 EMPTY_YAML = {"", "null", "~", "''", '""'}
+KEYS = ("name", "isolation")
+# A value opening one of these is a block, anchor, alias, tag or flow form.
+BLOCK_FORMS = set("|>&*!{[")
 
 
 class Refusal(ValueError):
@@ -100,17 +103,37 @@ def in_scratchpad(config: dict, target: Path) -> bool:
 
 
 def _frontmatter(path: Path) -> dict[str, str] | None:
-    """The ``name`` and ``isolation`` keys of a leading ``---`` block, or None without one."""
+    """The ``name`` and ``isolation`` keys of a leading ``---`` block, or None without one.
+
+    Only a plain ``key: value`` line at the top level is read. Any other YAML
+    form that could set either key refuses, because the runtime reads it in
+    full and a form read wrong here could hide an isolating type.
+    """
     lines = path.read_bytes().decode("utf-8-sig").splitlines()
     if not lines or lines[0].strip() != "---":
         return None
     keys: dict[str, str] = {}
+    open_key = None
     for line in lines[1:]:
         if line.strip() == "---":
             return keys
+        if open_key and line.strip() and line[:1].isspace():
+            raise Refusal(f"agent definition {path} sets {open_key} on a following line")
+        if line[:1].isspace() or line.lstrip().startswith("#"):
+            continue
+        open_key = None
         key, separator, value = line.partition(":")
-        if separator and key.strip() in {"name", "isolation"} and not line[:1].isspace():
-            keys[key.strip()] = value.split(" #", 1)[0].strip()
+        bare = key.strip().strip("\"'?").strip()
+        if bare not in KEYS:
+            continue
+        if key.strip() != bare or not separator:
+            raise Refusal(f"agent definition {path} sets {bare} in a form this guard doesn't read")
+        value = value.split(" #", 1)[0].strip()
+        if value[:1] in BLOCK_FORMS:
+            raise Refusal(f"agent definition {path} sets {bare} in a form this guard doesn't read")
+        if not value:
+            open_key = bare
+        keys[bare] = value
     raise Refusal(f"agent definition {path} has an unterminated frontmatter block")
 
 

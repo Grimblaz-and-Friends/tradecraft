@@ -27,7 +27,8 @@ import time
 from holder_tree_guard import contains, path_key
 import run_lifecycle as lifecycle
 from seat_process import run_process
-from tree_write_guard import BUILTIN_SAFE_TYPES, WORKTREE_TOOLS, logged_raw
+from tree_write_guard import (BUILTIN_SAFE_TYPES, WORKTREE_TOOLS, Refusal, agent_definitions,
+                              logged_raw)
 
 GUARD = Path(__file__).resolve().with_name("tree_write_guard.py")
 FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
@@ -170,6 +171,15 @@ def prepare_guard(temporary: Path, root: Path, session: str, env: dict[str, str]
         # and the argument-list self-test would not notice.
         if '"' in str(path):
             raise BoundError(f"write guard path contains a double quote: {path}")
+    config_path = temporary / "write-guard.json"
+    log = temporary / "write-guard.log.jsonl"
+    config = guard_config(root, session, env, log, agents)
+    try:
+        # Every definition is read now, so one the guard can't read fails the
+        # launch here rather than refusing every helper call mid-turn.
+        agent_definitions(config, "")
+    except Refusal as exc:
+        raise BoundError(f"an agent definition can't be read with certainty: {exc}") from exc
     test_dir = temporary / "write-guard-self-test"
     test_dir.mkdir()
     test_config_path = test_dir / "write-guard.json"
@@ -201,9 +211,6 @@ def prepare_guard(temporary: Path, root: Path, session: str, env: dict[str, str]
         if observed != expected:
             raise BoundError(f"write guard self-test failed: {label} target {raw} gave {observed}, "
                              f"expected {expected}; " + result.stderr.decode("utf-8", "replace")[:500])
-    config_path = temporary / "write-guard.json"
-    log = temporary / "write-guard.log.jsonl"
-    config = guard_config(root, session, env, log, agents)
     _write_json(config_path, config)
     log.write_bytes(b"")
     return {"config": config, "config_path": str(config_path), "log": str(log),
@@ -748,8 +755,10 @@ DIRECTORY_FORMS = re.compile(
 
 
 def _git_run(path: Path, timeout: float, *arguments: str):
+    # The C locale keeps git's messages in English, which refs_plan reads.
+    env = {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
     return run_process(["git", "-C", str(path), *arguments], input=b"", cwd=Path(path),
-                       timeout=timeout, on_tick=lambda: None,
+                       timeout=timeout, on_tick=lambda: None, env=env,
                        cleanup_deadline=lifecycle.cleanup_deadline())
 
 
@@ -831,8 +840,11 @@ def _default_branch(remotes: list[str], copies: dict[str, dict]) -> tuple[str | 
 
     The remote's ``HEAD`` names the branch others share and move, so it comes
     first: ``origin``'s, else that of the only remote, since with several no one
-    remote is the shared one. A repository with no remote ``HEAD`` falls back to
-    the branch its main working copy has checked out.
+    remote is the shared one. A repository with a remote but no such ``HEAD``
+    has no default identified, because its main working copy may have a feature
+    branch checked out, and exempting that would let a named change go unheld.
+    Only a repository with no remote at all falls back to the branch its main
+    working copy has checked out, the one branch it shares with itself.
     """
     symbolic = {}
     for line in remotes:
@@ -844,6 +856,8 @@ def _default_branch(remotes: list[str], copies: dict[str, dict]) -> tuple[str | 
         target = symbolic.get(f"refs/remotes/{remote}/HEAD") if remote else None
         if target and target.startswith(f"refs/remotes/{remote}/"):
             return target[len(f"refs/remotes/{remote}/"):], rule
+    if names:
+        return None, "none identified: a remote has no HEAD"
     first = next(iter(copies.values()), None)
     if first and first.get("branch"):
         return _short(first["branch"]), "the main working copy's branch"
@@ -945,20 +959,21 @@ def _leaves(value) -> list[str]:
 def read_run_record(path: Path) -> tuple[list[dict], int]:
     """Every tool call in the run's stream, by the recipient or a helper, in order.
 
-    The record is unreadable when it can't be opened or decoded, or when any
-    line but a final unterminated one is not a JSON object; that final line,
-    as a killed process leaves it, is skipped and counted.
+    The record is unreadable when it can't be opened, or when any line but a
+    final unterminated one can't be decoded or is not a JSON object; that final
+    line, as a killed process leaves it, perhaps cut inside a character, is
+    skipped and counted.
     """
     try:
-        text = Path(path).read_bytes().decode("utf-8")
-    except (OSError, UnicodeError) as exc:
+        data = Path(path).read_bytes()
+    except OSError as exc:
         raise ValueError(f"{type(exc).__name__}: {exc}") from exc
-    lines = text.split("\n")
+    lines = data.split(b"\n")
     last = lines.pop()
     events, skipped = [], 0
     for number, line in enumerate(lines, 1):
         try:
-            event = json.loads(line)
+            event = json.loads(line.decode("utf-8"))
         except ValueError:
             event = None
         if not isinstance(event, dict):
@@ -966,7 +981,7 @@ def read_run_record(path: Path) -> tuple[list[dict], int]:
         events.append(event)
     if last.strip():
         try:
-            event = json.loads(last)
+            event = json.loads(last.decode("utf-8"))
         except ValueError:
             event = None
         if isinstance(event, dict):
@@ -1022,9 +1037,12 @@ def named_targets(calls: list[dict], *, root: Path, copies: list[str], branches:
     """Which copies (``copy:<path>``) and branches (``branch:<name>``) the run's tool calls name.
 
     A branch is named by its whole short name or ``refs/heads/<name>`` between
-    ref-name boundaries. A copy is named by a path at or inside its top that
-    lies in no deeper known copy: an absolute path anywhere in the text, or a
-    relative token resolved against each base of the agent that made the call.
+    ref-name boundaries, or as the last part of a path, as ``git worktree add
+    ../x`` names the branch ``x`` it makes. A copy is named by a path at or
+    inside its top that lies in no deeper known copy: an absolute path anywhere
+    in the text, or a relative token resolved against each base of the agent
+    that made the call. A quoted or backslash-escaped path is also tried whole,
+    so a space inside it doesn't split it.
     An agent's bases are its launch root and every directory it named in
     ``cd``, ``pushd``, ``Set-Location`` or ``git -C``; they only grow.
     """
@@ -1036,7 +1054,8 @@ def named_targets(calls: list[dict], *, root: Path, copies: list[str], branches:
     occurrence = re.compile(
         rf"(?<![{REF_CHAR}])(?:{'|'.join(map(re.escape, sorted(known, key=len, reverse=True)))})"
         rf"(?=$|/|[^{NAME_CHAR}])") if known else None
-    branch_names = sorted(set(branches), key=len, reverse=True)
+    branch_set = set(branches)
+    branch_names = sorted(branch_set, key=len, reverse=True)
     branch_pattern = re.compile(
         rf"(?:(?<![{REF_CHAR}])|(?<=refs/heads/))(?:{'|'.join(map(re.escape, branch_names))})"
         rf"(?![{REF_CHAR}])") if branch_names else None
@@ -1060,10 +1079,16 @@ def named_targets(calls: list[dict], *, root: Path, copies: list[str], branches:
     for call in calls:
         agent_bases = bases.setdefault(call["agent"], {root_text})
         for raw in call["strings"]:
+            whole = _whole_arguments(raw)
             if branch_pattern is not None:
                 for match in branch_pattern.finditer(raw):
                     named.setdefault("branch:" + match.group(0),
                                      {"tool": call["name"], "tool_use_id": call["id"]})
+                for token in [*SPLITTER.split(raw), *whole]:
+                    last = re.sub(r"\\+", "/", token).rstrip("/").rpartition("/")[2]
+                    if "/" in token.replace("\\", "/") and last in branch_set:
+                        named.setdefault("branch:" + last,
+                                         {"tool": call["name"], "tool_use_id": call["id"]})
             if occurrence is None:
                 continue
             text = _normal_text(raw, home_text, windows)
@@ -1078,11 +1103,24 @@ def named_targets(calls: list[dict], *, root: Path, copies: list[str], branches:
                     end += 1
                 hit(_normal_path(text[match.start():end]), call)
                 remainder[match.start():end] = " " * (end - match.start())
-            for token in set(SPLITTER.split("".join(remainder))):
+            tokens = set(SPLITTER.split("".join(remainder)))
+            tokens.update(_normal_text(argument, home_text, windows) for argument in whole)
+            for token in tokens:
                 if token:
                     for candidate in resolve(token, agent_bases):
                         hit(candidate, call)
     return named
+
+
+QUOTED = re.compile(r'"([^"\n]{1,4096})"|\'([^\'\n]{1,4096})\'')
+ESCAPED = re.compile(r"(?:[^\s\"'\\]|\\.)*\\ (?:[^\s\"'\\]|\\.)*")
+
+
+def _whole_arguments(raw: str) -> list[str]:
+    """Quoted and backslash-escaped arguments, unsplit, since a path in one may hold a space."""
+    found = [first or second for first, second in QUOTED.findall(raw)]
+    found += [match.replace("\\ ", " ") for match in ESCAPED.findall(raw)]
+    return found
 
 
 def _classify_refs(entries: list[dict], *, default: dict[str, str | None], named: dict[str, dict] | None,

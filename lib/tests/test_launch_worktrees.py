@@ -440,3 +440,93 @@ def test_the_comparison_runs_no_removing_git_command():
         text = (LIB / name).read_text(encoding="utf-8")
         for word in ('"prune"', '"remove"', '"-D"', '"-d"', '"update-ref"', '"gc"'):
             assert word not in text, (name, word)
+
+
+# --- Review repairs: forms the first build read wrong -------------------------
+
+@pytest.mark.parametrize("text", ["---\nname: copier\nisolation:\n  worktree\n---\n",
+                                  '---\nname: copier\n"isolation": worktree\n---\n',
+                                  "---\nname: copier\nisolation: |\n  worktree\n---\n",
+                                  "---\n? isolation\n: worktree\nname: copier\n---\n"])
+def test_an_isolation_form_the_parser_cant_read_refuses(helper_config, text):
+    (helper_config["dirs"]["user"] / "copier.md").write_bytes(text.encode("utf-8"))
+    with pytest.raises(guard.Refusal, match="isolation"):
+        ask(helper_config["config"], prompt="x", subagent_type="copier")
+
+
+def test_an_unreadable_agent_definition_fails_the_launch_before_it_starts(tmp_path):
+    root = tmp_path / "Tree"
+    (root / ".claude" / "agents").mkdir(parents=True)
+    (root / ".claude" / "agents" / "README.md").write_bytes(b"---\nnotes without an end\n")
+    env = {**os.environ, "CLAUDE_CODE_TMPDIR": str(tmp_path / "t")}
+    temporary = tmp_path / "invocation"
+    temporary.mkdir()
+    with pytest.raises(launch_bound.BoundError, match="README.md"):
+        launch_bound.prepare_guard(temporary, root, SESSION, env, None)
+    assert not (temporary / "write-guard-self-test").exists()
+
+
+def test_git_runs_in_the_c_locale_so_not_a_repository_is_read(tmp_path, monkeypatch):
+    seen = []
+
+    def fake(command, **kwargs):
+        seen.append(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(command, 128, b"", b"fatal: not a git repository")
+    monkeypatch.setattr(launch_bound, "run_process", fake)
+    plan = launch_bound.refs_plan(tmp_path, [])
+    assert plan[0]["unavailable"] == "not-a-repository"
+    assert seen[0]["LC_ALL"] == "C" and seen[0]["LANGUAGE"] == "C"
+
+
+def test_a_german_git_still_reads_not_a_repository(tmp_path, monkeypatch):
+    monkeypatch.setenv("LANGUAGE", "de")
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+    outside = tmp_path / "plain"
+    outside.mkdir()
+    assert launch_bound.refs_plan(outside, [])[0]["unavailable"] == "not-a-repository"
+
+
+def test_a_final_line_cut_inside_a_character_is_skipped(repo):
+    record = repo["tmp"] / "cut.log"
+    record.write_bytes(b'{"type": "system"}\n{"type": "assistant", "text": "a \xe2\x80')
+    calls, skipped = launch_bound.read_run_record(record)
+    assert calls == [] and skipped == 1
+    record.write_bytes(b'{"type": "system", "text": "\xe2\x80"}\n{"type": "system"}\n')
+    with pytest.raises(ValueError, match="line 1"):
+        launch_bound.read_run_record(record)
+
+
+@pytest.mark.parametrize("form", ['git worktree add --detach "../helper copy"',
+                                  "git worktree add --detach '../helper copy'",
+                                  r"git worktree add --detach ../helper\ copy"])
+def test_a_quoted_or_escaped_relative_path_names_its_detached_copy(repo, form):
+    value = start(repo)
+    copy = repo["root"].parent / "helper copy"
+    git(repo["root"], "worktree", "add", "-q", "--detach", str(copy))
+    result = value.finish(60, record=stream(repo, form))
+    assert [Path(entry["path"]).name for entry in result["findings"]] == ["helper copy"]
+    assert result["findings"][0]["branch_after"] is None
+
+
+def test_a_remote_without_head_identifies_no_default_so_a_named_commit_holds(repo):
+    git(repo["main"], "checkout", "-q", "-b", "side")
+    git(repo["main"], "update-ref", "refs/remotes/origin/trunk", "HEAD")
+    assert launch_bound._default_branch(["refs/remotes/origin/trunk\0"], {})[0] is None
+    value = start(repo)
+    commit(repo["main"], "a helper's commit")
+    result = value.finish(60, record=stream(repo, f"git -C {repo['main']} commit -m x"))
+    [coverage] = [entry for entry in result["coverage"]
+                  if entry["item"].startswith("refs:") and entry["status"] == "compared"]
+    assert coverage["default_branch"] is None
+    held = [entry for entry in result["findings"] if entry.get("kind") == "working-copy"]
+    assert [Path(entry["path"]).name for entry in held] == ["product"]
+
+
+def test_a_branch_left_by_a_copy_added_and_removed_is_named_by_its_path(repo):
+    value = start(repo)
+    copy = repo["root"].parent / "x"
+    git(repo["root"], "worktree", "add", "-q", str(copy))
+    git(repo["root"], "worktree", "remove", str(copy))
+    result = value.finish(60, record=stream(repo, "git worktree add ../x", "git worktree remove ../x"))
+    assert [(entry["kind"], entry["branch"]) for entry in result["findings"]] == [("branch", "x")]
