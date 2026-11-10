@@ -1013,14 +1013,18 @@ def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeyp
         }),
     }}).encode())
     assert implementer.run_implementer(args) == 0
-    flags = json.loads((args.root / "seen-claude.json").read_bytes())["argv"]
+    observed = json.loads((args.root / "seen-claude.json").read_bytes())
+    flags = observed["argv"]
     assert flags[:2] == ["-p", "--model"]
     assert flags[flags.index("--model") + 1] == "claude-opus-5-5"
     assert flags[flags.index("--effort") + 1] == "high"
     assert flags[flags.index("--permission-mode") + 1] == "auto"
     assert flags[flags.index("--setting-sources") + 1] == "user"
-    # The author's own copy, never the holder checkout it was copied from.
-    assert flags[flags.index("--add-dir") + 1] == str(args.root) and flags.count("--add-dir") == 1
+    # The author's own copy, never the holder checkout it was copied from, then
+    # the launch's own instruction file (#963 AC6), which existed at launch.
+    add_dirs = [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"]
+    assert add_dirs == [str(args.root), str(args.instruction_shim)]
+    assert (observed["add_dirs"][add_dirs[1]] or "").startswith(implementer.LAUNCH_HELPER_RULE)
     assert json.loads((args.root / "seen-claude.json").read_bytes())["additional_claude_md"] == "1"
     assert "--no-session-persistence" not in flags
     assert "--safe-mode" not in flags
