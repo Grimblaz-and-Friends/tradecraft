@@ -6286,7 +6286,8 @@ def sweep_registry(transport: GitHubREST) -> None:
         write_registry(current)
 
 
-# The stages whose sessions can write, and so carry a GitHub write allowance.
+# The implementer stages whose prompts the entrance composes with an allowance sentence, and for
+# which `allowance` prints one. The use consumer's bound is set by the seat launcher instead.
 # Design: lib/DESIGN.md#the-github-write-bound
 GITHUB_BOUND_STAGES = frozenset({"artifact", "build", "floor", "review-disposition"})
 
@@ -6335,12 +6336,16 @@ def validated_grants(state: WorkState, comment_ids, stage: str, continuity: str 
     brief, _pair = _affirmed_review(state)
     if brief is None or not str(brief.source_id or "").isdigit():
         raise WorkError("--grant requires an affirmed brief comment")
-    bodies = {str(comment.get("id")): comment.get("body") for comment in state.issue_comments}
+    comments = {str(comment.get("id")): comment for comment in state.issue_comments}
     accepted = []
     for comment_id in comment_ids:
-        body = bodies.get(str(comment_id))
+        comment = comments.get(str(comment_id))
+        body = comment.get("body") if comment else None
         if not isinstance(body, str):
             raise WorkError(f"--grant {comment_id}: no such comment on the issue")
+        # As with every marker that advances the entrance, only a configured producer's counts.
+        if _author(comment).lower() not in state.config.marker_producers:
+            raise WorkError(f"--grant {comment_id} refused: its author is not a configured marker producer")
         try:
             grant = github_allowance.parse_grant(int(comment_id), body)
             accepted.append(github_allowance.validate_grant(

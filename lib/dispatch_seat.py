@@ -747,9 +747,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             )
                             github_bound = None
                             if compared_launch(args, vendor):
-                                # The use consumer's GitHub write bound: no write
-                                # allowed. Settings hooks don't run under --safe-mode, so
-                                # its check rides the shell prefix.
+                                # Settings hooks don't run under --safe-mode, so the use
+                                # consumer's check rides the shell prefix.
                                 github_bound = use_consumer_bound(
                                     args, root, Path(temp), request["recipient_allocation_seconds"])
                                 record["github_write_bound"] = github_bound["record"]

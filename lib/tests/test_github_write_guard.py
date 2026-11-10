@@ -416,3 +416,69 @@ def test_judge_push_refuses_every_write_beyond_a_fast_forward_of_the_own_branch(
 ])
 def test_judge_push_allows_the_own_branch_with_ordinary_options(tree, command):
     assert decision(command, tree, "branch") == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    "gh label list", "gh run download 123", "gh pr checkout 12", "gh repo list",
+    "gh secret list", "gh variable get NAME", "gh ruleset list", "gh --version", "gh help",
+])
+@pytest.mark.parametrize("kind", ["none", "branch"])
+def test_read_only_gh_subcommands_stay_open(tree, command, kind):
+    assert decision(command, tree, kind) == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    "gh label create bug", "gh run rerun 123", "gh release create v1", "gh secret set X",
+    "gh variable set X", "gh ruleset delete 1", "gh gist create f", "gh repo create o/x",
+])
+def test_gh_subcommands_that_write_stay_refused(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+def _no_password(env):
+    result = subprocess.run(["git", "credential", "fill"], input=b"protocol=https\nhost=github.com\n\n",
+                            capture_output=True, env=env, timeout=60)
+    return b"password=" not in result.stdout and result.returncode != 0
+
+
+def test_the_credential_removal_survives_an_environment_that_drops_empty_variables(tmp_path):
+    helper = tmp_path / "helper.sh"
+    helper.write_text("#!/bin/sh\necho username=u\necho password=fake-secret\n", encoding="utf-8")
+    helper.chmod(0o755)
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text(
+        f"[credential \"https://github.com\"]\n\thelper = !sh {helper.as_posix()}\n", encoding="utf-8")
+    base = {**os.environ, "GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_NOSYSTEM": "1"}
+    removed = allowance_module.without_push_credential(base)
+    assert all(value != "" for name, value in removed.items() if name not in base)
+    dropped = {name: value for name, value in removed.items() if value != ""}
+    assert _no_password(removed) and _no_password(dropped)
+
+
+def test_a_prepared_codex_environment_keeps_a_consistent_git_config_set(tmp_path, monkeypatch):
+    env = {**os.environ, "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "core.autocrlf",
+           "GIT_CONFIG_VALUE_0": "false", "GIT_CONFIG_KEY_1": "credential.helper",
+           "GIT_CONFIG_VALUE_1": "", "SOME_EMPTY": ""}
+    allowance = allowance_module.allowance_for("artifact", repository="o/r", branch=None, pull_request=None)
+    prepared = allowance_module.prepare_codex(allowance, env, None, temporary=tmp_path, root=tmp_path)["env"]
+    count = int(prepared["GIT_CONFIG_COUNT"])
+    assert all(f"GIT_CONFIG_KEY_{n}" in prepared and f"GIT_CONFIG_VALUE_{n}" in prepared
+               for n in range(count))
+    assert "'credential.helper='" in prepared["GIT_CONFIG_PARAMETERS"]
+    assert "GIT_ASKPASS" not in prepared and prepared["GIT_TERMINAL_PROMPT"] == "0"
+    git(tmp_path, "init", "-q")
+    assert subprocess.run(["git", "-C", str(tmp_path), "status"], env=prepared, capture_output=True,
+                          stdin=subprocess.DEVNULL, timeout=60).returncode == 0
+
+
+def test_a_self_test_that_ran_and_failed_says_so(tmp_path, monkeypatch):
+    cases = allowance_module._self_test_cases({})
+    label, allowance, command, _expected = cases[0]
+    monkeypatch.setattr(allowance_module, "_self_test_cases",
+                        lambda _a: [(label, allowance, command, "deny"), *cases[1:]])
+    allowance = allowance_module.allowance_for("artifact", repository="o/r", branch=None, pull_request=None)
+    with pytest.raises(allowance_module.BoundError) as failed:
+        allowance_module.prepare(tmp_path, allowance, carrier="pretooluse-hook", root=tmp_path,
+                                 env=dict(os.environ))
+    assert "self-test failed" in str(failed.value) and "could not run" not in str(failed.value)
+    assert not isinstance(failed.value, OSError)

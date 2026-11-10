@@ -36,8 +36,13 @@ CHILD_START = f'claude --setting-sources user --settings "${CHILD_VARIABLE}"'
 CLOUD_NOT_RUN = "the launch block runs on this machine; a cloud builder runs on a remote one"
 
 
-class BoundError(OSError):
-    """The command check could not be prepared; nothing launches unchecked."""
+class BoundError(RuntimeError):
+    """The bound cannot hold for this launch, so nothing launches.
+
+    Raised when the command check could not be prepared or its self-test failed, and when a
+    dispatch states an allowance other than the launch's own. It is not an OSError, so a
+    self-test that ran and failed is never reported as one that could not run.
+    """
 
 
 class GrantError(ValueError):
@@ -71,23 +76,20 @@ def without_push_credential(env: dict[str, str]) -> dict[str, str]:
     """A copy of ``env`` in which git finds no credential and ssh offers no key.
 
     The gh login stays: reads are open to every step, and the command check
-    refuses gh writes.
+    refuses gh writes. No variable it sets is empty: the empty helper value that clears
+    git's credential helpers travels inside ``GIT_CONFIG_PARAMETERS``, and the askpass
+    variables are removed rather than emptied, so an environment that drops empty
+    variables on the way to a child still carries the removal whole.
     """
     child = dict(env)
-    try:
-        count = int(child.get("GIT_CONFIG_COUNT", "0"))
-    except ValueError:
-        count = 0
-    for key, value in (("credential.helper", ""), ("core.askPass", "")):
-        child[f"GIT_CONFIG_KEY_{count}"] = key
-        child[f"GIT_CONFIG_VALUE_{count}"] = value
-        count += 1
-    child["GIT_CONFIG_COUNT"] = str(count)
-    child.update({"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_ASKPASS": "",
-                  "SSH_ASKPASS": "",
+    cleared = "'credential.helper=' 'core.askpass='"
+    existing = child.get("GIT_CONFIG_PARAMETERS")
+    child["GIT_CONFIG_PARAMETERS"] = f"{existing} {cleared}" if existing else cleared
+    child.update({"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
                   "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o IdentitiesOnly=yes "
                                      "-o IdentityAgent=none -o IdentityFile=none"})
-    child.pop("SSH_AUTH_SOCK", None)
+    for name in ("GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK"):
+        child.pop(name, None)
     return child
 
 
@@ -332,6 +334,8 @@ def prepare(temporary, allowance: dict, *, carrier: str, root, env: dict[str, st
         result = self_test(temporary / "github-write-self-test", root, child_settings,
                            carrier=carrier, wrapper=wrapper, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
+        # Only a self-test that could not start lands here; one that ran and failed raises
+        # BoundError naming its failure, which is not an OSError.
         raise BoundError(f"GitHub write check self-test could not run: {exc}") from exc
     log.write_bytes(b"")
     child = dict(env)
@@ -361,8 +365,10 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
     says so. A Claude session it starts carries the same child settings.
     """
     # An inherited environment drops an empty variable on Windows; this explicit copy
-    # does the same, so a Codex child sees what an inheriting one would.
-    child = {key: value for key, value in env.items() if value != "" or os.name != "nt"}
+    # does the same, so a Codex child sees what an inheriting one would. An inherited
+    # GIT_CONFIG_VALUE_n stays even when empty, because its GIT_CONFIG_COUNT names it.
+    child = {key: value for key, value in env.items()
+             if value != "" or os.name != "nt" or key.startswith("GIT_CONFIG_VALUE_")}
     child[CONNECTORS] = "false"
     child_settings = None
     if temporary is not None:
@@ -468,6 +474,22 @@ def parse_grant(comment_id: int, body: str) -> dict[str, object]:
             "write": write, "target": target.strip(), "quote": quote}
 
 
+# A quote is at least a phrase of the row, so it shows which of the row's words name the
+# write; a single word or letter would occur in almost any row.
+MIN_QUOTE_WORDS = 3
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+(?:['\-][a-z0-9]+)*", _normalized(text))
+
+
+def _quotes_row(quote: str, row: str) -> bool:
+    """Whether the quote is a run of at least MIN_QUOTE_WORDS whole words of the row."""
+    wanted, words = _words(quote), _words(row)
+    return len(wanted) >= MIN_QUOTE_WORDS and any(
+        words[i:i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
+
+
 def validate_grant(grant: dict, *, brief_comment: int, brief_body: str, stage: str,
                    resumed: bool) -> dict[str, object]:
     """Accept a grant only when it rests on a row of the affirmed brief; raise otherwise."""
@@ -481,8 +503,9 @@ def validate_grant(grant: dict, *, brief_comment: int, brief_body: str, stage: s
     row = brief_row(brief_body, grant["row"])
     if row is None:
         raise GrantError(f"grant {grant['marker']} cites row {grant['row']}, which the brief lacks")
-    if not grant["quote"].strip() or _normalized(grant["quote"]) not in _normalized(row):
-        raise GrantError(f"grant {grant['marker']} quotes words that row {grant['row']} does not carry")
+    if not _quotes_row(grant["quote"], row):
+        raise GrantError(f"grant {grant['marker']} does not quote at least {MIN_QUOTE_WORDS} whole "
+                         f"words that row {grant['row']} carries")
     if grant["stage"] != stage:
         raise GrantError(f"grant {grant['marker']} is for stage {grant['stage']}, not {stage}")
     target = grant["target"]

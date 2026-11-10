@@ -53,8 +53,13 @@ GH_READS = {
     ("repo", "view"), ("repo", "clone"),
     ("release", "view"), ("release", "list"), ("release", "download"),
     ("auth", "status"),
+    # Read-only on GitHub: they list or download, and pr checkout writes only the local tree.
+    ("label", "list"), ("run", "download"), ("pr", "checkout"), ("repo", "list"),
+    ("gist", "list"), ("gist", "view"), ("secret", "list"), ("variable", "list"),
+    ("variable", "get"), ("cache", "list"), ("ruleset", "list"), ("ruleset", "view"),
+    ("ruleset", "check"),
 }
-GH_READ_COMMANDS = {"search", "status", "browse", "help", "version", "--version", "--help", "-h"}
+GH_READ_COMMANDS = {"search", "status", "browse", "help", "version"}
 GH_API_VALUE_FLAGS = {"-X", "--method", "-f", "--raw-field", "-F", "--field", "-H", "--header",
                       "--input", "-q", "--jq", "-t", "--template", "--hostname", "-p", "--preview",
                       "--cache", "-R", "--repo"}
@@ -700,7 +705,7 @@ def judge_gh(arguments: list[str], ctx: Context) -> list[Finding]:
     if not positional:
         return []
     command = positional[0]
-    if command in GH_READ_COMMANDS or (not positional[1:] and command in ("--version", "--help")):
+    if command in GH_READ_COMMANDS:
         return []
     if command == "api":
         return judge_gh_api(positional[1:], values, ctx)

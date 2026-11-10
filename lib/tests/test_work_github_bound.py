@@ -304,3 +304,27 @@ def test_allowance_refuses_a_grant_the_entrance_would_refuse(tmp_path, monkeypat
     with pytest.raises(work.WorkError) as entrance:
         work.validated_grants(fixture, [9001], "build", continuity)
     assert str(refused.value) == str(entrance.value)
+
+
+def test_a_grant_from_an_author_who_is_not_a_marker_producer_is_refused(monkeypatch):
+    fixture, brief = _grant_state(_grant_body())
+    fixture.issue_comments[0]["user"] = {"login": "someone-else"}
+    monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "connected")))
+    with pytest.raises(work.WorkError, match="not a configured marker producer"):
+        work.validated_grants(fixture, [9001], "artifact", "resume")
+
+
+@pytest.mark.parametrize("quote", ["t", "push", "real push", "eal push to"])
+def test_a_grant_quoting_less_than_a_phrase_of_its_row_is_refused(monkeypatch, quote):
+    body = _grant_body().replace("The artifact must test a real push", quote)
+    fixture, brief = _grant_state(body)
+    monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "connected")))
+    with pytest.raises(work.WorkError, match="at least 3 whole words"):
+        work.validated_grants(fixture, [9001], "artifact", "resume")
+
+
+def test_a_grant_quoting_three_whole_words_of_its_row_is_carried(monkeypatch):
+    body = _grant_body().replace("The artifact must test a real push", "a real push")
+    fixture, brief = _grant_state(body)
+    monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "connected")))
+    assert work.validated_grants(fixture, [9001], "artifact", "resume")[0]["row"] == 4
