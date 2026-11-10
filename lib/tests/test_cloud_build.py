@@ -1123,3 +1123,12 @@ def test_the_entrance_and_the_launcher_read_one_routing_decision(tmp_path, monke
 def test_a_repair_change_branch_reason_names_its_stage():
     assert cloud.change_branch_check(TIP, TIP, [], "identical", repair=True, stage="floor")["reason"] \
         == "a floor turn can rightly make no commit"
+
+
+def test_894_ac4_a_cloud_run_record_says_the_github_write_block_did_not_run(machine):
+    code, _request, run, _output = launch(machine, Fake())
+    assert code == 0
+    bound = run["github_write_bound"]
+    assert bound["command_check"]["status"] == "not-run"
+    assert "remote" in bound["command_check"]["reason"]
+    assert bound["allowance"]["kind"] == "cloud-routine" and bound["allowance"]["posts"] == "none"

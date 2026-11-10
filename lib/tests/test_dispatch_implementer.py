@@ -2173,3 +2173,54 @@ def test_a_stage_the_route_does_not_carry_stays_local(job, monkeypatch):
     assert implementer._cloud_route(args) is None
     args.stage = "build"
     assert implementer._cloud_route(args)[0]["routine_id"] == "trig_1"
+
+
+def _run_record(args):
+    return json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
+
+
+@pytest.mark.parametrize("stage, kind", [("build", "branch"), ("review-disposition", "review-disposition")])
+def test_894_ac1_a_claude_builder_records_its_allowance_and_armed_check(job, monkeypatch, stage, kind):
+    args, scenario = job
+    args.vendor, args.stage, args.work = "claude", stage, "o/r#894"
+    args.lineage_branch, args.lineage_pull_request = "tradecraft/894-ab", 12
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    scenario.write_bytes(json.dumps({"claude": native_artifact_result("claude", "built")}).encode())
+    # A refusal the check logged during the turn (#894 AC12): reported, and the turn's outcome holds.
+    refusal = {"scope": "parent", "entry": "hook", "command": "gh issue comment 1", "reason": "refused",
+               "allowance": {"kind": kind}}
+    monkeypatch.setattr(implementer.github_allowance, "refusals", lambda _log: [refusal])
+    assert implementer.run_implementer(args) == 0
+    run = _run_record(args)
+    bound = run["github_write_bound"]
+    assert bound["allowance"]["kind"] == kind and bound["allowance"]["repository"] == "o/r"
+    assert bound["command_check"]["carrier"] == "pretooluse-hook"
+    assert bound["command_check"]["status"] == "armed" and bound["push_credential"] == "kept"
+    assert run["github_write_refusals"] == [refusal] and run["outcome"] == "success"
+    assert "write_guard" in run
+    observed = seen_claude(args)
+    assert observed["argv"][observed["argv"].index("--settings") + 1] == args.launch_settings_path
+    assert observed["github_write_matchers"] and "Bash|PowerShell" in observed["github_write_matchers"]
+
+
+def test_894_ac17_a_codex_launch_records_that_no_command_check_ran(job, monkeypatch):
+    args, _ = job
+    args.vendor, args.work = "codex", "o/r#894"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    captured = {}
+    original = implementer.run_process
+
+    def capture(command, **kwargs):
+        captured.update(kwargs.get("env") or {})
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(implementer, "run_process", capture)
+    assert implementer.run_implementer(args) == 0
+    bound = _run_record(args)["github_write_bound"]
+    assert bound["allowance"]["kind"] == "none"  # no registered branch, so no push
+    assert bound["command_check"]["carrier"] == "none" and bound["command_check"]["status"] == "not-run"
+    assert "codex-cli test" in bound["command_check"]["reason"]
+    assert bound["push_credential"] == "removed"
+    assert captured["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
+    assert captured["TRADECRAFT_CHILD_SETTINGS"] and captured["GIT_TERMINAL_PROMPT"] == "0"
