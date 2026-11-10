@@ -2,7 +2,7 @@
 
 **Purpose:** record why #957 lets one launch's account run across several `launch-account` comments, why a repeated finding takes its latest naming, and why a comment naming a finding its launch didn't flag counts for nothing as a whole. It also records the calls made inside the brief's rows. **Audience:** a future session changing how the entrance combines launch accounts, the held report's fields, or the account procedure. **Success:** that reader can recover what was chosen over what without the issue.
 
-The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/957#issuecomment-6773613674) governs. Its pre-implementation artifact was [settled on the would route](https://github.com/Grimblaz-and-Friends/tradecraft/issues/957#issuecomment-6773889772). The lane is ordinary / connected, and no panel was bought. This record supersedes none; it narrows [D-939](D-939-2026-11-03-claude-launch-writes-stay-in-their-tree.md)'s single exact account to the comments that count together.
+The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/957#issuecomment-6773226962) governs. Its pre-implementation artifact was [settled on the would route](https://github.com/Grimblaz-and-Friends/tradecraft/issues/957#issuecomment-6773889772). The lane is ordinary / connected, and no panel was bought. This record supersedes none; it narrows [D-939](D-939-2026-11-03-claude-launch-writes-stay-in-their-tree.md)'s single exact account to the comments that count together.
 
 ## The limit that made one comment too small
 
@@ -20,7 +20,7 @@ GitHub accepts an issue comment of up to 262,144 UTF-8 bytes; its refusal messag
 
 - **Which comments a held launch lists as not counting.** Those whose `dispatch` is this launch's, those whose `dispatch` can't be read, and those for another launch that name at least one finding this launch flagged. Row 3 asks for every comment for that launch; a post for another launch naming this one's findings is the misdirected post a holder needs to see, and listing every other launch's accounts would bury what is owed.
 - **A local-tree finding the tree has since released still counts as flagged.** The launch did flag it, so a comment that named it while it was owed keeps counting once the tree catches up, rather than being voided whole and leaving its other findings owed.
-- **The report's fields.** `findings` stays everything the launch flagged; `owed`, `accounts`, `uncounted` and `governing` (limited to findings named more than once, so a flood doesn't double the report) are added; the single `account` field is dropped from a held or accounted entry, since nothing outside `lib/work.py` read it. The refusal lists only what is owed, and keeps its reason `launch-findings-unaccounted`.
+- **The report's fields.** `findings` stays everything the launch flagged; `owed`, `accounts`, `uncounted` and `governing` (limited to findings named more than once, so a flood doesn't double the report) are added; the single `account` field is dropped from every entry, since nothing outside `lib/work.py` read it. The refusal lists only what is owed, under `owed`, and keeps its reason `launch-findings-unaccounted`.
 - **A `names-unflagged` reason lists at most ten ids, sorted, with a count,** because a comment written for another launch's flood could name thousands.
 - **No comment-size check in code,** because the entrance reads comments and never posts them. No tool writes or posts an account.
 

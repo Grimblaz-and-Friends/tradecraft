@@ -4001,7 +4001,7 @@ def _launch_account_reading(accounts: list[tuple], dispatch: object, findings: l
         other = marker.attributes.get("dispatch")
         readable = re.fullmatch(r"[0-9a-f]{32}", other or "") is not None
         if other != dispatch and readable and not flagged.intersection(names or ()):
-            continue  # another launch's account, naming nothing this launch flagged
+            continue  # a comment for another launch concerns this one only when it names this launch's findings
         source = f"{marker.surface}:{marker.source_id}"
         posted = _time(marker.timestamp)
         reason = fault
@@ -4014,6 +4014,7 @@ def _launch_account_reading(accounts: list[tuple], dispatch: object, findings: l
             # A comment naming what its launch didn't flag was most likely written for another, so none of it counts.
             unflagged = sorted(set(names) - flagged)
             if unflagged:
+                # Ten ids at most: a comment written for another launch could name thousands.
                 reason = "names-unflagged", (f"names {len(unflagged)} id(s) the launch didn't flag: "
                                              + ", ".join(unflagged[:10]))
         entry = {"source": source, "author": marker.author, "posted": marker.timestamp}
@@ -4031,6 +4032,7 @@ def _launch_account_reading(accounts: list[tuple], dispatch: object, findings: l
             if finding.get("released_by"):
                 value["released_by"] = finding["released_by"]
             owed.append(value)
+    # Only repeats are listed in governing, because listing every finding would double a flood's report.
     return {"owed": owed, "accounts": counted, "uncounted": uncounted,
             "governing": {key: value for key, value in governing.items() if namings[key] > 1}}
 
@@ -4081,7 +4083,7 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             status = "unrecorded"
         elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not cloud_findings:
             bundles.append({**entry, "state": "clear", "findings": [],
-                            "attributed": comparison.get("attributed") or [], "account": None})
+                            "attributed": comparison.get("attributed") or []})
             continue
         else:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
@@ -4112,7 +4114,7 @@ def _launch_account_refusal(state: WorkState, stage: str) -> Decision | None:
         detail = f"Before {stage}, launch findings could not be read: {report['reason']}."
     else:
         owed = [{"bundle": value["bundle"], "dispatch_id": value["dispatch_id"], "state": value["state"],
-                 "findings": value["owed"], "accounts": [account["source"] for account in value["accounts"]],
+                 "owed": value["owed"], "accounts": [account["source"] for account in value["accounts"]],
                  "uncounted": value["uncounted"]}
                 for value in report["bundles"] if value["state"] in {"account-required", "unrecorded"}]
         detail = (f"Before {stage}, the holder owes a launch-account for each launch comparison finding "

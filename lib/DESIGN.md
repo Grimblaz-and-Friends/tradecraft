@@ -88,8 +88,11 @@ The reading tree is built in a temporary folder of its own, holding only the tre
 - A failed local-tree check counts as flagged even once the tree has released it, so a comment that named it while it was owed keeps counting.
 - An account posted before its findings exist counts for nothing, because finding ids are predictable.
 - A comment from another launch is listed on a held launch only when it names one of that launch's findings, so the holder sees a misdirected post without every other launch's accounts.
+- A `names-unflagged` reason lists at most ten of the ids, with their count, because a comment written for another launch could name thousands.
+- `governing` lists only findings named more than once, because listing every finding would double a flood's report.
+- The entrance only reads accounts and never posts one, so it checks no comment size; GitHub's limit is 262,144 UTF-8 bytes, which an account of a few thousand findings outgrows.
 
-**Decisions in force:** D-939, a Claude launch's writes stay in its tree and an unattributed change holds until the holder accounts for it; D-988, a launch's account may run across several comments, the later naming governing a repeat.
+**Decisions in force:** D-939, a Claude launch's writes stay in its tree and an unattributed change holds until the holder accounts for it; D-988, a launch's account may run across several comments, the later naming governing a repeat; D-988 narrows D-939's single exact account to the comments that count together.
 
 ## Consumer trees
 

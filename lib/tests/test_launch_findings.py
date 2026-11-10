@@ -196,7 +196,7 @@ def test_ac14_report_repeats_the_bound_and_comparison():
     assert work._write_bound_report({"requested": {"vendor": "codex"}}, run, {"vendor": "codex"}) is None
 
 
-# An account in parts (#957).
+# An account in parts: comments that count combine, the later naming governs, and the hold says why.
 THIRD = {"id": "9e8d7c6b5a40", "item": "checkout:D:/y", "path": "D:/y/g", "change": "modified", "reason": None}
 THIRD_COMPARISON = {"schema_version": 1, "status": "findings", "findings": FINDINGS + [THIRD],
                     "attributed": [], "coverage": []}
@@ -210,7 +210,10 @@ def posted_in_order(tmp_path, *posts, **bundle):
         body, created = post[0], post[1]
         comment = {"id": number, "body": body, "user": {"login": PRODUCER}, "created_at": created}
         comment.update(post[2] if len(post) > 2 else {})
-        fixture.issue_comments.append(comment)
+        if comment.pop("pull_request_comment", False):
+            fixture.pr_comments.append(comment)
+        else:
+            fixture.issue_comments.append(comment)
     work.validate_marker_claims(fixture)
     return fixture
 
@@ -232,7 +235,7 @@ def test_an_account_over_one_comments_limit_releases_in_parts(tmp_path):
     findings = [{"id": f"{number:012x}", "item": f"checkout:D:/{number}", "path": f"D:/{number}/f",
                  "change": "modified", "reason": None} for number in range(3000)]
     entries = [{**SESSION, "id": finding["id"]} for finding in findings]
-    limit = 262144  # GitHub's comment limit in UTF-8 bytes (D-967)
+    limit = 262144  # GitHub's comment limit in UTF-8 bytes (lib/DESIGN.md#launch-accounts)
     assert len(account(*entries).encode("utf-8")) > limit
     halves = account(*entries[:1500]), account(*entries[1500:])
     assert all(len(half.encode("utf-8")) < limit for half in halves)
@@ -260,13 +263,14 @@ def test_a_split_missing_one_finding_holds_and_lists_only_it(tmp_path):
     ((account(SESSION), "2026-11-03T08:00:00Z", {"user": {"login": "stranger"}}), "untrusted-author"),
     ((account(SESSION, dispatch="c" * 32), "2026-11-03T08:00:00Z"), "another-launch"),
     ((account(SESSION), "2026-11-03T05:30:00Z"), "before-findings"),
+    ((account(SESSION), "2026-11-03T08:00:00Z", {"pull_request_comment": True}), "wrong-surface"),
 ])
 def test_a_comment_that_does_not_count_adds_nothing_and_is_listed_with_why(tmp_path, faulty, reason):
     fixture = posted_in_order(tmp_path, (account(OWNER), "2026-11-03T07:00:00Z"), faulty)
     assert held(fixture) is not None
     entry = entry_of(fixture)
     assert [finding["id"] for finding in entry["owed"]] == [SESSION["id"]]
-    assert [(value["source"], value["reason"]) for value in entry["uncounted"]] == [("issue-comment:2", reason)]
+    assert [(value["source"].rsplit(":", 1)[1], value["reason"]) for value in entry["uncounted"]] == [("2", reason)]
     assert [value["source"] for value in entry["accounts"]] == ["issue-comment:1"]
 
 

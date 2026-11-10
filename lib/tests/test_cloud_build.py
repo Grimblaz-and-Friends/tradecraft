@@ -985,7 +985,7 @@ def test_only_the_tree_releases_the_local_tree_hold(tmp_path, monkeypatch):
     monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a: [(1, "b", request, current)])
     assert work._evaluate_launch_findings(state)["status"] == "clear"
 
-    # A named local-tree finding stays owed while the tree lacks the tip (#957 AC-10).
+    # A comment naming the local-tree finding doesn't release it while the tree lacks the tip.
     monkeypatch.setattr(work, "_launch_accounts", lambda _state: [account("local_tree", "practice")])
     stale = run_with("f" * 40, practice=True)
     monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a: [(1, "b", request, stale)])
