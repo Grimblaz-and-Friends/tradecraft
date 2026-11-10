@@ -595,7 +595,6 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             child_env = artifact_tree.environment() if args.stage == "artifact" else None
             intent = {"status": "unprepared", "disabled_plugin_ids": [], "allowed_plugins": []}
             preparation_error = None
-            # The step's GitHub write allowance (#894), from its stage, branch and grants.
             allowance = github_allowance.allowance_for(
                 args.stage, repository=github_allowance.repository_of(args.work),
                 branch=args.lineage_branch, pull_request=args.lineage_pull_request,
@@ -661,7 +660,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 },
             )
             request["implementer_role"] = role
-            # The GitHub write bound is recorded in the run record, not the request (#894).
+            # The bound's record holds this launch's temporary paths, so it lives in the run
+            # record; the request stays comparable across launches of the same work.
             request["environment_request"] = {key: value for key, value in intent.items()
                                               if key != "github_write_bound"}
             request["transport"] = "codex-app-server-v2" if args.vendor == "codex" else "claude-stream-json"
@@ -686,11 +686,14 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             request["recipient_allocation_seconds"] = allocation
             request["budget_override_reason"] = budget_reason
             github_bound = intent.get("github_write_bound") if command is not None and not preparation_error else None
-            # Every bounded launch is told its allowance (#894); a composed prompt
-            # already carries the same sentence and is not told twice.
-            github_notice = (github_allowance.notice(allowance, vendor=args.vendor)
-                             if github_bound is not None and github_allowance.sentence(
-                                 allowance, vendor=args.vendor).encode("utf-8") not in prompt else b"")
+            # Every bounded launch is told its allowance exactly once: a composed prompt
+            # already carries it, and a dispatch stating another allowance is refused.
+            try:
+                github_notice = (github_allowance.notice(allowance)
+                                 if github_bound is not None and github_allowance.needs_notice(allowance, prompt)
+                                 else b"")
+            except github_allowance.BoundError as exc:
+                raise ImplementerError(str(exc)) from exc
             if args.vendor == "claude" and command is not None and not preparation_error:
                 # The notice is part of the effective input; its digest covers it.
                 notice = claude_launch_notice(allocation)
@@ -812,6 +815,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             if github_bound is not None:
                 record["github_write_bound"] = github_bound["record"]
                 if args.vendor == "codex":
+                    # The runtime version is read only after preparation, so the Codex
+                    # record's reason is completed here.
                     record["github_write_bound"]["command_check"]["reason"] = (
                         f"the installed Codex ({request['runtime_version'] or 'version unknown'}) "
                         "offers no per-launch rule source")

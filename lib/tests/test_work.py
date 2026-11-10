@@ -12707,7 +12707,7 @@ def test_938_a_cloud_review_disposition_returns_its_replies_and_a_local_one_is_u
     for posting in (work.THREAD_RESOLUTION_INSTRUCTION, work.RESOLVE_THREAD_COMMAND,
                     "after posting each inline disposition reply", "resolveReviewThread"):
         assert posting not in cloud
-    # Only the reply clause and the route's GitHub write allowance (#894) differ; every other
+    # Only the reply clause and the route's GitHub write allowance differ; every other
     # byte of the task is the local one.
     import github_allowance
     local_allowance = github_allowance.sentence(work._stage_allowance(fixture, "review-disposition", None))

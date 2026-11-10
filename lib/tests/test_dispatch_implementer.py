@@ -212,7 +212,7 @@ def test_composition_boundary_belongs_to_exact_retained_effective_input(job, ori
     assert prompt == args.dispatch.read_bytes() and context == args.context.read_bytes()
     assert composition["origin"] == origin
     assert composition["dispatch_sha256"] == hashlib.sha256(prompt).hexdigest()
-    # A dispatch without the allowance sentence is told it by the launcher (#894).
+    # A dispatch without the allowance sentence is told it by the launcher.
     notice = request["github_write_notice"].encode("utf-8")
     assert composition["effective_input_sha256"] == request["effective_input_sha256"] == hashlib.sha256(
         context + b"\n\n" + prompt + b"\n\n" + notice).hexdigest()
@@ -1616,7 +1616,7 @@ def test_artifact_byte_bound_keeps_exact_return_and_generated_context(
         # Then its write-bound notice (#906).
         effective_input += b"\n\n" + request["launch_controls"]["write_bound_notice"].encode("utf-8")
     else:
-        # Codex is told its GitHub write allowance after the dispatch (#894).
+        # Codex is told its GitHub write allowance after the dispatch.
         effective_input += b"\n\n" + request["github_write_notice"].encode("utf-8")
     assert base64.b64decode(captured["stdin"]) == effective_input
     assert request["effective_input_sha256"] == hashlib.sha256(effective_input).hexdigest()
@@ -2187,7 +2187,7 @@ def test_894_ac1_a_claude_builder_records_its_allowance_and_armed_check(job, mon
     monkeypatch.setattr(implementer, "resolve_command",
                         lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
     scenario.write_bytes(json.dumps({"claude": native_artifact_result("claude", "built")}).encode())
-    # A refusal the check logged during the turn (#894 AC12): reported, and the turn's outcome holds.
+    # A refusal the check logged during the turn is reported, and the turn's outcome holds.
     refusal = {"scope": "parent", "entry": "hook", "command": "gh issue comment 1", "reason": "refused",
                "allowance": {"kind": kind}}
     monkeypatch.setattr(implementer.github_allowance, "refusals", lambda _log: [refusal])
@@ -2224,3 +2224,38 @@ def test_894_ac17_a_codex_launch_records_that_no_command_check_ran(job, monkeypa
     assert bound["push_credential"] == "removed"
     assert captured["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
     assert captured["TRADECRAFT_CHILD_SETTINGS"] and captured["GIT_TERMINAL_PROMPT"] == "0"
+
+
+GRANT = {"marker": 9001, "brief": 7001, "row": 4, "stage": "build", "write": "push",
+         "target": "o/r:refs/heads/probe"}
+
+
+def _granted_turn(args, dispatch_grants):
+    args.vendor, args.work = "codex", "o/r#894"
+    args.lineage_branch = "tradecraft/894-ab"
+    stated = implementer.github_allowance.allowance_for(
+        "build", repository="o/r", branch="tradecraft/894-ab", pull_request=None, grants=dispatch_grants)
+    args.dispatch.write_bytes(b"Build the change.\n\n" + implementer.github_allowance.sentence(stated).encode())
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"github_write_grants": [GRANT]}).encode())
+
+
+def test_a_granted_turn_is_told_one_allowance_naming_its_grant(job):
+    args, _ = job
+    _granted_turn(args, [GRANT])
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 0
+    sent = base64.b64decode(seen(args)["stdin"]).decode("utf-8")
+    assert sent.count(implementer.github_allowance.SENTENCE_OPENING) == 1
+    assert "the granted push o/r:refs/heads/probe" in sent
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert "github_write_notice" not in request
+
+
+def test_a_dispatch_stating_another_allowance_is_refused_before_launch(job):
+    args, _ = job
+    _granted_turn(args, [])  # the dispatch omits the grant the launch holds
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    with pytest.raises(implementer.ImplementerError, match="other than the one this launch holds"):
+        implementer.run_implementer(args)
+    assert not (args.root / "seen-codex.json").exists()

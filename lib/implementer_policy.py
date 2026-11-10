@@ -159,8 +159,8 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
         settings["hooks"] = guard["hooks"]
     bound = None
     if github_bound is not None:
-        # The GitHub write check (#894) rides the same settings; its child
-        # settings carry the same plugin exclusions.
+        # A child's settings carry the parent's plugin exclusions, so a session it starts
+        # loads no plugin the parent was denied.
         try:
             bound = github_allowance.prepare(
                 Path(temporary), github_bound["allowance"], carrier="pretooluse-hook",

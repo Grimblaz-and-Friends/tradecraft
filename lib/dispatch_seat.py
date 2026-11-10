@@ -439,7 +439,7 @@ def compared_launch(args, vendor):
 
 
 def use_consumer_bound(args, root, temporary, allocation_seconds):
-    """Prepare the use consumer's GitHub write bound, or refuse the launch (#894).
+    """Prepare the use consumer's GitHub write bound, or refuse the launch.
 
     Design: lib/DESIGN.md#the-github-write-bound
     """
@@ -450,8 +450,10 @@ def use_consumer_bound(args, root, temporary, allocation_seconds):
         bound = github_allowance.prepare(temporary, allowance, carrier="shell-prefix", root=root, env=base)
     except github_allowance.BoundError as exc:
         raise DispatchError(f"the use consumer's GitHub write check could not be prepared: {exc}") from exc
-    prompt = args.dispatch.expanduser().read_bytes()
-    told = github_allowance.sentence(allowance).encode("utf-8") in prompt
+    try:
+        told = not github_allowance.needs_notice(allowance, args.dispatch.expanduser().read_bytes())
+    except github_allowance.BoundError as exc:
+        raise DispatchError(str(exc)) from exc
     return {**bound, "notice": b"" if told else github_allowance.notice(allowance)}
 
 
@@ -745,7 +747,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             )
                             github_bound = None
                             if compared_launch(args, vendor):
-                                # The use consumer's GitHub write bound (#894): no write
+                                # The use consumer's GitHub write bound: no write
                                 # allowed. Settings hooks don't run under --safe-mode, so
                                 # its check rides the shell prefix.
                                 github_bound = use_consumer_bound(

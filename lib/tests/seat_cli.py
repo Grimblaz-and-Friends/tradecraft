@@ -66,7 +66,7 @@ if vendor == "claude":
         if Path(flags[i + 1], "CLAUDE.md").is_file() else None)
         for i, flag in enumerate(flags) if flag == "--add-dir"}
     if "--settings" in flags:
-        # The PreToolUse matchers the launch settings carry (#894's command check among them).
+        # The PreToolUse matchers the launch settings carry, the GitHub write check among them.
         launch_settings = json.loads(Path(flags[flags.index("--settings") + 1]).read_bytes())
         capture["github_write_matchers"] = [entry.get("matcher") for entry in
                                             launch_settings.get("hooks", {}).get("PreToolUse", [])]

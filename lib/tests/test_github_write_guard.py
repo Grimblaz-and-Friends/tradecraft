@@ -1,4 +1,4 @@
-"""The GitHub write bound's command check and allowance (#894)."""
+"""The GitHub write bound's command check and allowance."""
 from __future__ import annotations
 
 import json

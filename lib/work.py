@@ -6298,13 +6298,15 @@ def _stage_allowance(state: WorkState, stage: str, branch: str | None,
 
 
 def _github_write_report(state: WorkState) -> dict[str, object]:
-    """Refusals and grants recorded by this term's bounded launches (#894); gates nothing."""
+    """Refusals and grants recorded by this term's bounded launches; gates nothing."""
     try:
         rows = lifecycle.launch_bundles(state.record_root or records.default_record_root(),
             f"{state.repo}#{state.issue_number}",
             frozenset({"artifact", "build", "floor", "review-disposition", "use"}))
         rows = work_recovery.scoped(state, rows, include_released=True)
-    except Exception as exc:
+    except (OSError, ValueError, TypeError, KeyError, WorkError) as exc:
+        # An unreadable record store must not stop the report it rides on; the report
+        # then says the lists are unknown rather than empty.
         return {"status": "unknown", "reason": type(exc).__name__ + ": " + str(exc),
                 "refusals": [], "grants": []}
     refusals, grants = [], []
@@ -6319,12 +6321,13 @@ def _github_write_report(state: WorkState) -> dict[str, object]:
         for grant in (allowance or {}).get("grants") or ():
             if isinstance(grant, dict):
                 grants.append({**identity, **grant})
-    return {"status": "refused, not made", "refusals": refusals, "grants": grants}
+    # "read": the lists are complete for the scoped launches; each refusal was refused, not made.
+    return {"status": "read", "refusals": refusals, "grants": grants}
 
 
 def validated_grants(state: WorkState, comment_ids, stage: str, continuity: str | None
                      ) -> list[dict[str, object]]:
-    """The write grants a resumed turn may carry, or a refusal before anything launches (#894)."""
+    """The write grants a resumed turn may carry, or a refusal before anything launches."""
     if not comment_ids:
         return []
     brief, _pair = _affirmed_review(state)
@@ -6351,7 +6354,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
                   merge_obligation: MergeObligation | None = None,
                   version_instruction: str = "",
                   resumed: ResumeSource | None = None,
-                  merge_script: str | None = None, cloud: bool = False) -> bytes:
+                  merge_script: str | None = None, cloud: bool = False,
+                  grants=()) -> bytes:
     if decision.stage == "use":
         raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
@@ -6421,10 +6425,10 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     if decision.stage == "review-disposition":
         instruction += CLOUD_REPLY_INSTRUCTION if cloud else _thread_resolution_clause(state)
     if decision.stage in GITHUB_BOUND_STAGES:
-        # Each step is told the GitHub writes it may make (#894). Design:
+        # Each step is told the GitHub writes it may make. Design:
         # lib/DESIGN.md#the-github-write-bound
         instruction += " " + (github_allowance.cloud_sentence() if cloud else github_allowance.sentence(
-            _stage_allowance(state, decision.stage, branch)))
+            _stage_allowance(state, decision.stage, branch, grants)))
     explicit_artifact = decision.stage == "artifact"
     phase = state.artifact_phase or _artifact_phase(state)
     problem = _artifact_source_problem(state, decision.stage)
@@ -9474,7 +9478,6 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "holder_close": _release_holder_close(state),
             "cold_readings": _cold_reading_measures(state),
         })
-        # The release report lists every granted write and names every refusal (#894).
         bound = _github_write_report(state)
         payload["write_grants"] = bound["grants"]
         payload["write_refusals"] = bound["refusals"]
@@ -9607,6 +9610,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     version_instruction=version_instruction, resumed=resume_source,
                     merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source, session),
                     cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source, session) is not None,
+                    grants=github_write_grants or (),
                 )
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
@@ -9780,6 +9784,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         version_instruction=version_instruction, resumed=resume_source,
                         merge_script=_cloud_merge_script(state, decision.stage, selected_vendor, resume_source, session),
                         cloud=_cloud_practice(state, decision.stage, selected_vendor, resume_source, session) is not None,
+                        grants=github_write_grants or (),
                     )
                 except WorkError as exc:
                     if getattr(exc, "version_obligation", None) is not None:
@@ -10184,7 +10189,7 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
 
 
 def _allowance_command(args: argparse.Namespace) -> int:
-    """Print the allowance sentence a holder-written dispatch for STAGE carries (#894)."""
+    """Print the allowance sentence a holder-written dispatch for STAGE carries."""
     if args.stage not in GITHUB_BOUND_STAGES:
         raise WorkError("allowance requires an implementer stage: " + ", ".join(sorted(GITHUB_BOUND_STAGES)))
     branch = None
@@ -10416,19 +10421,6 @@ def _run(
     grants = validated_grants(state, getattr(args, "grant", None), decision.stage, decision.continuity)
     try:
         if executor is execute_stage:
-            if grants:
-                return executor(
-                    state, decision, root, args.instalment, args.holder_session_id,
-                    dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
-                    draft_comment=args.draft_comment,
-                    timeout_seconds=args.timeout_seconds, transport=github,
-                    budget_override_reason=args.budget_override_reason,
-                    restart_unresolved_reason=args.restart_unresolved_reason,
-                    claude_path=args.claude, codex_path=args.codex,
-                    handover_recovery_session=args.handover_recovery_session,
-                    rules=rules, use_rules_path=use_rules_path, floor_command=args.floor_command,
-                    github_write_grants=grants,
-                )
             return executor(
                 state, decision, root, args.instalment, args.holder_session_id,
                 dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
@@ -10439,6 +10431,7 @@ def _run(
                 claude_path=args.claude, codex_path=args.codex,
                 handover_recovery_session=args.handover_recovery_session,
                 rules=rules, use_rules_path=use_rules_path, floor_command=args.floor_command,
+                github_write_grants=grants,
             )
         return executor(state, decision, root, args.instalment, args.holder_session_id)
     except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:

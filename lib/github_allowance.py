@@ -1,4 +1,4 @@
-"""Each dispatched step's GitHub write allowance, and the launch block that holds it (#894).
+"""Each dispatched step's GitHub write allowance, and the launch block that holds it.
 
 A dispatched session that can write (the artifact author, the builder, the use
 consumer) makes only the GitHub writes its own step needs, and returns any
@@ -108,7 +108,7 @@ def _writes(allowance: dict) -> str:
     return text
 
 
-def sentence(allowance: dict, *, vendor: str = "claude") -> str:
+def sentence(allowance: dict) -> str:
     """The instruction every bounded step receives, in its prompt or launcher notice.
 
     One sentence for both vendors: a Codex launch's children get the same child
@@ -125,6 +125,24 @@ def sentence(allowance: dict, *, vendor: str = "claude") -> str:
             "would leave behind.")
 
 
+SENTENCE_OPENING = "GitHub writes this step may make:"
+
+
+def needs_notice(allowance: dict, prompt: bytes) -> bool:
+    """Whether a launch must append its allowance notice to this dispatch.
+
+    A dispatch already stating this allowance is not told twice. One stating any other
+    allowance is refused, because a session told two allowances cannot know which holds.
+    """
+    if sentence(allowance).encode("utf-8") in prompt:
+        return False
+    if SENTENCE_OPENING.encode("utf-8") in prompt:
+        raise BoundError("the dispatch states a GitHub write allowance other than the one this "
+                         "launch holds; recompose it, or print the right sentence with the work "
+                         "entrance's allowance command")
+    return True
+
+
 def cloud_sentence() -> str:
     return ("GitHub writes this run may make: a push to the change branch and to its report "
             "branch, and nothing else; post nothing. If the work needs any other write, do not "
@@ -132,8 +150,8 @@ def cloud_sentence() -> str:
             "the work needs it, and what it would leave behind.")
 
 
-def notice(allowance: dict, *, vendor: str = "claude") -> bytes:
-    return ("Launcher GitHub write bound: " + sentence(allowance, vendor=vendor)
+def notice(allowance: dict) -> bytes:
+    return ("Launcher GitHub write bound: " + sentence(allowance)
             + " A refused command fails and is recorded; your turn goes on.\n").encode("utf-8")
 
 
@@ -188,7 +206,7 @@ def _self_test_cases(allowance: dict) -> list[tuple[str, dict, str]]:
          "allow"),
         ("read", none, "gh api --method GET repos/tradecraft-self-test/fixture/issues/1", "allow"),
         ("child start", none, CHILD_START + " -p hi", "allow"),
-        ("#886 push", none,
+        ("forced push of a commit to another ref", none,
          "git push --force-with-lease=refs/heads/x:abc https://github.com/tradecraft-self-test/"
          "fixture.git abc123:refs/heads/x", "deny"),
         ("wrapped comment", none, 'bash -c "gh issue comment 683"', "deny"),
@@ -323,14 +341,14 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
                   temporary=None, root=None) -> dict[str, object]:
     """The Codex block: environment removal, child settings, and a record that no check ran.
 
-    Codex 0.167 loads execpolicy rules only from user or project ``.rules``
+    The installed Codex loads execpolicy rules only from user or project ``.rules``
     files and ``requirements.toml``; no source can be supplied for one launch
     without writing into the product tree, the owner's Codex home or the
     machine's policy, so the parent's own commands go unchecked and its record
     says so. A Claude session it starts carries the same child settings.
     """
-    # The Codex launch used to inherit its environment, and Windows drops an empty
-    # inherited variable; an explicit copy keeps that behaviour.
+    # An inherited environment drops an empty variable on Windows; this explicit copy
+    # does the same, so a Codex child sees what an inheriting one would.
     child = {key: value for key, value in env.items() if value != "" or os.name != "nt"}
     child[CONNECTORS] = "false"
     child_settings = None
@@ -410,6 +428,8 @@ def brief_row(brief: str, number: int) -> str | None:
             break
     if start is None:
         return None
+    # A row runs to the next numbered row, or to the brief's "Not this" list, the one
+    # section a brief puts after its rows.
     end = len(lines)
     for index in range(start + 1, len(lines)):
         if re.match(r"^\s*\**\s*\d+\.\s", lines[index]) or re.match(r"^\s*\**Not this", lines[index]):

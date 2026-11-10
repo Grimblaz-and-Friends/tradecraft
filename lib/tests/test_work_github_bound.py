@@ -1,4 +1,4 @@
-"""#894: the GitHub write bound in composed prompts, the allowance command, grants and the report."""
+"""The GitHub write bound in composed prompts, the allowance command, grants and the report."""
 from __future__ import annotations
 
 import re
@@ -209,7 +209,7 @@ def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkey
     monkeypatch.setattr(work.work_recovery, "scoped", lambda _state, found, **_k: found)
     report = work._github_write_report(fixture)
     assert "use" in seen["stages"]
-    assert report["status"] == "refused, not made"
+    assert report["status"] == "read"
     assert report["refusals"] == [{"dispatch_id": "d1", "stage": "use", **refusal}]
     assert report["grants"] == [{"dispatch_id": "d2", "stage": "artifact", **grant}]
 
@@ -218,3 +218,16 @@ def test_ac7_the_cloud_routine_still_names_only_its_two_pushes_and_no_posting():
     import cloud_build
     assert "never push any branch other than the change branch and" in cloud_build._ROUTINE_PROMPT
     assert "Never comment on the issue" in cloud_build._ROUTINE_PROMPT
+
+
+def test_a_composed_prompt_names_the_grants_in_force(monkeypatch):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True)
+    monkeypatch.setattr(work, "_artifact_source_problem", lambda *_a: None)
+    grant = {"marker": 9001, "brief": 7001, "row": 4, "stage": "build", "write": "push",
+             "target": "example/product:refs/heads/probe"}
+    prompt = work._stage_prompt(fixture, work.Decision("build", True, "resume", "fixture"),
+                                branch=BRANCH, grants=[grant]).decode()
+    allowance = github_allowance.allowance_for("build", repository="example/product", branch=BRANCH,
+                                               pull_request=7, grants=[grant])
+    assert github_allowance.sentence(allowance) in prompt
+    assert prompt.count(github_allowance.SENTENCE_OPENING) == 1

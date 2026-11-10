@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refuse a dispatched session's GitHub writes outside its step's allowance (#894).
+"""Refuse a dispatched session's GitHub writes outside its step's allowance.
 
 Usage (the launcher supplies one of these; nobody runs it by hand):
     python <plugin-root>/lib/github_write_guard.py --hook --config FILE
@@ -534,8 +534,8 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
                 always.append(stem)
             elif stem == "--repo":
                 repo_option = word.split("=", 1)[1] if "=" in word else (words.pop(0) if words else "")
-            elif stem in ("--push-option", "--receive-pack", "--exec", "--signed") and "=" not in word \
-                    and stem != "--signed" and words:
+            elif stem in ("--push-option", "--receive-pack", "--exec") and "=" not in word and words:
+                # Each takes its value as the next word; --signed takes none.
                 words.pop(0)
         elif word.startswith("-") and len(word) > 1:
             for letter in word[1:]:
@@ -645,10 +645,8 @@ def _destination_refs(refspecs: list[str], cwd: str | None, remote: str
             destination = "refs/tags/" + spec
         else:
             return None
-        if destination.startswith("refs/tags/"):
-            refs.append((destination, None))
-        else:
-            refs.append((destination, None))
+        # A tag destination is judged like any other ref: only a granted tag is allowed.
+        refs.append((destination, None))
     return refs
 
 
@@ -1101,7 +1099,7 @@ def main(argv: list[str] | None = None) -> int:
     if "--" in argv:
         index = argv.index("--")
         argv, rest = argv[:index], argv[index + 1:]
-    cli = argparse.ArgumentParser(description="GitHub write bound command check (#894).")
+    cli = argparse.ArgumentParser(description="GitHub write bound command check.")
     mode = cli.add_mutually_exclusive_group(required=True)
     mode.add_argument("--hook", action="store_true")
     mode.add_argument("--prefix", action="store_true")

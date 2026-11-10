@@ -72,7 +72,7 @@ The reading tree is built in a temporary folder of its own, holding only the tre
 - That a cloud session loads the product clone's own `CLAUDE.md` and `AGENTS.md` natively is untested, so the cloud preamble tells the run to read them itself, and the run's own `instructions.md` reports which instruction files it loaded.
 - The practice's own repository is refused, because its product and practice clones would share one folder and its committed guard would govern a single-source build.
 
-**Decisions in force:** D-938, a set-up repository's Claude implementer runs as a cloud session with no local fallback, its cost counted by the shipped `Stop` hook and re-checked against its ledger, and the practice's own repository refused; D-938 narrows D-939 for cloud launches, which have no local file-tool guard, no before-and-after comparison and no memory setting, and which the owner's global instructions don't reach; D-938 narrows D-924 for cloud launches in that the command ceiling is fixed on the cloud environment rather than set per launch, its notice travels in the cloud task's preamble, and the stream check reads not applicable; the hook manifest is exempt from the harness-token rule of D-156, D-222 and D-618, because it must name the plugin root; D-938 narrows D-911 for cloud launches, which use no `--add-dir` or shim, are told to read the product clone's own `CLAUDE.md` and `AGENTS.md`, and record the instruction files from the run's own `instructions.md`, because the launcher can't read a cloud transcript.
+**Decisions in force:** D-938, a set-up repository's Claude implementer runs as a cloud session with no local fallback, its cost counted by the shipped `Stop` hook and re-checked against its ledger, and the practice's own repository refused; D-938 narrows D-939 for cloud launches, which have no local file-tool guard, no before-and-after comparison and no memory setting, and which the owner's global instructions don't reach; D-938 narrows D-924 for cloud launches in that the command ceiling is fixed on the cloud environment rather than set per launch, its notice travels in the cloud task's preamble, and the stream check reads not applicable; the hook manifest is exempt from the harness-token rule of D-156, D-222 and D-618, because it must name the plugin root; D-938 narrows D-911 for cloud launches, which use no `--add-dir` or shim, are told to read the product clone's own `CLAUDE.md` and `AGENTS.md`, and record the instruction files from the run's own `instructions.md`, because the launcher can't read a cloud transcript; D-986, a cloud build is told its routine's GitHub write allowance and its run record says the launch block did not run.
 
 ## Consumer trees
 
@@ -106,35 +106,25 @@ Before anything is built or launched:
 
 ## The GitHub write bound
 
-A dispatched session that can write (the artifact author, the builder, the use consumer) makes only
-the GitHub writes its own step needs, and returns any other as a request in a **Write requests**
-section; a session one of them starts makes none (#894). Code: `github_allowance.py` (allowance,
-sentence, launch preparation, grants) and `github_write_guard.py` (the command check).
+**What it does now.** A dispatched session that can write (the artifact author, the builder, the use consumer) makes only the GitHub writes its own step needs, and returns any other as a request in a **Write requests** section; a session one of them starts makes none. `github_allowance.py` works out the allowance, the sentence a session is told, the launch preparation and grants; `github_write_guard.py` is the command check.
 
-Decisions in force (D-894):
+- **The allowance comes from the stage.** `build` and `floor` may push the registered branch. `review-disposition` may also reply on and resolve its own pull request's threads and answer a body finding there. Every other stage, the use consumer and any started child may make none. Reads (`gh api --method GET`, GraphQL queries, fetches) stay open to every step.
+- **Instructions and a launch block together.** Every bounded launch is told the allowance sentence exactly once: a composed prompt carries it, the launcher's notice adds it to a dispatch that lacks it, and a dispatch stating another allowance is refused. The launch turns claude.ai connectors off with `ENABLE_CLAUDEAI_MCP_SERVERS=false`, names its child settings in `TRADECRAFT_CHILD_SETTINGS`, and, where the allowance permits no push, clears git's credential helpers and ssh agent.
+- **The check runs on every shell command.** A Claude implementer carries it as a `PreToolUse` hook on `Bash|PowerShell`; the use consumer carries it through `CLAUDE_CODE_SHELL_PREFIX`. A refusal fails the command, not the turn, and lands in the run record's `github_write_refusals`; the run record's `github_write_bound` states the allowance and whether the check ran.
+- **A child starts only under the launch's settings**: `claude --setting-sources user --settings "$TRADECRAFT_CHILD_SETTINGS"`, without `--safe-mode`, `--bare` or a connector change. Any other Claude start, and every Codex start, is refused.
+- **Codex** gets the instructions, the environment removal and the child settings, and its run record says no command check ran. **A cloud build** records that the launch block did not run.
+- **A grant rests on the affirmed brief.** `validate_grant` accepts a `write-grant` marker only for a resumed turn of its own stage whose quoted words occur in the cited row of the affirmed brief; a push grant keeps git's credential for that turn.
 
-- **The allowance comes from the stage.** `build` and `floor`: a push to the registered branch.
-  `review-disposition`: that push, plus a reply on and a resolve of a thread of its own pull request
-  and a conversation comment there. Every other stage, the use consumer and any started child:
-  none. Reads (`gh api --method GET`, GraphQL queries, fetches) stay open to every step.
-- **Instructions and a launch block together.** Every bounded launch is told the allowance sentence
-  (in the launcher's notice unless the dispatch already carries it). The launch turns claude.ai
-  connectors off with `ENABLE_CLAUDEAI_MCP_SERVERS=false`, names its child settings in
-  `TRADECRAFT_CHILD_SETTINGS`, and, when the allowance permits no push, clears git's credential
-  helpers and ssh agent; the `gh` login stays because reads need it.
-- **The check runs on every shell command.** A Claude implementer carries it as a `PreToolUse` hook
-  on `Bash|PowerShell`; the use consumer, whose `--safe-mode` skips settings hooks, carries it
-  through `CLAUDE_CODE_SHELL_PREFIX`. A refusal fails the command, not the turn, and lands in the
-  run record's `github_write_refusals`; the run record's `github_write_bound` states the allowance
-  and whether the check ran.
-- **A child starts only under the launch's settings.** `claude --setting-sources user --settings
-  "$TRADECRAFT_CHILD_SETTINGS"`, without `--safe-mode`, `--bare` or a connector change; any other
-  Claude start, and every Codex start, is refused.
-- **It is a tripwire, not a fence.** A write from inside a script (persist-changes' own push
-  included) is not seen, and no after-run check of GitHub looks for one.
-- **Codex** gets the instructions and the environment removal; its run record says no command check
-  ran, because the installed Codex offers no per-launch rule source. **A cloud build** records that
-  the launch block did not run.
-- **Grants rest on the affirmed brief.** `github_allowance.validate_grant` accepts a
-  `write-grant` marker only for a resumed turn of its own stage whose quoted words occur in the
-  cited row of the affirmed brief; a push grant keeps git's credential for that turn.
+**Why.**
+
+- Every dispatched session held the owner's full GitHub login and nothing said which writes its step could make, so an author pushed because a brief line read as an order, and probe sessions started from a builder inherited the login and the claude.ai connectors. The allowance is the writes the composed prompts already ask for, so a step working as designed loses nothing.
+- Instructions alone never reach a session the builder starts; only the launch environment and settings do, so both are used.
+- Connectors are off because a connector is a write path the shell check never sees, and every child inherits the environment that turns them off.
+- The `gh` login stays because every step's reads need it; the command check, not the missing login, is what refuses a `gh` write.
+- The use consumer keeps `--safe-mode`, which skips settings hooks, because dropping it would change what the consumer loads; the shell prefix still runs under it.
+- A child loads only user setting sources because the product tree's project or local settings could set `disableAllHooks` or an `env` block and turn its check off.
+- The check is a tripwire on an unfenced shell, not a fence: a write from inside a script, persist-changes' own push included, is not seen. It is accepted because the run record makes every refusal it does see visible, and an after-run check of GitHub was not bought.
+- A grant must rest on a brief row, not the holder's judgment that a write is reversible, because in a product repository a pushed branch can start workflows or a deploy that deleting it doesn't undo.
+- The installed Codex loads command rules only from user or project `.rules` files and `requirements.toml`, so no source can be supplied for one launch without writing into the product tree, the owner's Codex home or the machine's policy.
+
+**Decisions in force:** D-986, dispatched sessions make only their step's GitHub writes.

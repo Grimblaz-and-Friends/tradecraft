@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in native build checks; never run by ordinary CI or dispatch a stage.
 
-Covers #886's launch-environment procedures and #894's GitHub write bound cases
+Covers the launch-environment procedures and the GitHub write bound's cases
 (credential, connectors, child, author, use).
 """
 from __future__ import annotations
@@ -457,7 +457,7 @@ def legacy_resume(base, root):
         raise RuntimeError("native resume did not retain the exec-created identity")
 
 
-# --- #894: the GitHub write bound's native checks ----------------------------
+# --- the GitHub write bound's native checks -------------------------------------
 # Each prepares a launch the way the shipped launchers do (lib/github_allowance.py),
 # runs a real Claude session or command under it, and prints one JSON summary line.
 # Every write a case tries targets a fixture repository or
@@ -685,7 +685,7 @@ BOUND_CASES = {"credential": bound_case_credential, "connectors": bound_case_con
 
 
 def bound_check(args, base):
-    """Run one #894 case and print its summary; nonzero when it did not pass."""
+    """Run one write-bound case and print its summary; nonzero when it did not pass."""
     case_base = base / f"{args.check}-{uuid.uuid4().hex[:8]}"
     case_base.mkdir(parents=True)
     result = BOUND_CASES[args.check](args, case_base)
@@ -699,7 +699,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run opt-in native launch acceptance checks without dispatching a pipeline stage.")
     parser.add_argument("check", choices=("operations", "claude-context", "inventory", "canaries", "claude-origins", "claude-mods", "legacy-resume", *BOUND_CASES))
     parser.add_argument("--base", type=Path)
-    parser.add_argument("--model", default="claude-haiku-4-5", help="#894 cases only")
+    parser.add_argument("--model", default="claude-haiku-4-5", help="the write-bound cases only")
     args = parser.parse_args()
     base = args.base or Path(tempfile.mkdtemp(prefix="tc886-build-check-"))
     base.mkdir(exist_ok=True)

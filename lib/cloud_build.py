@@ -1057,7 +1057,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                    "published_output_unavailable_reason": "no completed final source return",
                    "assessment": "unassessed"},
         "route": "cloud", "launch_comparison": launch_bound.cloud_not_run(),
-        # The GitHub write bound's launch block cannot run on the remote machine (#894).
+        # The GitHub write bound's launch block runs on this machine, never on the remote one.
         "github_write_bound": github_allowance.cloud_record(getattr(args, "lineage_branch", None), branch),
     }
     if cloud.get("fire_unresolved"):
