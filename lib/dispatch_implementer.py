@@ -661,7 +661,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 },
             )
             request["implementer_role"] = role
-            request["environment_request"] = intent
+            # The GitHub write bound is recorded in the run record, not the request (#894).
+            request["environment_request"] = {key: value for key, value in intent.items()
+                                              if key != "github_write_bound"}
             request["transport"] = "codex-app-server-v2" if args.vendor == "codex" else "claude-stream-json"
             request["lineage_branch"] = args.lineage_branch
             request["lineage_pull_request"] = args.lineage_pull_request
