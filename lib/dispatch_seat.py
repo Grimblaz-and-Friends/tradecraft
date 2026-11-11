@@ -172,7 +172,7 @@ def build_command(
             "--permission-mode", "dontAsk", "--strict-mcp-config"]
 
 
-def _finish_comparison(comparison, error, deadline, *, process_started=True):
+def _finish_comparison(comparison, error, deadline, *, process_started=True, record=None):
     # A seat whose compared process call never ran changed nothing (#906).
     if not process_started or (comparison is not None and comparison.before is None):
         return launch_bound.not_launched()
@@ -183,7 +183,8 @@ def _finish_comparison(comparison, error, deadline, *, process_started=True):
     except TimeoutError as exc:
         return launch_bound.unrecorded(f"after-snapshot had no cleanup window: {exc}")
     try:
-        return comparison.finish(seconds)
+        # The run's own stream names what it made.
+        return comparison.finish(seconds, record=record)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         return launch_bound.unrecorded(f"comparison failed: {type(exc).__name__}: {exc}")
 
@@ -627,7 +628,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                 comparison = launch_bound.Comparison(
                     root=root, env=None, launcher_plugin=Path(__file__).resolve().parent.parent,
                     own_output=output, own_request=request_path, holder_session_id=None,
-                    dispatch_id=request["dispatch_id"])
+                    dispatch_id=request["dispatch_id"], refs=True)
             except (OSError, ValueError, TypeError) as exc:
                 plan_error = f"coverage could not be planned: {exc}"
             request["write_bound"] = {
@@ -896,7 +897,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                     if "write_bound" in request:
                         record["launch_comparison"] = _finish_comparison(
                             comparison, request["write_bound"]["comparison"].get("unavailable_reason"),
-                            deadline, process_started=process_started)
+                            deadline, process_started=process_started,
+                            record=sidecar(output, ".claude.stdout.log"))
                 if verdict is not None:
                     degraded = record["actual_vendor"] == args.own_vendor
                     record["staffing_status"] = "degraded" if degraded else "qualified"

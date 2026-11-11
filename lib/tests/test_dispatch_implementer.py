@@ -478,6 +478,8 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
         "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
         "--strict-mcp-config", "--no-chrome", "--add-dir", str(args.root.resolve()),
         "--disallowedTools=Monitor,ScheduleWakeup,CronCreate,Workflow",
+        # Every Claude launch carries its own instruction file.
+        "--add-dir", str(args.instruction_shim),
         "--settings", args.launch_settings_path,
     ]
     if resume:
@@ -1014,14 +1016,18 @@ def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeyp
         }),
     }}).encode())
     assert implementer.run_implementer(args) == 0
-    flags = json.loads((args.root / "seen-claude.json").read_bytes())["argv"]
+    observed = json.loads((args.root / "seen-claude.json").read_bytes())
+    flags = observed["argv"]
     assert flags[:2] == ["-p", "--model"]
     assert flags[flags.index("--model") + 1] == "claude-opus-5-5"
     assert flags[flags.index("--effort") + 1] == "high"
     assert flags[flags.index("--permission-mode") + 1] == "auto"
     assert flags[flags.index("--setting-sources") + 1] == "user"
-    # The author's own copy, never the holder checkout it was copied from.
-    assert flags[flags.index("--add-dir") + 1] == str(args.root) and flags.count("--add-dir") == 1
+    # The author's own copy, never the holder checkout it was copied from, then
+    # the launch's own instruction file, which existed at launch.
+    add_dirs = [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"]
+    assert add_dirs == [str(args.root), str(args.instruction_shim)]
+    assert (observed["add_dirs"][add_dirs[1]] or "").startswith(implementer.LAUNCH_HELPER_RULE)
     assert json.loads((args.root / "seen-claude.json").read_bytes())["additional_claude_md"] == "1"
     assert "--no-session-persistence" not in flags
     assert "--safe-mode" not in flags
@@ -1718,7 +1724,10 @@ def test_every_claude_route_loads_the_tree_through_the_same_command(job, monkeyp
     observed = seen_claude(args)
     flags = observed["argv"]
     assert flags[flags.index("--setting-sources") + 1] == "user"
-    assert [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"] == [str(args.root.resolve())]
+    assert [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"] == [
+        str(args.root.resolve()), str(args.instruction_shim)]
+    # The launch's own instruction file carries the helper rule on every route.
+    assert observed["add_dirs"][str(args.instruction_shim)] == implementer.LAUNCH_HELPER_RULE + "\n"
     assert observed["additional_claude_md"] == "1"
 
 
@@ -1737,12 +1746,13 @@ def agents_only(tree):
 
 
 @pytest.mark.parametrize("present", ["CLAUDE.md", ".claude/CLAUDE.md"])
-def test_a_tree_with_its_own_claude_md_gets_no_shim(tmp_path, present):
+def test_a_tree_with_its_own_claude_md_gets_an_instruction_file_with_no_import(tmp_path, present):
+    # Every Claude launch gets its own instruction file.
     tree = agents_only(tmp_path / "tree")
     (tree / present).parent.mkdir(parents=True, exist_ok=True)
     (tree / present).write_bytes(b"@AGENTS.md\n")
-    assert implementer.instruction_shim_plan(tree, tree / ".git") == []
-    assert implementer.instruction_shim_plan(tmp_path / "empty", None) == []
+    assert implementer.instruction_shim_plan(tree, tree / ".git") == [(None, "")]
+    assert implementer.instruction_shim_plan(tmp_path / "empty", None) == [(None, "")]
 
 
 @pytest.mark.parametrize("segment", ["space dir/tree one", "a #1 b", "caf" + chr(0xE9) + " (x86) o'k"])
@@ -1805,7 +1815,8 @@ def test_agents_only_tree_launch_carries_its_shim_and_removes_it(job, monkeypatc
     observed = seen_claude(args)
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
     shim = implementer.records.git_directory(args.root) / (implementer.INSTRUCTION_SHIM_PREFIX + request["dispatch_id"])
-    assert observed["add_dirs"] == {str(args.root.resolve()): None, str(shim): "@../../AGENTS.md\n"}
+    assert observed["add_dirs"] == {str(args.root.resolve()): None,
+                                    str(shim): implementer.LAUNCH_HELPER_RULE + "\n\n@../../AGENTS.md\n"}
     assert not shim.exists()
     status = git(args.root, "status", "--porcelain", "--untracked-files=all").stdout.decode()
     assert "tradecraft-instructions" not in status
@@ -2010,7 +2021,7 @@ def test_906_ac1_ac13_refused_or_unproved_write_fails_the_turn_and_is_recorded(j
     attempt = logged["attempts"][0]
     assert logged["outcome"] == attempt["outcome"] == "error"
     if decided:
-        assert attempt["reason"] == f"launch write bound refused Write {outside}"
+        assert attempt["reason"] == f"launch bound refused Write {outside}"
         assert logged["write_guard"]["refusals"][0]["canonical"] == outside
     else:
         assert "write bound unproved: Write" in attempt["reason"]
@@ -2273,3 +2284,39 @@ def test_a_dispatch_stating_another_allowance_is_refused_before_launch(job):
     with pytest.raises(implementer.ImplementerError, match="other than the one this launch holds"):
         implementer.run_implementer(args)
     assert not (args.root / "seen-codex.json").exists()
+
+
+# --- Every author and builder comparison reads its own record ---------------
+
+@pytest.mark.parametrize("stage", ["artifact", "build"])
+def test_the_claude_stdout_log_reaches_finish(job, monkeypatch, stage):
+    args, _ = claude_job(job, monkeypatch)
+    # The refs reads go through the process-tree worker, slow on a loaded Windows machine.
+    args.stage, args.timeout_seconds = stage, 600
+    if stage == "artifact":
+        supply_artifact_brief(args)
+    seen = []
+    original = implementer.launch_bound.Comparison.finish
+
+    def capture(self, seconds, **kwargs):
+        seen.append((kwargs.get("record"), any(item["method"] == "git-refs" for item in self.plan)))
+        return original(self, seconds, **kwargs)
+
+    monkeypatch.setattr(implementer.launch_bound.Comparison, "finish", capture)
+    implementer.run_implementer(args)
+    assert seen == [(implementer.records.sidecar(args.output, ".claude.stdout.log"), True)]
+    assert record(args)["launch_comparison"]["run_record"]["status"] == "read"
+
+
+def test_a_refs_comparison_without_its_record_is_held_unrecorded():
+    comparison = object.__new__(implementer.launch_bound.Comparison)
+    comparison.plan = [{"item": "refs:x", "path": "x", "method": "git-refs"}]
+    comparison.before = {}
+
+    class Window:
+        def probe(self, *_args, **_kwargs):
+            return 5.0
+
+    result = implementer._finish_comparison(comparison, None, Window())
+    assert result["status"] == "findings" and result["findings"][0]["id"] == "unrecorded"
+    assert "refs comparison needs the run's record" in result["findings"][0]["reason"]
