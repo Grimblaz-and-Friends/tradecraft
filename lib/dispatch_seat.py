@@ -749,9 +749,10 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 None if attempt["runtime_version"] else "runtime version command returned no value"
                             )
                             github_bound = None
+                            # The bound covers the seat that can write: a Claude use consumer
+                            # given a shell, the launch compared_launch names. Settings hooks
+                            # don't run under --safe-mode, so its check rides the shell prefix.
                             if compared_launch(args, vendor):
-                                # Settings hooks don't run under --safe-mode, so the use
-                                # consumer's check rides the shell prefix.
                                 github_bound = use_consumer_bound(
                                     args, root, Path(temp), request["recipient_allocation_seconds"])
                                 record["github_write_bound"] = github_bound["record"]

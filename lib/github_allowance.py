@@ -269,8 +269,9 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
         result = subprocess.run([wrapper["bash"], wrapper["path"], harness_string(command)],
                                 capture_output=True, timeout=60, cwd=directory, env=env,
                                 stdin=subprocess.DEVNULL)
-        if result.returncode != 126 or guard.REFUSED.encode() not in result.stderr:
-            failures.append(f"prefix entry: a wrapped comment exited {result.returncode}, not 126")
+        if result.returncode != guard.PREFIX_REFUSED_EXIT or guard.REFUSED.encode() not in result.stderr:
+            failures.append(f"prefix entry: a wrapped comment exited {result.returncode}, "
+                            f"not {guard.PREFIX_REFUSED_EXIT}")
         result = subprocess.run([wrapper["bash"], wrapper["path"], harness_string("printf ok; exit 3")],
                                 capture_output=True, timeout=60, cwd=directory, env=env,
                                 stdin=subprocess.DEVNULL)

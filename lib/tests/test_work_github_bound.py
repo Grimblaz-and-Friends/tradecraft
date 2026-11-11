@@ -186,8 +186,9 @@ def test_release_report_lists_grants_and_refusals(tmp_path, capsys, monkeypatch)
     monkeypatch.setattr(work, "_github_write_report", lambda _state: bound)
     report = run_release(fixture, tmp_path, capsys, reason=work.decide(fixture, RULES).reason)
     assert report["reason"] == "all-evidence-complete"
-    assert report["write_grants"] == bound["grants"]
-    assert report["write_refusals"] == bound["refusals"]
+    # One list, with its status: the release report carries the entrance report's bound.
+    assert report["github_write_bound"] == bound
+    assert "write_grants" not in report and "write_refusals" not in report
 
 
 def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkeypatch):

@@ -36,6 +36,8 @@ REFUSED = "tradecraft GitHub write bound refused"
 REQUEST_ROUTE = ("return this write to the holder as a request in a **Write requests** section "
                  "of your final message: the write, why the work needs it, and what it would leave behind")
 CHILD_VARIABLE = "TRADECRAFT_CHILD_SETTINGS"
+# The prefix entry's exit for a refused command; the self-test expects the same value.
+PREFIX_REFUSED_EXIT = 126
 CHILD_START = f'claude --setting-sources user --strict-mcp-config --settings "${CHILD_VARIABLE}"'
 # Each changes where or what a git push writes, so a push carrying one is refused rather than
 # judged from the stored configuration it overrides; a step's own push never needs one.
@@ -1157,7 +1159,7 @@ def run_prefix(config_path: str, arguments: list[str]) -> int:
     if verdict["decision"] == "deny":
         sys.stderr.write(str(verdict["reason"]) + "\n")
         sys.stderr.flush()
-        return 126
+        return PREFIX_REFUSED_EXIT
     return 0
 
 
