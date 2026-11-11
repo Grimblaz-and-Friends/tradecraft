@@ -6379,7 +6379,7 @@ def sweep_registry(transport: GitHubREST) -> None:
 
 # The implementer stages whose prompts the entrance composes with an allowance sentence, and for
 # which `allowance` prints one. The use consumer's bound is set by the seat launcher instead.
-# Design: lib/DESIGN.md#the-github-write-bound
+# Design: lib/DESIGN.md#the-github-write-bound (GITHUB_BOUND_STAGES through validated_grants)
 GITHUB_BOUND_STAGES = frozenset({"artifact", "build", "floor", "review-disposition"})
 
 
@@ -6396,7 +6396,7 @@ def _github_write_report(state: WorkState) -> dict[str, object]:
     try:
         rows = lifecycle.launch_bundles(state.record_root or records.default_record_root(),
             f"{state.repo}#{state.issue_number}",
-            frozenset({"artifact", "build", "floor", "review-disposition", "use"}))
+            GITHUB_BOUND_STAGES | {"use"})
         rows = work_recovery.scoped(state, rows, include_released=True)
     except Exception as exc:
         # This rides on every entrance and release report, so any failure reading records is
@@ -10403,7 +10403,7 @@ def _run(
                                          or args.stage not in GITHUB_BOUND_STAGES):
         raise WorkError("--grant requires run or allowance of an implementer stage")
     if args.command not in ("run", "allowance") and args.stage is not None:
-        raise WorkError("a stage is accepted only after the run command")
+        raise WorkError("a stage is accepted only after the run or allowance command")
     if args.command == "run" and args.stage is None:
         raise WorkError("run requires a stage")
     if args.command == "run" and args.stage == "catch-up" and args.implementation_root is not None:

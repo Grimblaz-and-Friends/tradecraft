@@ -465,11 +465,11 @@ def legacy_resume(base, root):
 
 import shutil  # noqa: E402
 import github_allowance  # noqa: E402
+from github_write_guard import REFUSED  # noqa: E402
 from dispatch_lifecycle import claude_launch_env  # noqa: E402
 from dispatch_seat import build_command as seat_command  # noqa: E402
 
 OWNER = "Grimblaz-and-Friends"
-REFUSED = "tradecraft GitHub write bound refused"
 
 
 def bound_run(command, *, cwd, env, stdin=b"", timeout=600):

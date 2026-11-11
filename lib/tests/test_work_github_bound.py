@@ -275,6 +275,13 @@ def test_the_allowance_command_prints_the_sentence_the_use_consumer_launcher_hol
     assert not github_allowance.needs_notice(held, ("Use the change.\n\n" + printed).encode("utf-8"))
 
 
+def test_a_stage_outside_run_or_allowance_is_refused_naming_both(tmp_path):
+    args = work.parser().parse_args(["--repo", "example/product", "--issue", "12", "--root", str(tmp_path)])
+    args.stage = "build"  # the state the guard refuses: a stage on neither run nor allowance
+    with pytest.raises(work.WorkError, match="only after the run or allowance command"):
+        work._run(args, transport=object())
+
+
 def test_the_allowance_command_prints_review_dispositions_own_pull_request(tmp_path, capsys):
     tree = _bound_tree(tmp_path)
     args = work.parser().parse_args(["allowance", "review-disposition", "--repo", "example/product",
