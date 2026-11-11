@@ -109,10 +109,13 @@ def claude_write_bound_notice(root, scratchpad):
     return (
         f"Launcher write bound: your file-editing tools write only inside {root} and your session "
         f"scratchpad {scratchpad}; a write anywhere else is refused, names the path and fails this "
-        "turn. You have no memory store in this session. Shell commands are not fenced, but the "
-        "launcher compares the owner's settings, plugins, records and other checkouts before and "
-        "after this run, and any change it cannot attribute holds the change for the holder's "
-        "account.\n"
+        "turn. A helper given its own working copy, or a move into another working copy, is "
+        "refused the same way; run helpers inside the tree. You have no memory store in this "
+        "session. Shell commands are not fenced, but the launcher compares the owner's settings, "
+        "plugins, records, other checkouts, and each covered repository's working copies and "
+        "branches before and after this run; any change it cannot attribute holds the change for "
+        "the holder's account, and a working copy or branch that changed holds it when this run's "
+        "own tool calls name it.\n"
     ).encode("utf-8")
 
 
