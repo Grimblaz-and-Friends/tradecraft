@@ -51,7 +51,7 @@ The reading tree is built in a temporary folder of its own, holding only the tre
 - A reading recorded before the records kept it still counts, because pull requests open when that layout changed hold such readings.
 - The reading tree is kept after the run, though the gate needs only its record, so that what the reader saw can still be inspected when a holder disputes a flag.
 
-**Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons; D-968, a consumer tree keeps its record elsewhere.
+**Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons; D-968, a consumer tree keeps its record elsewhere; D-997, a flag may name several lines.
 
 ## The cloud route
 
