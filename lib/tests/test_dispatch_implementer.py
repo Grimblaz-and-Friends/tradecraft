@@ -2214,3 +2214,58 @@ def test_a_refs_comparison_without_its_record_is_held_unrecorded():
     result = implementer._finish_comparison(comparison, None, Window())
     assert result["status"] == "findings" and result["findings"][0]["id"] == "unrecorded"
     assert "refs comparison needs the run's record" in result["findings"][0]["reason"]
+
+
+# --- #984: the comparison's allowance ----------------------------------------
+
+@pytest.mark.parametrize("step", ["crediting", "store", "stream"])
+def test_984_a_slow_comparison_step_still_writes_the_completed_record_with_the_return(
+        job, monkeypatch, tmp_path, step):
+    from allowance_fixture import Slow, check_expired
+    args, _ = claude_job(job, monkeypatch)
+    args.timeout_seconds = 600  # The refs reads go through the process-tree worker.
+    slow = Slow(monkeypatch, tmp_path, seconds=3.0, branch=step == "stream")
+    getattr(slow, "slow_" + step)()
+    assert implementer.run_implementer(args) == 0
+    logged = record(args)
+    assert logged["outcome"] == "success" and args.output.read_bytes() == b"built"
+    check_expired(slow, logged, step)
+
+
+def test_984_after_a_ceiling_stop_a_slow_store_read_still_records_before_the_wait_ends(
+        job, monkeypatch, tmp_path):
+    import time
+    from datetime import datetime, timedelta, timezone
+    from allowance_fixture import Slow
+    args, _ = claude_job(job, monkeypatch)
+    args.timeout_seconds = 160  # A 16 s reserve.
+    slow = Slow(monkeypatch, tmp_path, folders=2)
+    store = implementer.records.default_record_root()
+    launched = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    for index in range(500):
+        (store / f"old-{index}.md.request.json").write_text(json.dumps(
+            {"dispatch_id": f"{index:032x}", "root": str(tmp_path / "gone"), "launched_at": launched}))
+        # Unfinished, so the walk skips them; last checkpointed long before this run.
+        (store / f"old-{index}.md.run.json").write_text(json.dumps({"completed_at": None}))
+    slow.slow_store(pause=0.05)  # 25 s of reading, more than will be left.
+    raw = json.dumps({"type": "system", "subtype": "init", "session_id": FIXTURE_SESSION}).encode() + b"\n"
+
+    def stopped(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=raw, stderr=b"")
+
+    monkeypatch.setattr(implementer, "run_process", stopped)
+    # 28 s left: the walk is quick, so the comparing has until the final write.
+    args.invocation_started_monotonic = time.monotonic() - 132
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert slow.deadline is not None, logged.get("launch_comparison")
+    assert slow.written is not None and slow.written < slow.deadline.wait_end
+    assert logged["completed_at"] and logged["lifecycle"] == "completed"
+    assert logged["outcome"] == "interrupted" and logged["interruption_cause"] == "ceiling"
+    comparison = logged["launch_comparison"]
+    assert comparison["status"] == "findings"
+    for item in slow.items:
+        entry = slow.coverage(comparison, item)
+        assert entry["status"] == "uncompared", entry
+        assert "comparison allowance ran out" in entry["reason"]
+        assert "the launch's recording window" in entry["reason"]

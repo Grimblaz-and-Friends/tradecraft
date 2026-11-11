@@ -559,3 +559,19 @@ def test_mismatch_remains_evidence_without_replacing_canonical_session(tmp_path)
         assert saved["session_identity_error"]
         assert saved["session_identity"]["session_id"] == expected
         assert saved["session_identity"]["reported_session_id"] == other
+
+
+def test_984_the_entrance_waits_until_wait_end_and_the_final_write_begins_an_eighth_before(monkeypatch):
+    import work
+    deadline = lifecycle.Deadline(600)
+    assert deadline.wait_end == deadline.end - deadline.reserve / 4
+    assert deadline.final_write_at == deadline.wait_end - deadline.reserve / 8
+    seen = {}
+
+    def run(command, *, timeout, cleanup_deadline):
+        seen.update(timeout=timeout, now=time.monotonic())
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(work, "_recipient_run", run)
+    assert work._invoke_recipient(["launcher"], deadline) == 0
+    assert seen["timeout"] == pytest.approx(deadline.wait_end - seen["now"], abs=0.5)

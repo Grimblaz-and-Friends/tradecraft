@@ -62,6 +62,21 @@ class Deadline:
     def cleanup_end(self):
         return self.end - self.reserve / 2
 
+    @property
+    def wait_end(self):
+        # The entrance stops waiting for its launcher here, leaving itself the
+        # last quarter of the reserve to contain the tree and return.
+        return self.end - self.reserve / 4
+
+    @property
+    def final_write_at(self):
+        """The latest moment a launcher's final recording may begin.
+
+        Design: lib/DESIGN.md#the-launch-comparisons-crediting-and-allowance
+        """
+        # The same eighth the entrance leaves between its wait's end and stopping the launcher.
+        return self.wait_end - self.reserve / 8
+
 
 def stage_deadline(stage, caller_limit, *, started=None):
     deadline = Deadline(caller_limit, started=started)
