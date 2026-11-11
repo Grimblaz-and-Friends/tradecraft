@@ -32,7 +32,7 @@ CLOUD_CHANGE_STAGES = {"build", "floor", "review-disposition"}
 GRANT_MARKER = re.compile(
     r"<!--\s*tradecraft:write-grant:v1\s+brief=(\d+)\s+row=(\d+)\s+stage=([\w-]+)\s+"
     r"write=(push|comment|api)\s+target=(.+?)\s*-->")
-CHILD_START = f'claude --setting-sources user --settings "${CHILD_VARIABLE}"'
+CHILD_START = guard.CHILD_START
 CLOUD_NOT_RUN = "the launch block runs on this machine; a cloud builder runs on a remote one"
 
 
@@ -169,6 +169,8 @@ def notice(allowance: dict) -> bytes:
 # --- the launch block -----------------------------------------------------------
 
 def _quoted(path) -> str:
+    # Hook commands and the prefix wrapper run under bash, where a backslash inside double
+    # quotes can escape the next character; Windows takes these paths with forward slashes.
     return '"' + str(path).replace("\\", "/") + '"'
 
 
@@ -185,8 +187,7 @@ def _config(allowance: dict, *, scope: str, root, log: Path, child_settings: Pat
             session: str | None = None) -> dict[str, object]:
     return {"schema_version": SCHEMA_VERSION, "scope": scope, "allowance": allowance,
             "root": str(Path(root).resolve(strict=False)) if root else None, "log": str(log),
-            "child_settings": str(child_settings), "codex_child_arguments": None,
-            "session": session}
+            "child_settings": str(child_settings), "session": session}
 
 
 def bash_executable(env: dict[str, str] | None = None) -> str | None:
@@ -223,7 +224,8 @@ def _self_test_cases() -> list[tuple[str, dict, str, str]]:
         ("wrapped comment", none, 'bash -c "gh issue comment 683"', "deny"),
         ("bare child", none, "claude -p hi", "deny"),
         ("safe-mode child", none,
-         f'claude --setting-sources user --safe-mode --settings "${CHILD_VARIABLE}" -p x', "deny"),
+         f'claude --setting-sources user --strict-mcp-config --safe-mode --settings "${CHILD_VARIABLE}" -p x',
+         "deny"),
         ("child without sources", none, f'claude --settings "${CHILD_VARIABLE}" -p x', "deny"),
     ]
 

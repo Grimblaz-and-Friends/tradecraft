@@ -36,6 +36,13 @@ REFUSED = "tradecraft GitHub write bound refused"
 REQUEST_ROUTE = ("return this write to the holder as a request in a **Write requests** section "
                  "of your final message: the write, why the work needs it, and what it would leave behind")
 CHILD_VARIABLE = "TRADECRAFT_CHILD_SETTINGS"
+CHILD_START = f'claude --setting-sources user --strict-mcp-config --settings "${CHILD_VARIABLE}"'
+# Each changes where or what a git push writes, so a push carrying one is refused rather than
+# judged from the stored configuration it overrides; a step's own push never needs one.
+REDIRECTING_GIT_OPTIONS = {"-c", "--config-env", "--git-dir", "--work-tree", "--namespace"}
+REDIRECTING_GIT_VARIABLES = {"GIT_DIR", "GIT_WORK_TREE", "GIT_NAMESPACE", "GIT_CONFIG",
+                             "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL",
+                             "GIT_CONFIG_SYSTEM"}
 CONNECTORS = "ENABLE_CLAUDEAI_MCP_SERVERS"
 # Each turns off the command check or the connector switch in a session started
 # from the shell, so no command may set or remove it.
@@ -493,15 +500,25 @@ def _run_git(cwd: str | None, *arguments: str) -> str | None:
 def judge_git(arguments: list[str], ctx: Context) -> list[Finding]:
     cwd = ctx.cwd
     words = list(arguments)
+    redirecting: list[str] = []
     while words and words[0].startswith("-"):
         flag = words.pop(0)
+        stem = flag.split("=", 1)[0]
         if flag == "-C" and words:
             cwd = _resolve_dir(cwd, words.pop(0))
-        elif flag in ("-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
-                      "--config-env") and words and "=" not in flag:
+        elif stem in REDIRECTING_GIT_OPTIONS:
+            redirecting.append(stem)
+            if "=" not in flag and words:
+                words.pop(0)
+        elif flag == "--exec-path" and words:
             words.pop(0)
     if not words or words[0] != "push":
         return []
+    redirecting.extend(name for name in ctx.assigned if name in REDIRECTING_GIT_VARIABLES
+                       or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")))
+    if redirecting:
+        return [Finding("git push", f"git push with {', '.join(sorted(set(redirecting)))}, which can "
+                        "change where or what it writes")]
     return judge_push(words[1:], cwd, ctx.config)
 
 
@@ -628,6 +645,15 @@ def _is_url_or_path(destination: str) -> bool:
 def _destination_refs(refspecs: list[str], cwd: str | None, remote: str
                       ) -> list[tuple[str, str | None]] | None:
     if not refspecs:
+        # Configuration can make a push that names no refspec write more than @{push}, deletions
+        # included, so it is judged as @{push} only when nothing widens it.
+        if _run_git(cwd, "config", "--get-all", f"remote.{remote}.push"):
+            return [("", f"a push naming no refspec, which remote.{remote}.push widens")]
+        if _run_git(cwd, "config", "--type=bool", "--get", f"remote.{remote}.mirror") == "true":
+            return [("", f"a push naming no refspec, which remote.{remote}.mirror makes a mirror")]
+        if (_run_git(cwd, "config", "--get", "push.default") or "").lower() == "matching":
+            return [("", "a push naming no refspec under push.default=matching, which pushes every "
+                         "matching branch")]
         current = _run_git(cwd, "symbolic-ref", "--short", "-q", "HEAD")
         push = _run_git(cwd, "rev-parse", "--symbolic-full-name", "@{push}")
         if not current or not push:
@@ -978,6 +1004,7 @@ def judge_claude(arguments: list[str], ctx: Context, cleared: bool) -> list[Find
     settings: list[str] = []
     sources: list[str] = []
     problems: list[str] = []
+    strict = False
     words = list(arguments)
     while words:
         word = words.pop(0)
@@ -988,6 +1015,10 @@ def judge_claude(arguments: list[str], ctx: Context, cleared: bool) -> list[Find
             sources.append(inline if inline else (words.pop(0) if words else ""))
         elif stem in ("--safe-mode", "--bare"):
             problems.append(f"{stem} turns off the launch's command check")
+        elif stem == "--strict-mcp-config":
+            strict = True
+        elif stem == "--mcp-config":
+            problems.append("--mcp-config loads an MCP server, a write path the command check never sees")
     expected = ctx.config.get("child_settings")
     if len(settings) != 1:
         problems.append("it must carry exactly one --settings, the launch's own child settings")
@@ -1001,12 +1032,15 @@ def judge_claude(arguments: list[str], ctx: Context, cleared: bool) -> list[Find
     named = {part.strip() for value in sources for part in value.split(",")}
     if "user" not in named or named & {"project", "local"}:
         problems.append("it must carry --setting-sources user and name neither project nor local")
+    if not strict:
+        # Without it a child loads the owner's MCP servers, a write path this check never sees,
+        # as the connectors are.
+        problems.append("it must carry --strict-mcp-config, so it loads no MCP server")
     if cleared:
         problems.append("env -i drops the launch environment")
     if problems:
         return [Finding(write, "a Claude session start outside the launch's settings: "
-                        + "; ".join(problems) + "; start a child only as `claude --setting-sources user "
-                        f"--settings \"${CHILD_VARIABLE}\" ...`")]
+                        + "; ".join(problems) + f"; start a child only as `{CHILD_START} ...`")]
     return []
 
 

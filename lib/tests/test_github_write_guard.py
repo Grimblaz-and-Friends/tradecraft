@@ -15,7 +15,7 @@ sys.path.insert(0, str(LIB))
 import github_allowance as allowance_module  # noqa: E402
 import github_write_guard as guard  # noqa: E402
 
-CHILD = f'claude --setting-sources user --settings "${guard.CHILD_VARIABLE}"'
+CHILD = guard.CHILD_START
 
 
 def git(cwd, *arguments):
@@ -52,7 +52,7 @@ def decision(command, root, kind, **options):
     "gh api -X POST repos/o/r/issues/5/comments -f body=x",
     "echo $(gh pr comment 12 -b x)",
 ])
-def test_none_refuses_the_writes_on_record(tree, command):
+def test_none_refuses_a_forced_push_comments_and_a_post(tree, command):
     verdict = guard.decide(command, str(tree), config("none", tree))
     assert verdict["decision"] == "deny"
     assert "`none`" in verdict["reason"] and "**Write requests**" in verdict["reason"]
@@ -68,6 +68,37 @@ def test_none_refuses_the_writes_on_record(tree, command):
 ])
 def test_branch_refuses_other_refs_deletions_and_forces(tree, command):
     assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "git -c remote.origin.pushurl=https://github.com/other/x.git push origin HEAD:refs/heads/tradecraft/894-ab",
+    "git --config-env=remote.origin.pushurl=URL push origin HEAD:refs/heads/tradecraft/894-ab",
+    "git --git-dir=../other/.git push origin HEAD:refs/heads/tradecraft/894-ab",
+    "git --work-tree ../other push origin HEAD:refs/heads/tradecraft/894-ab",
+    "git --namespace x push origin HEAD:refs/heads/tradecraft/894-ab",
+    "GIT_DIR=../other/.git git push origin HEAD:refs/heads/tradecraft/894-ab",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=https://github.com/other/x.git "
+    "git push origin HEAD:refs/heads/tradecraft/894-ab",
+])
+def test_a_push_carrying_a_redirecting_git_option_is_refused(tree, command):
+    assert decision("git push origin HEAD:refs/heads/tradecraft/894-ab", tree, "branch") == "allow"
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("setting", [
+    ("remote.origin.push", "refs/heads/*:refs/heads/*"),
+    ("remote.origin.mirror", "true"),
+    ("push.default", "matching"),
+])
+def test_a_push_naming_no_refspec_is_refused_where_configuration_widens_it(tree, setting):
+    git(tree, "config", f"branch.tradecraft/894-ab.remote", "origin")
+    git(tree, "config", f"branch.tradecraft/894-ab.merge", "refs/heads/tradecraft/894-ab")
+    git(tree, "update-ref", "refs/remotes/origin/tradecraft/894-ab", "HEAD")
+    assert decision("git push", tree, "branch") == "allow"
+    git(tree, "config", *setting)
+    assert decision("git push", tree, "branch") == "deny"
+    # A named refspec is judged as itself; git refuses one beside a mirror setting.
+    assert decision("git push origin HEAD:refs/heads/tradecraft/894-ab", tree, "branch") == "allow"
 
 
 @pytest.mark.parametrize("command", [
@@ -134,7 +165,8 @@ def test_the_instructed_child_start_is_allowed(tree, kind):
     allowed = allowance_module.CHILD_START + " -p hi"
     assert allowance_module.CHILD_START in allowance_module.sentence(config(kind, tree)["allowance"])
     assert decision(allowed, tree, kind) == "allow"
-    literal = f"claude --setting-sources user --settings {(tree / 'child.json').as_posix()} -p hi"
+    literal = (f"claude --setting-sources user --strict-mcp-config --settings "
+               f"{(tree / 'child.json').as_posix()} -p hi")
     assert decision(literal, tree, kind) == "allow"
     assert decision("claude --version", tree, kind) == "allow"
 
@@ -142,14 +174,17 @@ def test_the_instructed_child_start_is_allowed(tree, kind):
 @pytest.mark.parametrize("command", [
     "claude -p hi",
     "bash -c 'claude -p hi'",
-    f'claude --settings "${guard.CHILD_VARIABLE}" -p hi',
-    f'claude --setting-sources user,project --settings "${guard.CHILD_VARIABLE}" -p hi',
-    f'claude --setting-sources local --settings "${guard.CHILD_VARIABLE}" -p hi',
-    f"claude --safe-mode --setting-sources user --settings \"${guard.CHILD_VARIABLE}\" -p hi",
-    f"claude --bare --setting-sources user --settings \"${guard.CHILD_VARIABLE}\" -p hi",
+    f'claude --strict-mcp-config --settings "${guard.CHILD_VARIABLE}" -p hi',
+    f'claude --setting-sources user,project --strict-mcp-config --settings "${guard.CHILD_VARIABLE}" -p hi',
+    f'claude --setting-sources local --strict-mcp-config --settings "${guard.CHILD_VARIABLE}" -p hi',
+    f"claude --safe-mode {CHILD[len('claude '):]} -p hi",
+    f"claude --bare {CHILD[len('claude '):]} -p hi",
+    # Without --strict-mcp-config, or with a server of its own, a child loads an MCP server.
+    f'claude --setting-sources user --settings "${guard.CHILD_VARIABLE}" -p hi',
+    f"{CHILD} --mcp-config github.json -p hi",
     f"CLAUDE_CODE_SIMPLE=1 {CHILD} -p hi",
     f"{CHILD} --settings x.json -p hi",
-    "claude --setting-sources user --settings '{\"disableAllHooks\":true}' -p hi",
+    "claude --setting-sources user --strict-mcp-config --settings '{\"disableAllHooks\":true}' -p hi",
     f"TRADECRAFT_CHILD_SETTINGS=x.json {CHILD} -p hi",
     f"env -i {CHILD} -p hi",
     "codex exec hi",
