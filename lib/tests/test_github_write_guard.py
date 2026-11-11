@@ -320,6 +320,38 @@ def test_a_dispatch_carrying_the_cloud_sentence_is_refused_locally(tree):
         allowance_module.needs_notice(allowance, prompt)
 
 
+@pytest.mark.parametrize("command", [
+    "nice -n 10 gh pr merge 1",
+    "nice --adjustment 10 gh pr merge 1",
+    "timeout -k 5 10 gh pr merge 1",
+    "timeout --signal KILL 10 gh pr merge 1",
+    "timeout --kill-after=5 10 gh pr merge 1",
+    # An option nobody listed leaves its value in program position; the signature still refuses it.
+    "nice --unlisted 5 gh pr merge 1",
+])
+def test_a_write_behind_a_pass_through_program_is_judged(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", ["nice -n 10 git status", "timeout -k 5 10 git status",
+                                     "nice -n 10 python -c pass"])
+def test_a_harmless_command_behind_a_pass_through_program_passes(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+
+
+def test_an_api_grant_matches_with_or_without_the_leading_slash(tree):
+    body = grant_body(stage="build", write="api", target="POST /repos/o/r/issues/5/labels")
+    accepted = allowance_module.validate_grant(allowance_module.parse_grant(9, body), brief_comment=7,
+                                               brief_body=BRIEF, stage="build", resumed=True,
+                                               repository="o/r")
+    assert accepted["target"] == "POST repos/o/r/issues/5/labels"
+    for target in (accepted["target"], "POST /repos/o/r/issues/5/labels"):
+        grant = {**accepted, "target": target}
+        for command in ("gh api -X POST repos/o/r/issues/5/labels -f labels[]=x",
+                        "gh api -X POST /repos/o/r/issues/5/labels -f labels[]=x"):
+            assert decision(command, tree, "branch", grants=[grant]) == "allow", (target, command)
+
+
 def test_a_tag_grant_permits_its_tag_and_no_ref_wide_push(tree):
     grant = {"marker": 1, "brief": 2, "row": 4, "stage": "build", "write": "push",
              "target": "o/r:refs/tags/v1"}

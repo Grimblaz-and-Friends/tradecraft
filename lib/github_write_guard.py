@@ -53,6 +53,12 @@ GUARDED_VARIABLES = (CHILD_VARIABLE, "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SHELL_PR
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "git-bash"}
 POWERSHELLS = {"pwsh", "powershell"}
 PASS_THROUGH = {"command", "exec", "nohup", "time", "builtin", "stdbuf", "timeout", "nice"}
+# Each option takes the next word as its value, which would otherwise sit where the program
+# the pass-through runs is expected.
+PASS_THROUGH_VALUES = {"nice": {"-n", "--adjustment"},
+                       "timeout": {"-k", "--kill-after", "-s", "--signal"},
+                       "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+                       "exec": {"-a"}, "time": {"-f", "--format", "-o", "--output"}}
 REDIRECTS = {">", ">>", "<", ">&", "&>", "<&", ">|", "&>>", "<>", "<<<"}
 SEPARATORS = {";", "&", "&&", "||", "|", "|&", "(", ")", ";;", ";&"}
 GH_READS = {
@@ -333,9 +339,16 @@ def _inner(ctx: Context, text: str) -> list[Finding]:
     return found
 
 
+# The programs judge_simple judges by name; any other runs unjudged.
+JUDGED_PROGRAMS = {"git", "gh", "claude", "codex", "cmd", "eval", "invoke-expression", "iex",
+                   "curl", "wget", "invoke-restmethod", "irm", "invoke-webrequest", "iwr",
+                   "npx", "bunx", "pnpx", "pnpm", "yarn", *SHELLS, *POWERSHELLS}
+
+
 def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
     words = list(words)
     local_cleared = False
+    passed_through = False
     while words:
         match = ASSIGNMENT.match(words[0])
         if match and not words[0].startswith("-"):
@@ -369,8 +382,11 @@ def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
             continue
         if name in PASS_THROUGH:
             words.pop(0)
+            passed_through = True
             while words and words[0].startswith("-"):
-                words.pop(0)
+                flag = words.pop(0)
+                if flag in PASS_THROUGH_VALUES.get(name, ()) and words:
+                    words.pop(0)
             if name == "timeout" and words:
                 _duration = words.pop(0)
             continue
@@ -386,6 +402,13 @@ def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
         return []
     first = words[0]
     name = program(first)
+    if passed_through and name not in JUDGED_PROGRAMS:
+        # A pass-through option nobody listed leaves its value where the program should be,
+        # so a write after it is refused on its signature rather than passed unjudged.
+        found = _tripwire(" ".join(words), f"{first!r} stands where a pass-through command's "
+                                           "program was expected")
+        if found:
+            return found
     if first.startswith("$") and not first.lower().startswith("$env:"):
         return _tripwire(" ".join(words), "a variable in program position")
     cleared = ctx.cleared or local_cleared
@@ -476,13 +499,17 @@ def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
     return []
 
 
+# Git Bash writes drive C: as /c/, a path Windows itself cannot open, so it is converted.
+GIT_BASH_DRIVE = re.compile(r"^/[A-Za-z]/")
+
+
 def _resolve_dir(cwd: str | None, target: str) -> str | None:
     if target == "-":
         return cwd
     target = os.path.expanduser(target)
     if os.path.isabs(target) or re.match(r"^[A-Za-z]:[\\/]", target):
         return os.path.normpath(target)
-    if re.match(r"^/[A-Za-z]/", target):  # a Git Bash drive path
+    if GIT_BASH_DRIVE.match(target):
         return os.path.normpath(target[1] + ":" + target[2:])
     return os.path.normpath(os.path.join(cwd, target)) if cwd else None
 
@@ -812,8 +839,14 @@ def _comment_granted(allowance: dict, repository: str, number: int) -> bool:
                for grant in allowance.get("grants") or ())
 
 
+def api_target(target: str) -> str:
+    """An api grant's ``METHOD path``, its path without the leading slash gh api drops too."""
+    method, _, path = target.partition(" ")
+    return f"{method} {path.lstrip('/')}"
+
+
 def _api_granted(allowance: dict, method: str, path: str) -> bool:
-    return any(grant.get("write") == "api" and str(grant.get("target", "")) == f"{method} {path}"
+    return any(grant.get("write") == "api" and api_target(str(grant.get("target", ""))) == f"{method} {path}"
                for grant in allowance.get("grants") or ())
 
 

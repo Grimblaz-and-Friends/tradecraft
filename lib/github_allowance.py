@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -269,7 +270,9 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
     if carrier == "pretooluse-hook":
         payload = {"tool_name": "Bash", "tool_input": {"command": command},
                    "cwd": str(directory), "session_id": "self-test"}
-        result = subprocess.run([sys.executable, str(GUARD), "--hook", "--config", str(config_path)],
+        # The command string a launch installs as its hook, split as a shell splits it, so the
+        # interpreter, script and quoting the hook carries are the ones proved.
+        result = subprocess.run(shlex.split(hook_entry(config_path)["hooks"][0]["command"]),
                                 input=json.dumps(payload).encode("utf-8"), capture_output=True,
                                 timeout=60, cwd=directory)
         if b'"deny"' not in result.stdout:
@@ -568,4 +571,7 @@ def validate_grant(grant: dict, *, brief_comment: int, brief_body: str, stage: s
     if _grant_repository(grant["write"], target) != repository.lower():
         raise GrantError(f"grant {grant['marker']} targets {target}, outside the work's repository "
                          f"{repository}")
-    return {key: grant[key] for key in ("marker", "brief", "row", "stage", "write", "target")}
+    accepted = {key: grant[key] for key in ("marker", "brief", "row", "stage", "write", "target")}
+    if grant["write"] == "api":
+        accepted["target"] = guard.api_target(target)
+    return accepted
