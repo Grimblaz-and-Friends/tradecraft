@@ -107,7 +107,7 @@ The comparison of a Claude launch (`launch_bound.py`) also reads, before and aft
 - The final write keeps an eighth of the reserve, the same gap the entrance leaves between its wait's end and stopping the launcher. After a ceiling stop whose walk used its whole window, that leaves the comparing an eighth of the reserve, 7.5 s at the 60 s reserve of a default stage limit.
 - A single step that itself hangs, such as one file read, is not interrupted; the entrance's wait still ends that launch.
 
-**Decisions in force:** D-939, the launch's before-and-after comparison, which this section bounds; D-987, the working-copy and branch check, whose two steps run inside the allowance.
+**Decisions in force:** D-996, one overlap list and one allowance between the walk and the final record; D-939, the launch's before-and-after comparison, which this section bounds; D-987, the working-copy and branch check, whose two steps run inside the allowance.
 
 ## Launch accounts
 
