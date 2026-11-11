@@ -39,6 +39,7 @@ def _load(name: str, path: Path):
 
 
 kw = _load("keep_warm_desktop_core", CORE)
+shipped = _load("keep_warm_shipped", REPO / "lib" / "keep_warm.py")
 installer = _load("keep_warm_install", KEEP_WARM / "install.py")
 
 SID = "0f3c2a1e-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
@@ -608,3 +609,15 @@ def test_ac39_the_wakes_undo_names_keep_warm():
     step = next(line for line in undo.splitlines() if line.startswith("3. "))
     assert f"`holder-pane@{ELLIPSIS}`" in step and f"`keep-warm@{ELLIPSIS}`" in step
     assert "keep-warm" in text[:text.index("## Undo")]
+
+
+def test_the_desktop_values_are_the_shipped_keep_warms():
+    """The desktop core copies lib/keep_warm.py's values; a change to one must reach the other."""
+    assert kw.INTERVAL_SECONDS == shipped.INTERVAL_SECONDS
+    assert kw.LAPSE_SECONDS == shipped.LAPSE_SECONDS
+    assert kw.CAP_SECONDS == shipped.DEFAULT_CAP_HOURS * 3600
+    assert kw.CAP_TURNS == shipped.max_pings(shipped.DEFAULT_CAP_HOURS)
+    assert kw.MISS_FLOOR_TOKENS == shipped.WRITE_ALLOWANCE_TOKENS
+    assert kw.MISS_SHARE == shipped.WRITE_SHARE
+    assert kw.CONTEXT_SHARE == shipped.CONTEXT_SHARE
+    assert kw.FALLBACK_WINDOW == shipped.FALLBACK_CONTEXT_WINDOW

@@ -149,6 +149,8 @@ export const register: Register = on => {
 
   // The model's tool calls in a keep-warm turn are refused, unrun; another
   // mod's own calls (the pane's title reads) are not the model's and pass.
+  // A guard that fails in a keep-warm turn still refuses: letting an unchecked
+  // call run there is the one thing this turn must never do.
   on('tool.call', async ($, e, next) => {
     if (!state.own || next.origin.plugin !== 'engine') return next(e)
     return { deny: REFUSAL }

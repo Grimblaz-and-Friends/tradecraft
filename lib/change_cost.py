@@ -77,6 +77,8 @@ def default_holder_usage(repo: str, issue: int) -> Path:
 
 
 def default_keep_warm(repo: str, issue: int) -> Path:
+    # The one home of the keep-warm record: lib/keep_warm.py writes it and report() reads it.
+    # Design: lib/DESIGN.md#keeping-a-waiting-session-warm
     return change_root(repo, issue) / "keep-warm.jsonl"
 
 
@@ -978,6 +980,9 @@ def runtime_report(repo, issue, dispatch_root):
     return reports
 
 
+# The keep-warm line and the reload list: what keeping waiting sessions warm
+# spent, and which resumed turns reloaded anyway.
+# Design: lib/DESIGN.md#keeping-a-waiting-session-warm
 _PING_CLASSES = ("input", "output", "cache_read", "cache_creation", "cache_write_5m", "cache_write_1h")
 
 
@@ -1233,7 +1238,7 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
     if skipped_records:
         floor_reasons.append("skipped evidence may contain additional contributions")
     # Pings are read only here, after every dispatch share is fixed, so each is counted once.
-    keep_warm, keep_rows = _keep_warm(keep_warm_path or holder_path.with_name("keep-warm.jsonl"),
+    keep_warm, keep_rows = _keep_warm(keep_warm_path or default_keep_warm(repo, issue),
                                       repo, issue, rates)
     keep_warm_amount = None
     if keep_warm["price"]["status"] == "known":

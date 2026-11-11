@@ -36,17 +36,19 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import holder_transcript as transcripts  # noqa: E402
 import implementer_environment as environments  # noqa: E402
+import change_cost  # noqa: E402
 import run_lifecycle as lifecycle  # noqa: E402
 from winio import utf8_stdio  # noqa: E402
 
 SCHEMA_VERSION = 1
-# About 55 minutes: inside the one-hour cache.
+# Inside the one-hour cache.
 INTERVAL_SECONDS = 3300
-# No ping once the session's last call is older than this; two minutes under
-# the hour leave room for the ping's own start-up.
+# No ping once the session's last call is older than this; the margin under
+# the hour leaves room for the ping's own start-up.
 LAPSE_SECONDS = 3420
 DEFAULT_CAP_HOURS = 8
-# The largest cap the machine setting accepts.
+# The largest cap the machine setting accepts: every late resume in the record
+# came within a day, so pings past it buy nothing.
 MAX_CAP_HOURS = 24
 # A ping still running then is killed and recorded failed.
 PING_TIMEOUT_SECONDS = 300
@@ -116,8 +118,8 @@ def parse_work(work: object) -> tuple[str, int] | None:
 
 
 def record_path(repo: str, issue: int) -> Path:
-    # The change's own cost records (change_cost.change_root), never the dispatch store.
-    return Path.home() / ".tradecraft" / "changes" / Path(repo) / str(issue) / "keep-warm.jsonl"
+    # The change's own cost records, never the dispatch store; the cost report reads the same path.
+    return change_cost.default_keep_warm(repo, issue)
 
 
 def _now() -> str:
@@ -267,7 +269,10 @@ def launch_env_changes(start: dict[str, str], child: dict[str, str]) -> tuple[di
 
 
 def ping_argv(command: list[str], settings: Path) -> list[str]:
-    """The turn's argv with exactly three changes; see AC5."""
+    """The turn's argv with exactly three changes.
+
+    Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+    """
     argv = list(command)
     for index, value in enumerate(argv[:-1]):
         if value == "--settings":
@@ -655,7 +660,7 @@ def ping_plan(spec: dict, directory: Path):
     if shim:
         # The launch's own instruction file, re-created whole for the ping.
         original = Path(shim["directory"])
-        text = shim["text"] if "text" in shim else shim.get("line", "") + "\n"
+        text = shim["text"]
         if original.parent.is_dir() and cwd == root:
             made = original
         else:
@@ -880,7 +885,7 @@ class Runner:
             return "too-large"
         status = self.state_reader(spec)
         if status is None:
-            # One GitHub read timing out is common; a minute later it usually answers.
+            # One GitHub read timing out is common; read once more after a wait.
             if self.clock() + UNREADABLE_RETRY_SECONDS - (_moment(state["last_call_at"]) or 0) > LAPSE_SECONDS:
                 return "lapsed"
             self.sleep(UNREADABLE_RETRY_SECONDS)

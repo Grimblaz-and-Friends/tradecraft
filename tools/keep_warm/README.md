@@ -1,6 +1,6 @@
 # Desktop keep-warm (lab-only)
 
-**Purpose:** an idle desktop session of a practice repository keeps its prompt cache warm, so the owner's next real turn reads its conversation from the cache instead of paying to write it again (#983, row 5). **Audience:** the owner who approves the install, and the holder who installs it and runs its probes. **Success:** a desktop session idle for an hour answers one short keep-warm turn and its next real turn reads at least 0.9 of its prompt from the cache, while no keep-warm turn runs a tool, overlaps a running turn, outlives its cap or counts as the owner speaking.
+**Purpose:** an idle desktop session of a practice repository keeps its prompt cache warm, so the owner's next real turn reads its conversation from the cache instead of paying to write it again. **Audience:** the owner who approves the install, and the holder who installs it and runs its probes. **Success:** a desktop session idle for an hour answers one short keep-warm turn and its next real turn reads at least 0.9 of its prompt from the cache, while no keep-warm turn runs a tool, overlaps a running turn, outlives its cap or counts as the owner speaking.
 
 This is a Claude Code mod that lives in tradecraft's repo-only `tools/` and is installed at **local scope** in each practice repository's main checkout, beside the holder pane and the Steward's wake. Nothing here ships in the plugin, because a mod is a desktop-app feature and shipped material names no lab tool. It covers the desktop sessions of a practice repository: holders and both Stewards.
 
@@ -69,7 +69,7 @@ The marketplace is a folder with a relative source, so sessions read the plugin 
 - **Not the owner.** The Steward's handover gate is unchanged: by the wake module's own comment, a prompt a mod submits does not pass through the wake's `prompt.submit` hook, and a build whose prompt does pass it gives the origin `plugin`, which `origin-is-owner` counts as not the owner. P5 checks it. The pane gives no reminder during a keep-warm turn: it reads this mod's session file, and while `turn_open` is true its reminder stays owed for the holder's next real turn.
 - **No status line, no files from the module.** The pane and the wake own the status line. Only the core writes, under the state directory: `sessions/<session>.json` and `log.jsonl`, which records each submission, each warm turn's cache figures, each stop with its reason, and the module's own faults.
 
-**Decisions in force:** this section, settled on #983 (row 5 of its affirmed brief).
+**Decisions in force:** a desktop session is kept warm by a short visible turn inside it, with the model's tools refused through the `tool.call` guard ([D-993](../../docs/architecture/decisions/D-993-2026-11-11-a-waiting-session-kept-warm.md)).
 
 ## The state directory and probe settings
 

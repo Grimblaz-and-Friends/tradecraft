@@ -1305,7 +1305,7 @@ def keep_warm_end(minutes, reason="idle limit reached", session=SESSION):
 
 
 def keep_warm_file(inputs):
-    return inputs["holder_path"].with_name("keep-warm.jsonl")
+    return cost.default_keep_warm("acme/widget", 12)
 
 
 def test_three_pings_are_one_priced_line_and_raise_the_total_by_exactly_their_price(report_inputs):
@@ -1336,7 +1336,7 @@ def test_three_pings_are_one_priced_line_and_raise_the_total_by_exactly_their_pr
     assert with_pings["raw_usage"] == without["raw_usage"]
 
 
-def test_keep_warm_path_defaults_beside_holder_usage_and_the_cli_overrides_it(report_inputs, tmp_path):
+def test_keep_warm_path_defaults_to_the_changes_record_and_the_cli_overrides_it(report_inputs, tmp_path):
     inputs = claude_inputs(report_inputs)
     keep_warm_rows(keep_warm_file(inputs), ping(60))
     other = tmp_path / "elsewhere" / "keep-warm.jsonl"
@@ -1350,6 +1350,9 @@ def test_keep_warm_path_defaults_beside_holder_usage_and_the_cli_overrides_it(re
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout)["keep_warm"]["pings"] == 2
     assert cost.default_keep_warm("acme/widget", 12) == cost.change_root("acme/widget", 12) / "keep-warm.jsonl"
+    import keep_warm
+    # The writer and the reader share one definition.
+    assert keep_warm.record_path("acme/widget", 12) == cost.default_keep_warm("acme/widget", 12)
 
 
 def test_pings_leave_the_runtime_budget_account_unchanged(report_inputs):
@@ -1424,6 +1427,7 @@ def test_ping_without_a_dated_rate_is_unknown_and_a_floor_not_zero(report_inputs
 
 def test_unreadable_keep_warm_record_is_unknown_without_failing_the_report(report_inputs):
     inputs = claude_inputs(report_inputs)
+    keep_warm_file(inputs).parent.mkdir(parents=True, exist_ok=True)
     keep_warm_file(inputs).write_bytes(b"{not json\n")
     result = cost.report(**inputs)
     assert result["keep_warm"]["price"]["status"] == "unknown"

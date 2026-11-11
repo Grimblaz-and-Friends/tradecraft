@@ -31,8 +31,9 @@ from typing import Any, Callable
 
 STATE_ENV = "KEEP_WARM_LAB_STATE_DIR"
 
-# The production values, the shipped keep-warm's own: a turn just inside the
-# cache's hour, at most eight of them over at most eight hours.
+# The production values, the shipped keep-warm's own (lib/keep_warm.py): a turn
+# just inside the cache's hour, capped in count and in time. A test in
+# tools/tests pins each to its shipped twin.
 INTERVAL_SECONDS = 3300
 LAPSE_SECONDS = 3420
 CAP_SECONDS = 8 * 3600
