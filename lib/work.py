@@ -6406,13 +6406,18 @@ def _github_write_report(state: WorkState) -> dict[str, object]:
     refusals, grants, unread = [], [], []
     for _order, _bundle, request, run in rows:
         identity = {"dispatch_id": request.get("dispatch_id"), "stage": request.get("stage")}
+        bound = run.get("github_write_bound")
         if run.get("github_write_refusals_unknown"):
             unread.append(f"{identity['dispatch_id']}: {run['github_write_refusals_unknown']}")
+        elif ("github_write_refusals" not in run and isinstance(bound, dict)
+              and (bound.get("command_check") or {}).get("status") == "armed"):
+            # A launcher that died, or is still running, before reading its log has not shown
+            # what it refused; a check that never ran has no log, so it stays as it is.
+            unread.append(f"{identity['dispatch_id']}: its refusals were never read from its log")
         for entry in run.get("github_write_refusals") or ():
             if isinstance(entry, dict):
                 refusals.append({**identity, **{key: entry.get(key) for key in (
                     "scope", "entry", "command", "reason", "allowance")}})
-        bound = run.get("github_write_bound")
         allowance = bound.get("allowance") if isinstance(bound, dict) else None
         for grant in (allowance or {}).get("grants") or ():
             if isinstance(grant, dict):

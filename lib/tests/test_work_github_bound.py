@@ -217,6 +217,16 @@ def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkey
     report = work._github_write_report(fixture)
     assert report["status"] == "unknown" and "d3: OSError: lost" in report["reason"]
     assert len(report["refusals"]) == 1
+    # An armed check whose refusals were never read is unknown; a check that never ran is not.
+    armed = {"command_check": {"status": "armed"}, "allowance": {"grants": []}}
+    rows[:] = [(0, "b1", {"dispatch_id": "d4", "stage": "build"}, {"github_write_bound": armed}),
+               (1, "b2", {"dispatch_id": "d5", "stage": "build"},
+                {"github_write_bound": {"command_check": {"status": "not-run"}}})]
+    report = work._github_write_report(fixture)
+    assert report["status"] == "unknown" and "d4: its refusals were never read" in report["reason"]
+    assert "d5" not in report["reason"]
+    rows[0][3]["github_write_refusals"] = []
+    assert work._github_write_report(fixture)["status"] == "read"
 
 
 def test_ac7_the_cloud_routine_still_names_only_its_two_pushes_and_no_posting():
