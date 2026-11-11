@@ -9,7 +9,7 @@ Usage (the launcher supplies one of these; nobody runs it by hand):
 hook input on stdin and prints a deny decision for a refused command.
 ``--prefix`` is the use consumer's carrier, reached through the launch's
 ``CLAUDE_CODE_SHELL_PREFIX`` wrapper, because settings hooks do not run under
-``--safe-mode``: it exits 126 with the refusal on stderr, or 0 to let the
+``--safe-mode``: it exits ``PREFIX_REFUSED_EXIT`` with the refusal on stderr, or 0 to let the
 wrapper run the command. Every decision is one JSON line in the config's log,
 so a refusal reaches the run record and the entrance report.
 
@@ -36,7 +36,8 @@ REFUSED = "tradecraft GitHub write bound refused"
 REQUEST_ROUTE = ("return this write to the holder as a request in a **Write requests** section "
                  "of your final message: the write, why the work needs it, and what it would leave behind")
 CHILD_VARIABLE = "TRADECRAFT_CHILD_SETTINGS"
-# The prefix entry's exit for a refused command; the self-test expects the same value.
+# A shell gives 126 to a command it found but could not run, so a refused command reads as one
+# that never ran, apart from any exit code of the command's own. The self-test expects it too.
 PREFIX_REFUSED_EXIT = 126
 CHILD_START = f'claude --setting-sources user --strict-mcp-config --settings "${CHILD_VARIABLE}"'
 # Each changes where or what a git push writes, so a push carrying one is refused rather than
@@ -1003,6 +1004,7 @@ def judge_claude(arguments: list[str], ctx: Context, cleared: bool) -> list[Find
     if arguments[:1] and arguments[0] in ("--version", "-v", "--help", "-h"):
         return []
     if head[:1] == ["mcp"] and head[1:2] in (["list"], ["get"]):
+        # These start no session, so nothing they run inherits the login.
         return []
     settings: list[str] = []
     sources: list[str] = []
@@ -1051,6 +1053,7 @@ def judge_codex(arguments: list[str], ctx: Context) -> list[Finding]:
     if arguments[:1] and arguments[0] in ("--version", "-V", "--help", "-h"):
         return []
     if arguments[:2] == ["execpolicy", "check"]:
+        # It judges a command against rules and starts no session, so nothing inherits the login.
         return []
     return [Finding("start a Codex session",
                     "a Codex session start: no Codex session started from a dispatched step "
