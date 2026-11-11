@@ -751,6 +751,10 @@ def test_cloud_run_build_reaches_the_cloud_launcher_with_its_lineage_branch(laun
         with monkeypatch.context() as patch:
             patch.setattr(Path, "home", lambda: home)
             patch.setattr(implementer.cloud_build, "run", cloud_run)
+            # The entrance composed for its recorded Codex vendor and this test forces a Claude
+            # cloud launch of that dispatch, a pairing a real entrance never sends; the cloud
+            # allowance check is test_dispatch_implementer's test_a_cloud_launch_* to prove.
+            patch.setattr(implementer.github_allowance, "cloud_notice", lambda *_a: b"")
             assert implementer.run_implementer(args) == 0
         return subprocess.CompletedProcess(command, 0)
 
