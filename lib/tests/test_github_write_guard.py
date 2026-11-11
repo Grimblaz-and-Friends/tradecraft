@@ -333,6 +333,22 @@ def test_a_write_behind_a_pass_through_program_is_judged(tree, command):
     assert decision(command, tree, "branch") == "deny"
 
 
+@pytest.mark.parametrize("command", [
+    "env -S 'gh pr merge 1'",
+    "env --split-string='gh pr merge 1'",
+    "env -S'gh pr merge 1'",
+    "env -C . -S 'gh pr merge 1'",
+    "env --unlisted 5 gh pr merge 1",
+])
+def test_a_write_env_runs_is_judged(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", ["env -S 'git status'", "env FOO=1 git status"])
+def test_a_harmless_command_env_runs_passes(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+
+
 @pytest.mark.parametrize("command", ["nice -n 10 git status", "timeout -k 5 10 git status",
                                      "nice -n 10 python -c pass"])
 def test_a_harmless_command_behind_a_pass_through_program_passes(tree, command):

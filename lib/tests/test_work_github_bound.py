@@ -321,6 +321,21 @@ def test_the_allowance_command_takes_the_launchers_tree_and_pull_request(tmp_pat
     assert capsys.readouterr().out == ""
 
 
+def test_the_allowance_command_prints_the_cloud_routes_sentence(tmp_path, capsys):
+    def allowance(*arguments):
+        return work.parser().parse_args(["allowance", *arguments, "--repo", "example/product",
+                                         "--issue", "12", "--root", str(tmp_path), "--cloud"])
+
+    assert work._allowance_command(allowance("build")) == 0
+    printed = capsys.readouterr().out.strip()
+    assert printed == github_allowance.cloud_sentence("build")
+    assert github_allowance.cloud_notice("build", printed.encode()) == b""
+    with pytest.raises(work.WorkError, match="never takes the cloud route"):
+        work._allowance_command(allowance("use"))
+    with pytest.raises(work.WorkError, match="cannot ride a cloud launch"):
+        work._allowance_command(allowance("build", "--grant", "9001"))
+
+
 def _granted_allowance_run(tmp_path, monkeypatch, capsys, *, grant_brief=7001, continuity="resume"):
     """Drive the documented route: `work.py allowance build --grant ID` for a resumed, granted build."""
     from test_work import FakeTransport, write_policy

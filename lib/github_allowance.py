@@ -172,6 +172,21 @@ def cloud_sentence(stage: str) -> str:
             "leave behind.")
 
 
+def cloud_notice(stage: str, prompt: bytes) -> bytes:
+    """What a cloud run's prompt needs appended: its route's sentence, unless it already states it.
+
+    A prompt stating any other allowance is refused, as a local launch refuses one.
+    """
+    stated = cloud_sentence(stage)
+    if stated.encode("utf-8") in prompt:
+        return b""
+    if any(opening.encode("utf-8") in prompt for opening in (SENTENCE_OPENING, CLOUD_SENTENCE_OPENING)):
+        raise BoundError("the dispatch states a GitHub write allowance other than the cloud route's; "
+                         "print the cloud route's sentence with the work entrance's allowance command "
+                         "and --cloud")
+    return ("Launcher GitHub write bound: " + stated + "\n").encode("utf-8")
+
+
 def notice(allowance: dict) -> bytes:
     return ("Launcher GitHub write bound: " + sentence(allowance)
             + " A refused command fails and is recorded; your turn goes on.\n").encode("utf-8")

@@ -10147,6 +10147,8 @@ def parser() -> argparse.ArgumentParser:
         help="declared caller limit; defaults to 7200 for build and 3600 for every other stage",
     )
     cli.add_argument("--budget-override-reason", help="reason for this build invocation beyond its runtime budget")
+    cli.add_argument("--cloud", action="store_true",
+                     help="with allowance: print the cloud route's sentence, for a launch the cloud route takes")
     cli.add_argument("--grant", action="append", type=int, default=[],
                      help="a write-grant marker comment id for a resumed implementer turn, with run or "
                           "allowance (repeatable)")
@@ -10310,6 +10312,15 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState 
     if args.stage not in GITHUB_BOUND_STAGES | {"use"}:
         raise WorkError("allowance requires an implementer stage or use: "
                         + ", ".join(sorted(GITHUB_BOUND_STAGES | {"use"})))
+    if getattr(args, "cloud", False):
+        # A cloud launch is told its route's sentence, which carries no grant and no branch of
+        # this tree; the launcher refuses a grant on that route.
+        if args.stage == "use":
+            raise WorkError("allowance --cloud: the use consumer never takes the cloud route")
+        if grants or getattr(args, "grant", None):
+            raise WorkError("allowance --cloud: a write grant cannot ride a cloud launch")
+        print(github_allowance.cloud_sentence(args.stage))
+        return 0
     branch = None
     if args.stage not in ("artifact", "use"):
         if args.implementation_root is None:

@@ -339,7 +339,24 @@ def _inner(ctx: Context, text: str) -> list[Finding]:
     return found
 
 
-# The programs judge_simple judges by name; any other runs unjudged.
+def _split_string(words: list[str]) -> str | None:
+    """Take env's -S/--split-string value off the front of ``words``, or None when it is not there."""
+    flag = words[0]
+    if flag in ("-S", "--split-string") and len(words) > 1:
+        value = words[1]
+        del words[:2]
+        return value
+    if flag.startswith("--split-string="):
+        words.pop(0)
+        return flag.split("=", 1)[1]
+    if flag.startswith("-S") and len(flag) > 2:
+        words.pop(0)
+        return flag[2:]
+    return None
+
+
+# The pass-through fallback's test: after env or a pass-through program, a word outside this
+# set stands where a program was expected, so the command is refused on its signature.
 JUDGED_PROGRAMS = {"git", "gh", "claude", "codex", "cmd", "eval", "invoke-expression", "iex",
                    "curl", "wget", "invoke-restmethod", "irm", "invoke-webrequest", "iwr",
                    "npx", "bunx", "pnpx", "pnpm", "yarn", *SHELLS, *POWERSHELLS}
@@ -358,7 +375,16 @@ def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
         name = program(words[0])
         if name == "env":
             words.pop(0)
+            passed_through = True
             while words:
+                split = _split_string(words)
+                if split is not None:
+                    # env splits the string and runs it, with any words after it, as a command.
+                    saved, ctx.cleared = ctx.cleared, ctx.cleared or local_cleared
+                    try:
+                        return _inner(ctx, " ".join([split, *(shlex.quote(word) for word in words)]))
+                    finally:
+                        ctx.cleared = saved
                 if words[0] in ("-i", "--ignore-environment", "-"):
                     local_cleared = True
                     words.pop(0)

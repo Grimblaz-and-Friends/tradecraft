@@ -2281,9 +2281,48 @@ def test_a_dispatch_stating_another_allowance_is_refused_before_launch(job):
     args, _ = job
     _granted_turn(args, [])  # the dispatch omits the grant the launch holds
     configure(job, {"stdout": success_events(), "message": "built\n"})
-    with pytest.raises(implementer.ImplementerError, match="other than the one this launch holds"):
-        implementer.run_implementer(args)
+    assert implementer.run_implementer(args) == 1
     assert not (args.root / "seen-codex.json").exists()
+    # A completed, unlaunched record names the refusal, so no session is left to resume.
+    run = _run_record(args)
+    assert run["outcome"] == "error" and run.get("completed_at")
+    assert [attempt["launched"] for attempt in run["attempts"]] == [False]
+    assert "other than the one this launch holds" in run["attempts"][0]["reason"]
+    assert "handover" not in run and "github_write_bound" not in run
+
+
+def _cloud_launch(job, monkeypatch, dispatch):
+    args, _ = job
+    args.work, args.vendor, args.stage = "Owner/product#592", "claude", "build"
+    args.dispatch.write_bytes(dispatch)
+    _cloud_record(Path.home(), "Owner/product")
+    sent = {}
+
+    def cloud_run(_args, _deadline, **kwargs):
+        sent.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(implementer.cloud_build, "run", cloud_run)
+    return args, sent
+
+
+def test_a_cloud_launch_appends_its_routes_sentence_once(job, monkeypatch):
+    sentence = implementer.github_allowance.cloud_sentence("build")
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.")
+    assert implementer.run_implementer(args) == 0
+    assert sent["effective_prompt"].count(sentence.encode()) == 1
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.\n\n" + sentence.encode())
+    assert implementer.run_implementer(args) == 0
+    assert sent["effective_prompt"].count(sentence.encode()) == 1
+
+
+def test_a_cloud_launch_refuses_a_dispatch_stating_another_allowance(job, monkeypatch):
+    local = implementer.github_allowance.sentence(implementer.github_allowance.allowance_for(
+        "build", repository="Owner/product", branch="b", pull_request=None))
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.\n\n" + local.encode())
+    with pytest.raises(implementer.ImplementerError, match="other than the cloud route's"):
+        implementer.run_implementer(args)
+    assert sent == {}
 
 
 # --- Every author and builder comparison reads its own record ---------------
