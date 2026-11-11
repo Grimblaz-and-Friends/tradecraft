@@ -14,7 +14,7 @@ Every invocation is a separate record. ``--resume`` is explicit; ``--last`` and
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import hashlib
@@ -44,6 +44,7 @@ from codex_pytest import implementer_pytest_overrides
 from seat_process import run_process
 import implementer_environment as environments
 import implementer_policy as policy
+import keep_warm
 import codex_implementer as native_codex
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
@@ -158,6 +159,16 @@ def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path,
             shutil.rmtree(directory, ignore_errors=True)
         return
     raise ImplementerError("cannot write the AGENTS.md instruction shim: " + "; ".join(errors))
+
+
+def _shim_record(shim: Path | None) -> dict[str, str] | None:
+    if shim is None:
+        return None
+    try:
+        return {"directory": str(shim),
+                "line": (shim / "CLAUDE.md").read_bytes().decode("utf-8").rstrip()}
+    except (OSError, UnicodeError):
+        return None
 
 
 def build_command(args: argparse.Namespace, executable: list[str], last_message: Path) -> list[str]:
@@ -395,11 +406,23 @@ def run_implementer(args: argparse.Namespace) -> int:
         args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
     deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
                                          started=getattr(args, "invocation_started_monotonic", None))
-    with lifecycle.deadline_scope(deadline):
+    # The launch's environment changes are read against the launcher's own,
+    # taken before an artifact launch sanitizes it.
+    if getattr(args, "keep_warm_env", None) is None:
+        args.keep_warm_env = dict(os.environ)
+    args.keep_warm_pending = None
+    with lifecycle.deadline_scope(deadline), ExitStack() as held:
+        args.keep_warm_held = held
         if args.stage == "artifact":
             with artifact_tree.isolated_git_environment():
-                return _run_implementer(args, deadline)
-        return _run_implementer(args, deadline)
+                code = _run_implementer(args, deadline)
+        else:
+            code = _run_implementer(args, deadline)
+    if args.keep_warm_pending is not None:
+        # Started directly, the launcher is the outermost process: its last act,
+        # after its own cleanup. Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+        keep_warm.start_runner(args.keep_warm_pending, args.keep_warm_env)
+    return code
 
 
 def _run_implementer(args: argparse.Namespace, deadline) -> int:
@@ -530,6 +553,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         output = records.resolved_output(args.output, args.work, args.stage)
     records.require_output_outside_root(output, root)
     args.output = output
+    held = getattr(args, "keep_warm_held", None)
+    if held is not None:
+        # Before any route or vendor split, so any launch replacing a waiting
+        # session ends its keep-warm. Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+        held.enter_context(keep_warm.stop_for_launch(args.work, args.stage, args.resume))
     if args.vendor == "claude":
         route = _cloud_route(args)
         if route is not None:
@@ -594,6 +622,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             child_env = artifact_tree.environment() if args.stage == "artifact" else None
             intent = {"status": "unprepared", "disabled_plugin_ids": [], "allowed_plugins": []}
             preparation_error = None
+            prepared_settings = None
             if executable is not None and unavailable_reason is None:
                 try:
                     if args.vendor == "claude":
@@ -601,6 +630,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                             Path(__file__).resolve().parent.parent, env=child_env,
                             write_guard={"root": root, "session": args.resume or args.session_id})
                         args.launch_settings_path = intent["settings_path"]
+                        prepared_settings = Path(intent["settings_path"]).read_bytes()
                     else:
                         intent = policy.codex_prepare(executable, root, deadline, env=child_env)
                         config = native_codex.read_config(build_command(args, executable, last_message),
@@ -1117,6 +1147,27 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 print(f"implementer: {args.vendor} ({args.model}, {args.effort}; source {request['requested']['sources']['vendor']}) session {session_note} -> {output}")
             else:
                 print(f"implementer: {attempt['reason']}", file=sys.stderr)
+            if args.vendor == "claude":
+                # The run record is final; nothing here changes this launch's result.
+                pending = keep_warm.after_turn({
+                    "vendor": args.vendor, "cloud": False, "launched": attempt["launched"],
+                    "session": args.resume or args.session_id,
+                    "observed_session": attempt["observed"].get("session_id"),
+                    "outcome": record["outcome"], "cleanup_proven": record.get("cleanup_proven"),
+                    "launch_unresolved": record.get("launch_unresolved"),
+                    "session_identity_error": record.get("session_identity_error"),
+                    "stage": args.stage, "work": args.work, "root": str(root),
+                    "fallback_root": copy.get("holder_root") if copy else None,
+                    "plugin_root": str(Path(__file__).resolve().parent.parent),
+                    "command": command, "settings_bytes": prepared_settings,
+                    "env_start": args.keep_warm_env, "env_child": child_env,
+                    "shim": _shim_record(shim), "lineage_pull_request": args.lineage_pull_request,
+                    "dispatch_id": dispatch_id, "completed_at": record["completed_at"],
+                    "stdout_path": str(stdout_path), "projects": str(projects), "model": args.model,
+                    "starter": args.keep_warm_starter, "start_token": args.keep_warm_token,
+                })
+                if pending is not None and args.keep_warm_starter != "entrance":
+                    args.keep_warm_pending = pending
             return return_code
 
 
@@ -1173,6 +1224,9 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
     cli.add_argument("--lifecycle-input", type=Path, help=argparse.SUPPRESS)
     cli.add_argument("--budget-override-reason")
+    cli.add_argument("--keep-warm-starter", choices=("entrance",),
+                     help="leave a waiting session's keep-warm for the entrance to start after its cleanup")
+    cli.add_argument("--keep-warm-token", help="names the pending keep-warm start for the entrance")
     return cli
 
 

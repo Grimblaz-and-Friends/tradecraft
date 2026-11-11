@@ -71,6 +71,7 @@ import raw_output
 import build_reach
 import change_cost
 import holder_transcript
+import keep_warm
 from winio import utf8_stdio
 from seat_process import run_process, run_inherited_process
 
@@ -6309,6 +6310,9 @@ def release_registration(repo: str, issue: int, holder_root: Path,
         write_registry(current)
     else:
         selected = matches[-1]
+    # A released change's waiting sessions stop at once.
+    # Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+    keep_warm.drop_work(f"{repo}#{issue}")
     return Path(str(selected["root"])).expanduser().resolve()
 
 
@@ -9945,6 +9949,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                                    selected_vendor, claude_path if selected_vendor == "claude" else codex_path
                                )),
                             "--holder-session-id", holder_identity]
+                # The entrance starts a waiting session's keep-warm itself, after
+                # its own cleanup. Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+                keep_warm_token = uuid.uuid4().hex
+                command.extend(("--keep-warm-starter", "entrance", "--keep-warm-token", keep_warm_token))
                 if handover_retry_of is not None:
                     command.extend(("--retry-of", handover_retry_of))
                 if selected_vendor in {"claude", "codex"}:
@@ -10005,6 +10013,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 if artifact_run:
                     invoked["value"] = True
                 result = _invoke_recipient(command, deadline)
+                keep_warm.start_pending(keep_warm_token)
                 _emit_report({"stage": decision.stage, "implementer_returned": True}, state, flush=True)
                 return result
 

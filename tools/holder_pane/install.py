@@ -17,6 +17,10 @@ stops) is refused before any command runs.
 The --worktree copy is only for a session started outside the desktop app; in
 the app, restart the session instead, because the app reads every session's
 local-scope plugins from the main checkout (#915).
+
+The install and uninstall mechanics take a mod's marketplace and plugin names,
+so the lab's keep-warm installer (tools/keep_warm/install.py) runs the same
+steps under its own names and its own install record.
 """
 from __future__ import annotations
 
@@ -36,6 +40,8 @@ MARKETPLACE = "tradecraft-holder-pane"
 PLUGIN = "holder-pane"
 PLUGIN_REF = f"{PLUGIN}@{MARKETPLACE}"
 OPT_IN = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"
+# The lab mods that need the opt-in: while any is enabled in a local file, it stays there.
+OPT_IN_PLUGINS = ("holder-pane", "steward-wake", "keep-warm")
 LOCAL = Path(".claude") / "settings.local.json"
 VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
@@ -114,38 +120,37 @@ def _install_record_path() -> Path:
     return Path.home() / ".tradecraft" / "status" / ".pane" / "installs.json"
 
 
-def _install_records() -> dict[str, Any]:
+def _install_records(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(_install_record_path().read_bytes().decode("utf-8"))
+        value = json.loads(path.read_bytes().decode("utf-8"))
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
 
 
-def _remember(checkout: Path, added_opt_in: bool, local_before: bytes | None) -> None:
+def _remember(path: Path, checkout: Path, added_opt_in: bool,
+              local_before: bytes | None) -> None:
     """Record the first install: whether it added the opt-in, and the local file it found."""
-    records = _install_records()
+    records = _install_records(path)
     records[str(checkout)] = {
         "added_opt_in": added_opt_in,
         "local_before": None if local_before is None
         else base64.b64encode(local_before).decode("ascii"),
     }
-    path = _install_record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
-def _forget(checkout: Path) -> None:
+def _forget(path: Path, checkout: Path) -> None:
     """Drop the checkout's install record, once uninstall has restored from it."""
-    records = _install_records()
+    records = _install_records(path)
     records.pop(str(checkout), None)
-    path = _install_record_path()
     if path.exists():
         path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
-def _still_installed(checkout: Path) -> list[str]:
-    """Every other recorded checkout whose own local file still enables the pane, or can't be read.
+def _still_installed(records: Path, checkout: Path, plugin_ref: str) -> list[str]:
+    """Every other recorded checkout whose own local file still enables the mod, or can't be read.
 
     The local file is read as well as the record, so a checkout uninstalled by
     hand or deleted can't keep the shared registration forever. A file that can't
@@ -154,7 +159,7 @@ def _still_installed(checkout: Path) -> list[str]:
     """
     found = []
     here = os.path.normcase(str(checkout))
-    for name in _install_records():
+    for name in _install_records(records):
         other = Path(name)
         if os.path.normcase(name) == here or not other.is_dir():
             continue
@@ -164,9 +169,19 @@ def _still_installed(checkout: Path) -> list[str]:
             found.append(f"{other} (its local file can't be read)")
             continue
         plugins = settings.get("enabledPlugins")
-        if isinstance(plugins, dict) and plugins.get(PLUGIN_REF) is True:
+        if isinstance(plugins, dict) and plugins.get(plugin_ref) is True:
             found.append(str(other))
     return found
+
+
+def opt_in_users(settings: dict[str, Any]) -> list[str]:
+    """The lab mods' entries a local file still enables, each of which needs the opt-in."""
+    plugins = settings.get("enabledPlugins")
+    if not isinstance(plugins, dict):
+        return []
+    return sorted(ref for ref, enabled in plugins.items()
+                  if enabled is True and isinstance(ref, str) and "@" in ref
+                  and ref.split("@", 1)[0] in OPT_IN_PLUGINS)
 
 
 def set_opt_in(path: Path) -> bool:
@@ -181,7 +196,8 @@ def set_opt_in(path: Path) -> bool:
     return added
 
 
-def restore_local(path: Path, record: dict[str, Any] | None) -> tuple[str | None, bool]:
+def restore_local(path: Path, record: dict[str, Any] | None, marketplace: str = MARKETPLACE,
+                  plugin_ref: str = PLUGIN_REF) -> tuple[str | None, bool]:
     """Put the checkout's local file back as the first install found it (README "Uninstall").
 
     Answers a note for the owner, if any, and whether the install record may go: it stays
@@ -205,10 +221,12 @@ def restore_local(path: Path, record: dict[str, Any] | None) -> tuple[str | None
     try:
         settings = _read_settings(path)
     except (Refused, ValueError):
-        return (f"{path}: left as it is, because it isn't a JSON object now; remove the pane's "
-                f"keys from it by hand; the install record is kept"), False
-    removals = [("enabledPlugins", PLUGIN_REF), ("extraKnownMarketplaces", MARKETPLACE)]
-    if record.get("added_opt_in") is True:
+        return (f"{path}: left as it is, because it isn't a JSON object now; remove "
+                f"{plugin_ref}'s keys from it by hand; the install record is kept"), False
+    removals = [("enabledPlugins", plugin_ref), ("extraKnownMarketplaces", marketplace)]
+    # The opt-in stays while another lab mod enabled in this file still needs it.
+    kept_for = [ref for ref in opt_in_users(settings) if ref != plugin_ref]
+    if record.get("added_opt_in") is True and not kept_for:
         removals.append(("env", OPT_IN))
     else:
         held_before = before.get("env") if isinstance(before, dict) else None
@@ -230,10 +248,13 @@ def restore_local(path: Path, record: dict[str, Any] | None) -> tuple[str | None
             path.write_bytes(before_bytes)
         return None, True
     _write_settings(path, settings)
+    kept = (f"kept {OPT_IN}, because {', '.join(kept_for)} still needs it"
+            if record.get("added_opt_in") is True and kept_for else "")
     if snapshot is False:
-        return None, True
+        return (f"{path}: {kept}" if kept else None), True
     return (f"{path}: not restored byte for byte, because it changed after the install; "
-            f"the pane's keys were removed and every other change kept"), True
+            f"{plugin_ref}'s keys were removed and every other change kept"
+            + (f"; {kept}" if kept else "")), True
 
 
 def _claude(runner: Runner, claude: Path, checkout: Path, *args: str) -> None:
@@ -246,8 +267,9 @@ def _claude(runner: Runner, claude: Path, checkout: Path, *args: str) -> None:
         raise RuntimeError(f"{' '.join(args)} exited {completed.returncode}: {detail}".strip())
 
 
-def install(checkout: Path, claude: Path, runner: Runner = subprocess.run,
-            marketplace: Path = MARKETPLACE_DIR) -> None:
+def install_mod(checkout: Path, claude: Path, runner: Runner, *, marketplace_dir: Path,
+                marketplace: str, plugin: str, records: Path) -> None:
+    """One lab mod's local-scope install, under its own names and its own install record."""
     check_local_file(checkout, runner)
     try:
         local_before: bytes | None = (checkout / LOCAL).read_bytes()
@@ -256,46 +278,61 @@ def install(checkout: Path, claude: Path, runner: Runner = subprocess.run,
     # The record, with its snapshot, is written before anything changes the local file, so a
     # failure later never leaves a changed file without its snapshot. A reinstall keeps the
     # first install's record: the opt-in and file it found then are not its own.
-    if str(checkout) not in _install_records():
+    if str(checkout) not in _install_records(records):
         env = _read_settings(checkout / LOCAL).get("env")
-        _remember(checkout, not (isinstance(env, dict) and OPT_IN in env), local_before)
-    _claude(runner, claude, checkout, "plugin", "marketplace", "add", str(marketplace),
+        _remember(records, checkout, not (isinstance(env, dict) and OPT_IN in env), local_before)
+    _claude(runner, claude, checkout, "plugin", "marketplace", "add", str(marketplace_dir),
             "--scope", "local")
-    _claude(runner, claude, checkout, "plugin", "install", PLUGIN_REF, "--scope", "local")
+    _claude(runner, claude, checkout, "plugin", "install", f"{plugin}@{marketplace}",
+            "--scope", "local")
     set_opt_in(checkout / LOCAL)
 
 
-def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> list[str]:
-    """Uninstall here; keep the shared marketplace while another checkout has the pane."""
+def install(checkout: Path, claude: Path, runner: Runner = subprocess.run,
+            marketplace: Path = MARKETPLACE_DIR) -> None:
+    install_mod(checkout, claude, runner, marketplace_dir=marketplace, marketplace=MARKETPLACE,
+                plugin=PLUGIN, records=_install_record_path())
+
+
+def uninstall_mod(checkout: Path, claude: Path, runner: Runner, *, marketplace: str,
+                  plugin: str, records: Path) -> list[str]:
+    """Uninstall here; keep the shared marketplace while another checkout has the mod."""
+    plugin_ref = f"{plugin}@{marketplace}"
     messages = []
     try:
-        _claude(runner, claude, checkout, "plugin", "uninstall", PLUGIN_REF, "--scope", "local")
+        _claude(runner, claude, checkout, "plugin", "uninstall", plugin_ref, "--scope", "local")
     except RuntimeError as error:
         # A retried uninstall finds the plugin already gone and still owes the restore.
         if not re.search(r"not (?:currently )?installed", str(error), re.IGNORECASE):
             raise
-        messages.append(f"{PLUGIN_REF} was already uninstalled here")
-    others = _still_installed(checkout)
+        messages.append(f"{plugin_ref} was already uninstalled here")
+    others = _still_installed(records, checkout, plugin_ref)
     if others:
-        messages.append(f"kept the shared marketplace {MARKETPLACE}: still installed in "
+        messages.append(f"kept the shared marketplace {marketplace}: still installed in "
                         + ", ".join(others))
     else:
         try:
-            _claude(runner, claude, checkout, "plugin", "marketplace", "remove", MARKETPLACE,
+            _claude(runner, claude, checkout, "plugin", "marketplace", "remove", marketplace,
                     "--scope", "local")
         except RuntimeError as error:
             # A retried uninstall finds the marketplace already gone and still owes the restore.
             if not re.search(r"not (?:currently )?(?:installed|found)|(?:does not|doesn't) exist",
                              str(error), re.IGNORECASE):
                 raise
-        messages.append(f"removed the shared marketplace {MARKETPLACE}: no other checkout has it")
+        messages.append(f"removed the shared marketplace {marketplace}: no other checkout has it")
     # Other function hooks in the checkout may rely on an opt-in that predates this install.
-    note, done = restore_local(checkout / LOCAL, _install_records().get(str(checkout)))
+    note, done = restore_local(checkout / LOCAL, _install_records(records).get(str(checkout)),
+                               marketplace, plugin_ref)
     if done:
-        _forget(checkout)
+        _forget(records, checkout)
     if note:
         messages.append(note)
     return messages
+
+
+def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> list[str]:
+    return uninstall_mod(checkout, claude, runner, marketplace=MARKETPLACE, plugin=PLUGIN,
+                         records=_install_record_path())
 
 
 def install_worktree(worktree: Path, main_checkout: Path, runner: Runner = subprocess.run) -> None:

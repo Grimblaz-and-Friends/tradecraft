@@ -1,0 +1,6 @@
+{
+  "name": "keep-warm",
+  "version": "0.1.0",
+  "description": "Lab-only: keeps an idle desktop session of a practice repository warm with a short turn about every 55 minutes, up to eight hours after its last real turn.",
+  "author": { "name": "Grimblaz-and-Friends" }
+}

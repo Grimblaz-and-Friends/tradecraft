@@ -1,0 +1,5 @@
+{
+  "name": "tradecraft-keep-warm",
+  "owner": { "name": "Grimblaz-and-Friends" },
+  "plugins": [{ "name": "keep-warm", "source": "./keep-warm" }]
+}

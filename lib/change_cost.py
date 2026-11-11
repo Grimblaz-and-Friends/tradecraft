@@ -76,6 +76,10 @@ def default_holder_usage(repo: str, issue: int) -> Path:
     return change_root(repo, issue) / "holder-usage.jsonl"
 
 
+def default_keep_warm(repo: str, issue: int) -> Path:
+    return change_root(repo, issue) / "keep-warm.jsonl"
+
+
 def _read_json(path: Path, description: str) -> object:
     try:
         return json.loads(path.read_bytes())
@@ -974,8 +978,195 @@ def runtime_report(repo, issue, dispatch_root):
     return reports
 
 
+_PING_CLASSES = ("input", "output", "cache_read", "cache_creation", "cache_write_5m", "cache_write_1h")
+
+
+def _ping_counts(value: object, label: str, reasons: list[str]) -> dict[str, int]:
+    if not isinstance(value, dict):
+        reasons.append(f"{label} has no token classes")
+        return {}
+    counts = {}
+    for name, count in value.items():
+        if type(count) is not int or count < 0:
+            reasons.append(f"{label} token class {name} is not a nonnegative integer")
+        else:
+            counts[name] = count
+    reasons.extend(f"{label} token class {name} is unavailable" for name in _PING_CLASSES if name not in value)
+    return counts
+
+
+def _ping_price(row: dict, rates: list[dict], reasons: list[str]) -> tuple[dict[str, int], Decimal | None]:
+    """One ping's classes and card price, or None for the price with its reasons."""
+    label = f"ping at {row.get('at')}"
+    found: list[str] = []
+    usage = _mapping(row.get("usage"))
+    total = _ping_counts(usage.get("total"), label, found)
+    calls = usage.get("calls")
+    if not isinstance(calls, list):
+        found.append(f"{label} has no per-call usage")
+    else:
+        summed: dict[str, int] = {}
+        for call in calls:
+            for name, count in _ping_counts(call, f"{label} call", found).items():
+                summed[name] = summed.get(name, 0) + count
+        if any(summed.get(name, 0) != total.get(name, 0) for name in {*summed, *total}):
+            found.append(f"{label} total disagrees with its calls")
+    if total.get("cache_write_5m", 0) + total.get("cache_write_1h", 0) != total.get("cache_creation", 0):
+        found.append(f"{label} cache write durations disagree with its cache writes")
+    amount = Decimal(0)
+    model = row.get("model")
+    when = _timestamp(row.get("at"))
+    if when is None:
+        found.append(f"{label} has no readable time")
+    elif any(total.values()):
+        rate = _rate_for(rates, "claude", model, when) if isinstance(model, str) else None
+        if rate is None:
+            found.append(f"{label} has no dated rate for claude {model}")
+        else:
+            if rate.get("currency") != "USD":
+                found.append(f"{label} rate currency is not USD")
+            # The duration-specific writes carry the aggregate, so it is not charged twice.
+            classes = {name: Decimal(count) for name, count in total.items() if name != "cache_creation"}
+            amount = _class_price(classes, rate, str(model), found)
+    reasons.extend(found)
+    return total, None if found else amount
+
+
+def _keep_warm(path: Path, repo: str, issue: int,
+               rates: list[dict]) -> tuple[dict[str, object], list[dict]]:
+    """The keep-warm line: pings priced on the card, once, apart from every dispatch."""
+    line: dict[str, object] = {"source": str(path), "pings": 0, "outcomes": {}, "tokens": {},
+                               "price": None, "sessions": [], "faults": [], "skipped_rows": []}
+    reasons: list[str] = []
+    try:
+        rows = _read_jsonl(path)
+    except CostError as exc:
+        rows = []
+        reasons.append(f"keep-warm record is unreadable: {exc}")
+    kept, total, sessions = [], Decimal(0), {}
+    for number, row in enumerate(rows, 1):
+        change = _change(str(row.get("work") or ""))
+        kind = row.get("kind")
+        if change["repository"] != repo or change["issue"] != issue:
+            line["skipped_rows"].append({"row": number, "reason": "keep-warm row names another change or none"})
+            continue
+        if kind not in {"ping", "end", "fault"}:
+            line["skipped_rows"].append({"row": number, "reason": f"unfamiliar keep-warm row kind: {kind}"})
+            continue
+        kept.append(row)
+        if kind == "fault":
+            line["faults"].append(row)
+            continue
+        session = sessions.setdefault(json.dumps(row.get("session")), {
+            "session": row.get("session"), "pings": 0, "amount": Decimal(0), "last_end_reason": None})
+        if kind == "end":
+            session["last_end_reason"] = row.get("reason")
+            continue
+        line["pings"] += 1
+        session["pings"] += 1
+        outcome = str(row.get("outcome"))
+        line["outcomes"][outcome] = line["outcomes"].get(outcome, 0) + 1
+        counts, amount = _ping_price(row, rates, reasons)
+        for name, count in counts.items():
+            line["tokens"][name] = line["tokens"].get(name, 0) + count
+        if amount is None or session["amount"] is None:
+            session["amount"] = None
+        else:
+            session["amount"] += amount
+        total += amount or Decimal(0)
+    for session in sessions.values():
+        if session["amount"] is not None:
+            session["amount"] = format(session["amount"], "f")
+    line["sessions"] = list(sessions.values())
+    line["price"] = _unknown_price(reasons) if reasons else {
+        "status": "known", "currency": "USD", "amount": format(total, "f"),
+        "basis": "API list-price equivalence", "source": "rate-card", "reasons": []}
+    return line, kept
+
+
+def _cloud_attempt(item: _Attempt) -> bool:
+    return (item.request.get("route") == "cloud" or item.usage.get("source") == "cloud-stop-hook"
+            or item.evidence.get("source_format") == "claude-cloud-routine")
+
+
+def _first_call(path: object) -> tuple[dict | None, str | None]:
+    if not isinstance(path, str) or not path:
+        return None, "attempt records no stdout log"
+    try:
+        lines = Path(path).read_bytes().splitlines()
+    except OSError as exc:
+        return None, f"cannot read stdout log: {path}: {exc}"
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        # Later events repeating this message id are the same call, so the first one decides.
+        message = event.get("message") if isinstance(event, dict) and event.get("type") == "assistant" else None
+        if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+            try:
+                counts, _ = transcripts.call_classes(message["usage"])
+            except transcripts.TranscriptError as exc:
+                return None, f"first call usage is unreadable: {path}: {exc}"
+            return {name: counts[name] for name in ("input", "cache_read", "cache_creation")}, None
+    return None, f"stdout log has no assistant event: {path}"
+
+
+def _launch_time(item: _Attempt, field_name: str = "launched_at") -> datetime | None:
+    return _timestamp(_mapping(item.usage.get("dispatch")).get(field_name))
+
+
+def _reloads(items: list[_Attempt], keep_rows: list[dict]) -> tuple[list, list, dict]:
+    """Local resumed Claude turns whose first call rewrote the conversation instead of reading it."""
+    bundled = [item for item in items if item.request and not item.foreign]
+    reloads, unreadable, cloud = [], [], 0
+    for item in bundled:
+        dispatch = _mapping(item.usage.get("dispatch"))
+        vendor = dispatch.get("actual_vendor") or dispatch.get("requested_vendor")
+        if vendor != "claude" or dispatch.get("continuity") != "resume" or _not_launched(item):
+            continue
+        if _cloud_attempt(item):
+            cloud += 1
+            continue
+        session = _mapping(item.request.get("requested")).get("session_id")
+        if not isinstance(session, str) or not session:
+            session = next(iter(sorted(_session_ids(item))), None)
+        marker = {"dispatch_id": item.bundle_id, "attempt_index": item.position,
+                  "session": session, "stage": dispatch.get("stage")}
+        first, failure = _first_call(item.evidence.get("stdout"))
+        if failure:
+            unreadable.append({**marker, "reason": failure})
+            continue
+        if first["cache_creation"] <= first["cache_read"]:
+            continue
+        start = _launch_time(item)
+        earlier = [candidate for candidate in bundled if candidate is not item and session
+                   and session in _session_ids(candidate) and start is not None
+                   and _launch_time(candidate) is not None and _launch_time(candidate) < start]
+        previous = max(earlier, key=lambda candidate: (_launch_time(candidate), candidate.position),
+                       default=None)
+        end = _launch_time(previous, "completed_at") if previous else None
+        gap = None
+        if start is not None and end is not None:
+            gap = [row for row in keep_rows if row.get("session") == session
+                   and (when := _timestamp(row.get("at"))) is not None and end <= when <= start]
+        ends = [row for row in gap or [] if row.get("kind") == "end"]
+        reloads.append({**marker,
+                        "idle_seconds": (start - end).total_seconds() if gap is not None else None,
+                        "previous_dispatch_id": previous.bundle_id if previous else None,
+                        "first_call": first,
+                        "pings_in_gap": sum(row.get("kind") == "ping" for row in gap) if gap is not None else None,
+                        "last_end_reason": ends[-1].get("reason") if ends else None})
+    scope = {"basis": "local resumed Claude attempts whose first call wrote more cache than it read",
+             "cloud_attempts_excluded": cloud,
+             # A cloud turn runs in a remote session; this machine holds no per-call log for it.
+             "cloud_reason": "a cloud attempt's calls are not logged on this machine"}
+    return reloads, unreadable, scope
+
+
 def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
-           terms_path: Path, gauges_path: Path, holder_path: Path) -> dict[str, object]:
+           terms_path: Path, gauges_path: Path, holder_path: Path, *,
+           keep_warm_path: Path | None = None) -> dict[str, object]:
     skipped_records: list[dict[str, str]] = []
     foreign_requests: list[dict] = []
     items = _contexts(dispatch_root, repo, issue, holder_path, skipped_records,
@@ -1041,6 +1232,17 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
         floor_reasons.append("dispatches with unknown contributions are excluded from the known amount")
     if skipped_records:
         floor_reasons.append("skipped evidence may contain additional contributions")
+    # Pings are read only here, after every dispatch share is fixed, so each is counted once.
+    keep_warm, keep_rows = _keep_warm(keep_warm_path or holder_path.with_name("keep-warm.jsonl"),
+                                      repo, issue, rates)
+    keep_warm_amount = None
+    if keep_warm["price"]["status"] == "known":
+        keep_warm_amount = Decimal(keep_warm["price"]["amount"])
+        if keep_warm["pings"]:
+            known_total += keep_warm_amount
+    else:
+        floor_reasons.append("keep-warm pings with an unknown price are excluded from the known amount")
+    reloads, reloads_unreadable, reloads_scope = _reloads(items, keep_rows)
     for summary in summaries.values():
         summary["status"] = ("not-launched" if summary["not_launched_attempts"] == summary["attempts"]
                              else "unknown" if summary["unknown_attempts"] else "known")
@@ -1070,12 +1272,17 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
             "basis": "API list-price equivalence; not plan or subscription billing",
             "currency": "USD", "known_amount": format(known_total, "f"),
             "display_amount": format(known_total, ".2f"),
+            "keep_warm_amount": format(keep_warm_amount, "f") if keep_warm_amount is not None else None,
             "priced_dispatches": sum(summary["status"] == "known" for summary in summaries.values()),
             "unknown_dispatches": unknown_count,
             "floor": bool(floor_reasons), "floor_reasons": list(dict.fromkeys(floor_reasons)),
             "skipped_record_count": len(skipped_records),
         },
         "bill_plan_status": bill_plan_status(rows, terms_path, gauges_path),
+        "keep_warm": keep_warm,
+        "reloads": reloads,
+        "reloads_unreadable": reloads_unreadable,
+        "reloads_scope": reloads_scope,
     }
 
 
@@ -1285,6 +1492,7 @@ def parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--plan-terms", type=Path, default=default_plan_terms())
     report_parser.add_argument("--gauges", type=Path)
     report_parser.add_argument("--holder-usage", type=Path)
+    report_parser.add_argument("--keep-warm", type=Path, help="keep-warm record; defaults beside the holder usage")
     close = commands.add_parser("holder-close", help="attach the holder's own usage at change close")
     close.add_argument("--repo", required=True)
     close.add_argument("--issue", required=True, type=int)
@@ -1315,6 +1523,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.repo, args.issue, args.dispatch_root, args.rates, args.plan_terms,
                 args.gauges or default_gauges(args.repo, args.issue),
                 args.holder_usage or default_holder_usage(args.repo, args.issue),
+                keep_warm_path=args.keep_warm,
             )
         elif args.command == "holder-close":
             value = holder_close(

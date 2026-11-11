@@ -1058,6 +1058,34 @@ def test_c6_1_once_per_distinct_step_and_never_while_active(home):
     assert [block for block in blocks if block] == ["next: post the release report (yours)"]
 
 
+def keep_warm_turn(base: Path, turn_open: bool) -> None:
+    """The lab keep-warm mod's session file, as its core writes it (tools/keep_warm)."""
+    path = base / "sessions" / f"{SID}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"session_id": SID, "turn_open": turn_open}), encoding="utf-8")
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_ac36_no_reminder_while_a_keep_warm_turn_is_open(home, tmp_path, configured):
+    """#983 AC36: a keep-warm turn ends in one word with no tool, so the pane holds its
+    reminder, unspent, until the keep-warm core closes the turn."""
+    base = tmp_path / "probe-keep-warm" if configured else home / ".tradecraft-lab" / "keep-warm"
+    environ = {"KEEP_WARM_LAB_STATE_DIR": str(base)} if configured else {}
+    command = f"python lib/work.py run release-report --repo {REPO_NAME} --issue 888 --root D:/r"
+    bind(home, command=command, output=RELEASE_REPORT_OUTPUT)
+    reminded = core.load_session(ctx_at(home, T0), SID).get("reminded")
+    keep_warm_turn(base, True)
+    for step in range(1, 4):
+        answer = core.remind(ctx_at(home, T0 + step, environ=environ),
+                             {"session_id": SID, "stop_hook_active": False})
+        assert answer == {"block": None}
+    assert core.load_session(ctx_at(home, T0), SID).get("reminded") == reminded
+    keep_warm_turn(base, False)
+    answer = core.remind(ctx_at(home, T0 + 10, environ=environ),
+                         {"session_id": SID, "stop_hook_active": False})
+    assert answer == {"block": "next: post the release report (yours)"}
+
+
 def test_c6_2_no_reminder_when_another_party_holds_the_step(home):
     bind(home, output=json.dumps({"stage": "waiting", "status": "waiting",
                                   "reason": "required-connected-reviewer-has-not-run"}))
@@ -2327,6 +2355,26 @@ def test_an_unreadable_other_checkout_keeps_the_marketplace(tmp_path, records):
     messages = installer.uninstall(first, Path("claude.exe"), tools)
     assert removes(tools) == 0
     assert any("can't be read" in message for message in messages)
+
+
+@pytest.mark.parametrize("other", ["keep-warm@tradecraft-keep-warm",
+                                   "steward-wake@tradecraft-lab"])
+def test_the_opt_in_stays_while_another_lab_mod_is_enabled(tmp_path, records, other):
+    """#983 section 4.7: the opt-in the pane added stays while keep-warm or the wake is
+    enabled in the same file."""
+    root = tmp_path / "a"
+    (root / ".claude").mkdir(parents=True)
+    path = root / ".claude" / "settings.local.json"
+    path.write_text('{"permissions": {"allow": []}}', encoding="utf-8")
+    installer.install(root, Path("claude.exe"), FakeClaude(), marketplace=Path("M"))
+    settings = json.loads(path.read_text(encoding="utf-8"))
+    settings["enabledPlugins"][other] = True
+    path.write_text(json.dumps(settings), encoding="utf-8")
+    messages = installer.uninstall(root, Path("claude.exe"), FakeClaude())
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["env"] == {installer.OPT_IN: "1"}
+    assert after["enabledPlugins"] == {other: True}
+    assert any(other in message and installer.OPT_IN in message for message in messages)
 
 
 def test_the_desktop_claude_is_found_where_the_app_keeps_it(tmp_path):
