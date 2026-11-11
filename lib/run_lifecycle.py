@@ -64,8 +64,8 @@ class Deadline:
 
     @property
     def wait_end(self):
-        # The entrance stops waiting for its launcher here, leaving itself the
-        # last quarter of the reserve to contain the tree and return.
+        # The entrance stops waiting for its launcher here, keeping time to
+        # contain the launcher's tree and return.
         return self.end - self.reserve / 4
 
     @property

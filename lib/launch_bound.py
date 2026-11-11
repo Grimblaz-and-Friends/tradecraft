@@ -620,7 +620,7 @@ def _diff_entries(item: str, top: str, before: dict, after: dict, method: str) -
     return changes
 
 
-# The owner's two-minute allowance for everything between the after-walk and the final record.
+# The owner's limit on everything between the after-walk and the final record.
 COMPARING_SECONDS = 120.0
 OWN_WORK, FOUND = "own", "found"
 
@@ -689,7 +689,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         changes.extend(_diff_entries(name, top, first.get("entries") or {},
                                      second.get("entries") or {}, item["method"]))
     own_root = Path(root).resolve(strict=False)
-    # Each change's outcome: None until examined, then own work, a finding, or the run credited.
+    # A change still None when the allowance ends was never examined, so nothing may call it credited or clean.
     outcome: list = [FOUND if change["change"] == "uncompared" else None for change in changes]
     refs_found = {name: _refs_changes(name, first, second, Path(root), []) for name, first, second in refs}
     has_refs = any(item["method"] == REFS_METHOD for item in plan)
@@ -1288,7 +1288,7 @@ class Comparison:
         after = snapshot(self.plan, seconds=seconds, own_output=self.own_output, before=self.before)
         after_at = now()
         begun = time.monotonic()
-        end, bound = begun + COMPARING_SECONDS, "the two-minute limit"
+        end, bound = begun + COMPARING_SECONDS, "the comparison's own limit"
         deadline = lifecycle.current_deadline()
         if deadline is not None and deadline.final_write_at < end:
             end, bound = deadline.final_write_at, "the launch's recording window"

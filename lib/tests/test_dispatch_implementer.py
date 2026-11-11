@@ -2216,7 +2216,7 @@ def test_a_refs_comparison_without_its_record_is_held_unrecorded():
     assert "refs comparison needs the run's record" in result["findings"][0]["reason"]
 
 
-# --- #984: the comparison's allowance ----------------------------------------
+# --- The comparison's allowance ----------------------------------------------
 
 @pytest.mark.parametrize("step", ["crediting", "store", "stream"])
 def test_984_a_slow_comparison_step_still_writes_the_completed_record_with_the_return(
@@ -2238,7 +2238,7 @@ def test_984_after_a_ceiling_stop_a_slow_store_read_still_records_before_the_wai
     from datetime import datetime, timedelta, timezone
     from allowance_fixture import Slow
     args, _ = claude_job(job, monkeypatch)
-    args.timeout_seconds = 160  # A 16 s reserve.
+    args.timeout_seconds = 160  # A reserve whose eighth leaves the final write time.
     slow = Slow(monkeypatch, tmp_path, folders=2)
     store = implementer.records.default_record_root()
     launched = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
@@ -2247,14 +2247,15 @@ def test_984_after_a_ceiling_stop_a_slow_store_read_still_records_before_the_wai
             {"dispatch_id": f"{index:032x}", "root": str(tmp_path / "gone"), "launched_at": launched}))
         # Unfinished, so the walk skips them; last checkpointed long before this run.
         (store / f"old-{index}.md.run.json").write_text(json.dumps({"completed_at": None}))
-    slow.slow_store(pause=0.05)  # 25 s of reading, more than will be left.
+    slow.slow_store(pause=0.05)  # More reading than will be left.
     raw = json.dumps({"type": "system", "subtype": "init", "session_id": FIXTURE_SESSION}).encode() + b"\n"
 
     def stopped(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=raw, stderr=b"")
 
     monkeypatch.setattr(implementer, "run_process", stopped)
-    # 28 s left: the walk is quick, so the comparing has until the final write.
+    # A little more than the reserve left: enough to launch, and the walk is quick, so the
+    # comparing runs until the final write must begin.
     args.invocation_started_monotonic = time.monotonic() - 132
     assert implementer.run_implementer(args) == 1
     logged = record(args)

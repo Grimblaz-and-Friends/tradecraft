@@ -1,4 +1,4 @@
-"""One step of a launch's comparison forced slow, for the allowance checks of #984.
+"""One step of a launch's comparison forced slow, for the comparison allowance checks.
 
 Both launchers' tests use it: a covered folder whose files change during the
 run, another run overlapping it, and the moments the allowance and the final

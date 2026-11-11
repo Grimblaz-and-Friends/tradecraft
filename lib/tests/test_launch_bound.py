@@ -213,7 +213,7 @@ def test_absent_items_are_recorded_without_findings(machine):
     assert entry["status"] == "absent" and result["status"] == "clean"
 
 
-# --- #984: one overlap list and one allowance ---------------------------------
+# --- One overlap list and one allowance ---------------------------------------
 
 BEFORE_AT, AFTER_AT = "2026-11-11T10:00:00+00:00", "2026-11-11T11:00:00+00:00"
 OTHER, STALE = "b" * 32, "c" * 32
@@ -308,7 +308,8 @@ def normalized(result, tmp_path):
     return value
 
 
-# What ``compare`` recorded for ``golden`` at 2abdc8c, before #984 restructured it.
+# What ``compare`` recorded for ``golden`` before its crediting was restructured, kept literal so
+# the restructured ``compare`` is held to the earlier one's result, not to its own.
 GOLDEN = {'after_at': '2026-11-11T11:00:00+00:00',
           'attributed': [{'change': 'added',
                           'item': 'checkout:<tmp>/main',
@@ -404,7 +405,7 @@ def test_984_ac4_in_time_the_comparison_records_what_it_recorded_before(tmp_path
     kwargs = golden(tmp_path)
     if end == "distant":
         import time
-        kwargs.update(end=time.monotonic() + 3600, allowance="3600.0s, the two-minute limit")
+        kwargs.update(end=time.monotonic() + 3600, allowance="3600.0s, the comparison's own limit")
     assert normalized(launch_bound.compare(**kwargs), tmp_path) == GOLDEN
 
 
@@ -474,9 +475,9 @@ def test_984_a_store_read_that_runs_out_marks_what_it_could_not_examine(tmp_path
 
     monkeypatch.setattr(launch_bound, "_recorded_run", slow)
     kwargs = golden(tmp_path)
-    result = launch_bound.compare(**kwargs, end=clock[0] + 10, allowance="10.0s, the two-minute limit")
+    result = launch_bound.compare(**kwargs, end=clock[0] + 10, allowance="10.0s, the comparison's own limit")
     value = normalized(result, tmp_path)
-    ran_out = "comparison allowance ran out (10.0s, the two-minute limit)"
+    ran_out = "comparison allowance ran out (10.0s, the comparison's own limit)"
     assert _uncompared(result) == {
         "checkout:" + str(tmp_path.resolve() / "main"): f"{ran_out}: 2 of 6 changes examined",
         "claude-settings": f"{ran_out}: 0 of 1 changes examined",
@@ -542,7 +543,7 @@ def test_984_ac11_the_allowance_is_two_minutes_unless_the_recording_window_is_ne
         seconds, bound = deadline.final_write_at - clock[0] + len(reads), "the launch's recording window"
     else:
         result = before.finish(60)
-        seconds, bound = 120.0, "the two-minute limit"
+        seconds, bound = launch_bound.COMPARING_SECONDS, "the comparison's own limit"
     assert seconds <= len(reads) <= seconds + 1
     reason = _uncompared(result)["checkout:" + str(machine["registered"])]
     assert reason == f"comparison allowance ran out ({seconds:.1f}s, {bound}): 0 of 1 changes examined"

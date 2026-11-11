@@ -1932,7 +1932,7 @@ def test_the_use_consumers_stdout_log_reaches_finish(job, tmp_path, monkeypatch)
     assert record(args)["launch_comparison"]["run_record"]["status"] == "read"
 
 
-# --- #984: the comparison's allowance ----------------------------------------
+# --- The comparison's allowance ----------------------------------------------
 
 @pytest.mark.parametrize("step", ["crediting", "store", "stream"])
 def test_984_a_use_consumers_slow_comparison_still_records_its_note(job, tmp_path, monkeypatch, step):
