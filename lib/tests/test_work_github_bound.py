@@ -219,14 +219,19 @@ def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkey
     assert report["status"] == "unknown" and "d3: OSError: lost" in report["reason"]
     assert len(report["refusals"]) == 1
     # An armed check whose refusals were never read is unknown; a check that never ran is not.
-    armed = {"command_check": {"status": "armed"}, "allowance": {"grants": []}}
+    # A launch that prepared a log (it names child settings) and never read it is unknown, a Codex
+    # launch whose own check did not run included; a cloud run prepared none.
+    armed = {"command_check": {"status": "armed"}, "child_settings": "c.json", "allowance": {"grants": []}}
+    codex = {"command_check": {"status": "not-run"}, "child_settings": "c.json"}
+    cloud = {"route": "cloud", "command_check": {"status": "not-run"}}
     rows[:] = [(0, "b1", {"dispatch_id": "d4", "stage": "build"}, {"github_write_bound": armed}),
-               (1, "b2", {"dispatch_id": "d5", "stage": "build"},
-                {"github_write_bound": {"command_check": {"status": "not-run"}}})]
+               (1, "b2", {"dispatch_id": "d5", "stage": "build"}, {"github_write_bound": codex}),
+               (2, "b3", {"dispatch_id": "d6", "stage": "build"}, {"github_write_bound": cloud})]
     report = work._github_write_report(fixture)
     assert report["status"] == "unknown" and "d4: its refusals were never read" in report["reason"]
-    assert "d5" not in report["reason"]
+    assert "d5: its refusals were never read" in report["reason"] and "d6" not in report["reason"]
     rows[0][3]["github_write_refusals"] = []
+    rows[1][3]["github_write_refusals"] = []
     assert work._github_write_report(fixture)["status"] == "read"
 
 
@@ -292,6 +297,30 @@ def test_the_allowance_command_prints_review_dispositions_own_pull_request(tmp_p
     assert "example/product#7" in capsys.readouterr().out
 
 
+def test_the_allowance_command_takes_the_launchers_tree_and_pull_request(tmp_path, monkeypatch, capsys):
+    tree = _bound_tree(tmp_path)
+    fixture = state(pr=True)
+    registered = {"root": tree.resolve()}
+    monkeypatch.setattr(work, "resolve_implementation_root",
+                        lambda *_a, **_k: (registered["root"], BRANCH, False))
+
+    def allowance(*extra):
+        args = work.parser().parse_args(["allowance", "review-disposition", "--repo", "example/product",
+                                         "--issue", "12", "--root", str(tree), "--implementation-root",
+                                         str(tree), *extra])
+        return work._allowance_command(args, state=fixture, root=tree)
+
+    # The issue's pull request, as the launcher holds it, when none is named.
+    assert allowance() == 0
+    assert f"example/product#{fixture.pr['number']}" in capsys.readouterr().out
+    with pytest.raises(work.WorkError, match="not this issue's pull request"):
+        allowance("--pull-request", str(fixture.pr["number"] + 1))
+    registered["root"] = (tmp_path / "elsewhere").resolve()
+    with pytest.raises(work.WorkError, match="registered implementation tree"):
+        allowance()
+    assert capsys.readouterr().out == ""
+
+
 def _granted_allowance_run(tmp_path, monkeypatch, capsys, *, grant_brief=7001, continuity="resume"):
     """Drive the documented route: `work.py allowance build --grant ID` for a resumed, granted build."""
     from test_work import FakeTransport, write_policy
@@ -301,6 +330,8 @@ def _granted_allowance_run(tmp_path, monkeypatch, capsys, *, grant_brief=7001, c
     monkeypatch.setattr(work, "read_state", lambda *_a, **_k: fixture)
     monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "connected")))
     monkeypatch.setattr(work, "_named_continuity", lambda *_a: continuity)
+    monkeypatch.setattr(work, "resolve_implementation_root",
+                        lambda *_a, **_k: (tree.resolve(), BRANCH, False))
 
     class Transport:
         def get(self, endpoint, *, paginate=False):

@@ -298,6 +298,28 @@ def test_a_lost_refusal_log_reads_as_unknown_not_clean(tmp_path):
         assert record["github_write_refusals"] == [] and record["github_write_refusals_unknown"]
 
 
+def test_a_damaged_refusal_log_line_reads_as_unknown(tmp_path):
+    refused = {"decision": "deny", "scope": "child", "command": "gh issue comment 1"}
+    log = tmp_path / "log.jsonl"
+    log.write_bytes((json.dumps(refused) + "\n\n").encode())
+    record = {}
+    allowance_module.record_refusals(record, log)
+    assert "github_write_refusals_unknown" not in record  # an empty line is no damage
+    # A line cut short, as by a launch stopped mid-write, may be the refusal that is lost.
+    log.write_bytes((json.dumps(refused) + "\n" + '{"decision": "deny", "comm').encode())
+    record = {}
+    allowance_module.record_refusals(record, log)
+    assert [r["command"] for r in record["github_write_refusals"]] == ["gh issue comment 1"]
+    assert "could not be read" in record["github_write_refusals_unknown"]
+
+
+def test_a_dispatch_carrying_the_cloud_sentence_is_refused_locally(tree):
+    allowance = config("branch", tree)["allowance"]
+    prompt = ("Build.\n\n" + allowance_module.cloud_sentence("build")).encode()
+    with pytest.raises(allowance_module.BoundError):
+        allowance_module.needs_notice(allowance, prompt)
+
+
 def test_a_tag_grant_permits_its_tag_and_no_ref_wide_push(tree):
     grant = {"marker": 1, "brief": 2, "row": 4, "stage": "build", "write": "push",
              "target": "o/r:refs/tags/v1"}
@@ -394,7 +416,7 @@ def grant_body(**overrides):
 def test_a_grant_rests_on_an_affirmed_row():
     grant = allowance_module.parse_grant(9, grant_body())
     accepted = allowance_module.validate_grant(grant, brief_comment=7, brief_body=BRIEF,
-                                               stage="artifact", resumed=True)
+                                               stage="artifact", resumed=True, repository="o/r")
     assert accepted["target"] == "o/r:refs/heads/probe" and accepted["row"] == 4
 
 
@@ -405,12 +427,17 @@ def test_a_grant_rests_on_an_affirmed_row():
     (grant_body(), "build", True),
     (grant_body(), "artifact", False),
     (grant_body(target="refs/tags/x"), "artifact", True),
+    # Outside the work's repository, whatever the write.
+    (grant_body(target="other/x:refs/heads/probe"), "artifact", True),
+    (grant_body(write="comment", target="other/x#5"), "artifact", True),
+    (grant_body(write="api", target="POST repos/other/x/issues/5/comments"), "artifact", True),
+    (grant_body(write="api", target="PATCH user"), "artifact", True),
 ])
 def test_a_grant_without_an_affirmed_row_is_refused(body, stage, resumed):
     grant = allowance_module.parse_grant(9, body)
     with pytest.raises(allowance_module.GrantError):
         allowance_module.validate_grant(grant, brief_comment=7, brief_body=BRIEF, stage=stage,
-                                        resumed=resumed)
+                                        resumed=resumed, repository="o/r")
 
 
 def test_cloud_record_says_the_block_did_not_run():

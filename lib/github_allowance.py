@@ -45,6 +45,14 @@ class BoundError(RuntimeError):
     """
 
 
+class RefusalLogDamaged(ValueError):
+    """A line of a command-check log could not be read, so a refusal it held may be lost."""
+
+    def __init__(self, found: list, damaged: int):
+        super().__init__(f"{damaged} line(s) of the refusal log could not be read")
+        self.found = found
+
+
 class GrantError(ValueError):
     """A write grant does not rest on a row of the affirmed brief."""
 
@@ -130,6 +138,7 @@ def sentence(allowance: dict) -> str:
 
 
 SENTENCE_OPENING = "GitHub writes this step may make:"
+CLOUD_SENTENCE_OPENING = "GitHub writes this run may make:"
 
 
 def needs_notice(allowance: dict, prompt: bytes) -> bool:
@@ -140,7 +149,8 @@ def needs_notice(allowance: dict, prompt: bytes) -> bool:
     """
     if sentence(allowance).encode("utf-8") in prompt:
         return False
-    if SENTENCE_OPENING.encode("utf-8") in prompt:
+    # The cloud sentence states an allowance too, so a local launch refuses it the same way.
+    if any(opening.encode("utf-8") in prompt for opening in (SENTENCE_OPENING, CLOUD_SENTENCE_OPENING)):
         raise BoundError("the dispatch states a GitHub write allowance other than the one this "
                          "launch holds; recompose it, or print the right sentence with the work "
                          "entrance's allowance command")
@@ -155,7 +165,7 @@ def cloud_sentence(stage: str) -> str:
     """
     pushes = ("a push to the change branch and to its report branch" if stage in CLOUD_CHANGE_STAGES
               else "a push to its report branch, which carries its return")
-    return (f"GitHub writes this run may make: {pushes}, and nothing else; post nothing. If the "
+    return (f"{CLOUD_SENTENCE_OPENING} {pushes}, and nothing else; post nothing. If the "
             "work needs any other write, do not make it: end your report with a **Write "
             "requests** section naming each write, why the work needs it, and what it would "
             "leave behind.")
@@ -431,23 +441,37 @@ def record_refusals(record: dict, log) -> None:
     """
     try:
         record["github_write_refusals"] = refusals(log)
+    except RefusalLogDamaged as exc:
+        record["github_write_refusals"] = exc.found
+        record["github_write_refusals_unknown"] = str(exc)
     except OSError as exc:
         record["github_write_refusals"] = []
         record["github_write_refusals_unknown"] = f"{type(exc).__name__}: {exc}"
 
 
 def refusals(log) -> list[dict[str, object]]:
-    """The refused decisions in a launch's command-check log; OSError when it cannot be read."""
+    """The refused decisions in a launch's command-check log.
+
+    OSError when the log cannot be read. A line that will not parse raises
+    ``RefusalLogDamaged`` carrying the refusals that did: a line cut short, as by a launch
+    stopped mid-write, may be the refusal that is lost. An empty line is no damage.
+    """
     raw = Path(log).read_bytes()
     found = []
+    damaged = 0
     for line in raw.splitlines():
+        if not line.strip():
+            continue
         try:
             entry = json.loads(line)
         except (UnicodeError, ValueError):
+            damaged += 1
             continue
         if isinstance(entry, dict) and entry.get("decision") == "deny":
             found.append({key: entry.get(key) for key in (
                 "at", "scope", "entry", "session", "tool", "command", "reason", "allowance")})
+    if damaged:
+        raise RefusalLogDamaged(found, damaged)
     return found
 
 
@@ -497,6 +521,16 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+(?:['\-][a-z0-9]+)*", _normalized(text))
 
 
+def _grant_repository(write: str, target: str) -> str | None:
+    """owner/name a grant's target writes to, lowercased, or None when it names none."""
+    if write == "push":
+        return target.split(":", 1)[0].lower()
+    if write == "comment":
+        return target.split("#", 1)[0].lower()
+    match = re.match(r"^[A-Z]+ /?repos/([^/\s]+/[^/\s]+)(?:/|$)", target)
+    return match.group(1).lower() if match else None
+
+
 def _quotes_row(quote: str, row: str) -> bool:
     """Whether the quote is a run of at least MIN_QUOTE_WORDS whole words of the row."""
     wanted, words = _words(quote), _words(row)
@@ -505,7 +539,7 @@ def _quotes_row(quote: str, row: str) -> bool:
 
 
 def validate_grant(grant: dict, *, brief_comment: int, brief_body: str, stage: str,
-                   resumed: bool) -> dict[str, object]:
+                   resumed: bool, repository: str) -> dict[str, object]:
     """Accept a grant only when it rests on a row of the affirmed brief; raise otherwise."""
     # A grant answers a request the step itself returned, so only that step's next,
     # resumed turn can carry it.
@@ -529,4 +563,9 @@ def validate_grant(grant: dict, *, brief_comment: int, brief_body: str, stage: s
         raise GrantError("a comment grant's target is owner/name#n")
     if grant["write"] == "api" and not re.match(r"^[A-Z]+ \S+$", target):
         raise GrantError("an api grant's target is METHOD path")
+    # A grant answers a write the change's own step needs, in the change's own repository;
+    # nothing in the affirmed work provides for a grant to write anywhere else.
+    if _grant_repository(grant["write"], target) != repository.lower():
+        raise GrantError(f"grant {grant['marker']} targets {target}, outside the work's repository "
+                         f"{repository}")
     return {key: grant[key] for key in ("marker", "brief", "row", "stage", "write", "target")}

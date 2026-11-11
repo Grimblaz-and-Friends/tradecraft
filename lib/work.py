@@ -6412,9 +6412,11 @@ def _github_write_report(state: WorkState) -> dict[str, object]:
         if run.get("github_write_refusals_unknown"):
             unread.append(f"{identity['dispatch_id']}: {run['github_write_refusals_unknown']}")
         elif ("github_write_refusals" not in run and isinstance(bound, dict)
-              and (bound.get("command_check") or {}).get("status") == "armed"):
-            # A launcher that died, or is still running, before reading its log has not shown
-            # what it refused; a check that never ran has no log, so it stays as it is.
+              and bound.get("child_settings")):
+            # A launch that prepared child settings prepared a log with them, which its own check
+            # or its children's writes to, even a Codex launch whose own check did not run. A
+            # launcher that died, or is still running, before reading that log has not shown
+            # what was refused; a cloud run prepared none, so it stays as it is.
             unread.append(f"{identity['dispatch_id']}: its refusals were never read from its log")
         for entry in run.get("github_write_refusals") or ():
             if isinstance(entry, dict):
@@ -6454,7 +6456,7 @@ def validated_grants(state: WorkState, comment_ids, stage: str, continuity: str 
             grant = github_allowance.parse_grant(int(comment_id), body)
             accepted.append(github_allowance.validate_grant(
                 grant, brief_comment=int(brief.source_id), brief_body=brief.body, stage=stage,
-                resumed=continuity == "resume"))
+                resumed=continuity == "resume", repository=state.repo))
         except github_allowance.GrantError as exc:
             raise WorkError(f"--grant {comment_id} refused: {exc}") from exc
     return accepted
@@ -10296,12 +10298,14 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
     return 0
 
 
-def _allowance_command(args: argparse.Namespace, grants=()) -> int:
+def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState | None = None,
+                       root: Path | None = None) -> int:
     """Print the allowance sentence a holder-written dispatch for STAGE carries.
 
-    It reads the branch from the implementation tree, as the launcher will, and refuses rather
-    than print a sentence for an allowance the launch would not hold: the launcher refuses a
-    dispatch stating any other. Design: lib/DESIGN.md#the-github-write-bound
+    Given the issue's state and the holder root, as the entrance passes them, it takes the
+    branch from the registered implementation tree and the pull request from the issue, as
+    the launcher will, and refuses a tree or pull request other than those: the launcher
+    refuses a dispatch stating any other allowance. Design: lib/DESIGN.md#the-github-write-bound
     """
     if args.stage not in GITHUB_BOUND_STAGES | {"use"}:
         raise WorkError("allowance requires an implementer stage or use: "
@@ -10316,11 +10320,26 @@ def _allowance_command(args: argparse.Namespace, grants=()) -> int:
             capture_output=True, stdin=subprocess.DEVNULL, timeout=30).stdout.decode("utf-8").strip() or None
         if branch is None:
             raise WorkError(f"allowance {args.stage}: --implementation-root is on no branch")
-    if args.stage == "review-disposition" and args.pull_request is None:
+        if root is not None:
+            registered = resolve_implementation_root(root, args.repo, args.issue, args.instalment,
+                                                     migrate=False)
+            if registered is None or not _same_path(registered[0],
+                                                    args.implementation_root.expanduser().resolve()):
+                raise WorkError(f"allowance {args.stage}: --implementation-root is not this change's "
+                                "registered implementation tree, which the launch pushes from")
+            branch = registered[1]
+    pull_request = args.pull_request
+    if state is not None:
+        number = state.pr.get("number") if state.pr else None
+        if pull_request is not None and pull_request != number:
+            raise WorkError(f"allowance: --pull-request {pull_request} is not this issue's pull request "
+                            f"({number}), which the launch holds")
+        pull_request = number
+    if args.stage == "review-disposition" and pull_request is None:
         raise WorkError("allowance review-disposition requires --pull-request, the pull request "
                         "whose threads the step may answer")
     allowance = github_allowance.allowance_for(
-        args.stage, repository=args.repo, branch=branch, pull_request=args.pull_request, grants=grants)
+        args.stage, repository=args.repo, branch=branch, pull_request=pull_request, grants=grants)
     print(github_allowance.sentence(allowance))
     return 0
 
@@ -10396,8 +10415,6 @@ def _run(
         return 0
     if args.command == "tree":
         return _tree_command(args, root, github)
-    if args.command == "allowance" and not getattr(args, "grant", None):
-        return _allowance_command(args)
     if getattr(args, "grant", None) and (args.command not in ("run", "allowance")
                                          or args.stage not in GITHUB_BOUND_STAGES):
         raise WorkError("--grant requires run or allowance of an implementer stage")
@@ -10531,11 +10548,11 @@ def _run(
     state.collection_diagnostics.extend(policy_diagnostics)
     recommendation = decide(state, rules)
     if args.command == "allowance":
-        # A granted turn's sentence names its grants; they are read and validated exactly as
-        # run --grant will, so the printed sentence is the one the launch holds.
+        # The sentence is the one the launch holds: its grants are validated exactly as run --grant
+        # will, and its branch and pull request are the registered tree's and the issue's.
         grants = validated_grants(state, args.grant, args.stage,
                                   _named_continuity(state, args.stage, recommendation))
-        return _allowance_command(args, grants)
+        return _allowance_command(args, grants, state=state, root=root)
     if args.command is None:
         _emit_report(recommendation.as_dict(), state)
         return 0
