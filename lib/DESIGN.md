@@ -94,6 +94,28 @@ The comparison of a Claude launch (`launch_bound.py`) also reads, before and aft
 
 **Decisions in force:** D-987, a launched Claude author or builder is told to keep helpers in its tree and refused any helper copy, and its comparison holds only on the working copies and branches its record names; D-939, the launch's file-tool guard and before-and-after comparison, which this section extends; D-911, the launch's instruction loading through `--add-dir`, which this section widens to every Claude launch.
 
+## Launch accounts
+
+**What it does now.** A launch whose comparison found changes, or whose cloud attempt check failed, holds the change until the holder accounts for every finding in `launch-account` comments for that launch (`work.py`). The comments that count are a trusted producer's well-formed issue comments for that launch's dispatch, each posted after its findings exist and naming only findings that launch flagged; the hold releases once together they name every finding. Where two of them name one finding, the one posted later governs it. A failed local-tree check is released only by the tree containing the returned tip. While held, the report lists the findings still owed and every comment concerning the launch that didn't count, with its reason.
+
+**Why.**
+
+- An account can run across comments because one comment has a byte ceiling and a launch's findings don't; several comments keep the marker's form, so every account posted earlier reads as before.
+- A comment naming a finding its launch didn't flag counts for nothing as a whole, because it was most likely written for another launch and counting part of it would be a guess.
+- The later naming governs, because a correction or a retried post is the likely repeat, and treating it as a fault would hold a released change again with only an edit or deletion as a way out; the record stays append-only. Inside one comment a repeat is a writing error, so that comment counts for nothing.
+- Posting order is when a comment was created, never when it was edited, so editing an old comment can't take governance back.
+- Comments only add names and the flagged set comes from the run record, so nothing posted after a release can hold the change again.
+- A failed local-tree check counts as flagged even once the tree has released it, so a comment that named it while it was owed keeps counting.
+- An account posted before its findings exist counts for nothing, because finding ids are predictable.
+- A comment from another launch is listed on a held launch only when it names one of that launch's findings, so the holder sees a misdirected post without every other launch's accounts.
+- A `names-unflagged` reason lists at most ten of the ids, with their count, because a comment written for another launch could name thousands.
+- `governing` lists only findings named more than once, because listing every finding would double a flood's report.
+- Any comment's text is read, an untrusted author's included, so whatever reading one payload raises makes that comment unread or malformed and never the whole report unreadable, which would refuse every next stage on one stranger's post.
+- A comparison that isn't clear holds even when it lists no findings, until a counting comment for its launch exists, because a comparison the entrance can't read as clear is held rather than passed silently.
+- The entrance only reads accounts and never posts one, so it checks no comment size; GitHub's limit is 262,144 UTF-8 bytes, which an account of a few thousand findings outgrows.
+
+**Decisions in force:** D-939, a Claude launch's writes stay in its tree and an unattributed change holds until the holder accounts for it; D-988, a launch's account may run across several comments, the later naming governing a repeat; D-988 narrows D-939's single exact account to the comments that count together.
+
 ## Consumer trees
 
 **What it does now.** `work.py tree` builds a use consumer's tree from committed bytes: a new repository with one neutral detached commit, no remote and no shared history, holding only the declared job paths and loading surfaces, each file proved against its committed blob. Its record of the tree names the change, the source checkout and revision, what was excluded and every carried file, under a digest. `tree` writes that record whole to the entrance's own records, under `trees/`, in a file named by a digest of the tree's resolved path, prints the path as `tree_metadata`, and leaves nothing but the tree in the folder the tree sits in. `run use` takes that path, proves the record's integrity, re-proves the source revision, the neutral repository and the tree's bytes, and launches the consumer with the tree as its root. The cold reader's reading tree is recorded the same way.
