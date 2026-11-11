@@ -1852,7 +1852,46 @@ def test_906_a_slow_before_snapshot_comes_out_of_the_use_consumers_window(job, t
     claude = [attempt for attempt in logged["attempts"] if attempt["vendor"] == "claude"][0]
     assert claude["allocation_seconds"] <= request["recipient_allocation_seconds"] - 1.5
     # The after-snapshot still had its cleanup window.
-    assert logged["launch_comparison"]["status"] == "clean"
+    comparison = logged["launch_comparison"]
+    assert comparison["status"] == "clean", json.dumps(
+        {key: comparison.get(key) for key in ("findings", "coverage", "run_record")}, indent=1)
+
+
+def ci_shaped_checkout(tmp_path):
+    """A clone as a CI checkout leaves it: an origin remote with no HEAD, at a detached HEAD."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    git(upstream, "init")
+    git(upstream, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "--allow-empty", "-m", "base")
+    checkout = tmp_path / "ci-checkout"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(checkout)], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    branch = git(checkout, "branch", "--show-current").stdout.decode().strip()
+    git(checkout, "remote", "set-head", "origin", "-d")
+    git(checkout, "checkout", "-q", "--detach")
+    git(checkout, "branch", "-D", branch)
+    return checkout
+
+
+def test_a_use_consumer_that_changed_nothing_compares_clean_beside_a_ci_shaped_checkout(
+        job, tmp_path, monkeypatch):
+    # The launcher plugin runs from such a checkout in CI, and its refs are compared too.
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    checkout = ci_shaped_checkout(tmp_path)
+    original = seat.launch_bound.Comparison.__init__
+
+    def from_checkout(self, **kwargs):
+        original(self, **{**kwargs, "launcher_plugin": checkout})
+
+    monkeypatch.setattr(seat.launch_bound.Comparison, "__init__", from_checkout)
+    assert seat.run_dispatch(args) == 0
+    comparison = record(args)["launch_comparison"]
+    assert comparison["status"] == "clean", json.dumps(
+        {key: comparison.get(key) for key in ("findings", "coverage", "run_record")}, indent=1)
+    refs = [entry for entry in comparison["coverage"] if entry["item"].startswith("refs:")]
+    assert any(entry["status"] == "compared" and entry["default_branch"] is None for entry in refs)
 
 
 @pytest.mark.parametrize("launched", [False, True])
@@ -1874,3 +1913,20 @@ def test_906_a_seat_whose_planning_failed_records_not_launched_unless_it_ran(
         assert [finding["id"] for finding in comparison["findings"]] == ["unrecorded"]
     else:
         assert comparison["status"] == "not-launched" and comparison["findings"] == []
+
+
+def test_the_use_consumers_stdout_log_reaches_finish(job, tmp_path, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    seen = []
+    original = seat.launch_bound.Comparison.finish
+
+    def capture(self, seconds, **kwargs):
+        seen.append((kwargs.get("record"), any(item["method"] == "git-refs" for item in self.plan)))
+        return original(self, seconds, **kwargs)
+
+    monkeypatch.setattr(seat.launch_bound.Comparison, "finish", capture)
+    assert seat.run_dispatch(args) == 0
+    assert seen == [(seat.sidecar(args.output, ".claude.stdout.log"), True)]
+    assert record(args)["launch_comparison"]["run_record"]["status"] == "read"

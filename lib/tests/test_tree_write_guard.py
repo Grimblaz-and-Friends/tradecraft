@@ -198,8 +198,10 @@ def test_ac4_self_test_has_its_own_log_and_a_broken_guard_refuses_preparation(bo
     temporary.mkdir()
     prepared = launch_bound.prepare_guard(temporary, bound["root"], SESSION, env, None)
     assert Path(prepared["log"]).read_bytes() == b""
-    assert [case["observed"] for case in prepared["self_test"]] == ["deny", "deny", "allow", "allow"]
-    assert (temporary / "write-guard-self-test" / "write-guard.log.jsonl").read_bytes().count(b"\n") == 4
+    # The file-tool cases come first, then the helper cases.
+    assert [case["observed"] for case in prepared["self_test"]] == [
+        "deny", "deny", "allow", "allow", "deny", "allow", "deny", "deny", "deny"]
+    assert (temporary / "write-guard-self-test" / "write-guard.log.jsonl").read_bytes().count(b"\n") == 9
     command = prepared["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert "\\" not in command and command.count('"') == 6
     broken = tmp_path / "broken"
@@ -241,4 +243,4 @@ def test_ac4_outcome_cross_check_covers_every_route(tmp_path):
     log.write_bytes(json.dumps({"tool": "Write", "tool_use_id": "b", "raw": "/o", "canonical": "/o",
                                 "decision": "deny", "reason": "r"}).encode() + b"\n")
     record, reason = launch_bound.guard_outcome(stream(use("b", "/o"), answer("b", True)), log)
-    assert reason == "launch write bound refused Write /o" and record["rejected_before_run"] == []
+    assert reason == "launch bound refused Write /o" and record["rejected_before_run"] == []

@@ -4089,7 +4089,8 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             status = "unrecorded"
         elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not cloud_findings:
             bundles.append({**entry, "state": "clear", "findings": [],
-                            "attributed": comparison.get("attributed") or []})
+                            "attributed": comparison.get("attributed") or [],
+                            "listed": comparison.get("listed") or []})
             continue
         else:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
@@ -4108,7 +4109,8 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
         # A comparison that isn't clear holds even with no findings listed, until a counting comment exists.
         released = not reading["owed"] and (findings or reading["accounts"])
         bundles.append({**entry, "state": "accounted" if released else status, "findings": findings,
-                        "attributed": (comparison or {}).get("attributed") or [], **reading})
+                        "attributed": (comparison or {}).get("attributed") or [],
+                        "listed": (comparison or {}).get("listed") or [], **reading})
     held = [value for value in bundles if value["state"] in {"account-required", "unrecorded"}]
     return {"schema_version": 1, "status": "held" if held else "clear", "bundles": bundles}
 

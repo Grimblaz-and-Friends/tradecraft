@@ -7,6 +7,8 @@ Claude use consumer given a shell also compare what they must not touch before
 and after the run. Other Claude seats given a shell are not compared.
 A change the launcher cannot attribute to another live recorded run is a
 finding the holder must account for; the entrance holds the change until then.
+A Claude launch also compares each covered repository's working copies and
+branches, and holds only on those its own record names.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import subprocess
 import sys
@@ -24,10 +27,12 @@ import time
 from holder_tree_guard import contains, path_key
 import run_lifecycle as lifecycle
 from seat_process import run_process
+from tree_write_guard import (BUILTIN_SAFE_TYPES, WORKTREE_TOOLS, Refusal, agent_definitions,
+                              logged_raw)
 
 GUARD = Path(__file__).resolve().with_name("tree_write_guard.py")
 FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-GUARD_MATCHER = "|".join(FILE_TOOLS)
+GUARD_MATCHER = "|".join(FILE_TOOLS + WORKTREE_TOOLS)
 MEMORY_SWITCH = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 SLUG_LIMIT = 200
 SCHEMA_VERSION = 1
@@ -93,10 +98,32 @@ def hook_settings(config_path: Path) -> dict[str, object]:
                             "hooks": [{"type": "command", "command": command}]}]}
 
 
-def guard_config(root: Path, session: str, env: dict[str, str], log: Path) -> dict[str, object]:
+def agent_dirs(root: Path, env: dict[str, str], launcher_plugin: Path | None,
+               builtin_plugins: list[tuple[str, str]] = ()) -> list[dict[str, str | None]]:
+    """Where a launched session's agent definitions can come from.
+
+    The launch disables every other plugin, so these are the user's agents, the
+    tree's, the launcher plugin's and each built-in plugin's.
+    Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
+    """
+    home = env.get("USERPROFILE") if os.name == "nt" else env.get("HOME")
+    config = Path(env.get("CLAUDE_CONFIG_DIR") or Path(home or os.path.expanduser("~")) / ".claude")
+    dirs: list[dict[str, str | None]] = [
+        {"path": str(config / "agents"), "namespace": None},
+        {"path": str(Path(root).resolve(strict=False) / ".claude" / "agents"), "namespace": None}]
+    if launcher_plugin is not None:
+        dirs.append({"path": str(Path(launcher_plugin) / "agents"), "namespace": "tradecraft"})
+    for name, path in builtin_plugins:
+        dirs.append({"path": str(Path(path) / "agents"), "namespace": name})
+    return dirs
+
+
+def guard_config(root: Path, session: str, env: dict[str, str], log: Path,
+                 agents: list[dict] | None = None) -> dict[str, object]:
     home = env.get("USERPROFILE") if os.name == "nt" else env.get("HOME")
     return {"schema_version": SCHEMA_VERSION, "root": str(Path(root).resolve(strict=False)),
             "session": session, "home": home or os.path.expanduser("~"), "log": str(log),
+            "agent_dirs": agents if agents is not None else agent_dirs(root, env, None),
             **scratchpad(Path(root).resolve(strict=False), session, env)}
 
 
@@ -117,8 +144,22 @@ def _self_test_targets(config: dict, outside: Path) -> list[tuple[str, str, str]
             ("scratchpad", str(inside_pad), "allow")]
 
 
-def prepare_guard(temporary: Path, root: Path, session: str, env: dict[str, str], deadline
-                  ) -> dict[str, object]:
+SELF_TEST_ISOLATING = "tradecraft-self-test-isolating"
+
+
+def _self_test_helper_cases() -> list[tuple[str, str, dict, str]]:
+    """Helper calls the guard must decide before launch."""
+    return [("isolated helper", "Agent", {"prompt": "x", "isolation": "worktree"}, "deny"),
+            ("plain helper", "Agent", {"prompt": "x", "subagent_type": "general-purpose"}, "allow"),
+            ("isolating definition", "Agent", {"prompt": "x", "subagent_type": SELF_TEST_ISOLATING},
+             "deny"),
+            ("unknown type", "Agent", {"prompt": "x", "subagent_type": "tradecraft-self-test-unknown"},
+             "deny"),
+            ("enter worktree", "EnterWorktree", {"name": "tradecraft-self-test"}, "deny")]
+
+
+def prepare_guard(temporary: Path, root: Path, session: str, env: dict[str, str], deadline,
+                  agents: list[dict] | None = None) -> dict[str, object]:
     """Write the guard config, prove it with its own self-test, then create its log.
 
     The self-test has its own config and log in a separate directory, so its
@@ -130,15 +171,32 @@ def prepare_guard(temporary: Path, root: Path, session: str, env: dict[str, str]
         # and the argument-list self-test would not notice.
         if '"' in str(path):
             raise BoundError(f"write guard path contains a double quote: {path}")
+    config_path = temporary / "write-guard.json"
+    log = temporary / "write-guard.log.jsonl"
+    config = guard_config(root, session, env, log, agents)
+    try:
+        # Every definition is read now, so one the guard can't read fails the
+        # launch here rather than refusing every helper call mid-turn.
+        agent_definitions(config, "")
+    except Refusal as exc:
+        raise BoundError(f"an agent definition can't be read with certainty: {exc}") from exc
     test_dir = temporary / "write-guard-self-test"
     test_dir.mkdir()
     test_config_path = test_dir / "write-guard.json"
-    test_config = guard_config(root, session, env, test_dir / "write-guard.log.jsonl")
+    fixture = test_dir / "agents"
+    fixture.mkdir()
+    (fixture / "isolating.md").write_bytes(
+        f"---\nname: {SELF_TEST_ISOLATING}\nisolation: worktree\n---\nself-test\n".encode("utf-8"))
+    test_config = guard_config(root, session, env, test_dir / "write-guard.log.jsonl",
+                               [{"path": str(fixture), "namespace": None}])
     _write_json(test_config_path, test_config)
     results = []
-    for label, raw, expected in _self_test_targets(test_config, test_dir / "outside.txt"):
-        payload = {"tool_name": "Write", "tool_use_id": f"self-test-{label}",
-                   "tool_input": {"file_path": raw, "content": ""}, "cwd": str(root)}
+    cases = [(label, "Write", {"file_path": raw, "content": ""}, expected)
+             for label, raw, expected in _self_test_targets(test_config, test_dir / "outside.txt")]
+    for label, tool, tool_input, expected in cases + _self_test_helper_cases():
+        raw = tool_input.get("file_path") or json.dumps(tool_input, sort_keys=True)
+        payload = {"tool_name": tool, "tool_use_id": f"self-test-{label}",
+                   "tool_input": tool_input, "cwd": str(root)}
         try:
             result = run_process([sys.executable, str(GUARD), "--config", str(test_config_path)],
                                  input=json.dumps(payload).encode("utf-8"), cwd=Path(root),
@@ -153,9 +211,6 @@ def prepare_guard(temporary: Path, root: Path, session: str, env: dict[str, str]
         if observed != expected:
             raise BoundError(f"write guard self-test failed: {label} target {raw} gave {observed}, "
                              f"expected {expected}; " + result.stderr.decode("utf-8", "replace")[:500])
-    config_path = temporary / "write-guard.json"
-    log = temporary / "write-guard.log.jsonl"
-    config = guard_config(root, session, env, log)
     _write_json(config_path, config)
     log.write_bytes(b"")
     return {"config": config, "config_path": str(config_path), "log": str(log),
@@ -166,7 +221,9 @@ def file_tools_record(prepared: dict, settings_sha256: str) -> dict[str, object]
     config = prepared["config"]
     return {"tools": list(FILE_TOOLS), "allowed": [config["root"], allowed_scratchpad(config)],
             "scratchpad_form": config["scratchpad_form"], "guard": str(GUARD),
-            "guard_self_test": "passed", "settings_sha256": settings_sha256}
+            "guard_self_test": "passed", "settings_sha256": settings_sha256,
+            "worktree_tools": list(WORKTREE_TOOLS), "agent_dirs": config.get("agent_dirs") or [],
+            "builtin_safe_types": dict(BUILTIN_SAFE_TYPES)}
 
 
 def memory_record() -> dict[str, str]:
@@ -193,7 +250,7 @@ def _blocks(event: dict) -> list[dict]:
 
 
 def guard_outcome(stdout: bytes, log: Path | str) -> tuple[dict[str, object], str]:
-    """Cross-check the stream's file-tool calls against the guard's decisions.
+    """Cross-check the stream's guarded calls against the guard's decisions.
 
     A deny fails the turn. A call that completed, or has no result at all, and
     has no decision fails it as unproved: the hook may never have started. A
@@ -213,10 +270,10 @@ def guard_outcome(stdout: bytes, log: Path | str) -> tuple[dict[str, object], st
     calls, results = [], {}
     for event in _stream_events(stdout):
         for block in _blocks(event):
-            if block.get("type") == "tool_use" and block.get("name") in FILE_TOOLS:
+            if block.get("type") == "tool_use" and (block.get("name") in FILE_TOOLS
+                                                    or block.get("name") in WORKTREE_TOOLS):
                 tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
-                key = "notebook_path" if block["name"] == "NotebookEdit" else "file_path"
-                calls.append({"tool": block["name"], "raw": tool_input.get(key),
+                calls.append({"tool": block["name"], "raw": logged_raw(block["name"], tool_input),
                               "tool_use_id": block.get("id")})
             elif block.get("type") == "tool_result" and block.get("tool_use_id"):
                 results[block["tool_use_id"]] = block.get("is_error") is True
@@ -244,7 +301,7 @@ def guard_outcome(stdout: bytes, log: Path | str) -> tuple[dict[str, object], st
             rejected.append(call)
         else:
             unguarded.append({**call, "result": "none" if state is None else "completed"})
-    reasons = [f"launch write bound refused {r['tool']} {r['canonical'] or r['raw']}" for r in refusals]
+    reasons = [f"launch bound refused {r['tool']} {r['canonical'] or r['raw']}" for r in refusals]
     reasons += [f"write bound unproved: {u['tool']} {u['raw']} completed with no guard decision"
                 for u in unguarded]
     record = {"decisions": len(decisions), "refusals": refusals, "unguarded": unguarded,
@@ -292,7 +349,7 @@ def main_clone(root: Path) -> Path | None:
 
 
 def coverage_plan(*, root: Path, home: Path, env: dict[str, str], launcher_plugin: Path,
-                  store: Path, own_request: Path) -> list[dict[str, str]]:
+                  store: Path, own_request: Path, refs: bool = False) -> list[dict[str, str]]:
     """What this launch must not touch, fixed before it starts."""
     config = Path(env.get("CLAUDE_CONFIG_DIR") or home / ".claude")
     cache = Path(env.get("CLAUDE_CODE_PLUGIN_CACHE_DIR") or config / "plugins")
@@ -333,6 +390,9 @@ def coverage_plan(*, root: Path, home: Path, env: dict[str, str], launcher_plugi
         plan.append({"item": "launcher-plugin", "path": str(plugin), "method": "checkout"})
     for _key, path in sorted(checkouts.items()):
         plan.append({"item": "checkout:" + str(path), "path": str(path), "method": "checkout"})
+    if refs:
+        plan.extend(refs_plan(Path(root), [Path(item["path"]) for item in plan
+                                           if item["method"] == "checkout"]))
     return plan
 
 
@@ -418,7 +478,9 @@ def snapshot(plan: list[dict], *, seconds: float, own_output: Path,
         path = Path(item["path"])
         try:
             _check(end)
-            if item["method"] in {"sha256", "registry"}:
+            if item["method"] == REFS_METHOD:
+                state = _refs_state(item, end)
+            elif item["method"] in {"sha256", "registry"}:
                 if not path.exists():
                     state = {"status": "absent"}
                 else:
@@ -534,14 +596,24 @@ def _diff_entries(item: str, top: str, before: dict, after: dict, method: str) -
 
 def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_session_id: str | None,
             store: Path, own_dispatch: str, before_at: str, after_at: str,
-            elapsed_seconds: float) -> dict[str, object]:
-    """Findings are changes no other live recorded run accounts for (row 2)."""
+            elapsed_seconds: float, record: Path | None = None,
+            home: Path | None = None) -> dict[str, object]:
+    """Findings are changes no other live recorded run accounts for (row 2).
+
+    Working-copy and branch changes are findings only when the run's record
+    names them; the rest are ``listed``.
+    """
     started, ended = _moment(before_at), _moment(after_at)
     changes, coverage = [], []
+    refs_entries, refs_attributed, defaults, known_copies = [], [], {}, []
+    live = None
     for item in plan:
         name, top = item["item"], item["path"]
         first, second = before.get(name, {}), after.get(name, {})
         statuses = {first.get("status"), second.get("status")}
+        if item["method"] == REFS_METHOD and statuses == {"not-a-repository"}:
+            coverage.append({"item": name, "status": "not-a-repository", "reason": None})
+            continue
         if "uncompared" in statuses or None in statuses:
             reason = first.get("reason") or second.get("reason") or "no snapshot was taken"
             coverage.append({"item": name, "status": "uncompared", "reason": reason})
@@ -550,6 +622,19 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         coverage.append({"item": name, "status": "absent" if statuses == {"absent"} else "compared",
                          "reason": None})
         if statuses == {"absent"}:
+            continue
+        if item["method"] == REFS_METHOD:
+            coverage[-1].update(default_branch=first.get("default") or second.get("default"),
+                                default_rule=first.get("default_rule"))
+            defaults[name] = first.get("default") or second.get("default")
+            for state in (first, second):
+                known_copies += [copy["path"] for copy in (state.get("copies") or {}).values()]
+            if live is None:
+                live = ([run for run in recorded_runs(store, own_dispatch)
+                         if _overlaps(run, started, ended)] if started and ended else [])
+            entries, attributed_refs = _refs_changes(name, first, second, Path(root), live)
+            refs_entries += entries
+            refs_attributed += attributed_refs
             continue
         if item["method"] in {"sha256", "registry"}:
             if first["status"] == "absent":
@@ -595,10 +680,37 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         if rows is not None:
             entry["reason"] = "registry row added, removed or changed"
         findings.append(entry)
+    result: dict[str, object] = {}
+    listed: list[dict] = []
+    if any(item["method"] == REFS_METHOD for item in plan):
+        unreadable, named, skipped = None, None, 0
+        try:
+            if record is None:
+                raise ValueError("no record was passed")
+            calls, skipped = read_run_record(record)
+        except ValueError as exc:
+            unreadable = str(exc)
+        if unreadable is None and refs_entries:
+            names = set()
+            for entry in refs_entries:
+                names.add(entry.get("branch") or "")
+                names.add((entry.get("folded_branch") or {}).get("branch") or "")
+            named = named_targets(calls, root=Path(root), copies=known_copies,
+                                  branches=sorted(names - {""}), home=str(home or Path.home()))
+        held, listed = _classify_refs(refs_entries, default=defaults, named=named,
+                                      unreadable=unreadable)
+        findings += held
+        attributed += refs_attributed
+        result["run_record"] = {"path": str(record) if record is not None else None,
+                                "status": "unreadable" if unreadable else "read",
+                                "reason": unreadable}
+        result["record_lines_skipped"] = skipped
     findings.sort(key=lambda value: value["id"])
+    listed.sort(key=lambda value: value["id"])
     return {"schema_version": SCHEMA_VERSION, "status": "findings" if findings else "clean",
             "before_at": before_at, "after_at": after_at, "elapsed_seconds": elapsed_seconds,
-            "coverage": coverage, "findings": findings, "attributed": attributed}
+            "coverage": coverage, "findings": findings, "attributed": attributed,
+            "listed": listed, **result}
 
 
 def _attribute(change: dict, runs: list[dict], started: datetime, ended: datetime,
@@ -631,6 +743,418 @@ def _attribute(change: dict, runs: list[dict], started: datetime, ended: datetim
     return None
 
 
+# --- Each covered repository's working copies and branches -------------------
+# Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
+
+REFS_METHOD = "git-refs"
+REF_CHAR = r"A-Za-z0-9._/-"
+NAME_CHAR = r"A-Za-z0-9._-"
+SPLITTER = re.compile(r"[\s\"'`;|&()<>=]")
+DIRECTORY_FORMS = re.compile(
+    r"(?:^|[\s;&|(])(?:cd|pushd|set-location)\s+(?:-(?:literal)?path\s+)?"
+    r"(\"[^\"]*\"|'[^']*'|[^\s;&|()]+)"
+    r"|(?:^|[\s;&|(])git\s+-C\s+(\"[^\"]*\"|'[^']*'|[^\s;&|()]+)", re.IGNORECASE)
+
+
+def _git_run(path: Path, timeout: float, *arguments: str):
+    # The C locale keeps git's messages in English, which refs_plan reads.
+    env = {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
+    return run_process(["git", "-C", str(path), *arguments], input=b"", cwd=Path(path),
+                       timeout=timeout, on_tick=lambda: None, env=env,
+                       cleanup_deadline=lifecycle.cleanup_deadline())
+
+
+def refs_plan(root: Path, checkouts: list[Path]) -> list[dict[str, str]]:
+    """One ``git-refs`` item per distinct repository: the run's own and every checkout's.
+
+    The run's own repository is never left out, because a linked copy it makes
+    can lie outside its root.
+    """
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, path in enumerate([Path(root), *checkouts]):
+        if index and not path.is_dir():
+            continue  # A stale registration has nothing to compare.
+        item = {"item": "refs:" + str(path), "path": str(path), "method": REFS_METHOD,
+                "git": str(path)}
+        try:
+            result = _git_run(path, lifecycle.probe_timeout(), "rev-parse", "--path-format=absolute",
+                              "--git-common-dir")
+        except (OSError, subprocess.TimeoutExpired, TimeoutError) as exc:
+            items.append({**item, "unavailable": f"git could not run: {exc}"})
+            continue
+        if result.returncode:
+            error = result.stderr.decode("utf-8", "replace").strip()
+            if "not a git repository" in error.lower():
+                items.append({**item, "unavailable": "not-a-repository"})
+            else:
+                items.append({**item, "unavailable": f"git rev-parse failed: {error[:300]}"})
+            continue
+        common = Path(result.stdout.decode("utf-8", "replace").strip())
+        key = path_key(common)
+        if key in seen:
+            continue
+        seen.add(key)
+        main = common.parent if common.name == ".git" else path
+        items.append({**item, "item": "refs:" + str(common), "path": str(main)})
+    return items
+
+
+def _git_out(path: Path, end: float, *arguments: str) -> list[str]:
+    _check(end)
+    try:
+        result = _git_run(path, max(0.1, end - time.monotonic()), *arguments)
+    except (subprocess.TimeoutExpired, TimeoutError) as exc:
+        raise _Expired(f"git {arguments[0]} ran out of time") from exc
+    if result.returncode:
+        raise ValueError(f"git {' '.join(arguments[:2])} failed: "
+                         + result.stderr.decode("utf-8", "replace").strip()[:300])
+    return result.stdout.decode("utf-8", "replace").splitlines()
+
+
+def _worktrees(lines: list[str]) -> dict[str, dict]:
+    copies: dict[str, dict] = {}
+    current: dict | None = None
+    for line in [*lines, ""]:
+        if not line.strip():
+            if current is not None:
+                copies[path_key(Path(current["path"]))] = current
+            current = None
+            continue
+        word, _, value = line.partition(" ")
+        if word == "worktree":
+            current = {"path": value, "head": None, "branch": None, "flags": []}
+        elif current is not None and word == "HEAD":
+            current["head"] = value
+        elif current is not None and word == "branch":
+            current["branch"] = value
+        elif current is not None:
+            current["flags"].append(word)
+    return copies
+
+
+def _short(ref: str | None) -> str | None:
+    return ref[len("refs/heads/"):] if ref and ref.startswith("refs/heads/") else ref
+
+
+def _default_branch(remotes: list[str], copies: dict[str, dict]) -> tuple[str | None, str]:
+    """The repository's default branch, by the first rule that applies.
+
+    The remote's ``HEAD`` names the branch others share and move, so it comes
+    first: ``origin``'s, else that of the only remote, since with several no one
+    remote is the shared one. A repository with a remote but no such ``HEAD``
+    has no default identified, because its main working copy may have a feature
+    branch checked out, and exempting that would let a named change go unheld.
+    Only a repository with no remote at all falls back to the branch its main
+    working copy has checked out, the one branch it shares with itself.
+    """
+    symbolic = {}
+    for line in remotes:
+        ref, _, target = line.partition("\0")
+        symbolic[ref] = target
+    names = {ref.split("/")[2] for ref in symbolic if ref.count("/") >= 3}
+    for rule, remote in (("origin HEAD", "origin"),
+                         ("the only remote's HEAD", next(iter(names)) if len(names) == 1 else None)):
+        target = symbolic.get(f"refs/remotes/{remote}/HEAD") if remote else None
+        if target and target.startswith(f"refs/remotes/{remote}/"):
+            return target[len(f"refs/remotes/{remote}/"):], rule
+    if names:
+        return None, "none identified: a remote has no HEAD"
+    first = next(iter(copies.values()), None)
+    if first and first.get("branch"):
+        return _short(first["branch"]), "the main working copy's branch"
+    return None, "none identified"
+
+
+def _refs_state(item: dict, end: float) -> dict[str, object]:
+    if item.get("unavailable") == "not-a-repository":
+        return {"status": "not-a-repository"}
+    if item.get("unavailable"):
+        return {"status": "uncompared", "reason": item["unavailable"]}
+    path = Path(item["git"])
+    copies = _worktrees(_git_out(path, end, "worktree", "list", "--porcelain"))
+    branches, remotes = {}, []
+    for line in _git_out(path, end, "for-each-ref",
+                         "--format=%(refname)%00%(objectname)%00%(symref)", "refs/heads", "refs/remotes"):
+        ref, _, rest = line.partition("\0")
+        tip, _, target = rest.partition("\0")
+        if ref.startswith("refs/heads/"):
+            branches[ref] = tip
+        else:
+            remotes.append(ref + "\0" + target)
+    default, rule = _default_branch(remotes, copies)
+    return {"status": "compared", "copies": copies, "branches": branches,
+            "default": default, "default_rule": rule}
+
+
+def _refs_changes(name: str, first: dict, second: dict, root: Path, live: list[dict]
+                  ) -> tuple[list[dict], list[dict]]:
+    """Entries for changed copies and branches, and those attributed to overlapping runs.
+
+    Only the copy at the run's root and its checked-out branch are the run's own.
+    """
+    copies_before, copies_after = first.get("copies") or {}, second.get("copies") or {}
+    branches_before, branches_after = first.get("branches") or {}, second.get("branches") or {}
+    own_key = path_key(Path(root).resolve(strict=False))
+    own_branches = {copy["branch"] for copy in (copies_before.get(own_key), copies_after.get(own_key))
+                    if copy and copy.get("branch")}
+    others: dict[str, str] = {}
+    for run in live:
+        if isinstance(run.get("root"), str) and run["root"]:
+            others.setdefault(path_key(Path(run["root"]).resolve(strict=False)), run["dispatch_id"])
+    other_branches = {copy["branch"]: others[key] for key in others
+                      for copy in (copies_before.get(key), copies_after.get(key))
+                      if copy and copy.get("branch")}
+    entries, attributed = [], []
+    copy_entries: dict[str, dict] = {}
+    for key in sorted(set(copies_before) | set(copies_after)):
+        before, after = copies_before.get(key), copies_after.get(key)
+        if before and after and (before["head"], before["branch"]) == (after["head"], after["branch"]):
+            continue
+        if key == own_key:
+            continue
+        change = "added" if before is None else "removed" if after is None else "moved"
+        path = (after or before)["path"]
+        if key in others:
+            attributed.append({"item": name, "path": path, "change": change,
+                               "to": {"dispatch_id": others[key], "holder_session_id": None}})
+            continue
+        entry = {"kind": "working-copy", "item": name, "path": path, "change": change,
+                 "branch_before": _short(before and before["branch"]),
+                 "branch_after": _short(after and after["branch"]),
+                 "tip_before": before and before["head"], "tip_after": after and after["head"]}
+        copy_entries[key] = entry
+        entries.append(entry)
+    for ref in sorted(set(branches_before) | set(branches_after)):
+        before, after = branches_before.get(ref), branches_after.get(ref)
+        if before == after or ref in own_branches:
+            continue
+        change = "added" if before is None else "removed" if after is None else "moved"
+        if ref in other_branches:
+            attributed.append({"item": name, "path": ref, "change": change,
+                               "to": {"dispatch_id": other_branches[ref], "holder_session_id": None}})
+            continue
+        at = next((key for key, copy in copies_after.items() if copy.get("branch") == ref), None)
+        if at is None:
+            at = next((key for key, copy in copies_before.items()
+                       if copy.get("branch") == ref and key not in copies_after), None)
+        branch = {"branch": _short(ref), "change": change, "tip_before": before, "tip_after": after}
+        if at is not None and at in copy_entries:
+            copy_entries[at]["folded_branch"] = branch
+            continue
+        entries.append({"kind": "branch", "item": name, "path": ref, **branch,
+                        "checked_out_at": (copies_after.get(at) or copies_before.get(at) or {}).get("path")
+                        if at else None})
+    return entries, attributed
+
+
+def _leaves(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [leaf for item in value.values() for leaf in _leaves(item)]
+    if isinstance(value, list):
+        return [leaf for item in value for leaf in _leaves(item)]
+    return []
+
+
+def read_run_record(path: Path) -> tuple[list[dict], int]:
+    """Every tool call in the run's stream, by the recipient or a helper, in order.
+
+    The record is unreadable when it can't be opened, or when any line but a
+    final unterminated one can't be decoded or is not a JSON object; that final
+    line, as a killed process leaves it, perhaps cut inside a character, is
+    skipped and counted.
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+    lines = data.split(b"\n")
+    last = lines.pop()
+    events, skipped = [], 0
+    for number, line in enumerate(lines, 1):
+        try:
+            event = json.loads(line.decode("utf-8"))
+        except ValueError:
+            event = None
+        if not isinstance(event, dict):
+            raise ValueError(f"line {number} is not a JSON object")
+        events.append(event)
+    if last.strip():
+        try:
+            event = json.loads(last.decode("utf-8"))
+        except ValueError:
+            event = None
+        if isinstance(event, dict):
+            events.append(event)
+        else:
+            skipped = 1
+    calls = []
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+        for block in _blocks(event):
+            if block.get("type") == "tool_use":
+                calls.append({"id": block.get("id"), "name": block.get("name"),
+                              "agent": event.get("parent_tool_use_id"),
+                              "strings": _leaves(block.get("input"))})
+    return calls, skipped
+
+
+def _normal_text(text: str, home: str, windows: bool) -> str:
+    """Slashes forward, Git-Bash drives and home forms expanded, and case folded on Windows."""
+    text = re.sub(r"\\+", "/", text)
+    if windows:
+        text = re.sub(rf"(?<![{REF_CHAR}])/([A-Za-z])(?=/|$|[^{NAME_CHAR}])",
+                      lambda match: match.group(1) + ":", text)
+    text = re.sub(rf"(?<![{REF_CHAR}])(?:~|\$HOME|\$env:USERPROFILE)(?=/|$|[^{NAME_CHAR}])",
+                  lambda _match: home, text, flags=re.IGNORECASE)
+    return text.casefold() if windows else text
+
+
+def _normal_path(text: str) -> str:
+    # POSIX keeps a leading "//" as its own root, but no path here is one, so it
+    # folds to "/" like any other run of slashes.
+    value = posixpath.normpath(text)
+    return value[1:] if value.startswith("//") else value
+
+
+def _deepest(path: str, tops: set[str]) -> str | None:
+    """The deepest known copy whose top is ``path`` or one of its ancestors."""
+    parts = path.split("/")
+    for count in range(len(parts), 0, -1):
+        prefix = "/".join(parts[:count]) or "/"
+        if prefix in tops or prefix + "/" in tops:
+            return prefix if prefix in tops else prefix + "/"
+    return None
+
+
+def _absolute(token: str) -> bool:
+    return token.startswith("/") or re.match(r"[a-z]:/", token, re.IGNORECASE) is not None
+
+
+def named_targets(calls: list[dict], *, root: Path, copies: list[str], branches: list[str],
+                  home: str, windows: bool = os.name == "nt") -> dict[str, dict]:
+    """Which copies (``copy:<path>``) and branches (``branch:<name>``) the run's tool calls name.
+
+    A branch is named by its whole short name or ``refs/heads/<name>`` between
+    ref-name boundaries, or as the last part of a path, as ``git worktree add
+    ../x`` names the branch ``x`` it makes. A copy is named by a path at or
+    inside its top that lies in no deeper known copy: an absolute path anywhere
+    in the text, or a relative token resolved against each base of the agent
+    that made the call. A quoted or backslash-escaped path is also tried whole,
+    so a space inside it doesn't split it.
+    An agent's bases are its launch root and every directory it named in
+    ``cd``, ``pushd``, ``Set-Location`` or ``git -C``; they only grow.
+    """
+    home_text = _normal_path(_normal_text(home, "", windows))
+    tops: dict[str, str] = {}
+    for copy in copies:
+        tops.setdefault(_normal_path(_normal_text(copy, home_text, windows)), copy)
+    known = set(tops)
+    occurrence = re.compile(
+        rf"(?<![{REF_CHAR}])(?:{'|'.join(map(re.escape, sorted(known, key=len, reverse=True)))})"
+        rf"(?=$|/|[^{NAME_CHAR}])") if known else None
+    branch_set = set(branches)
+    branch_names = sorted(branch_set, key=len, reverse=True)
+    branch_pattern = re.compile(
+        rf"(?:(?<![{REF_CHAR}])|(?<=refs/heads/))(?:{'|'.join(map(re.escape, branch_names))})"
+        rf"(?![{REF_CHAR}])") if branch_names else None
+    root_text = _normal_path(_normal_text(str(Path(root).resolve(strict=False)), home_text, windows))
+    bases: dict[object, set[str]] = {}
+    named: dict[str, dict] = {}
+    cache: dict[str, str | None] = {}
+
+    def hit(candidate: str, call: dict) -> None:
+        if candidate not in cache:
+            cache[candidate] = _deepest(candidate, known)
+        if cache[candidate] is not None:
+            named.setdefault("copy:" + tops[cache[candidate]],
+                             {"tool": call["name"], "tool_use_id": call["id"]})
+
+    def resolve(token: str, agent_bases: set[str]) -> list[str]:
+        if _absolute(token):
+            return [_normal_path(token)]
+        return [_normal_path(base + "/" + token) for base in agent_bases]
+
+    for call in calls:
+        agent_bases = bases.setdefault(call["agent"], {root_text})
+        for raw in call["strings"]:
+            whole = _whole_arguments(raw)
+            if branch_pattern is not None:
+                for match in branch_pattern.finditer(raw):
+                    named.setdefault("branch:" + match.group(0),
+                                     {"tool": call["name"], "tool_use_id": call["id"]})
+                for token in [*SPLITTER.split(raw), *whole]:
+                    last = re.sub(r"\\+", "/", token).rstrip("/").rpartition("/")[2]
+                    if "/" in token.replace("\\", "/") and last in branch_set:
+                        named.setdefault("branch:" + last,
+                                         {"tool": call["name"], "tool_use_id": call["id"]})
+            if occurrence is None:
+                continue
+            text = _normal_text(raw, home_text, windows)
+            for match in DIRECTORY_FORMS.finditer(text):
+                target = (match.group(1) or match.group(2)).strip("\"'")
+                if target:
+                    agent_bases.update(resolve(target, agent_bases))
+            remainder = list(text)
+            for match in occurrence.finditer(text):
+                end = match.end()
+                while end < len(text) and not SPLITTER.match(text[end]):
+                    end += 1
+                hit(_normal_path(text[match.start():end]), call)
+                remainder[match.start():end] = " " * (end - match.start())
+            tokens = set(SPLITTER.split("".join(remainder)))
+            tokens.update(_normal_text(argument, home_text, windows) for argument in whole)
+            for token in tokens:
+                if token:
+                    for candidate in resolve(token, agent_bases):
+                        hit(candidate, call)
+    return named
+
+
+QUOTED = re.compile(r'"([^"\n]{1,4096})"|\'([^\'\n]{1,4096})\'')
+ESCAPED = re.compile(r"(?:[^\s\"'\\]|\\.)*\\ (?:[^\s\"'\\]|\\.)*")
+
+
+def _whole_arguments(raw: str) -> list[str]:
+    """Quoted and backslash-escaped arguments, unsplit, since a path in one may hold a space."""
+    found = [first or second for first, second in QUOTED.findall(raw)]
+    found += [match.replace("\\ ", " ") for match in ESCAPED.findall(raw)]
+    return found
+
+
+def _classify_refs(entries: list[dict], *, default: dict[str, str | None], named: dict[str, dict] | None,
+                   unreadable: str | None) -> tuple[list[dict], list[dict]]:
+    """Held entries the record names, and listed ones; the default branch never holds."""
+    findings, listed = [], []
+    for entry in entries:
+        out = {"id": _finding_id(entry["item"], entry["path"], entry["change"]), **entry}
+        branch_default = default.get(entry["item"])
+        if branch_default and (
+                (entry["kind"] == "branch" and entry["branch"] == branch_default)
+                or (entry["kind"] == "working-copy" and entry["change"] == "moved"
+                    and entry["branch_before"] == entry["branch_after"] == branch_default)):
+            listed.append({**out, "reason": "default branch"})
+            continue
+        if unreadable is not None:
+            findings.append({**out, "reason": f"run record unreadable: {unreadable}"})
+            continue
+        if entry["kind"] == "working-copy":
+            folded = entry.get("folded_branch")
+            keys = ["copy:" + entry["path"], *(["branch:" + folded["branch"]] if folded else [])]
+        else:
+            keys = ["branch:" + entry["branch"]]
+        hit = next((named[key] for key in keys if named and key in named), None)
+        if hit is not None:
+            findings.append({**out, "reason": f"named in the run's record: {hit['tool']} call "
+                                              f"{hit['tool_use_id']}"})
+        else:
+            listed.append({**out, "reason": "not named in the run's record"})
+    return findings, listed
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -640,7 +1164,8 @@ class Comparison:
 
     def __init__(self, *, root: Path, env: dict[str, str] | None, launcher_plugin: Path,
                  own_output: Path, own_request: Path, holder_session_id: str | None,
-                 dispatch_id: str, home: Path | None = None, store: Path | None = None):
+                 dispatch_id: str, home: Path | None = None, store: Path | None = None,
+                 refs: bool = False):
         import dispatch_record as records
         self.root, self.own_output, self.dispatch_id = Path(root), Path(own_output), dispatch_id
         self.holder_session_id = holder_session_id
@@ -649,7 +1174,7 @@ class Comparison:
         self.plan = coverage_plan(root=self.root, home=self.home,
                                   env=dict(os.environ if env is None else env),
                                   launcher_plugin=launcher_plugin, store=self.store,
-                                  own_request=own_request)
+                                  own_request=own_request, refs=refs)
         self.before = None
         self.before_at = None
         self.started = None
@@ -662,7 +1187,15 @@ class Comparison:
         self.before_at = now()
         self.before = snapshot(self.plan, seconds=seconds, own_output=self.own_output)
 
-    def finish(self, seconds: float) -> dict[str, object]:
+    def finish(self, seconds: float, *, record: Path | None = None) -> dict[str, object]:
+        """The after-snapshot and comparison; a refs plan is never compared without its record.
+
+        No record means the launch never named what its run made, so the whole
+        comparison is recorded unrecorded. A record that exists but can't be read
+        still lets each entry found be held one by one, so the holder sees which.
+        """
+        if record is None and any(item["method"] == REFS_METHOD for item in self.plan):
+            raise ValueError("refs comparison needs the run's record")
         if self.before is None:
             raise RuntimeError("no before-snapshot was taken")
         after = snapshot(self.plan, seconds=seconds, own_output=self.own_output, before=self.before)
@@ -670,7 +1203,8 @@ class Comparison:
         result = compare(self.plan, self.before, after, root=self.root,
                          holder_session_id=self.holder_session_id, store=self.store,
                          own_dispatch=self.dispatch_id, before_at=self.before_at,
-                         after_at=after_at, elapsed_seconds=time.monotonic() - self.started)
+                         after_at=after_at, elapsed_seconds=time.monotonic() - self.started,
+                         record=record, home=self.home)
         for entry in result["coverage"]:
             state = self.before.get(entry["item"]) or {}
             entries = state.get("entries")
@@ -689,7 +1223,7 @@ def unrecorded(reason: str) -> dict[str, object]:
             # an unrecorded comparison are named alike in an account.
             "findings": [{"id": "unrecorded", "item": "comparison",
                           "path": "", "change": "unrecorded", "reason": reason}],
-            "attributed": []}
+            "attributed": [], "listed": []}
 
 
 CLOUD_NOT_RUN_REASON = "not run: a cloud builder runs on a remote machine and cannot reach this one"
