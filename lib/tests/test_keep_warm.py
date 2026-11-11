@@ -219,24 +219,38 @@ def test_ac6_only_a_resumable_local_claude_turn_starts(home, tmp_path, change):
     assert not (home / ".tradecraft" / "keep-warm").exists()
 
 
-def test_ac8_the_shim_is_recreated_for_the_ping_and_removed(home, tmp_path):
+RULE = implementer.LAUNCH_HELPER_RULE
+
+
+@pytest.mark.parametrize("text", [RULE + "\n\n@../../tree/AGENTS.md\n", RULE + "\n"])
+def test_ac8_the_launchs_instruction_file_is_recreated_whole_and_removed(home, tmp_path, text):
     git_dir = tmp_path / "gitdir"
     original = git_dir / "tradecraft-instructions-d1"
     git_dir.mkdir()
-    directory = keep_warm.after_turn(turn(home, tmp_path, shim={"directory": str(original),
-                                                                  "line": "@../../tree/AGENTS.md"}))
+    directory = keep_warm.after_turn(turn(home, tmp_path, shim={"directory": str(original), "text": text}))
     spec = json.loads((directory / "spec.json").read_bytes())
     spec["ping_argv"] = [*spec["ping_argv"][:-1], "--add-dir", str(original), "--no-session-persistence"]
     with keep_warm.ping_plan(spec, directory) as (_cwd, argv):
-        assert (original / "CLAUDE.md").read_text() == "@../../tree/AGENTS.md\n"
+        assert (original / "CLAUDE.md").read_bytes() == text.encode()
         assert str(original) in argv
     assert not original.exists()
     git_dir.rmdir()
     with keep_warm.ping_plan(spec, directory) as (_cwd, argv):
         placed = directory / original.name
         assert str(placed) in argv and str(original) not in argv
-        assert (placed / "CLAUDE.md").read_text() == "@" + (Path(spec["root"]) / "AGENTS.md").as_posix() + "\n"
+        moved = (placed / "CLAUDE.md").read_bytes().decode()
+        assert moved.startswith(RULE + "\n")
+        expected = "@" + (Path(spec["root"]) / "AGENTS.md").as_posix() + "\n" if "@" in text else ""
+        assert moved == RULE + "\n" + ("\n" + expected if expected else "")
     assert not placed.exists()
+
+
+def test_ac8_the_launcher_records_its_instruction_file_whole(tmp_path):
+    shim = tmp_path / "tradecraft-instructions-d1"
+    shim.mkdir()
+    text = RULE + "\n\n@../AGENTS.md\n"
+    (shim / "CLAUDE.md").write_bytes(text.encode())
+    assert implementer._shim_record(shim) == {"directory": str(shim), "text": text}
 
 
 def test_ac42_the_ping_runs_under_the_turns_login_and_writes_no_credential(home, tmp_path, monkeypatch):
@@ -270,6 +284,7 @@ def test_ac44_nothing_started_on_windows_opens_a_window(home, tmp_path, monkeypa
         calls.append(kwargs.get("creationflags"))
         return subprocess.CompletedProcess(argv, 0, b"1234\n", b"")
     monkeypatch.setattr(keep_warm.subprocess, "run", fake_run)
+    monkeypatch.setattr(keep_warm, "WINDOWS", True)
     keep_warm._windows_spawn(["x"], tmp_path, {})
     monkeypatch.setattr(keep_warm, "shutil", type("S", (), {"which": staticmethod(lambda _n: "gh")}))
     keep_warm._gh({"gh": "gh"}, "repos/owner/repo/issues/5")
@@ -286,7 +301,6 @@ def test_ac44_nothing_started_on_windows_opens_a_window(home, tmp_path, monkeypa
         def communicate(self, *_a, **_k):
             return stream((60000, 10)), b""
     monkeypatch.setattr(keep_warm.subprocess, "Popen", Fake)
-    monkeypatch.setattr(keep_warm.os, "name", "nt")
     directory = keep_warm.after_turn(turn(home, tmp_path))
     spec = json.loads((directory / "spec.json").read_bytes())
     assert keep_warm.run_ping(spec, directory)[0] == "read"
@@ -296,7 +310,7 @@ def test_ac44_nothing_started_on_windows_opens_a_window(home, tmp_path, monkeypa
 def test_ac44_the_windows_runner_is_windowless_python(monkeypatch, tmp_path):
     fake = tmp_path / "python.exe"
     (tmp_path / "pythonw.exe").write_bytes(b"")
-    monkeypatch.setattr(keep_warm.os, "name", "nt")
+    monkeypatch.setattr(keep_warm, "WINDOWS", True)
     monkeypatch.setattr(keep_warm.sys, "executable", str(fake))
     assert keep_warm.runner_python() == str(tmp_path / "pythonw.exe")
     assert keep_warm.runner_command(tmp_path)[1] == "-B"
@@ -687,6 +701,9 @@ def test_launcher_writes_the_spec_and_starts_the_runner_last(claude):
     assert keep_warm.ping_argv(request["requested"]["command"], home / ".tradecraft" / "keep-warm" / SESSION
                                / "ping-settings.json") == spec["ping_argv"]
     assert spec["turn_dispatch_id"] == request["dispatch_id"]
+    # Every launch's own instruction file is recorded whole, and the ping's argv names it.
+    assert spec["shim"]["text"].startswith(RULE + "\n")
+    assert spec["shim"]["directory"] in spec["ping_argv"]
     assert len(spawned) == 1 and spawned[0][0][-1] == str(home / ".tradecraft" / "keep-warm" / SESSION)
     assert set(spec["env_set"]) <= set(keep_warm.LAUNCH_ENV_NAMES)
 

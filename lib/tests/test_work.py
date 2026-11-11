@@ -12841,3 +12841,26 @@ def test_983_release_drops_the_changes_waiting_sessions(tmp_path, monkeypatch):
     work.release_registration("example/product", 12, holder, None)
     assert not (waiting["ours"] / "spec.json").exists()
     assert (waiting["other"] / "spec.json").exists()
+
+
+@pytest.mark.parametrize("texts", [(AFFIRMED,), (AFFIRMED, ARTIFACT)])
+def test_983_ac17_a_recorded_keep_warm_fault_changes_no_decision(tmp_path, monkeypatch, texts):
+    """AC6 and AC17: the entrance's decision JSON is the same with keep-warm state and a fault row as without."""
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    def reported():
+        fixture = state(*texts)
+        fixture.record_root = tmp_path / "dispatches"
+        dispatch_bundle(fixture.record_root, stage="build", session=SESSION)
+        return json.dumps(work._reported_decision(fixture, work.decide(fixture, RULES)).as_dict(),
+                          sort_keys=True), fixture
+    without, fixture = reported()
+    work.keep_warm.fault(f"{fixture.repo}#{fixture.issue_number}", "spawn", "forced keep-warm fault")
+    waiting = home / ".tradecraft" / "keep-warm" / "5f0c2c1e-8a3b-4d6e-9f10-2b3c4d5e6f70"
+    waiting.mkdir(parents=True)
+    (waiting / "spec.json").write_text(json.dumps(
+        {"work": f"{fixture.repo}#{fixture.issue_number}", "group": "build", "generation": "g"}))
+    assert work.keep_warm.record_path(fixture.repo, fixture.issue_number).read_text().count('"fault"') == 1
+    assert reported()[0] == without

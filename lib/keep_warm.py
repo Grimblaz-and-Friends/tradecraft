@@ -51,8 +51,8 @@ MAX_CAP_HOURS = 24
 # A ping still running then is killed and recorded failed.
 PING_TIMEOUT_SECONDS = 300
 # A first call that read nothing paid for the whole conversation, so it is a
-# miss whatever it wrote. Otherwise the allowance absorbs the one-time write of
-# about 9,500 tokens at a session's first resume.
+# miss whatever it wrote. Otherwise the allowance absorbs the one-time write at
+# a session's first resume.
 WRITE_ALLOWANCE_TOKENS = 20000
 WRITE_SHARE = 0.05
 # No ping when the last call's context is at least this share of the window:
@@ -85,6 +85,9 @@ UNREADABLE_RETRY_SECONDS = 60
 START_GRACE_SECONDS = 300
 CLEANUP_DAYS = 7
 CREATE_NO_WINDOW = 0x08000000
+# Whether what keep-warm starts must be windowless Windows processes; one
+# name, so the rule is tested on every platform.
+WINDOWS = os.name == "nt"
 WORK = re.compile(r"\A([^/\s#]+/[^/\s#]+)#([1-9][0-9]*)\Z")
 SESSION = re.compile(r"\A[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 
@@ -349,7 +352,7 @@ def last_assistant_at(transcript: Path) -> float | None:
 
 def runner_python() -> str:
     """pythonw.exe beside this Python on Windows, so no console window opens."""
-    if os.name == "nt":
+    if WINDOWS:
         windowless = Path(sys.executable).with_name("pythonw.exe")
         if windowless.is_file():
             return str(windowless)
@@ -489,7 +492,7 @@ def _posix_spawn(argv: list[str], cwd: Path, env: dict[str, str]) -> int:
 
 
 def spawn(argv: list[str], cwd: Path, env: dict[str, str]) -> int:
-    return (_windows_spawn if os.name == "nt" else _posix_spawn)(argv, cwd, env)
+    return (_windows_spawn if WINDOWS else _posix_spawn)(argv, cwd, env)
 
 
 def start_runner(directory: Path, env: dict[str, str] | None = None, *, spawner=None) -> bool:
@@ -650,17 +653,22 @@ def ping_plan(spec: dict, directory: Path):
     shim = spec.get("shim")
     made = None
     if shim:
+        # The launch's own instruction file, re-created whole for the ping.
         original = Path(shim["directory"])
+        text = shim["text"] if "text" in shim else shim.get("line", "") + "\n"
         if original.parent.is_dir() and cwd == root:
-            made, line = original, shim["line"]
+            made = original
         else:
             # A relative import resolves only from its own directory; the
-            # absolute form is the launcher's own second placement.
+            # absolute form is the launcher's own second placement. Every
+            # other line stays as the launch wrote it.
             made = directory / original.name
-            line = "@" + (cwd / "AGENTS.md").as_posix().replace(" ", "\\ ")
+            absolute = "@" + (cwd / "AGENTS.md").as_posix().replace(" ", "\\ ") + "\n"
+            text = "".join(absolute if line.startswith("@") else line
+                           for line in text.splitlines(keepends=True))
             argv = _replace_add_dir(argv, str(original), str(made))
         made.mkdir(exist_ok=True)
-        (made / "CLAUDE.md").write_bytes((line + "\n").encode("utf-8"))
+        (made / "CLAUDE.md").write_bytes(text.encode("utf-8"))
     try:
         yield cwd, argv
     finally:
@@ -725,7 +733,7 @@ def run_ping(spec: dict, directory: Path) -> tuple[str, str, dict]:
     except (KeepWarmError, OSError) as exc:
         return "failed", str(exc), {"calls": [], "total": {}}
     try:
-        posix = os.name != "nt"
+        posix = not WINDOWS
         process = subprocess.Popen(argv, cwd=cwd, env=ping_environment(spec), stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    start_new_session=posix,
@@ -749,7 +757,7 @@ def run_ping(spec: dict, directory: Path) -> tuple[str, str, dict]:
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
-    if os.name == "nt":
+    if WINDOWS:
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW, timeout=30)
@@ -779,7 +787,7 @@ def _gh(spec: dict, endpoint: str) -> dict | None:
     try:
         result = subprocess.run([gh, "api", endpoint], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, timeout=GH_SECONDS,
-                                creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
+                                creationflags=CREATE_NO_WINDOW if WINDOWS else 0)
         value = json.loads(result.stdout) if result.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
         return None

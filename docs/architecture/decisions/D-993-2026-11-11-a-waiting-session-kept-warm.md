@@ -1,4 +1,4 @@
-# D-983 — A waiting session kept warm
+# D-993 — A waiting session kept warm
 
 **Purpose:** record why #983 keeps a waiting local Claude builder or author in the model's one-hour cache with an outside resume that saves nothing, how that resume is bounded, and which approaches were dropped. **Audience:** a future session changing `lib/keep_warm.py`, the launcher's start and stop calls, the cost report's keep-warm line, or the lab's desktop keep-warm mod. **Success:** that reader can recover what was chosen over what without the issue.
 
@@ -7,7 +7,7 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 ## What was chosen over what
 
 - **Keep idle sessions warm, over making waking cheap** (the owner, 2026-11-10: "A, keep warm"). Shrinking a session before it waits, or sending a small late turn to a fresh session, was not built.
-- **An outside resume that saves nothing, over an in-session turn,** for local builders and authors. `--no-session-persistence` leaves the transcript and the session's running total as they were; a premise run read 105,244 tokens and wrote none. A desktop session can't be reached that way (an outside ping read nothing and wrote all 162,530 tokens), so the lab's desktop mod submits a short visible turn instead, by the owner's ruling (2026-11-11: "Yes, both").
+- **An outside resume that saves nothing, over an in-session turn,** for local builders and authors. `--no-session-persistence` leaves the transcript and the session's running total as they were; a premise run read 105,244 tokens and wrote none. A desktop session can't be reached that way (an outside ping read nothing and wrote all 162,530 tokens), so the lab's desktop mod submits a short visible turn instead, by the owner's ruling (2026-11-10: "Yes, both").
 - **Tools refused by a hook, over a flag.** Every tool-list flag changes what the model is sent, so the ping would write its conversation again.
 - **The stop at the launcher's start, over the stage call.** The wait between a stage call and its launch ran 35 to 69 minutes in the record (#978).
 - **A cap of eight hours.** Counting every unreturned session as pinged for the whole cap, the four-week net saving peaked there.
@@ -25,7 +25,7 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 ## Calls made inside the rows
 
 - **The entrance names a start token.** It cannot know the launcher's dispatch id before the launch, so it passes `--keep-warm-token` and starts the spec whose `start.pending` carries it.
-- **A shim placed outside its original directory imports the ping directory's `AGENTS.md` by absolute path.** A relative import resolves only from its own directory; the absolute form is the launcher's own second placement.
+- **The launch's own instruction file is re-created whole for the ping.** Every Claude launch has one, opening with the launch's helper rule, so the ping is sent what its turns were. Where it can't go back to its own directory, its import line, if it has one, becomes an absolute import of the ping directory's `AGENTS.md`, because a relative import resolves only from its own directory; every other line is kept.
 - **The desktop mod refuses tools through the mod API's `tool.call` hook during its own turn,** with the core's turn-end check as a second line.
 
 The tests are `lib/tests/test_keep_warm.py`, the keep-warm tests in `lib/tests/test_change_cost.py` and `lib/tests/test_work.py`, and `tools/tests/test_keep_warm_desktop.py`.

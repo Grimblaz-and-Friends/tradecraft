@@ -183,8 +183,7 @@ def _shim_record(shim: Path | None) -> dict[str, str] | None:
     if shim is None:
         return None
     try:
-        return {"directory": str(shim),
-                "line": (shim / "CLAUDE.md").read_bytes().decode("utf-8").rstrip()}
+        return {"directory": str(shim), "text": (shim / "CLAUDE.md").read_bytes().decode("utf-8")}
     except (OSError, UnicodeError):
         return None
 
