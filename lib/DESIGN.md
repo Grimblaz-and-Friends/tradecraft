@@ -170,6 +170,7 @@ Before anything is built or launched:
 - The `gh` login stays because every step's reads need it; the command check, not the missing login, is what refuses a `gh` write.
 - The use consumer keeps `--safe-mode`, which skips settings hooks, because dropping it would change what the consumer loads; the shell prefix still runs under it.
 - A child loads only user setting sources because the product tree's project or local settings could set `disableAllHooks` or an `env` block and turn its check off.
+- An implementer's child carries its parent's plugin exclusions, while a use consumer's or a Codex launch's child keeps the owner's plugins: neither parent has a plugin list to hand down (the use consumer runs `--safe-mode`, Codex runs no Claude plugin discovery), and a child's GitHub bound rests on its settings' hook, its environment and `--strict-mcp-config`, not on which plugins it loads.
 - The check is a tripwire on an unfenced shell, not a fence: a write from inside a script, persist-changes' own push included, is not seen, and nothing checks GitHub after a run. The run record is what makes every refusal it does see visible.
 - A cloud turn cannot carry a grant because its routine's text is fixed and allows no write beyond the change and report branches; a grant it named would be a write the run is told not to make.
 - A push grant names one ref, so a ref-wide push would carry refs no row named.

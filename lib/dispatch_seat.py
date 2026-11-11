@@ -448,6 +448,8 @@ def use_consumer_bound(args, root, temporary, allocation_seconds):
         "use", repository=github_allowance.repository_of(args.work), branch=None, pull_request=None)
     base = claude_launch_env(os.environ, allocation_seconds)
     try:
+        # No plugin exclusions: the use consumer runs --safe-mode, which loads no plugin list to
+        # hand down, and its child's GitHub bound rests on the hook and environment, not plugins.
         bound = github_allowance.prepare(temporary, allowance, carrier="shell-prefix", root=root, env=base)
     except github_allowance.BoundError as exc:
         raise DispatchError(f"the use consumer's GitHub write check could not be prepared: {exc}") from exc

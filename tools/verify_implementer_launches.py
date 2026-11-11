@@ -700,6 +700,9 @@ def main():
     parser = argparse.ArgumentParser(description="Run opt-in native launch acceptance checks without dispatching a pipeline stage.")
     parser.add_argument("check", choices=("operations", "claude-context", "inventory", "canaries", "claude-origins", "claude-mods", "legacy-resume", *BOUND_CASES))
     parser.add_argument("--base", type=Path)
+    # A bound case proves the check only on the writes the model attempts, so it needs a model that
+    # runs each instructed command as written; a case's summary lists what was attempted and refused,
+    # so check it for a skipped arm. The default is the small, fast model; --model compares another.
     parser.add_argument("--model", default="claude-haiku-4-5", help="the write-bound cases only")
     args = parser.parse_args()
     base = args.base or Path(tempfile.mkdtemp(prefix="tc886-build-check-"))

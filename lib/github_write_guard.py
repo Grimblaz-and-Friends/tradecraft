@@ -690,7 +690,8 @@ def _destination_refs(refspecs: list[str], cwd: str | None, remote: str
             destination = "refs/tags/" + spec
         else:
             return None
-        # A tag destination is judged like any other ref: only a granted tag is allowed.
+        # A tag needs no case of its own: its ref is matched against the grants like any other,
+        # so only a granted tag passes.
         refs.append((destination, None))
     return refs
 
