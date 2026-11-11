@@ -1553,8 +1553,8 @@ def _marker_value_error(marker: Marker) -> str | None:
             return "launch account dispatch is not a dispatch id"
         try:
             launch_account_payload(marker.body)
-        except ValueError as exc:
-            return str(exc)
+        except Exception as exc:  # any comment's text can raise; it makes that comment malformed, never the read
+            return str(exc) or type(exc).__name__
     if marker.name == "floor" and values.get("status") != "pass":
         return "floor status is invalid"
     if marker.name == "use":
@@ -3960,18 +3960,108 @@ def launch_account_payload(body: str) -> dict[str, object]:
 
 
 def _launch_accounts(state: WorkState) -> list[Marker]:
-    return [marker for marker in _state_markers(state) if marker.name == "launch-account"
-            and marker.author.lower() in state.config.marker_producers
-            and marker.surface == "issue-comment"
-            and _attribute_error(marker) is None and _marker_value_error(marker) is None]
+    # Design: lib/DESIGN.md#launch-accounts
+    """Every launch-account claim, in posting order; whether one counts is judged per launch."""
+    found = [marker for marker in _state_markers(state) if marker.name == "launch-account"]
+    # Posting time, never an edit, decides which naming governs.
+    return [marker for _key, marker in sorted(
+        ((_marker_recency(marker, position), marker) for position, marker in enumerate(found)),
+        key=lambda pair: pair[0])]
+
+
+def _account_fault(state: WorkState, marker: Marker) -> tuple[str, str] | None:
+    # Design: lib/DESIGN.md#launch-accounts
+    """Why a launch-account comment counts toward no launch at all, in validate_marker_claims' order."""
+    if marker.author.lower() not in state.config.marker_producers:
+        return "untrusted-author", f"marker producer is not authorized: {marker.author}"
+    error = _attribute_error(marker)
+    if error is not None:
+        return "malformed", error
+    if marker.surface != "issue-comment":
+        return "wrong-surface", f"marker is not permitted on {marker.surface}"
+    error = _marker_value_error(marker)
+    if error is not None:
+        return "malformed", error
+    return None
+
+
+def _account_names(marker: Marker) -> list[str] | None:
+    try:
+        return [finding["id"] for finding in launch_account_payload(marker.body)["findings"]]
+    except Exception:  # an untrusted comment's text can raise anything; only that comment goes unread
+        return None
+
+
+def _launch_account_reading(accounts: list[tuple], dispatch: object, findings: list[dict],
+                            flagged: set, recorded_at: datetime | None) -> dict[str, object]:
+    # Design: lib/DESIGN.md#launch-accounts
+    """Which comments count toward one launch, which governs each finding, and what is still owed."""
+    governing: dict[str, str] = {}
+    namings: dict[str, int] = {}
+    counted, uncounted = [], []
+    for marker, fault, names in accounts:
+        other = marker.attributes.get("dispatch")
+        readable = re.fullmatch(r"[0-9a-f]{32}", other or "") is not None
+        if other != dispatch and readable and not flagged.intersection(names or ()):
+            continue  # a comment for another launch concerns this one only when it names this launch's findings
+        source = f"{marker.surface}:{marker.source_id}"
+        posted = _time(marker.timestamp)
+        reason = fault
+        if reason is None and other != dispatch:
+            reason = "another-launch", f"its dispatch is {other}"
+        if reason is None and (recorded_at is None or posted is None or posted <= recorded_at):
+            if posted is None:
+                reason = "before-findings", f"its posting time could not be read: {marker.timestamp!r}"
+            elif recorded_at is None:
+                reason = "before-findings", "the time this launch's findings were recorded could not be read"
+            else:
+                reason = "before-findings", (f"posted at {marker.timestamp}, not after the findings were "
+                                             f"recorded at {recorded_at.isoformat()}")
+        if reason is None:
+            # A comment naming what its launch didn't flag was most likely written for another, so none of it counts.
+            unflagged = sorted(set(names) - flagged)
+            if unflagged:
+                # Ten ids at most: a comment written for another launch could name thousands.
+                reason = "names-unflagged", (f"names {len(unflagged)} id(s) the launch didn't flag: "
+                                             + ", ".join(unflagged[:10]))
+        entry = {"source": source, "author": marker.author, "posted": marker.timestamp}
+        if reason is not None:
+            uncounted.append({**entry, "reason": reason[0], "detail": reason[1]})
+            continue
+        counted.append(entry)
+        for identity in names:
+            governing[identity] = source
+            namings[identity] = namings.get(identity, 0) + 1
+    owed = []
+    for finding in findings:
+        if finding.get("released_by") == "tree" or finding.get("id") not in governing:
+            value = {key: finding.get(key) for key in ("id", "item", "path", "change")}
+            if finding.get("released_by"):
+                value["released_by"] = finding["released_by"]
+            owed.append(value)
+    # Only repeats are listed in governing, because listing every finding would double a flood's report.
+    return {"owed": owed, "accounts": counted, "uncounted": uncounted,
+            "governing": {key: value for key, value in governing.items() if namings[key] > 1}}
+
+
+def _local_tree_failed(run: dict) -> bool:
+    for attempt in run.get("attempts") or []:
+        cloud = attempt.get("cloud") if isinstance(attempt, dict) else None
+        checks = cloud.get("cloud_checks") if isinstance(cloud, dict) else None
+        check = checks.get("local_tree") if isinstance(checks, dict) else None
+        if isinstance(check, dict) and check.get("ok") is False:
+            return True
+    return False
 
 
 def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
+    # Design: lib/DESIGN.md#launch-accounts
     """Each writing launch's comparison, and whether the holder has accounted for it."""
     try:
         rows = lifecycle.launch_bundles(state.record_root or records.default_record_root(),
                                         f"{state.repo}#{state.issue_number}", LAUNCH_FINDING_STAGES)
-        accounts = _launch_accounts(state)
+        accounts = [(marker, _account_fault(state, marker), _account_names(marker))
+                    for marker in _launch_accounts(state)]
     except Exception as exc:
         return {"schema_version": 1, "status": "unproved",
                 "reason": f"{type(exc).__name__}: {exc}", "bundles": []}
@@ -4000,34 +4090,32 @@ def _evaluate_launch_findings(state: WorkState) -> dict[str, object]:
             status = "unrecorded"
         elif comparison.get("status") in LAUNCH_CLEAR_STATUSES and not cloud_findings:
             bundles.append({**entry, "state": "clear", "findings": [],
-                            "attributed": comparison.get("attributed") or [], "account": None})
+                            "attributed": comparison.get("attributed") or []})
             continue
         else:
             findings = [finding for finding in comparison.get("findings") or [] if isinstance(finding, dict)]
             findings += cloud_findings
             status = "account-required"
-        ids = {finding.get("id") for finding in findings}
+        flagged = {finding.get("id") for finding in findings}
+        if isinstance(comparison, dict) and _local_tree_failed(run):
+            # A local-tree finding the tree has since released still counts as flagged,
+            # so a comment that named it while it was owed keeps counting.
+            flagged.add("cloud-check:local_tree")
         # An account counts only once its findings exist: after the run completed,
         # or, for an unrecorded comparison, after the launch began.
         recorded_at = _time(run.get("completed_at") if isinstance(comparison, dict)
                             else request.get("launched_at"))
-        account = None
-        for marker in accounts:
-            if marker.attributes.get("dispatch") != request.get("dispatch_id"):
-                continue
-            posted = _time(marker.timestamp)
-            if recorded_at is None or posted is None or posted <= recorded_at:
-                continue
-            named = {finding["id"] for finding in launch_account_payload(marker.body)["findings"]}
-            if named == ids and not any(finding.get("released_by") == "tree" for finding in findings):
-                account = {"source": f"{marker.surface}:{marker.source_id}", "author": marker.author}
-        bundles.append({**entry, "state": "accounted" if account else status, "findings": findings,
-                        "attributed": (comparison or {}).get("attributed") or [], "account": account})
+        reading = _launch_account_reading(accounts, request.get("dispatch_id"), findings, flagged, recorded_at)
+        # A comparison that isn't clear holds even with no findings listed, until a counting comment exists.
+        released = not reading["owed"] and (findings or reading["accounts"])
+        bundles.append({**entry, "state": "accounted" if released else status, "findings": findings,
+                        "attributed": (comparison or {}).get("attributed") or [], **reading})
     held = [value for value in bundles if value["state"] in {"account-required", "unrecorded"}]
     return {"schema_version": 1, "status": "held" if held else "clear", "bundles": bundles}
 
 
 def _launch_account_refusal(state: WorkState, stage: str) -> Decision | None:
+    # Design: lib/DESIGN.md#launch-accounts
     report = _evaluate_launch_findings(state)
     if report["status"] == "clear":
         return None
@@ -4035,13 +4123,16 @@ def _launch_account_refusal(state: WorkState, stage: str) -> Decision | None:
         detail = f"Before {stage}, launch findings could not be read: {report['reason']}."
     else:
         owed = [{"bundle": value["bundle"], "dispatch_id": value["dispatch_id"], "state": value["state"],
-                 "findings": [{key: finding.get(key) for key in ("id", "item", "path", "change")}
-                              for finding in value["findings"]]}
+                 "owed": value["owed"], "accounts": [account["source"] for account in value["accounts"]],
+                 "uncounted": value["uncounted"]}
                 for value in report["bundles"] if value["state"] in {"account-required", "unrecorded"}]
         detail = (f"Before {stage}, the holder owes a launch-account for each launch comparison finding "
                   + json.dumps(owed, ensure_ascii=True, sort_keys=True)
                   + ". Name every finding's party; builder damage names where the owner was told "
-                  "and the practice's product-incident filing.")
+                  "and the practice's product-incident filing. An account may run across several "
+                  "comments for the same launch, the later naming governing a repeat; a finding "
+                  "released by the tree stays listed until the tree contains the returned tip "
+                  "(launch-findings reference).")
     return Decision("launch-account", False, None, "launch-findings-unaccounted", detail,
                     status="holder-owned")
 
