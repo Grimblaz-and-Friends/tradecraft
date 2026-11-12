@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import posixpath
@@ -526,30 +527,57 @@ def _moment(value) -> datetime | None:
     return moment if moment.tzinfo else None
 
 
-def recorded_runs(store: Path, own_dispatch: str) -> list[dict]:
-    """Every other recorded run, with what attribution needs from it."""
+def recorded_runs(store: Path, own_dispatch: str, *, after_read=None) -> list[dict]:
+    """Every other recorded run, with what attribution needs from it.
+
+    ``after_read`` is called after each run record is read, so a caller can bound the walk.
+    """
     runs = []
     if not Path(store).is_dir():
         return runs
     for request_path in Path(store).rglob("*.request.json"):
-        try:
-            request = json.loads(request_path.read_bytes())
-        except (OSError, UnicodeError, ValueError):
-            continue
-        if not isinstance(request, dict) or request.get("dispatch_id") == own_dispatch:
-            continue
-        base = request_path.name.removesuffix(".request.json")
-        try:
-            run = json.loads(request_path.with_name(base + ".run.json").read_bytes())
-        except (OSError, UnicodeError, ValueError):
-            run = {}
-        runs.append({"dispatch_id": request.get("dispatch_id"), "root": request.get("root"),
-                     "holder_session_id": request.get("holder_session_id"),
-                     "work": request.get("work"),
-                     "opened": _moment(request.get("launched_at")),
-                     "closed": _moment(run.get("completed_at")) if isinstance(run, dict) else None,
-                     "run": run if isinstance(run, dict) else {}})
+        run = _recorded_run(request_path, own_dispatch)
+        if after_read is not None:
+            after_read()
+        if run is not None:
+            runs.append(run)
     return runs
+
+
+def _recorded_run(request_path: Path, own_dispatch: str) -> dict | None:
+    try:
+        request = json.loads(request_path.read_bytes())
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not isinstance(request, dict) or request.get("dispatch_id") == own_dispatch:
+        return None
+    base = request_path.name.removesuffix(".request.json")
+    try:
+        run = json.loads(request_path.with_name(base + ".run.json").read_bytes())
+    except (OSError, UnicodeError, ValueError):
+        run = {}
+    return {"dispatch_id": request.get("dispatch_id"), "root": request.get("root"),
+            "holder_session_id": request.get("holder_session_id"),
+            "work": request.get("work"),
+            "opened": _moment(request.get("launched_at")),
+            "closed": _moment(run.get("completed_at")) if isinstance(run, dict) else None,
+            "run": run if isinstance(run, dict) else {}}
+
+
+def overlapping_runs(store: Path, own_dispatch: str, started: datetime, ended: datetime,
+                     end: float = math.inf) -> list[dict]:
+    """The other recorded runs that overlapped this run's window, worked out once.
+
+    Deciding an overlap may read another launcher's process, so the allowance is
+    checked after each decision as well as after each run record read.
+    Design: lib/DESIGN.md#the-launch-comparisons-crediting-and-allowance
+    """
+    live = []
+    for run in recorded_runs(store, own_dispatch, after_read=lambda: _check(end)):
+        if _overlaps(run, started, ended):
+            live.append(run)
+        _check(end)
+    return live
 
 
 def _last_checkpoint(run: dict) -> datetime | None:
@@ -594,19 +622,28 @@ def _diff_entries(item: str, top: str, before: dict, after: dict, method: str) -
     return changes
 
 
+# The owner's limit on everything between the after-walk and the final record.
+COMPARING_SECONDS = 120.0
+OWN_WORK, FOUND = "own", "found"
+
+
 def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_session_id: str | None,
             store: Path, own_dispatch: str, before_at: str, after_at: str,
             elapsed_seconds: float, record: Path | None = None,
-            home: Path | None = None) -> dict[str, object]:
+            home: Path | None = None, end: float | None = None,
+            allowance: str | None = None) -> dict[str, object]:
     """Findings are changes no other live recorded run accounts for (row 2).
 
     Working-copy and branch changes are findings only when the run's record
-    names them; the rest are ``listed``.
+    names them; the rest are ``listed``. Past ``end`` nothing more is examined:
+    each item with a change left unexamined is ``uncompared``, never clean.
+    Design: lib/DESIGN.md#the-launch-comparisons-crediting-and-allowance
     """
+    limit = math.inf if end is None else end
+    label = allowance or f"{max(0.0, limit - time.monotonic()):.1f}s"
     started, ended = _moment(before_at), _moment(after_at)
-    changes, coverage = [], []
-    refs_entries, refs_attributed, defaults, known_copies = [], [], {}, []
-    live = None
+    changes, coverage, refs = [], [], []
+    defaults, known_copies = {}, []
     for item in plan:
         name, top = item["item"], item["path"]
         first, second = before.get(name, {}), after.get(name, {})
@@ -629,12 +666,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             defaults[name] = first.get("default") or second.get("default")
             for state in (first, second):
                 known_copies += [copy["path"] for copy in (state.get("copies") or {}).values()]
-            if live is None:
-                live = ([run for run in recorded_runs(store, own_dispatch)
-                         if _overlaps(run, started, ended)] if started and ended else [])
-            entries, attributed_refs = _refs_changes(name, first, second, Path(root), live)
-            refs_entries += entries
-            refs_attributed += attributed_refs
+            refs.append((name, first, second))
             continue
         if item["method"] in {"sha256", "registry"}:
             if first["status"] == "absent":
@@ -659,20 +691,73 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         changes.extend(_diff_entries(name, top, first.get("entries") or {},
                                      second.get("entries") or {}, item["method"]))
     own_root = Path(root).resolve(strict=False)
-    runs = None
-    findings, attributed = [], []
-    for change in changes:
-        if change["change"] != "uncompared" and change["item"] not in {"registry", "own-request"} \
-                and contains(own_root, Path(change["path"])):
-            continue  # This run's own edits are its own work.
-        owner = None
-        if change["change"] != "uncompared" and started and ended:
-            if runs is None:
-                runs = recorded_runs(store, own_dispatch)
-            owner = _attribute(change, runs, started, ended, holder_session_id)
+    # A change still None when the allowance ends was never examined, so nothing may call it credited or clean.
+    outcome: list = [FOUND if change["change"] == "uncompared" else None for change in changes]
+    # Each repository's copy and branch entries, worked out one repository at a time.
+    refs_found: dict[str, tuple[list[dict], list[dict]]] = {}
+    has_refs = any(item["method"] == REFS_METHOD for item in plan)
+    unreadable, named, skipped, expired = None, None, 0, False
+    try:
+        # Sorted in memory first, so a slow store read never leaves the run's own edits unexamined.
+        needs = []
+        for index, change in enumerate(changes):
+            if outcome[index] is not None:
+                continue
+            if change["item"] not in {"registry", "own-request"} and contains(own_root, Path(change["path"])):
+                outcome[index] = OWN_WORK  # This run's own edits are its own work.
+            elif not (started and ended) or (change["item"] in {"registry", "own-request", "dispatch-records"}
+                                              and change["change"] != "row-changed"):
+                outcome[index] = FOUND  # No other run could account for it.
+            else:
+                needs.append(index)
+            _check(limit)
+        # Without the list first, so a repository the allowance never reaches again still
+        # has entries to list and count; one repository's working out is never interrupted.
+        for name, first, second in refs:
+            refs_found[name] = _refs_changes(name, first, second, Path(root), [])
+            _check(limit)
+        live = []
+        if started and ended and (needs or any(entries for entries, _ in refs_found.values())):
+            live = overlapping_runs(store, own_dispatch, started, ended, limit)
+            for name, first, second in refs:
+                if refs_found[name][0]:  # Nothing to credit where nothing changed beyond the run's own.
+                    refs_found[name] = _refs_changes(name, first, second, Path(root), live)
+                    _check(limit)
+        for index in needs:
+            outcome[index] = _attribute(changes[index], live, holder_session_id) or FOUND
+            _check(limit)
+        if has_refs:
+            try:
+                if record is None:
+                    raise ValueError("no record was passed")
+                calls, skipped = read_run_record(record, end=limit)
+            except ValueError as exc:
+                unreadable = str(exc)
+            refs_entries = [entry for entries, _ in refs_found.values() for entry in entries]
+            if unreadable is None and refs_entries:
+                names = set()
+                for entry in refs_entries:
+                    names.add(entry.get("branch") or "")
+                    names.add((entry.get("folded_branch") or {}).get("branch") or "")
+                named = named_targets(calls, root=Path(root), copies=known_copies,
+                                      branches=sorted(names - {""}), home=str(home or Path.home()),
+                                      end=limit)
+    except _Expired:
+        expired = True
+    ran_out = f"comparison allowance ran out ({label})"
+    findings, attributed, listed = [], [], []
+    examined: dict[str, list[int]] = {}
+    for change, result in zip(changes, outcome):
+        counts = examined.setdefault(change["item"], [0, 0])
+        counts[1] += 1
+        if result is None:
+            continue
+        counts[0] += 1
         rows = change.pop("rows", None)
-        if owner is not None:
-            attributed.append({**{k: change[k] for k in ("item", "path", "change")}, "to": owner})
+        if result == OWN_WORK:
+            continue
+        if result != FOUND:
+            attributed.append({**{k: change[k] for k in ("item", "path", "change")}, "to": result})
             continue
         entry = {"id": _finding_id(change["item"], change["path"], change["change"]),
                  "item": change["item"], "path": change["path"], "change": change["change"],
@@ -680,30 +765,36 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         if rows is not None:
             entry["reason"] = "registry row added, removed or changed"
         findings.append(entry)
-    result: dict[str, object] = {}
-    listed: list[dict] = []
-    if any(item["method"] == REFS_METHOD for item in plan):
-        unreadable, named, skipped = None, None, 0
-        try:
-            if record is None:
-                raise ValueError("no record was passed")
-            calls, skipped = read_run_record(record)
-        except ValueError as exc:
-            unreadable = str(exc)
-        if unreadable is None and refs_entries:
-            names = set()
-            for entry in refs_entries:
-                names.add(entry.get("branch") or "")
-                names.add((entry.get("folded_branch") or {}).get("branch") or "")
-            named = named_targets(calls, root=Path(root), copies=known_copies,
-                                  branches=sorted(names - {""}), home=str(home or Path.home()))
-        held, listed = _classify_refs(refs_entries, default=defaults, named=named,
-                                      unreadable=unreadable)
+    for name, (entries, credited) in refs_found.items():
+        attributed += credited
+        if expired:
+            # Listing is not crediting, and the default-branch rule needs neither the list nor the record.
+            defaulted = [{"id": _finding_id(e["item"], e["path"], e["change"]), **e,
+                          "reason": "default branch"} for e in entries if _on_default(e, defaults)]
+            listed += defaulted
+            examined[name] = [len(credited) + len(defaulted), len(credited) + len(entries)]
+    # A repository whose entries were never worked out stays in the record, uncompared if it changed.
+    unworked = {name for name, first, second in refs if name not in refs_found
+                and (first.get("copies"), first.get("branches")) != (second.get("copies"), second.get("branches"))}
+    if has_refs and not expired:
+        held, listed = _classify_refs([entry for entries, _ in refs_found.values() for entry in entries],
+                                      default=defaults, named=named, unreadable=unreadable)
         findings += held
-        attributed += refs_attributed
-        result["run_record"] = {"path": str(record) if record is not None else None,
-                                "status": "unreadable" if unreadable else "read",
-                                "reason": unreadable}
+    for entry in coverage:
+        done, total = examined.get(entry["item"], (0, 0))
+        if entry["status"] == "uncompared" or (done == total and entry["item"] not in unworked):
+            continue
+        reason = (f"{ran_out}: none of its working copies and branches were examined"
+                  if entry["item"] in unworked else f"{ran_out}: {done} of {total} changes examined")
+        entry.update(status="uncompared", reason=reason)
+        path = next(item["path"] for item in plan if item["item"] == entry["item"])
+        findings.append({"id": _finding_id(entry["item"], path, "uncompared"), "item": entry["item"],
+                         "path": path, "change": "uncompared", "reason": reason})
+    result: dict[str, object] = {}
+    if has_refs:
+        status = "not-read" if expired else "unreadable" if unreadable else "read"
+        result["run_record"] = {"path": str(record) if record is not None else None, "status": status,
+                                "reason": ran_out if expired else unreadable}
         result["record_lines_skipped"] = skipped
     findings.sort(key=lambda value: value["id"])
     listed.sort(key=lambda value: value["id"])
@@ -713,9 +804,8 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             "listed": listed, **result}
 
 
-def _attribute(change: dict, runs: list[dict], started: datetime, ended: datetime,
-               holder_session_id: str | None) -> dict | None:
-    live = [run for run in runs if _overlaps(run, started, ended)]
+def _attribute(change: dict, live: list[dict], holder_session_id: str | None) -> dict | None:
+    """The overlapping run that accounts for ``change``, if any."""
     if change["item"] == "registry" and change["change"] == "row-changed":
         before_row, after_row = change.get("rows") or (None, None)
         for row in (before_row, after_row):
@@ -958,7 +1048,7 @@ def _leaves(value) -> list[str]:
     return []
 
 
-def read_run_record(path: Path) -> tuple[list[dict], int]:
+def read_run_record(path: Path, *, end: float | None = None) -> tuple[list[dict], int]:
     """Every tool call in the run's stream, by the recipient or a helper, in order.
 
     The record is unreadable when it can't be opened, or when any line but a
@@ -970,6 +1060,7 @@ def read_run_record(path: Path) -> tuple[list[dict], int]:
         data = Path(path).read_bytes()
     except OSError as exc:
         raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+    limit = math.inf if end is None else end
     lines = data.split(b"\n")
     last = lines.pop()
     events, skipped = [], 0
@@ -981,6 +1072,7 @@ def read_run_record(path: Path) -> tuple[list[dict], int]:
         if not isinstance(event, dict):
             raise ValueError(f"line {number} is not a JSON object")
         events.append(event)
+        _check(limit)
     if last.strip():
         try:
             event = json.loads(last.decode("utf-8"))
@@ -990,15 +1082,16 @@ def read_run_record(path: Path) -> tuple[list[dict], int]:
             events.append(event)
         else:
             skipped = 1
+        _check(limit)
     calls = []
     for event in events:
-        if event.get("type") != "assistant":
-            continue
-        for block in _blocks(event):
-            if block.get("type") == "tool_use":
-                calls.append({"id": block.get("id"), "name": block.get("name"),
-                              "agent": event.get("parent_tool_use_id"),
-                              "strings": _leaves(block.get("input"))})
+        if event.get("type") == "assistant":
+            for block in _blocks(event):
+                if block.get("type") == "tool_use":
+                    calls.append({"id": block.get("id"), "name": block.get("name"),
+                                  "agent": event.get("parent_tool_use_id"),
+                                  "strings": _leaves(block.get("input"))})
+        _check(limit)  # Turning events into calls is still the stream's read.
     return calls, skipped
 
 
@@ -1035,7 +1128,8 @@ def _absolute(token: str) -> bool:
 
 
 def named_targets(calls: list[dict], *, root: Path, copies: list[str], branches: list[str],
-                  home: str, windows: bool = os.name == "nt") -> dict[str, dict]:
+                  home: str, windows: bool = os.name == "nt", end: float | None = None
+                  ) -> dict[str, dict]:
     """Which copies (``copy:<path>``) and branches (``branch:<name>``) the run's tool calls name.
 
     A branch is named by its whole short name or ``refs/heads/<name>`` between
@@ -1078,6 +1172,7 @@ def named_targets(calls: list[dict], *, root: Path, copies: list[str], branches:
             return [_normal_path(token)]
         return [_normal_path(base + "/" + token) for base in agent_bases]
 
+    limit = math.inf if end is None else end
     for call in calls:
         agent_bases = bases.setdefault(call["agent"], {root_text})
         for raw in call["strings"]:
@@ -1111,6 +1206,7 @@ def named_targets(calls: list[dict], *, root: Path, copies: list[str], branches:
                 if token:
                     for candidate in resolve(token, agent_bases):
                         hit(candidate, call)
+        _check(limit)
     return named
 
 
@@ -1125,17 +1221,22 @@ def _whole_arguments(raw: str) -> list[str]:
     return found
 
 
+def _on_default(entry: dict, default: dict[str, str | None]) -> bool:
+    """A move of the default branch, which every session sharing it may make."""
+    branch_default = default.get(entry["item"])
+    return bool(branch_default) and (
+        (entry["kind"] == "branch" and entry["branch"] == branch_default)
+        or (entry["kind"] == "working-copy" and entry["change"] == "moved"
+            and entry["branch_before"] == entry["branch_after"] == branch_default))
+
+
 def _classify_refs(entries: list[dict], *, default: dict[str, str | None], named: dict[str, dict] | None,
                    unreadable: str | None) -> tuple[list[dict], list[dict]]:
     """Held entries the record names, and listed ones; the default branch never holds."""
     findings, listed = [], []
     for entry in entries:
         out = {"id": _finding_id(entry["item"], entry["path"], entry["change"]), **entry}
-        branch_default = default.get(entry["item"])
-        if branch_default and (
-                (entry["kind"] == "branch" and entry["branch"] == branch_default)
-                or (entry["kind"] == "working-copy" and entry["change"] == "moved"
-                    and entry["branch_before"] == entry["branch_after"] == branch_default)):
+        if _on_default(entry, default):
             listed.append({**out, "reason": "default branch"})
             continue
         if unreadable is not None:
@@ -1200,11 +1301,17 @@ class Comparison:
             raise RuntimeError("no before-snapshot was taken")
         after = snapshot(self.plan, seconds=seconds, own_output=self.own_output, before=self.before)
         after_at = now()
+        begun = time.monotonic()
+        end, bound = begun + COMPARING_SECONDS, "the comparison's own limit"
+        deadline = lifecycle.current_deadline()
+        if deadline is not None and deadline.final_write_at < end:
+            end, bound = deadline.final_write_at, "the launch's recording window"
         result = compare(self.plan, self.before, after, root=self.root,
                          holder_session_id=self.holder_session_id, store=self.store,
                          own_dispatch=self.dispatch_id, before_at=self.before_at,
                          after_at=after_at, elapsed_seconds=time.monotonic() - self.started,
-                         record=record, home=self.home)
+                         record=record, home=self.home, end=end,
+                         allowance=f"{max(0.0, end - begun):.1f}s, {bound}")
         for entry in result["coverage"]:
             state = self.before.get(entry["item"]) or {}
             entries = state.get("entries")

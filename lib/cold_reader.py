@@ -34,9 +34,13 @@ HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 # Built at run time: string constants stay ASCII, since a platform encoding can garble captured output.
 EM_DASH, EN_DASH = chr(0x2014), chr(0x2013)
+# A reader names one finding at several places as a comma list; the gate holds a flag by its file, so a
+# list owes nothing more.
+LINE_ITEM = r"[0-9]+(?:[-" + EN_DASH + r"][0-9]+)?"
+LINES = LINE_ITEM + r"(?:,[ \t]*" + LINE_ITEM + r")*"
 # Lenient on dashes, bullets and backticks, so a reader's stray formatting doesn't refuse a whole account.
 FLAG_LINE = re.compile(
-    r"^(?:[-*][ \t]+)?`?(?P<path>[^\s:`]+)(?::(?P<lines>[0-9]+(?:[-" + EN_DASH + r"][0-9]+)?))?`?"
+    r"^(?:[-*][ \t]+)?`?(?P<path>[^\s:`]+)(?::(?P<lines>" + LINES + r"))?`?"
     r"[ \t]+[" + EM_DASH + r"-][ \t]+(?P<kind>" + "|".join(FLAG_KINDS) + r")[ \t]+["
     + EM_DASH + r"-][ \t]+(?P<text>\S.*)$"
 )
@@ -45,8 +49,7 @@ CAN_TELL = re.compile(r"^Can tell: (yes|no)$")
 REVIEW_HEADING = "Holder's review against the brief"
 # A mistyped acceptance must fail the `open`, so it never silently accepts nothing.
 ACCEPTANCE = re.compile(
-    r"^(?:[-*][ \t]+)?Accepted:[ \t]+`?(?P<path>[^\s:`]+)(?::(?P<lines>[0-9]+(?:[-" + EN_DASH
-    + r"][0-9]+)?))?`?[ \t]+[" + EM_DASH + r"-][ \t]+(?P<kind>" + "|".join(FLAG_KINDS) + r")[ \t]+["
+    r"^(?:[-*][ \t]+)?Accepted:[ \t]+`?(?P<path>[^\s:`]+)(?::(?P<lines>" + LINES + r"))?`?[ \t]+[" + EM_DASH + r"-][ \t]+(?P<kind>" + "|".join(FLAG_KINDS) + r")[ \t]+["
     + EM_DASH + r"-][ \t]+(?P<rest>\S.*)$"
 )
 ACCEPTANCE_START = re.compile(r"^(?:[-*][ \t]+)?Accepted:")
@@ -389,7 +392,9 @@ def compose_prompt(metadata: dict, standard: str, diff_text: str | None) -> byte
         "or a decision record). Where you can't tell, say so.\n\n"
         "## Flags\nOne line each, in the form `path:lines " + EM_DASH + " KIND " + EM_DASH
         + " text`, where KIND is one of "
-        + ", ".join(f"`{kind}`" for kind in FLAG_KINDS) + ". A flag may name a carried file the "
+        + ", ".join(f"`{kind}`" for kind in FLAG_KINDS) + ". `lines` is one line, one range, or several "
+        "of either separated by commas, such as `path:12`, `path:12-18` or `path:12,40-44,97`. "
+        "A flag may name a carried file the "
         "change didn't alter, such as a design-document section missing an entry. With no flags, "
         "write the single word `none`. Each flag names a file in your root, and a flag on the diff names "
         "the changed file whose lines it shows.\n\n"
@@ -467,7 +472,10 @@ def flag_line(flag: dict) -> str:
 
 
 def _same_lines(left: str | None, right: str | None) -> bool:
-    return (left or "").replace(EN_DASH, "-") == (right or "").replace(EN_DASH, "-")
+    # The same items in the same order, whatever the dash or comma spacing; part of a list names no flag.
+    def items(lines: str | None) -> str:
+        return re.sub(r"\s", "", lines or "").replace(EN_DASH, "-")
+    return items(left) == items(right)
 
 
 def acceptances(comment: str, flags: list[dict]) -> tuple[dict[int, str], list[str]]:

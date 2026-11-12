@@ -5055,8 +5055,12 @@ def _records_home(state: WorkState | None) -> Path:
     return store.parent
 
 
-def _cold_readings(state: WorkState) -> list[dict[str, object]]:
-    """Every reading of this pull request whose return passed its form check, oldest first."""
+def _cold_readings(state: WorkState, refused: list[dict[str, object]] | None = None) -> list[dict[str, object]]:
+    """Every reading of this pull request whose return passes the current form check, oldest first.
+
+    `refused`, when given, gathers this pull request's returns the form check refuses, oldest first,
+    each with its first form error, so an `open` quoting one can be told why it isn't a reading.
+    """
     work = f"{state.repo}#{state.issue_number}"
     store = _cold_reading_source(state)
     damaged = _damaged_cold_reader_record(store, work)
@@ -5080,8 +5084,12 @@ def _cold_readings(state: WorkState) -> list[dict[str, object]]:
             metadata = cold_reader.load_metadata(cold_reader.reading_record(Path(root), _records_home(state)))
         except (OSError, UnicodeError, cold_reader.ColdReaderError) as exc:
             raise WorkError(f"cold-reader bundle cannot be read: {path}: {exc}") from exc
-        # The stage refused this return for its form, so it was never a reading.
-        if cold_reader.form_errors(returned, cold_reader.flaggable(metadata)):
+        # The current form check refuses this return, so it isn't a reading, whatever the stage said when it ran.
+        errors = cold_reader.form_errors(returned, cold_reader.flaggable(metadata))
+        if errors:
+            if refused is not None:
+                refused.append({"id": path, "completed_at": completed, "request": request, "return": returned,
+                                "head": metadata.get("head"), "error": errors[0]})
             continue
         # An entrance older than the lineage rule records none; such a reading counts only when this
         # change's history holds the head it read.
@@ -5130,8 +5138,9 @@ def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
 
     Correcting the account would hide the gap the reading exists to find.
     """
+    refused: list[dict[str, object]] = []
     try:
-        found = _cold_readings(state)
+        found = _cold_readings(state, refused)
     except WorkError as exc:
         return f"cold-reading unverifiable: {exc}"
     posted = _time(marker.timestamp)
@@ -5143,6 +5152,17 @@ def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
         readings = [reading for reading in readings
                     if _return_match_length(reading["return"], marker.body)]
         if not readings:
+            # A holder told only that its quote differs goes looking for a copying error, not the refusal.
+            try:
+                quoted = [entry for entry in refused if _time(entry["completed_at"]) <= posted
+                          and _return_match_length(entry["return"], marker.body)
+                          and ("lineage_branch" in entry["request"]
+                               or _cold_reading_in_history(state, entry["head"], entry["id"]))]
+            except WorkError as exc:
+                return f"cold-reading unverifiable: {exc}"
+            if quoted:
+                return ("cold-reading account quotes a cold-reader return the form check refuses, so it is "
+                        "not a reading: " + quoted[-1]["error"])
             return "cold-reading account differs from every retained cold-reader return"
     if not readings:
         return "no cold-reader return precedes this cold-reading marker"
@@ -9095,7 +9115,7 @@ def _invoke_recipient(command, deadline):
         command.extend(("--invocation-started-monotonic", str(deadline.started)))
     # Let the child spend its recording reserve, then stop a stuck launcher
     # with time still left for the entrance's own containment and return.
-    wait_end = deadline.end - deadline.reserve / 4
+    wait_end = deadline.wait_end
     try:
         return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
                               cleanup_deadline=deadline.end - deadline.reserve / 8).returncode
