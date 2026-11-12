@@ -782,7 +782,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         done, total = examined.get(entry["item"], (0, 0))
         if entry["status"] == "uncompared" or (done == total and entry["item"] not in unworked):
             continue
-        reason = (f"{ran_out}: its working copies and branches were not worked out"
+        reason = (f"{ran_out}: none of its working copies and branches were examined"
                   if entry["item"] in unworked else f"{ran_out}: {done} of {total} changes examined")
         entry.update(status="uncompared", reason=reason)
         path = next(item["path"] for item in plan if item["item"] == entry["item"])
@@ -1083,13 +1083,13 @@ def read_run_record(path: Path, *, end: float | None = None) -> tuple[list[dict]
         _check(limit)
     calls = []
     for event in events:
-        if event.get("type") != "assistant":
-            continue
-        for block in _blocks(event):
-            if block.get("type") == "tool_use":
-                calls.append({"id": block.get("id"), "name": block.get("name"),
-                              "agent": event.get("parent_tool_use_id"),
-                              "strings": _leaves(block.get("input"))})
+        if event.get("type") == "assistant":
+            for block in _blocks(event):
+                if block.get("type") == "tool_use":
+                    calls.append({"id": block.get("id"), "name": block.get("name"),
+                                  "agent": event.get("parent_tool_use_id"),
+                                  "strings": _leaves(block.get("input"))})
+        _check(limit)  # Turning events into calls is still the stream's read.
     return calls, skipped
 
 

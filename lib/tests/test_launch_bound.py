@@ -597,6 +597,20 @@ def test_984_the_allowance_is_checked_between_repositories_never_inside_one(tmp_
         # A repository never reached still stays in the record.
         assert result["attributed"] == []
         assert reasons == {"refs:a": f"{ran_out}: 0 of 2 changes examined",
-                           "refs:b": f"{ran_out}: its working copies and branches were not worked out"}
+                           "refs:b": f"{ran_out}: none of its working copies and branches were examined"}
     assert {f["item"] for f in result["findings"] if f["change"] == "uncompared"} == {"refs:a", "refs:b"}
     assert result["status"] == "findings" and result["run_record"]["status"] == "not-read"
+
+
+def test_984_turning_the_streams_events_into_calls_is_inside_the_allowance(tmp_path, monkeypatch):
+    clock = _clock(monkeypatch)
+    blocks = launch_bound._blocks
+
+    def slow(event):
+        clock[0] += 20  # Only the second pass over the events calls this.
+        return blocks(event)
+
+    monkeypatch.setattr(launch_bound, "_blocks", slow)
+    record = golden(tmp_path)["record"]
+    with pytest.raises(launch_bound._Expired):
+        launch_bound.read_run_record(record, end=clock[0] + 10)
