@@ -164,3 +164,29 @@ Before anything is built or launched:
 - This keeps the record out of the consumer's folder only. A consumer whose shell reaches the rest of the machine can still find the entrance's records, which is a separate exposure.
 
 **Decisions in force:** D-726, the entrance is the holder's instrument, which builds neutral, mode-declared, history-free consumer trees; D-736, a landed commit is a lawful consumer-tree source; D-968, a consumer tree keeps its record elsewhere.
+
+## Pricing a run
+
+**What it does now.** `change_cost.py report` prices each recorded run from two price files: the shipped card, `lib/rates.json`, and the repository's own `.tradecraft/rates.json` at the top level of the checkout it runs in, or of `--root`. For each model and time, a shipped row that covers the use wins; a repository row is used only where no shipped row covers it, and when both cover one model the report lists the repository entry under `repository_entries_now_shipped` as removable. Every priced share records which file priced it. A damaged repository file, or a row in it that is incomplete, still holds a `FILL` placeholder, or carries a price that isn't a finite nonnegative number, is named under `price_files` and left unused, and the report runs on; a damaged shipped card stops the report, as before. The report never writes either file.
+
+A model that no row prices, including one whose row has ended, no longer makes its run unknown. In a dispatch, that model's share comes from the runtime's own figure when the runtime recorded one marked `costBasis: "list"`, labelled `runtime-list-price` with no card amount; otherwise the share is left out and the run's figure is a floor whose reason names the model. A Codex dispatch has no runtime figure, so its missing model is always a named floor. In a holder transcript, replies on such a model are left out, and the row's floor gives the reply count for each model; when they are the only replies, the row is known at zero. Any other fault keeps the run unknown, as before. `total.runtime_list_price_models` lists the models a runtime figure priced. A subagent's transcript replies count as covered by a dispatch only for a model that dispatch priced.
+
+A row may carry `prompt_tiers`, each a threshold and its own classes: a request whose prompt, its input plus cache reads plus cache writes, is above a threshold takes that tier's prices, and one at or below every threshold takes the row's own. Tiers are applied where each request's counts are kept, which is each transcript reply. Where only a run's totals are kept, a tiered model is never priced from the card; it takes the runtime's list figure or a floor that says it is priced per request.
+
+When a dispatch carries only the aggregate cache-write count, the comparison with the runtime's list figure accepts the card's figure at either the one-hour or the five-minute write price, and records which reading matched; any other difference above a cent is flagged and the card's one-hour figure used, as before.
+
+Wherever a model has no price, whether the run ends known, as a floor or unknown, the report's `missing_prices` names it with the vendor's posted pricing page, the uses that met it, the repository file to paste into, and a ready-to-fill entry in the vendor's shape. Each price and the retrieval time in the entry is a `FILL` placeholder naming the page column to copy, `effective_from` is midnight UTC of the earliest affected use, and `new_file` gives the whole file when none exists.
+
+**Why.**
+
+- One unpriced helper model, under two cents, left a $3.75 author turn and a $10.32 build read unknown, so the owner's cost figures came back without their largest stage. A floor that names the model keeps every share the card prices.
+- The runtime's figure is trusted only when marked as a list price, because a runtime too old to know a model charges it at another model's rates and marks that figure otherwise.
+- The repository file sits in the repository, not beside the shipped card, because the shipped card lives in the installed plugin, where an entry pasted there would be lost at the next update and would show as a change to the plugin.
+- A shipped row beats a repository row, because the practice checks the shipped card against the posted page and a pasted entry is checked by no one; the note says when the pasted one has served its purpose.
+- A damaged repository file doesn't stop the report, so a half-filled paste can't take away every other figure, and the guidance still shows how to finish it.
+- The guidance is built from where a missing price was met, not from the run's final status, so a run that ends unknown for another reason still says how to price the model.
+- Tiers are not applied to totals, because totals can't show which requests crossed the threshold, and pricing them at the lower tier would understate them by up to five times.
+- A helper subagent writes five-minute cache and a main conversation writes one-hour cache, while `modelUsage` reports only their sum. Without the second reading, every recorded helper share would be flagged against a runtime figure that was right.
+- No reading of the live page while a report runs and no command that writes an entry, because the owner chose report guidance for adding a model.
+
+**Decisions in force:** D-936, price every model a run used and say how to add a missing price.

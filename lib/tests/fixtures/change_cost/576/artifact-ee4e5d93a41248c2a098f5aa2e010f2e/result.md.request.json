@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "efaebe58a866464b9a3a2866f671f132",
+  "work": "Grimblaz-and-Friends/Organizations-of-Verra#576",
+  "stage": "artifact",
+  "launched_at": "2026-11-09T17:46:17.400292+00:00",
+  "requested": {
+    "vendor": "claude",
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "continuity": "fresh",
+    "session_id": null
+  }
+}

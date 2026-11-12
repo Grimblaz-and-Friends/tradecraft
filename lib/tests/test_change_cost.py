@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from copy import deepcopy
 from decimal import Decimal
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -80,16 +81,21 @@ def report_inputs(tmp_path):
         "dispatch_root": tmp_path / "dispatches", "rates_path": rates_path,
         "terms_path": tmp_path / "terms.json", "gauges_path": tmp_path / "gauges.jsonl",
         "holder_path": tmp_path / "holder.jsonl",
+        # The CLI reads a repository price file; a test never reads the checkout's own.
+        "repository_rates_path": (tmp_path / "repo").resolve() / ".tradecraft" / "rates.json",
     }
 
 
 def report_arguments(inputs):
-    return [
+    arguments = [
         "report", "--repo", inputs["repo"], "--issue", str(inputs["issue"]),
         "--dispatch-root", str(inputs["dispatch_root"]), "--rates", str(inputs["rates_path"]),
         "--plan-terms", str(inputs["terms_path"]), "--gauges", str(inputs["gauges_path"]),
         "--holder-usage", str(inputs["holder_path"]),
     ]
+    if inputs.get("repository_rates_path") is not None:
+        arguments += ["--root", str(inputs["repository_rates_path"].parents[1])]
+    return arguments
 
 
 def report_cli(inputs):
@@ -407,10 +413,11 @@ def test_missing_rate_card_remains_a_cli_failure(report_inputs):
     assert "change-cost:" in completed.stderr
 
 
-def test_shipped_rate_card_prices_recorded_claude_classes_and_leaves_unknown_model():
+def test_shipped_rate_card_prices_recorded_claude_classes_and_floors_an_unrated_model():
     rates = cost.load_rates(LIB / "rates.json")
     assert {row["model"] for row in rates} == {
-        "claude-fable-5-1", "claude-opus-5", "claude-opus-5-5",
+        "claude-fable-5-1", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-2",
+        "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-haiku-5-5",
         "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-6.1-sol",
     }
     assert all(row["currency"] == "USD" and row["per_tokens"] == 1_000_000 for row in rates)
@@ -429,12 +436,13 @@ def test_shipped_rate_card_prices_recorded_claude_classes_and_leaves_unknown_mod
     assert priced["amount"] == "40.5"
 
     unrecorded = cost.rate_card_equivalent(usage(
-        vendor="claude", model="claude-sonnet-5", tokens={"models": {
-            "claude-sonnet-5": {"input": 1},
+        vendor="claude", model="claude-unrated-9", tokens={"models": {
+            "claude-unrated-9": {"input": 1, "cache_read": 0, "cache_creation": 0, "output": 0},
         }},
     ), rates)
-    assert unrecorded["status"] == "unknown"
-    assert "no dated rate matches claude claude-sonnet-5" in unrecorded["reasons"]
+    assert unrecorded["status"] == "known" and unrecorded["amount"] == "0" and unrecorded["floor"]
+    assert unrecorded["floor_reasons"] == [
+        "no price for claude claude-unrated-9; its usage is excluded from the known amount"]
 
 
 def test_schema_v2_usage_has_context_classes_source_and_no_money():
@@ -500,12 +508,11 @@ def test_dated_rate_card_computes_only_when_every_class_and_model_match():
         "status": "known", "currency": "USD", "amount": "0.11",
         "rate_sources": [{"model": "gpt-fixture",
                           "source_url": "https://example.test/rates",
-                          "retrieved_at": WHEN}],
+                          "retrieved_at": WHEN, "price_file": "shipped"}],
     }
     missing_model = cost.rate_card_equivalent(usage(model="unknown-model"), [rate()])
-    assert missing_model["status"] == "unknown"
-    assert "no dated rate" in missing_model["reason"]
-    assert "amount" not in missing_model
+    assert missing_model["status"] == "known" and missing_model["amount"] == "0"
+    assert "no price for codex unknown-model" in missing_model["floor_reasons"][-1]
 
 
 def test_missing_token_rate_and_unknown_scope_never_render_zero():
@@ -544,8 +551,11 @@ def test_report_labels_three_quantities_groups_rows_and_keeps_unknowns(tmp_path)
         {"stage": "build", "vendor": "codex", "attempts": 1},
         {"stage": "holder-close", "vendor": "codex", "attempts": 1},
     ]
-    assert all(row["value"]["status"] == "unknown"
-               for row in result["dated_rate_card_equivalent"])
+    dispatch, close = (row["value"] for row in result["dated_rate_card_equivalent"])
+    # A dispatch on a model with no price keeps a floor; the unknown holder close stays unknown.
+    assert dispatch["status"] == "known" and dispatch["amount"] == "0" and dispatch["floor"]
+    assert any("gpt-fixture" in reason for reason in dispatch["floor_reasons"])
+    assert close["status"] == "unknown"
     plan = result["bill_plan_status"][0]
     assert plan["plan_terms"]["status"] == "unknown"
     assert plan["gauge"]["status"] == "unknown"
@@ -943,6 +953,9 @@ def test_card_transcription_matches_the_retained_price_observations():
         "gpt-6-luna": (.1, .01, .125, .5), "gpt-5.6-sol": (4, .4, 5, 20),
         "gpt-6.1-sol": (2, .1, 2.5, 10), "claude-fable-5-1": (10, .25, 20, 50),
         "claude-opus-5": (5, .5, 10, 25), "claude-opus-5-5": (4, .2, 8, 20),
+        "claude-fable-5-2": (8, .2, 16, 40), "claude-sonnet-5-5": (2, .1, 4, 10),
+        "claude-sonnet-5": (2, .2, 4, 10), "claude-haiku-4-5-20251001": (1, .1, 2, 5),
+        "claude-haiku-5-5": (.1, .01, .2, .5),
     }
     for row in cost.load_rates(LIB / "rates.json"):
         classes = ("input", "cached_input", "cache_write_input", "output") if row["vendor"] == "codex" else (
@@ -953,7 +966,7 @@ def test_card_transcription_matches_the_retained_price_observations():
             assert row["retrieved_at"] == ("2026-09-29" if row["model"] == "gpt-6.1-sol" else "2026-09-28")
             assert "issuecomment-" in row["retrieval_record"]
         else:
-            assert row["retrieved_at"].startswith("2026-10-01")
+            assert row["retrieved_at"].startswith("2026-11-12" if "retrieval_record" in row else "2026-10-01")
 
 
 @pytest.mark.parametrize("role,vendor", [
@@ -1044,12 +1057,15 @@ def test_promotional_price_uses_launch_date_and_replacement(launched, known):
     row = usage(model="gpt-5.6-sol")
     row["dispatch"]["launched_at"] = launched
     value = cost.rate_card_equivalent(row, rates)
-    assert (value["status"] == "known") == known
+    assert value["status"] == "known"
+    assert (value["amount"] != "0") == known
     if not known:
-        assert "gpt-5.6-sol" in value["reason"] and "re-read the posted page" in value["reason"]
+        # An ended interval excludes only that model's share and says to re-read the page.
+        assert any("gpt-5.6-sol" in reason and "re-read the posted page" in reason
+                   for reason in value["floor_reasons"])
         replacement = deepcopy(next(rate for rate in rates if rate["model"] == "gpt-5.6-sol"))
         replacement.update(effective_from="2026-11-22T00:00:00Z", effective_to=None)
-        assert cost.rate_card_equivalent(row, [*rates, replacement])["status"] == "known"
+        assert cost.rate_card_equivalent(row, [*rates, replacement])["amount"] != "0"
 
 
 def test_close_commands_default_holder_inclusion_override_and_exact_repo(tmp_path, monkeypatch, capsys):
@@ -1226,3 +1242,430 @@ def test_malformed_holder_dispatch_is_an_unknown_cli_contribution(report_inputs,
     value = result["dated_rate_card_equivalent"][0]["value"]
     assert value["status"] == "unknown" and "no dispatch" in value["reason"]
     assert result["total"]["unknown_dispatches"] == 1 and result["total"]["floor"]
+
+
+# Pricing every model a run used (D-936): new card rows, per-request tiers, the floor
+# route for a missing price, and the guidance that names where to add one.
+
+CENT = Decimal("0.01")
+SHIPPED = cost.load_rates(LIB / "rates.json")
+FIXTURE_576 = "efaebe58a866464b9a3a2866f671f132"
+
+
+def _seven(value):
+    return Decimal(value).quantize(Decimal("0.0000001"))
+
+
+def inputs_576(tmp_path, withheld=None):
+    inputs = fixture_inputs(tmp_path, "576", 576)
+    inputs["repo"] = "Grimblaz-and-Friends/Organizations-of-Verra"
+    if withheld:
+        rates_path = tmp_path / "withheld-rates.json"
+        write_json(rates_path, {"schema_version": 1, "rates": [
+            row for row in SHIPPED if row["model"] != withheld]})
+        inputs["rates_path"] = rates_path
+    inputs["repository_rates_path"] = (tmp_path / "repo").resolve() / ".tradecraft" / "rates.json"
+    return inputs
+
+
+def raw_576(inputs):
+    _, path = fixture_paths(inputs, "ee4e5d93a41248c2a098f5aa2e010f2e")
+    return path, json.loads(path.read_bytes())
+
+
+def test_the_576_run_prices_its_sonnet_share_at_the_runtime_list_charge(tmp_path):
+    # AC-1.1: the card's five-minute reading of the Sonnet 5 share is the runtime's list charge.
+    value = fixture_prices(inputs_576(tmp_path))[1][FIXTURE_576]
+    assert value["status"] == "known" and value["flags"] == [] and not value["floor"]
+    shares = {row["model"]: row for row in value["model_prices"]}
+    sonnet = shares["claude-sonnet-5"]
+    assert sonnet["source"] == "runtime-list-price" and sonnet["card_cache_write_reading"] == "5m"
+    assert _seven(sonnet["runtime_amount"]) == Decimal("1.9993206")
+    assert abs(Decimal(sonnet["card_amount"]) - Decimal("1.9993206")) <= CENT
+    assert _seven(shares["claude-opus-5-5"]["runtime_amount"]) == Decimal("2.9056922")
+    assert shares["claude-opus-5-5"]["card_cache_write_reading"] == "1h"
+    assert _seven(value["amount"]) == Decimal("4.9050128")
+
+
+def test_new_rows_carry_the_retrieval_and_its_record():
+    # AC-1.2 and AC-1.3: prices, retrieval time and the record of the retrieval.
+    rows = {row["model"]: row for row in SHIPPED}
+    expected = {  # input, 5m write, 1h write, cache hit, output
+        "claude-fable-5-2": (8, 10, 16, .2, 40), "claude-sonnet-5-5": (2, 2.5, 4, .1, 10),
+        "claude-sonnet-5": (2, 2.5, 4, .2, 10), "claude-haiku-4-5-20251001": (1, 1.25, 2, .1, 5),
+        "claude-haiku-5-5": (.1, .125, .2, .01, .5),
+    }
+    order = ("input", "cache_write_5m", "cache_write_1h", "cache_read", "output")
+    for model, prices in expected.items():
+        row = rows[model]
+        assert tuple(row["classes"][name] for name in order) == prices
+        assert row["classes"]["cache_creation"] == row["classes"]["cache_write_1h"]
+        assert row["retrieved_at"] == row["duration_rates_retrieved_at"] == "2026-11-12T05:21:04Z"
+        assert row["source_url"] == "https://platform.claude.com/docs/en/about-claude/pricing"
+        assert row["retrieval_record"].endswith("/issues/936#issuecomment-6815693523")
+        assert row["effective_from"] == "2026-09-20T00:00:00Z" and row["effective_to"] is None
+    [tier] = rows["claude-haiku-5-5"]["prompt_tiers"]
+    assert tier["above_prompt_tokens"] == 100000
+    assert tuple(tier["classes"][name] for name in order) == (.5, .625, 1, .05, 2.5)
+    assert tier["classes"]["cache_creation"] == 1
+
+
+def claude_usage(models, when, *, continuity="fresh", dispatch_id="claude-run"):
+    row = usage(vendor="claude", model=next(iter(models)), tokens={"models": models}, dispatch_id=dispatch_id)
+    row["dispatch"].update(launched_at=when, continuity=continuity)
+    return row
+
+
+def populations(input=10, output=1000, read=100000, creation=1000):
+    return {"input": input, "output": output, "cache_read": read, "cache_creation": creation}
+
+
+def transcript_row(replies, gaps=()):
+    when = replies[-1]["timestamp"] if replies else WHEN
+    row = usage(vendor="claude", model="holder", dispatch_id="holder-close-fixture", stage="holder-close",
+                tokens={"models": {}})
+    row["dispatch"].update(launched_at=when, completed_at=when)
+    row["holder"] = {"schema_version": 1, "source_kind": "transcript", "window": {}, "session_id": "holder",
+                     "replies": replies, "gaps": list(gaps)}
+    return row
+
+
+def transcript_reply(identity, model, when, *, input=10, output=1000, read=100000, five=0, hour=1000):
+    return {"id": identity, "timestamp": when, "model": model, "agent_id": None, "additional_native_classes": {},
+            "tokens": {"input": input, "output": output, "cache_read": read, "cache_creation": five + hour,
+                       "cache_write_5m": five, "cache_write_1h": hour}}
+
+
+@pytest.mark.parametrize("model,when", [
+    ("claude-haiku-4-5-20251001", "2026-10-13T03:08:14Z"), ("claude-sonnet-5", "2026-11-01T01:11:45Z")])
+def test_each_new_dispatch_model_prices_from_its_earliest_recorded_run(model, when):
+    # AC-1.4 and AC-1.6: the shipped card alone, with no repository file.
+    value = cost.rate_card_equivalent(claude_usage({model: populations()}, when), SHIPPED)
+    assert value["status"] == "known" and not value["floor"] and Decimal(value["amount"]) > 0
+    assert value["rate_sources"][0]["price_file"] == "shipped"
+
+
+@pytest.mark.parametrize("model,when,amount", [
+    ("claude-haiku-5-5", "2026-11-03T04:29:01Z", None), ("claude-sonnet-5-5", "2026-11-07T10:22:48Z", None),
+    ("claude-fable-5-2", "2026-11-11T04:33:25Z", "0.07608")])
+def test_each_new_transcript_model_prices_from_its_earliest_recorded_reply(model, when, amount):
+    # AC-1.4: a holder close on Fable 5.2 prices like any other.
+    value = cost.rate_card_equivalent(transcript_row([transcript_reply("r1", model, when)]), SHIPPED)
+    assert value["status"] == "known" and not value["floor"]
+    assert value["rate_sources"][0]["price_file"] == "shipped"
+    if amount:
+        assert Decimal(value["amount"]) == Decimal(amount)
+    else:
+        assert Decimal(value["amount"]) > 0
+
+
+@pytest.mark.parametrize("read,amount,tier", [
+    (60000, "0.030501", "above 100000"),  # 100,002 only once cache reads and writes count
+    (59998, "0.00610018", "base"),        # exactly 100,000
+    (59997, "0.00610017", "base"),        # 99,999
+])
+def test_haiku_5_5_reply_takes_its_own_prompt_tier(read, amount, tier):
+    # AC-2.1 and AC-2.2.
+    reply_value = transcript_reply("r1", "claude-haiku-5-5", "2026-11-03T04:29:01Z",
+                                   input=2, read=read, five=40000, hour=0, output=1000)
+    value = cost.rate_card_equivalent(transcript_row([reply_value]), SHIPPED)
+    assert value["status"] == "known" and Decimal(value["amount"]) == Decimal(amount)
+    assert value["rate_sources"][0]["prompt_tier"] == tier
+
+
+def haiku_attempt(basis="list", cloud=False):
+    models = {"claude-opus-5-5": populations(), "claude-haiku-5-5": populations()}
+    row = claude_usage(models, "2026-11-05T00:00:00Z")
+    evidence = {}
+    if cloud:
+        row.update(source="cloud-stop-hook", scope="session-delta", ledger_check={"ok": True, "faults": []})
+    else:
+        raw = {"claude-haiku-5-5": {"costUSD": 0.42}}
+        if basis is not None:
+            raw["claude-haiku-5-5"]["costBasis"] = basis
+        evidence = {"observed": {"source": "modelUsage", "raw": raw}}
+    return cost._Attempt(row, evidence=evidence)
+
+
+@pytest.mark.parametrize("basis", ["list", None, "fallback", "cloud"])
+def test_haiku_5_5_totals_are_never_priced_at_a_guessed_tier(basis):
+    # AC-2.3: totals take the runtime's list figure, or a floor naming the per-request pricing.
+    value = cost._price(haiku_attempt(None if basis == "cloud" else basis, cloud=basis == "cloud"), SHIPPED)
+    opus = cost.rate_card_equivalent(claude_usage({"claude-opus-5-5": populations()}, "2026-11-05T00:00:00Z"),
+                                     SHIPPED)
+    assert value["status"] == "known"
+    [entry] = value["unpriced_models"]
+    assert entry["cause"] == "per-request-tiers"
+    if basis == "list":
+        assert Decimal(value["amount"]) == Decimal(opus["amount"]) + Decimal("0.42") and not value["floor"]
+        haiku = next(row for row in value["model_prices"] if row["model"] == "claude-haiku-5-5")
+        assert haiku["source"] == "runtime-list-price" and haiku["card_amount"] is None
+    else:
+        assert Decimal(value["amount"]) == Decimal(opus["amount"]) and value["floor"]
+        assert value["floor_reasons"] == ["claude-haiku-5-5 is priced per request by prompt length, and this run "
+                                          "recorded only totals; its usage is excluded from the known amount"]
+
+
+def test_haiku_5_5_totals_never_enter_the_missing_price_guidance(report_inputs):
+    row = claude_usage({"claude-haiku-5-5": populations()}, "2026-11-05T00:00:00Z", dispatch_id="haiku")
+    write_bundle(report_inputs, "haiku", rows=[row])
+    write_json(report_inputs["rates_path"], json.loads((LIB / "rates.json").read_bytes()))
+    result = cost.report(**report_inputs)
+    assert result["missing_prices"] == []
+    assert result["total"]["floor"]
+
+
+def test_cli_prices_a_haiku_5_5_reply_at_its_tier(report_inputs):
+    # AC-2.5: an adopter's CLI report applies the same tier.
+    reply_value = transcript_reply("r1", "claude-haiku-5-5", "2026-11-03T04:29:01Z",
+                                   input=2, read=60000, five=40000, hour=0, output=1000)
+    row = transcript_row([reply_value])
+    row["change"] = {"repository": report_inputs["repo"], "issue": report_inputs["issue"]}
+    write_json(report_inputs["holder_path"], row)
+    write_json(report_inputs["rates_path"], json.loads((LIB / "rates.json").read_bytes()))
+    completed = report_cli(report_inputs)
+    assert completed.returncode == 0, completed.stderr
+    value = json.loads(completed.stdout)["dated_rate_card_equivalent"][0]["value"]
+    assert Decimal(value["amount"]) == Decimal("0.030501")
+    assert value["rate_sources"][0]["prompt_tier"] == "above 100000"
+
+
+def test_tiers_are_card_data_and_a_malformed_tier_is_refused(tmp_path):
+    # AC-2.6.
+    entry = rate("claude-any")
+    entry.update(vendor="claude", per_tokens=1, classes={"input": 1, "output": 1, "cache_read": 1,
+                                                         "cache_write_5m": 1, "cache_write_1h": 1})
+    entry["prompt_tiers"] = [{"above_prompt_tokens": 5, "classes": {name: 10 for name in entry["classes"]}},
+                             {"above_prompt_tokens": 50, "classes": {name: 100 for name in entry["classes"]}}]
+    replies = [transcript_reply(str(count), "claude-any", WHEN, input=count, read=0, hour=0, output=0)
+               for count in (5, 6, 51)]
+    amounts = [cost.rate_card_equivalent(transcript_row([item]), [entry])["amount"] for item in replies]
+    assert [Decimal(value) for value in amounts] == [5, 60, 5100]
+    for tiers in ([{"above_prompt_tokens": 0, "classes": {}}], [{"above_prompt_tokens": 1.5, "classes": {}}],
+                  [{"above_prompt_tokens": 9, "classes": {}}, {"above_prompt_tokens": 9, "classes": {}}],
+                  [{"above_prompt_tokens": 9}], []):
+        path = tmp_path / "card.json"
+        write_json(path, {"schema_version": 1, "rates": [{**entry, "prompt_tiers": tiers}]})
+        with pytest.raises(cost.CostError, match="prompt"):
+            cost.load_rates(path)
+
+
+def test_withheld_sonnet_takes_the_runtime_list_charge_labelled(tmp_path):
+    # AC-3.1, through the library and through the CLI.
+    inputs = inputs_576(tmp_path, withheld="claude-sonnet-5")
+    result, prices = fixture_prices(inputs)
+    completed = report_cli(inputs)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["dated_rate_card_equivalent"] == result["dated_rate_card_equivalent"]
+    value = prices[FIXTURE_576]
+    assert value["status"] == "known" and not value["floor"]
+    assert _seven(value["amount"]) == Decimal("4.9050128")
+    sonnet = next(row for row in value["model_prices"] if row["model"] == "claude-sonnet-5")
+    assert sonnet["source"] == "runtime-list-price" and sonnet["card_amount"] is None
+    assert _seven(sonnet["runtime_amount"]) == Decimal("1.9993206")
+    assert result["total"]["runtime_list_price_models"] == ["claude-sonnet-5"]
+
+
+@pytest.mark.parametrize("change", ["no-basis", "fallback", "no-charge"])
+def test_withheld_sonnet_without_a_list_charge_is_a_floor_naming_it(tmp_path, change):
+    # AC-3.2 and AC-3.3, and AC-4.3's floor run: only the Sonnet share leaves; its counts stay recorded.
+    inputs = inputs_576(tmp_path, withheld="claude-sonnet-5")
+    path, run = raw_576(inputs)
+    sonnet = run["attempts"][0]["observed"]["raw"]["claude-sonnet-5"]
+    if change == "fallback":
+        sonnet["costBasis"] = "fallback"
+    else:
+        sonnet.pop("costBasis")
+        if change == "no-charge":
+            sonnet.pop("costUSD")
+    assert sonnet["outputTokens"] == 61209
+    write_json(path, run)
+    result, prices = fixture_prices(inputs)
+    value = prices[FIXTURE_576]
+    assert value["status"] == "known" and value["floor"]
+    assert _seven(value["amount"]) == Decimal("2.9056922")
+    assert value["floor_reasons"] == [
+        "no price for claude claude-sonnet-5; its usage is excluded from the known amount"]
+    assert result["total"]["runtime_list_price_models"] == []
+    assert [entry["model"] for entry in result["missing_prices"]] == ["claude-sonnet-5"]
+
+
+def test_codex_attempt_on_an_unrated_model_is_a_floor_naming_it():
+    value = cost.rate_card_equivalent(usage(model="gpt-unrated-9"), SHIPPED)
+    assert value["status"] == "known" and value["amount"] == "0" and value["floor"]
+    assert "no price for codex gpt-unrated-9" in value["floor_reasons"][-1]
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("resume", "resumed Claude usage scope is not established"),
+    ("negative", "token class input for claude-opus-5-5 is not finite and nonnegative"),
+    ("native", "billable native count webSearchRequests for claude-opus-5-5 has no card rate mapping"),
+])
+def test_a_real_fault_beside_a_missing_price_still_reads_unknown(tmp_path, fault, reason):
+    # AC-3.4, and AC-4.3's unknown run: the guidance still names the missing model.
+    inputs = inputs_576(tmp_path, withheld="claude-sonnet-5")
+    path, run = raw_576(inputs)
+    attempt = run["attempts"][0]
+    if fault == "resume":
+        attempt["usage"]["dispatch"]["continuity"] = "resume"
+    elif fault == "negative":
+        attempt["observed"]["raw"]["claude-opus-5-5"]["inputTokens"] = -1
+    else:
+        attempt["observed"]["raw"]["claude-opus-5-5"]["webSearchRequests"] = 3
+    write_json(path, run)
+    result, prices = fixture_prices(inputs)
+    value = prices[FIXTURE_576]
+    assert value["status"] == "unknown" and reason in value["reasons"]
+    assert [entry["model"] for entry in result["missing_prices"]] == ["claude-sonnet-5"]
+
+
+def test_a_failed_cloud_ledger_beside_a_missing_price_still_reads_unknown():
+    row = claude_usage({"claude-unrated-9": populations()}, "2026-11-05T00:00:00Z", continuity="resume")
+    row.update(source="cloud-stop-hook", scope="session-delta",
+               ledger_check={"ok": False, "faults": ["unread files: x"]})
+    value = cost._price(cost._Attempt(row), SHIPPED)
+    assert value["status"] == "unknown" and "unread files" in value["reason"]
+
+
+def test_a_transcript_gap_beside_a_missing_price_still_reads_unknown():
+    replies = [transcript_reply("r1", "claude-unrated-9", "2026-11-05T00:00:00Z")]
+    value = cost.rate_card_equivalent(transcript_row(replies, [{"source": "x", "reason": "unreadable line"}]),
+                                      SHIPPED)
+    assert value["status"] == "unknown" and "unreadable line" in value["reasons"]
+    assert value["unpriced_models"][0]["model"] == "claude-unrated-9"
+    only_price = cost.rate_card_equivalent(transcript_row(replies), SHIPPED)
+    assert only_price["status"] == "known" and only_price["amount"] == "0" and only_price["floor"]
+    assert only_price["floor_reasons"] == [
+        "no price for claude claude-unrated-9; 1 reply on it is excluded from the known amount"]
+
+
+def unrated_bundles(inputs):
+    claude = claude_usage({"claude-unrated-9": populations()}, "2026-11-05T00:00:00Z", dispatch_id="claude-run")
+    codex = usage(model="gpt-unrated-9", dispatch_id="codex-run")
+    codex["dispatch"]["launched_at"] = "2026-11-06T13:00:00+00:00"
+    write_bundle(inputs, "claude-run", rows=[claude])
+    write_bundle(inputs, "codex-run", rows=[codex])
+    write_json(inputs["rates_path"], json.loads((LIB / "rates.json").read_bytes()))
+
+
+def fill(entry, price):
+    entry = deepcopy(entry)
+    entry["classes"] = {name: price for name in entry["classes"]}
+    entry["retrieved_at"] = "2026-11-12T06:00:00Z"
+    return entry
+
+
+def test_guidance_names_each_vendor_page_entry_and_file(report_inputs):
+    # AC-4.1: a Claude and a Codex run, each on a model with no entry.
+    unrated_bundles(report_inputs)
+    completed = report_cli(report_inputs)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    guidance = {entry["vendor"]: entry for entry in result["missing_prices"]}
+    target = str(report_inputs["repository_rates_path"])
+    assert result["price_files"]["repository"] == {"path": target, "status": "absent", "rejected": []}
+    claude, codex = guidance["claude"], guidance["codex"]
+    assert claude["model"] == "claude-unrated-9" and codex["model"] == "gpt-unrated-9"
+    assert claude["pricing_page"] == "https://platform.claude.com/docs/en/about-claude/pricing"
+    assert codex["pricing_page"] == "https://developers.openai.com/api/docs/pricing"
+    assert set(claude["entry"]["classes"]) == {"input", "cache_write_5m", "cache_write_1h", "cache_creation",
+                                               "cache_read", "output"}
+    assert set(codex["entry"]["classes"]) == {"input", "cached_input", "cache_write_input", "output"}
+    for entry in (claude, codex):
+        assert entry["paste_into"] == target and entry["new_file"] == {"schema_version": 1, "rates": [entry["entry"]]}
+        assert set(cost._RATE_FIELDS) <= set(entry["entry"])
+        assert entry["uses"] == [{"dispatch_id": entry["vendor"] + "-run", "attempt_index": 0}]
+        assert "prompt_tiers" in entry["instructions"] and "above_prompt_tokens" in entry["instructions"]
+    assert claude["entry"]["effective_from"] == "2026-11-05T00:00:00Z"
+    assert codex["entry"]["effective_from"] == "2026-11-06T00:00:00Z"
+
+
+def test_a_filled_entry_pasted_into_the_repository_file_prices_the_next_report(report_inputs):
+    # AC-4.2: only the FILL values change; one left in place is named and rejected.
+    unrated_bundles(report_inputs)
+    first = cost.report(**report_inputs)
+    target = report_inputs["repository_rates_path"]
+    guidance = {entry["vendor"]: entry for entry in first["missing_prices"]}
+    pasted = deepcopy(guidance["codex"]["new_file"])
+    pasted["rates"] = [fill(guidance["claude"]["entry"], 1), fill(guidance["codex"]["entry"], 2)]
+    write_json(target, pasted)
+    second = cost.report(**report_inputs)
+    assert second["price_files"]["repository"]["status"] == "read"
+    assert second["price_files"]["repository"]["rejected"] == []
+    assert second["missing_prices"] == []
+    prices = {row["dispatch_id"]: row["value"] for row in second["dated_rate_card_equivalent"]}
+    assert prices["claude-run"]["rate_sources"][0]["price_file"] == "repository"
+    assert prices["claude-run"]["rate_sources"][0]["price_file_path"] == str(target)
+    assert Decimal(prices["claude-run"]["amount"]) == Decimal(102010) / 1000000
+    assert Decimal(prices["codex-run"]["amount"]) == Decimal(2 * (80 + 20 + 10)) / 1000000
+    pasted["rates"][1]["classes"]["output"] = guidance["codex"]["entry"]["classes"]["output"]
+    write_json(target, pasted)
+    third = cost.report(**report_inputs)
+    assert third["price_files"]["repository"]["rejected"] == [{
+        "model": "gpt-unrated-9",
+        "reason": "classes.output still holds a FILL placeholder; replace it from the pricing page"}]
+    assert [entry["model"] for entry in third["missing_prices"]] == ["gpt-unrated-9"]
+    assert "new_file" not in third["missing_prices"][0]
+
+
+def test_guidance_appears_when_the_run_is_known_from_the_runtime(tmp_path):
+    # AC-4.3's known run; its floor and unknown runs are in the floor and real-fault tests above.
+    result = fixture_prices(inputs_576(tmp_path, withheld="claude-sonnet-5"))[0]
+    assert result["dated_rate_card_equivalent"][0]["value"]["status"] == "known"
+    assert [entry["model"] for entry in result["missing_prices"]] == ["claude-sonnet-5"]
+    assert result["missing_prices"][0]["uses"] == [{"dispatch_id": FIXTURE_576, "attempt_index": 0}]
+
+
+def test_a_shipped_price_wins_over_the_repository_entry_and_says_so(tmp_path):
+    # AC-4.4.
+    inputs = inputs_576(tmp_path)
+    shipped = next(row for row in SHIPPED if row["model"] == "claude-opus-5-5")
+    local = {**deepcopy(shipped), "classes": {name: 99 for name in shipped["classes"]}}
+    target = inputs["repository_rates_path"]
+    write_json(target, {"schema_version": 1, "rates": [local]})
+    result, prices = fixture_prices(inputs)
+    value = prices[FIXTURE_576]
+    opus = next(row for row in value["rate_sources"] if row["model"] == "claude-opus-5-5")
+    assert opus["price_file"] == "shipped"
+    share = next(row for row in value["model_prices"] if row["model"] == "claude-opus-5-5")
+    assert _seven(share["card_amount"]) == Decimal("2.9056922")
+    assert result["repository_entries_now_shipped"] == [{
+        "vendor": "claude", "model": "claude-opus-5-5", "path": str(target),
+        "note": "the shipped card now prices this model for these uses; this repository entry can be removed"}]
+
+
+def test_the_report_writes_neither_price_file_and_survives_a_damaged_one(report_inputs):
+    # AC-4.5.
+    unrated_bundles(report_inputs)
+    target = report_inputs["repository_rates_path"]
+    write_json(target, {"schema_version": 1, "rates": []})
+    shipped = LIB / "rates.json"
+    before = (target.read_bytes(), shipped.read_bytes())
+    clean = report_cli(report_inputs)
+    assert clean.returncode == 0 and (target.read_bytes(), shipped.read_bytes()) == before
+    target.write_bytes(b'{"schema_version": 1, "rates": [')
+    damaged = report_cli(report_inputs)
+    assert damaged.returncode == 0, damaged.stderr
+    good, bad = json.loads(clean.stdout), json.loads(damaged.stdout)
+    assert bad["price_files"]["repository"]["status"] == "unreadable"
+    assert bad["dated_rate_card_equivalent"] == good["dated_rate_card_equivalent"]
+    assert bad["total"] == good["total"]
+    assert "new_file" not in bad["missing_prices"][0]
+
+
+def test_a_cli_report_outside_a_repository_names_the_file_to_create(report_inputs, tmp_path):
+    unrated_bundles(report_inputs)
+    arguments = report_arguments(report_inputs)
+    arguments = arguments[:arguments.index("--root")]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    environment = {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}
+    completed = subprocess.run([sys.executable, str(LIB / "change_cost.py"), *arguments], cwd=outside,
+                               env=environment, stdin=subprocess.DEVNULL, capture_output=True,
+                               encoding="utf-8", timeout=60)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["price_files"]["repository"]["status"] == "no-repository"
+    entry = result["missing_prices"][0]
+    assert entry["paste_into"].replace("\\", "/") == "<repository top level>/.tradecraft/rates.json"
+    assert "--root" in entry["paste_into_note"] and "new_file" in entry

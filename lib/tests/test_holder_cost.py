@@ -652,7 +652,9 @@ def test_unrated_synthetic_reply_needs_a_rate_only_for_positive_billable_counts(
     result = report(inputs)
     value = holder_price(result)
     if input_count or extra:
-        assert value["status"] == "unknown" and "no dated rate" in value["reason"]
+        assert value["status"] == "known" and value["amount"] == "0" and value["floor"]
+        assert value["floor_reasons"] == [
+            "no price for claude <synthetic>; 1 reply on it is excluded from the known amount"]
         assert result["total"]["floor"]
     else:
         assert value["status"] == "known" and value["amount"] == "0" and not value["floor"]
@@ -813,3 +815,35 @@ def test_automatic_close_refuses_unpublished_journal_without_advancing_boundary(
     recovered = close(inputs, transcript)
     assert recovered["holder"]["window"]["previous_close_id"] is None
     assert {reply["id"] for reply in recovered["holder"]["replies"]} == {"main", "child-reply"}
+
+
+def test_a_holder_close_on_an_unrated_model_is_a_floor_with_guidance(inputs, transcript):
+    # AC-3.3's transcript, AC-4.1's transcript reply and AC-4.3's transcript run (D-936).
+    transcript[2].unlink()
+    write_lines(transcript[1], [reply("r1", 1, model="claude-unrated-9"), reply("r2", 2, model="claude-unrated-9")])
+    row = close(inputs, transcript)
+    result = cost.report(**inputs, repository_rates_path=inputs["rates_path"].parent / "repo" / ".tradecraft" / "rates.json")
+    value = holder_price(result)
+    assert value["status"] == "known" and value["amount"] == "0" and value["floor"]
+    assert value["floor_reasons"] == [
+        "no price for claude claude-unrated-9; 2 replies on it are excluded from the known amount"]
+    [guidance] = result["missing_prices"]
+    assert guidance["model"] == "claude-unrated-9" and guidance["vendor"] == "claude"
+    assert guidance["uses"] == [{"dispatch_id": row["dispatch"]["id"], "attempt_index": 0, "replies": 2}]
+    assert guidance["entry"]["effective_from"] == at(1).strftime("%Y-%m-%dT00:00:00Z")
+    assert "cache_write_5m" in guidance["entry"]["classes"]
+
+
+def test_a_dispatch_that_left_a_model_out_does_not_cover_its_subagent_replies(inputs, transcript):
+    # AC-3.5: the dispatch launched before the card's interval, so it priced nothing for the model;
+    # the subagent's reply is priced in the holder row instead of being dropped as covered.
+    inputs["rates_path"].write_bytes(json.dumps({"schema_version": 1, "rates": [card(start=at(1).isoformat())]}).encode())
+    bundle(inputs)
+    close(inputs, transcript)
+    result = report(inputs)
+    value = holder_price(result)
+    native = next(row["value"] for row in result["dated_rate_card_equivalent"] if row["dispatch_id"] == "native")
+    assert native["status"] == "known" and native["amount"] == "0" and native["floor"]
+    assert value["dispatch_exclusions"] == []
+    assert value["effective_agent_inclusion"][0]["status"] == "included"
+    assert Decimal(value["amount"]) == Decimal(".146") and not value["floor"]
