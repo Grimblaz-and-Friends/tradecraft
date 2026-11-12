@@ -441,8 +441,10 @@ def test_pricing_needs_a_passing_ledger_and_a_rate_row():
 
     known = change_cost._price(item("claude-opus-5-5"), rates)
     assert known["status"] == "known" and float(known["amount"]) > 0
-    unknown = change_cost._price(item("claude-unrated-9"), rates)
-    assert unknown["status"] == "unknown" and "amount" not in unknown
+    # A model with no price is a named floor, not an unknown, once the ledger passes.
+    unrated = change_cost._price(item("claude-unrated-9"), rates)
+    assert unrated["status"] == "known" and unrated["amount"] == "0" and unrated["floor"]
+    assert "claude-unrated-9" in unrated["floor_reasons"][0]
     ledger = change_cost._price(item("claude-opus-5-5", ok=False), rates)
     assert ledger["status"] == "unknown" and "unread files" in json.dumps(ledger)
 

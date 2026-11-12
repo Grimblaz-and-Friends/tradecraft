@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Record plan gauges and render a change's three-part cost report."""
+"""Record plan gauges and render a change's three-part cost report.
+
+Pricing a run from the shipped and repository price files. Design: lib/DESIGN.md#pricing-a-run
+"""
 from __future__ import annotations
 
 import argparse
@@ -297,16 +300,232 @@ def usage_rows(dispatch_root: Path, repo: str, issue: int,
         dispatch_root, repo, issue, holder_path or default_holder_usage(repo, issue), skipped)]
 
 
+_RATE_FIELDS = ("vendor", "model", "effective_from", "effective_to", "currency",
+                "per_tokens", "classes", "source_url", "retrieved_at")
+
+
+def _classes_problem(name: str, classes: object) -> str | None:
+    if not isinstance(classes, dict) or not classes:
+        return f"{name} must be a nonempty object"
+    for key, price in classes.items():
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or _number(price) is None:
+            return f"{name}.{key} must be a finite nonnegative number"
+    return None
+
+
+def _tier_problem(row: dict) -> str | None:
+    if "prompt_tiers" not in row:
+        return None
+    tiers = row["prompt_tiers"]
+    # An explicit null would silently price a tiered model at its base prices.
+    if not isinstance(tiers, list) or not tiers:
+        return "prompt_tiers must be a nonempty list; leave it out for a model priced the same at every prompt length"
+    thresholds = []
+    for number, tier in enumerate(tiers):
+        if not isinstance(tier, dict):
+            return "each prompt tier must be an object with above_prompt_tokens and classes"
+        problem = _classes_problem(f"prompt_tiers[{number}].classes", tier.get("classes"))
+        if problem:
+            return problem
+        threshold = tier.get("above_prompt_tokens")
+        if type(threshold) is not int or threshold <= 0:
+            return "each prompt tier's above_prompt_tokens must be a positive integer"
+        thresholds.append(threshold)
+    if len(set(thresholds)) != len(thresholds):
+        return "prompt tier thresholds must be distinct"
+    return None
+
+
 def load_rates(path: Path) -> list[dict[str, object]]:
     value = _read_json(path, "rate card")
     if not isinstance(value, dict) or value.get("schema_version") != 1 or not isinstance(value.get("rates"), list):
         raise CostError("rate card must be a schema-version-1 object with a rates list")
-    required = {"vendor", "model", "effective_from", "effective_to", "currency",
-                "per_tokens", "classes", "source_url", "retrieved_at"}
     for row in value["rates"]:
-        if not isinstance(row, dict) or not required.issubset(row):
+        if not isinstance(row, dict) or not set(_RATE_FIELDS).issubset(row):
             raise CostError("each rate row must carry the complete dated rate-card shape")
+        problem = _tier_problem(row)
+        if problem:
+            raise CostError(f"rate row for {row.get('model')}: {problem}")
     return value["rates"]
+
+
+_PRICING_PAGES = {"claude": "https://platform.claude.com/docs/en/about-claude/pricing",
+                  "codex": "https://developers.openai.com/api/docs/pricing"}
+# The Claude page is served as Markdown and as a rendered table with shorter headers, so each
+# label names the column both ways; a reader of either form finds it without reading this code.
+_ENTRY_CLASSES = {
+    "claude": {"input": "Base input tokens (shown as Input)",
+               "cache_write_5m": "5m cache writes (shown as 5m writes)",
+               "cache_write_1h": "1h cache writes (shown as 1h writes)", "cache_creation": None,
+               "cache_read": "Cache hits and refreshes (shown as Hits and refreshes)",
+               "output": "Output tokens (shown as Output)"},
+    "codex": {"input": "Input", "cached_input": "Cached input",
+              "cache_write_input": "30m write", "output": "Output"},
+}
+_ENTRY_PROCESSING = {
+    "claude": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation",
+    "codex": "standard; short context",
+}
+_REPOSITORY_RATES = Path(".tradecraft") / "rates.json"
+
+
+def _placeholder(value: object, where: str = "") -> str | None:
+    if isinstance(value, str) and value.startswith("FILL"):
+        return where or "value"
+    if isinstance(value, dict):
+        for key, child in value.items():
+            found = _placeholder(child, f"{where}.{key}" if where else str(key))
+            if found:
+                return found
+    if isinstance(value, list):
+        for number, child in enumerate(value):
+            found = _placeholder(child, f"{where}[{number}]")
+            if found:
+                return found
+    return None
+
+
+def _repository_row_problem(row: object) -> str | None:
+    if not isinstance(row, dict):
+        return "entry is not a JSON object"
+    missing = [name for name in _RATE_FIELDS if name not in row]
+    if missing:
+        return "missing field " + ", ".join(missing)
+    placeholder = _placeholder(row)
+    if placeholder:
+        return f"{placeholder} still holds a FILL placeholder; replace it from the pricing page"
+    if not isinstance(row["vendor"], str) or not isinstance(row["model"], str):
+        return "vendor and model must be strings"
+    if not isinstance(row["currency"], str) or not row["currency"]:
+        return "currency must be a nonempty string, such as USD"
+    if _timestamp(row["effective_from"]) is None:
+        return "effective_from is not a timestamp with a zone, such as 2026-11-12T00:00:00Z"
+    if row["effective_to"] is not None and _timestamp(row["effective_to"]) is None:
+        return "effective_to must be null or a timestamp with a zone"
+    denominator = _number(row["per_tokens"])
+    if denominator is None or denominator <= 0:
+        return "per_tokens must be a positive number"
+    problem = _classes_problem("classes", row["classes"])
+    if problem:
+        return problem
+    return _tier_problem(row)
+
+
+def repository_rates(path: Path | None) -> tuple[list[dict], dict[str, object]]:
+    """Read a repository's own price file; a bad paste is named and set aside so it can't take every other figure."""
+    if path is None:
+        return [], {"path": None, "status": "no-repository",
+                    "reason": "no repository top level was found; run from inside the repository or pass --root",
+                    "rejected": []}
+    status = {"path": str(path), "status": "read", "rejected": []}
+    try:
+        value = json.loads(path.read_bytes())
+    except FileNotFoundError:
+        return [], {**status, "status": "absent"}
+    except (OSError, ValueError) as exc:
+        return [], {**status, "status": "unreadable", "reason": f"cannot read the file as JSON: {exc}"}
+    if not isinstance(value, dict) or value.get("schema_version") != 1 or not isinstance(value.get("rates"), list):
+        return [], {**status, "status": "unreadable",
+                    "reason": "the file must be a schema-version-1 object with a rates list"}
+    rows = []
+    for row in value["rates"]:
+        problem = _repository_row_problem(row)
+        if problem:
+            status["rejected"].append({"model": _mapping(row).get("model"), "reason": problem})
+        else:
+            rows.append(row)
+    return rows, status
+
+
+def repository_rates_path(root: Path | None) -> Path | None:
+    """The repository's price file; it lives in the repository so a plugin update keeps it."""
+    if root is None:
+        try:
+            completed = subprocess.run(["git", "rev-parse", "--show-toplevel"], stdin=subprocess.DEVNULL,
+                                       capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        text = completed.stdout.decode("utf-8", errors="backslashreplace").strip()
+        if completed.returncode or not text:
+            return None
+        root = Path(text)
+    return root.expanduser().resolve() / _REPOSITORY_RATES
+
+
+class _Card:
+    """The shipped rows, then the repository's own rows for a use the shipped card does not price."""
+
+    def __init__(self, shipped, repository=(), repository_path=None):
+        self.shipped = list(shipped)
+        self.repository = list(repository)
+        self.repository_path = repository_path
+
+    def lookup(self, vendor, model, when):
+        row = _rate_for(self.shipped, vendor, model, when)
+        if row is not None:
+            # A shipped price is checked against the posted page by the practice; a pasted one is not.
+            return row, "shipped"
+        local = _rate_for(self.repository, vendor, model, when) if self.repository else None
+        return (local, "repository") if local is not None else (None, None)
+
+    def shipped_covers(self, entry) -> bool:
+        """Whether shipped rows price the entry's model over its whole interval, so deleting it loses nothing."""
+        start, end = _timestamp(entry.get("effective_from")), _timestamp(entry.get("effective_to"))
+        spans = sorted((_timestamp(row.get("effective_from")), _timestamp(row.get("effective_to")))
+                       for row in self.shipped
+                       if row.get("vendor") == entry.get("vendor") and row.get("model") == entry.get("model")
+                       and _timestamp(row.get("effective_from")) is not None)
+        reached = start
+        for span_start, span_end in spans:
+            if span_start > reached:
+                break
+            if span_end is None:
+                return True
+            reached = max(reached, span_end)
+        return end is not None and reached >= end
+
+    def now_shipped(self) -> list[dict]:
+        return [{"vendor": entry["vendor"], "model": entry["model"], "effective_from": entry["effective_from"],
+                 "path": self.repository_path,
+                 "note": "the shipped card now prices this model over this entry's whole interval; "
+                         "this repository entry can be removed"}
+                for entry in self.repository if self.shipped_covers(entry)]
+
+    def ended_page(self, vendor, model, when):
+        for row in [*self.shipped, *self.repository]:
+            end = _timestamp(row.get("effective_to"))
+            if row.get("vendor") == vendor and row.get("model") == model and end is not None and when >= end:
+                return row.get("source_url")
+        return None
+
+    def origin(self, label):
+        if label == "repository":
+            return {"price_file": "repository", "price_file_path": self.repository_path}
+        return {"price_file": "shipped"}
+
+
+def _card(rates) -> _Card:
+    return rates if isinstance(rates, _Card) else _Card(rates)
+
+
+def _missing_reason(card: _Card, vendor, model, when, subject: str) -> str:
+    reason = f"no price for {vendor} {model}; {subject} excluded from the known amount"
+    page = card.ended_page(vendor, model, when) if when else None
+    if page:
+        reason += f"; price interval for {model} has ended; re-read the posted page: {page}"
+    return reason
+
+
+def _prompt_tier(rate: dict, prompt: Decimal) -> tuple[dict, str]:
+    """The posted page prices tokens "over" its threshold, so a prompt exactly at it takes the lower prices."""
+    chosen = None
+    for tier in rate.get("prompt_tiers") or []:
+        if prompt > tier["above_prompt_tokens"] and (
+                chosen is None or tier["above_prompt_tokens"] > chosen["above_prompt_tokens"]):
+            chosen = tier
+    if chosen is None:
+        return rate, "base"
+    return {**rate, "classes": chosen["classes"]}, f"above {chosen['above_prompt_tokens']}"
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -640,69 +859,123 @@ def _price(item: _Attempt, rates: list[dict]) -> dict:
             populations[exact_model] = counts
     else:
         reasons.append(f"no token interpretation for vendor {vendor}")
+    card = _card(rates)
     total = Decimal(0)
     currency = None
     sources = []
     card_models = {}
+    five_minute = {}
+    unpriced = {}
     for exact_model, classes in populations.items():
         if not isinstance(exact_model, str) or not exact_model:
             continue
-        candidates = [row for row in rates if row.get("vendor") == vendor and row.get("model") == exact_model]
-        rate = _rate_for(rates, vendor, exact_model, when) if when else None
-        if rate is None:
-            reasons.append(f"no dated rate matches {vendor} {exact_model}")
-            if candidates and when and any(
-                    (end := _timestamp(row.get("effective_to"))) is not None and when >= end
-                    for row in candidates):
-                reasons.append(f"price interval for {exact_model} has ended; re-read the posted page: {candidates[-1]['source_url']}")
+        if when is None:
+            reasons.append(f"no price can be dated for {vendor} {exact_model} without the dispatch timestamp")
             known_classes = {"input", "cached_input", "cache_write_input", "output"} if vendor == "codex" else {
                 "input", "cache_read", "cache_creation", "output"}
             for name, count in classes.items():
                 if name not in known_classes and count > 0:
                     reasons.append(f"billable token class {name} for {exact_model} has no rate mapping")
             continue
+        rate, origin = card.lookup(vendor, exact_model, when)
+        # One unpriced model must not cost the run every share the card does price.
+        if rate is None:
+            unpriced[exact_model] = {"model": exact_model, "vendor": vendor, "cause": "no-price",
+                                     "first_use": when.isoformat(),
+                                     "reason": _missing_reason(card, vendor, exact_model, when, "its usage is")}
+            continue
+        if rate.get("prompt_tiers"):
+            # Totals cannot show which requests crossed a threshold, so neither tier is guessed.
+            unpriced[exact_model] = {"model": exact_model, "vendor": vendor, "cause": "per-request-tiers",
+                                     "reason": f"{exact_model} is priced per request by prompt length, and this "
+                                               "run recorded only totals; its usage is excluded from the known amount"}
+            continue
         if currency is not None and rate.get("currency") != currency:
             reasons.append("matched rate rows use different currencies")
         currency = rate.get("currency")
         card_models[exact_model] = _class_price(classes, rate, exact_model, reasons)
+        prices = _mapping(rate.get("classes"))
+        if (classes.get("cache_creation", 0) > 0 and "cache_write_5m" not in classes
+                and "cache_write_1h" not in classes and _number(prices.get("cache_write_5m")) is not None
+                and _number(prices.get("cache_write_1h")) is not None):
+            # The aggregate cannot say which duration was written; helpers write five-minute cache.
+            shorter = {("cache_write_5m" if name == "cache_creation" else name): count
+                       for name, count in classes.items()}
+            five_minute[exact_model] = _class_price(shorter, rate, exact_model, [])
         total += card_models[exact_model]
         sources.append({"model": exact_model, "source_url": rate.get("source_url"),
-                        "retrieved_at": rate.get("retrieved_at")})
+                        "retrieved_at": rate.get("retrieved_at"), **card.origin(origin)})
+    runtime = _runtime_prices(item, populations) if vendor == "claude" else {}
+    for entry in unpriced.values():
+        # Only a runtime figure marked as a list price is trusted: an older runtime prices an
+        # unknown model at another model's rates and marks that figure otherwise.
+        entry["share"] = "runtime-list-price" if entry["model"] in runtime else "excluded"
+        if entry["share"] == "runtime-list-price":
+            entry["runtime_amount"] = format(runtime[entry["model"]], "f")
+    excluded = [entry["reason"] for entry in unpriced.values() if entry["share"] == "excluded"]
+    if currency not in (None, "USD") and any(entry["share"] == "runtime-list-price" for entry in unpriced.values()):
+        reasons.append(f"a runtime list charge in USD cannot be added to a {currency} card figure")
     if reasons:
         value = _unknown_price(reasons)
     else:
-        value = {"status": "known", "currency": currency, "amount": format(total, "f"),
+        # With no card row matched, every share is a runtime list charge, which is in USD, or excluded
+        # and so zero; claiming USD lets that figure count in the change total like any other.
+        value = {"status": "known", "currency": currency or "USD", "amount": format(total, "f"),
                  "rate_sources": sources, "basis": "API list-price equivalence",
-                 "source": "rate-card", "floor": vendor == "codex", "floor_reasons": [],
-                 "reasons": []}
+                 "source": "rate-card", "floor": vendor == "codex" or bool(excluded),
+                 "floor_reasons": list(excluded), "reasons": []}
         if vendor == "codex":
             value["model_basis"] = "requested model"
-            value["floor_reasons"] = ["Codex short-context rates are a floor; requests are not separated"]
+            value["floor_reasons"] = ["Codex short-context rates are a floor; requests are not separated",
+                                      *excluded]
         else:
-            runtime = _runtime_prices(item, populations)
             flags = []
             comparisons = []
             selected = Decimal(0)
-            whole_mismatch = len(runtime) == len(card_models) and abs(
-                sum(runtime.values(), Decimal(0)) - total) > Decimal("0.01")
-            for exact_model, card in card_models.items():
+            readings = {}
+            for exact_model, amount in card_models.items():
                 native = runtime.get(exact_model)
-                mismatch = native is not None and (whole_mismatch or abs(native - card) > Decimal("0.01"))
+                shorter = five_minute.get(exact_model)
+                if (native is not None and shorter is not None and abs(native - amount) > Decimal("0.01")
+                        and abs(native - shorter) <= Decimal("0.01")):
+                    readings[exact_model] = ("5m", shorter)
+                else:
+                    readings[exact_model] = ("1h" if shorter is not None else None, amount)
+            matched = sum((amount for _, amount in readings.values()), Decimal(0))
+            covered = [runtime[name] for name in card_models if name in runtime]
+            whole_mismatch = len(covered) == len(card_models) and abs(
+                sum(covered, Decimal(0)) - matched) > Decimal("0.01")
+            for exact_model, (reading, amount) in readings.items():
+                native = runtime.get(exact_model)
+                mismatch = native is not None and (whole_mismatch or abs(native - amount) > Decimal("0.01"))
                 if mismatch:
                     flags.append(f"runtime/card list-price mismatch above one cent; model population {exact_model}")
-                selected += native if native is not None and not mismatch else card
-                comparisons.append({"model": exact_model, "card_amount": format(card, "f"),
-                                    "runtime_amount": format(native, "f") if native is not None else None,
-                                    "source": "runtime-list-price" if native is not None and not mismatch else "rate-card"})
+                selected += native if native is not None and not mismatch else amount
+                comparison = {"model": exact_model, "card_amount": format(amount, "f"),
+                              "runtime_amount": format(native, "f") if native is not None else None,
+                              "source": "runtime-list-price" if native is not None and not mismatch else "rate-card"}
+                if reading is not None:
+                    comparison["card_cache_write_reading"] = reading
+                comparisons.append(comparison)
+            for entry in unpriced.values():
+                if entry["share"] == "runtime-list-price":
+                    selected += runtime[entry["model"]]
+                    comparisons.append({"model": entry["model"], "card_amount": None,
+                                        "runtime_amount": entry["runtime_amount"],
+                                        "source": "runtime-list-price",
+                                        "basis": "runtime list charge; no card price"})
             value["amount"] = format(selected, "f")
             value["model_prices"] = comparisons
             value["flags"] = flags
             value["source"] = ("runtime-list-price" if comparisons and all(
                 row["source"] == "runtime-list-price" for row in comparisons) else "rate-card"
                 if all(row["source"] == "rate-card" for row in comparisons) else "runtime-and-rate-card")
-            value["card_amount"] = format(total, "f")
-            if len(runtime) == len(card_models):
+            value["card_amount"] = format(matched, "f")
+            if populations and set(runtime) >= {name for name in populations if isinstance(name, str) and name}:
                 value["runtime_amount"] = format(sum(runtime.values(), Decimal(0)), "f")
+    if unpriced:
+        value["unpriced_models"] = [{key: entry[key] for key in entry if key != "reason"}
+                                    for entry in unpriced.values()]
     if item.predecessor is not None:
         value["predecessor_dispatch_id"] = item.predecessor
     if item.share is not None:
@@ -743,7 +1016,12 @@ def _agent_contributions(holder, items, prices):
             if not exact and not potential_native:
                 continue
             start, end = _timestamp(dispatch.get("launched_at")), _timestamp(dispatch.get("completed_at"))
-            matching_models = _mapping(_mapping(attempt.usage.get("tokens")).get("models"))
+            # A model whose share the dispatch excluded is priced, or floored, in the holder row instead.
+            left_out = {entry.get("model") for entry in price.get("unpriced_models") or []
+                        if entry.get("share") == "excluded"}
+            matching_models = {name: counts for name, counts in
+                               _mapping(_mapping(attempt.usage.get("tokens")).get("models")).items()
+                               if name not in left_out}
             selected = [reply for reply in children if (start is None or end is None or
                         start <= _timestamp(reply["timestamp"]) <= end)
                         and reply["model"] in matching_models]
@@ -806,8 +1084,10 @@ def _transcript_price(item, rates, agent_decisions=None):
     if usage.get("tokens_unknown_reason"):
         gaps.append(str(usage["tokens_unknown_reason"]))
     decisions = agent_decisions or {}
+    card = _card(rates)
     total, slices, exclusions, effective, reasons = Decimal(0), [], [], [], list(gaps)
     computable = False
+    missing: dict[str, dict] = {}
     for reply in replies:
         if reply["id"] in unresolved_replies:
             continue
@@ -831,12 +1111,25 @@ def _transcript_price(item, rates, agent_decisions=None):
             slices.append({"reply_id": reply["id"], "model": model, "timestamp": reply["timestamp"],
                            "amount": "0", "basis": "zero billable populations; no rate required"})
             continue
-        rate = _rate_for(rates, "claude", model, when) if when else None
+        if when is None:
+            reasons.append(f"reply {reply.get('id')} has no readable timestamp")
+            continue
+        rate, origin = card.lookup("claude", model, when)
+        malformed = [name for name, count in extras.items() if type(count) is not int or count < 0]
         if rate is None:
-            reasons.append(f"reply {reply.get('id')} has no dated rate for claude {model}")
+            entry = missing.setdefault(model, {"replies": 0, "first": when, "last": when})
+            entry["replies"] += 1
+            entry["first"], entry["last"] = min(entry["first"], when), max(entry["last"], when)
+            # A malformed count is a fault of its own; a missing price must not hide it.
+            reasons.extend(f"reply {reply['id']} has unmapped or invalid billable native count: {name}"
+                           for name in malformed)
             continue
         required = transcripts.TOKEN_CLASSES
         classes = {name: Decimal(count) for name, count in counts.items() if name != "cache_creation"}
+        # Each reply is one request, so a tiered row is priced on this reply's own prompt.
+        prompt = sum((classes.get(name, Decimal(0)) for name in
+                      ("input", "cache_read", "cache_write_5m", "cache_write_1h")), Decimal(0))
+        rate, tier = _prompt_tier(rate, prompt)
         price_reasons = []
         amount = _class_price(classes, rate, model, price_reasons)
         if rate.get("currency") != "USD":
@@ -863,14 +1156,28 @@ def _transcript_price(item, rates, agent_decisions=None):
         slices.append({"reply_id": reply["id"], "model": model, "timestamp": reply["timestamp"],
                        "amount": format(amount, "f"), "source_url": rate.get("source_url"),
                        "retrieved_at": rate.get("retrieved_at"), "effective_from": rate.get("effective_from"),
-                       "duration_rates_retrieved_at": rate.get("duration_rates_retrieved_at")})
+                       "duration_rates_retrieved_at": rate.get("duration_rates_retrieved_at"),
+                       "prompt_tier": tier, **card.origin(origin)})
     reasons = list(dict.fromkeys(reasons))
+    price_gaps = []
+    for model, entry in missing.items():
+        count = entry["replies"]
+        subject = "1 reply on it is" if count == 1 else f"{count} replies on it are"
+        price_gaps.append(_missing_reason(card, "claude", model, entry["last"], subject))
     if reasons and not computable:
-        value = _unknown_price(reasons)
+        value = _unknown_price(reasons + price_gaps)
     else:
+        # A missing price is no fault in the evidence, so it lowers the figure to a floor rather than voiding it.
+        floor_reasons = reasons + price_gaps
         value = {"status": "known", "currency": "USD", "amount": format(total, "f"),
                  "basis": "API list-price equivalence", "source": "rate-card",
-                 "floor": bool(reasons), "floor_reasons": reasons, "reasons": [], "rate_sources": slices}
+                 "floor": bool(floor_reasons), "floor_reasons": floor_reasons, "reasons": [],
+                 "rate_sources": slices}
+    if missing:
+        value["unpriced_models"] = [{"model": model, "vendor": "claude", "cause": "no-price",
+                                     "share": "excluded", "replies": entry["replies"],
+                                     "first_use": entry["first"].isoformat()}
+                                    for model, entry in missing.items()]
     value.update(timestamp_basis="reply time", attribution="attributed by time",
                  window=holder.get("window"), session_id=holder.get("session_id"),
                  dispatch_exclusions=exclusions, effective_agent_inclusion=effective,
@@ -974,8 +1281,75 @@ def runtime_report(repo, issue, dispatch_root):
     return reports
 
 
+def _entry_template(vendor: str, model: str, first_use: datetime) -> dict[str, object]:
+    unit = "USD per million tokens, as a number"
+    names = _ENTRY_CLASSES.get(vendor, {})
+    return {
+        "vendor": vendor, "model": model,
+        # Midnight of the earliest affected use, so the filled entry covers the run that asked for it.
+        "effective_from": first_use.astimezone(timezone.utc).strftime("%Y-%m-%dT00:00:00Z"),
+        "effective_to": None, "currency": "USD", "per_tokens": 1000000,
+        "classes": {name: f"FILL: the {column} column's price for {model}, {unit}" if column else
+                    "FILL: the same price as cache_write_1h, because the card keeps this class at the "
+                    f"one-hour price for records that report only their total cache writes; {unit}"
+                    for name, column in names.items()},
+        "source_url": _PRICING_PAGES.get(vendor),
+        "retrieved_at": "FILL: the UTC time you read the page, such as 2026-11-12T05:21:04Z",
+        "processing": _ENTRY_PROCESSING.get(vendor, "standard"),
+        "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+    }
+
+
+_GUIDANCE = (
+    "Look the model up on pricing_page, replace every FILL value in entry from the column it names, "
+    "set retrieved_at to the time you read the page, and add entry to the rates list in paste_into "
+    "(or save new_file there when it is given); the next report prices these uses. If the page prices "
+    "the model by prompt length, add to entry \"prompt_basis\": \"a request's input, cache-read and "
+    "cache-write tokens, each request priced on its own\" and \"prompt_tiers\": [{\"above_prompt_tokens\": "
+    "\"FILL: the prompt length in tokens above which the page charges the higher prices, as a whole number\", "
+    "\"classes\": {...the same class names, at the prices for prompts over that many tokens...}}], "
+    "keeping entry's own classes as the prices at or below it. Then send the filled entry to the practice "
+    "repository named by the installed plugin's homepage, so that the shipped card carries it."
+)
+
+
+def _missing_prices(prices: list[dict], files: dict) -> list[dict[str, object]]:
+    found: dict[tuple[str, str], dict] = {}
+    for price in prices:
+        for entry in price["value"].get("unpriced_models") or []:
+            if entry.get("cause") != "no-price":
+                continue
+            key = (entry["vendor"], entry["model"])
+            target = found.setdefault(key, {"uses": [], "first": _timestamp(entry["first_use"])})
+            use = {"dispatch_id": price["dispatch_id"], "attempt_index": price["attempt_index"]}
+            if "replies" in entry:
+                use["replies"] = entry["replies"]
+            target["uses"].append(use)
+            target["first"] = min(target["first"], _timestamp(entry["first_use"]))
+    repository = files["repository"]
+    paste_into = repository["path"] or str(Path("<repository top level>") / _REPOSITORY_RATES)
+    answer = []
+    for (vendor, model), target in sorted(found.items()):
+        entry = _entry_template(vendor, model, target["first"])
+        value = {"vendor": vendor, "model": model, "uses": target["uses"],
+                 "pricing_page": _PRICING_PAGES.get(vendor), "paste_into": paste_into, "entry": entry}
+        if value["pricing_page"] is None:
+            value["pricing_page_reason"] = f"no posted pricing page is known for vendor {vendor}"
+        if repository["status"] == "no-repository":
+            value["paste_into_note"] = "run the report from inside the repository, or pass --root"
+        value["instructions"] = _GUIDANCE
+        answer.append(value)
+    if repository["status"] in {"absent", "no-repository"}:
+        # One file carries every missing entry, so saving any item's new_file loses none of the others.
+        whole = {"schema_version": 1, "rates": [value["entry"] for value in answer]}
+        for value in answer:
+            value["new_file"] = whole
+    return answer
+
+
 def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
-           terms_path: Path, gauges_path: Path, holder_path: Path) -> dict[str, object]:
+           terms_path: Path, gauges_path: Path, holder_path: Path, *,
+           repository_rates_path: Path | None = None) -> dict[str, object]:
     skipped_records: list[dict[str, str]] = []
     foreign_requests: list[dict] = []
     items = _contexts(dispatch_root, repo, issue, holder_path, skipped_records,
@@ -984,7 +1358,9 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
                 for entry in skipped_records if entry.get("report_warning")]
     skipped_records = [entry for entry in skipped_records if not entry.get("report_warning")]
     rows = [item.usage for item in items]
-    rates = load_rates(rates_path)
+    local_rows, repository_status = repository_rates(repository_rates_path)
+    price_files = {"shipped": str(rates_path), "repository": repository_status}
+    rates = _Card(load_rates(rates_path), local_rows, repository_status["path"])
     _session_shares(items, foreign_requests)
     prices = [{
         "dispatch_id": _mapping(item.usage.get("dispatch")).get("id"),
@@ -1035,6 +1411,9 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
         else:
             summary["unknown_attempts"] += 1
             summary["reasons"].extend(value.get("reasons") or ["contribution currency is not USD"])
+    runtime_models = sorted({entry["model"] for price in prices if price["value"]["status"] == "known"
+                             for entry in price["value"].get("unpriced_models") or []
+                             if entry.get("share") == "runtime-list-price"})
     unknown_count = sum(summary["unknown_attempts"] > 0 for summary in summaries.values())
     known_total = sum((summary["known_amount"] for summary in summaries.values()), Decimal(0))
     if unknown_count:
@@ -1074,7 +1453,11 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
             "unknown_dispatches": unknown_count,
             "floor": bool(floor_reasons), "floor_reasons": list(dict.fromkeys(floor_reasons)),
             "skipped_record_count": len(skipped_records),
+            "runtime_list_price_models": runtime_models,
         },
+        "price_files": price_files,
+        "missing_prices": _missing_prices(prices, price_files),
+        "repository_entries_now_shipped": rates.now_shipped(),
         "bill_plan_status": bill_plan_status(rows, terms_path, gauges_path),
     }
 
@@ -1285,6 +1668,9 @@ def parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--plan-terms", type=Path, default=default_plan_terms())
     report_parser.add_argument("--gauges", type=Path)
     report_parser.add_argument("--holder-usage", type=Path)
+    report_parser.add_argument("--root", type=Path,
+                               help="repository top level whose .tradecraft/rates.json adds prices; "
+                                    "defaults to the current directory's repository")
     close = commands.add_parser("holder-close", help="attach the holder's own usage at change close")
     close.add_argument("--repo", required=True)
     close.add_argument("--issue", required=True, type=int)
@@ -1315,6 +1701,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.repo, args.issue, args.dispatch_root, args.rates, args.plan_terms,
                 args.gauges or default_gauges(args.repo, args.issue),
                 args.holder_usage or default_holder_usage(args.repo, args.issue),
+                repository_rates_path=repository_rates_path(args.root),
             )
         elif args.command == "holder-close":
             value = holder_close(
