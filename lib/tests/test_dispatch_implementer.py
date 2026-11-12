@@ -2279,7 +2279,7 @@ SPLIT_PARTS = {"github_seconds", "removals_seconds", "markers_seconds", "launch_
 
 
 def assert_978_split(split, until):
-    """A16: the parts and the unattributed remainder sum to the total within one second."""
+    """The parts and the unattributed remainder sum to the total within one second."""
     assert split["until"] == until and set(split["parts"]) == SPLIT_PARTS, split
     assert abs(sum(split["parts"].values()) - split["total_seconds"]) <= 1, split
 
@@ -2300,7 +2300,7 @@ def entrance_handoff(path, delay):
 
 
 def test_978_request_record_split(job, tmp_path, monkeypatch):
-    # A13 (i) to (iii): the request record's split ends at its first write and nowhere else.
+    # The request record's split ends at its first write and nowhere else.
     # Each delay is bounded by clock readings within the one run, so the preparation's
     # own run-to-run variance cannot decide the result.
     import time

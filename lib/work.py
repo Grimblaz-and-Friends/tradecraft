@@ -901,7 +901,7 @@ def _implementing_candidates(transport: GitHubREST, repo: str, issue_number: int
                              config: WorkConfig) -> list[dict[str, object]]:
     """Fetch every pull request that may implement the issue, found from the issue itself.
 
-    The result feeds `_candidate_pr_classes` as the repository-wide listing once did: the issue
+    The result feeds `_candidate_pr_classes`, which classifies what it is given: the issue
     itself and authorized markers count as they are, and a timeline or closing-graph pull
     request counts only when its current body closes the issue. No request lists the
     repository's pull requests, a collection that grows without bound.
@@ -921,8 +921,7 @@ def _implementing_candidates(transport: GitHubREST, repo: str, issue_number: int
         try:
             pulls.append(_dict(transport.get(endpoint), endpoint))
         except WorkError as exc:
-            # A marker naming a number that is no pull request leaves nothing to fetch, as the
-            # listing this replaces simply lacked that number.
+            # A marker naming a number that is no pull request names nothing to classify, so it is absent.
             if getattr(exc, "http_status", None) == 404 and number in named:
                 continue
             raise
@@ -4004,7 +4003,7 @@ def _evaluate_reach_in_part(state: WorkState) -> None:
     except Exception as exc:
         limit = _time_ran_out(exc)
         # Time running out is not missing evidence, so it never reads as something to restore.
-        reason = (f"reach evaluation stopped: time ran out: {limit}" if limit is not None
+        reason = (REACH_STOPPED + limit if limit is not None
                   else f"reach evaluation unproved: {type(exc).__name__}: {exc}")
         state.reach = build_reach.uncertainty(
             reason, readings, root=state.holder_root, head=head, pr=pr, run=_git,
@@ -4023,13 +4022,15 @@ def _time_ran_out(exc: BaseException) -> str | None:
         return limit
     bound = getattr(exc, "timeout", None)
     if lifecycle.current_deadline() is None and isinstance(bound, (int, float)):
-        return f"this read's own {bound:g}-second bound"
+        return build_reach.own_bound(bound)
     return lifecycle.limit_phrase()
 
 
+REACH_STOPPED = "reach evaluation stopped: time ran out: "
+# An uncertainty is the error's type name and its message; each prefix is read from its text's home.
 REACH_TIMEOUT_PREFIXES = (
-    "ReachTimeout: time ran out before this read finished: ",
-    "ReachError: reach evaluation stopped: time ran out: ",
+    f"{build_reach.ReachTimeout.__name__}: {build_reach.TIME_RAN_OUT}",
+    f"{build_reach.ReachError.__name__}: {REACH_STOPPED}",
 )
 
 
@@ -4050,13 +4051,14 @@ def _reach_advice(owed: list[dict[str, object]]) -> str:
     timed_out: dict[str, list[str]] = {}
     unavailable: list[str] = []
     for turn in owed:
-        if not turn.get("uncertainty"):
-            continue
-        limit = _reach_timeout_limit(turn["uncertainty"])
-        if limit is not None:
-            timed_out.setdefault(limit, []).append(str(turn["turn"]))
-        else:
-            unavailable.append(str(turn["turn"]))
+        # A turn's own measurement and its pull-request superset each fail for one of the two causes.
+        for trouble in (turn.get("uncertainty"), turn.get("superset_error")):
+            if not trouble:
+                continue
+            limit = _reach_timeout_limit(trouble)
+            causes = timed_out.setdefault(limit, []) if limit is not None else unavailable
+            if str(turn["turn"]) not in causes:
+                causes.append(str(turn["turn"]))
     advice = [f"For {', '.join(turns)}: time ran out ({limit}); raise the limit and run again."
               for limit, turns in timed_out.items()]
     if unavailable:

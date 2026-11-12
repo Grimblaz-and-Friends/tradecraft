@@ -70,7 +70,7 @@ def audit():
         _AUDIT["on"] = False
 
 
-# --- A6(e)'s allowed requests: each entry named, with R the scenario's repository. ---
+# --- The allowed requests: each read scoped to one named object, with R the scenario's repository. ---
 
 SHA_ID = r"[0-9a-f]{40}(?:[0-9a-f]{24})?"
 
@@ -92,7 +92,7 @@ def allowed_rest(repo):
         "one path's contents at a commit": rf"{r}/contents/[^?]+",
         "one comment by id": rf"{r}/issues/comments/[0-9]+",
         "one workflow run by id": rf"{r}/actions/runs/[0-9]+",
-        # Added beyond the artifact's list, each scoped to one object: the review workflow
+        # Each also scoped to one object: the review workflow
         # run's jobs and the base branch's protection (read_state for an open pull request),
         # and one commit by its sha (use evidence classifying each commit since a use marker).
         "one workflow run's jobs": rf"{r}/actions/runs/[0-9]+/jobs",
@@ -151,7 +151,7 @@ def gh_allowed(argv, repo):
 
 
 def unlisted(requests, gh_argvs, repo):
-    """Every request or `gh` process not on A6(e)'s allowed list, named."""
+    """Every request or `gh` process not on the allowed list, named."""
     found = []
     for kind, value in requests:
         if kind == "GET":
@@ -370,7 +370,7 @@ def report(capsys, call):
     return json.loads(capsys.readouterr().out)
 
 
-# --- A6: the standing test. ---
+# --- The standing test: each piece of the entrance's work done once, at realistic size. ---
 
 def test_978_scale(tmp_path, monkeypatch, capsys, audit):
     fixture = made_up_change(tmp_path, monkeypatch)
@@ -440,7 +440,7 @@ def test_978_scale(tmp_path, monkeypatch, capsys, audit):
     assert measured[40] <= measured[1], measured
     # (e) every request is on the allowed list.
     stray = unlisted(transport.requests, audit["gh"], REPO)
-    assert not stray, "requests not on A6(e)'s allowed list:\n" + "\n".join(stray)
+    assert not stray, "requests not on the allowed list:\n" + "\n".join(stray)
     assert any(kind == "GRAPHQL" for kind, _ in transport.requests)
 
 
@@ -454,7 +454,7 @@ LISTINGS = (
 
 
 def test_978_scale_detector_fails_every_listing(audit):
-    """A6(e)'s control: the detector names each listing it is sent, so it cannot pass vacuously."""
+    """The detector names each listing it is sent, so it cannot pass vacuously."""
     fixture = tw.state(pr=True)
     transport = Recorder(fixture)
     for kind, value in LISTINGS:
@@ -490,7 +490,7 @@ def test_978_scale_detector_fails_every_listing(audit):
                      ["gh", "api", "graphql", "-f", f"query={work.REVIEW_THREADS_QUERY}"]], REPO) == []
 
 
-# --- A7: no count between composing the prompt and launching. ---
+# --- No count between composing the prompt and launching. ---
 
 def test_978_no_count_between_composition_and_launch(tmp_path, monkeypatch):
     fixture = made_up_change(tmp_path, monkeypatch)
@@ -525,7 +525,7 @@ def test_978_no_count_between_composition_and_launch(tmp_path, monkeypatch):
     assert between == [], f"{len(between)} build_reach Git processes between composition and launch: {between[:5]}"
 
 
-# --- A3, committed half: the scoped report equals the unscoped one. ---
+# --- The scoped report equals the unscoped one, so the index and memo change no answer. ---
 
 class _Unscoped:
     """`build_reach`'s view of preflight with no scope open, so it keeps no memo and no shared view."""
@@ -591,7 +591,7 @@ def test_978_scoped_report_equals_unscoped(tmp_path, monkeypatch, capsys):
     assert scoped == unscoped
 
 
-# --- A19: a count cut off by time says time ran out, and never says to fetch or restore. ---
+# --- A count cut off by time says time ran out, and never says to fetch or restore. ---
 
 def _searched(capfd):
     captured = capfd.readouterr()
@@ -726,7 +726,7 @@ class _Recording:
 
 
 def test_978_open_pull_request_reads_are_on_the_allowed_list():
-    """A6(e) over what the scale test stubs: `read_state` for an open pull request, and use evidence."""
+    """The allowed list over what the standing test stubs: `read_state` for an open pull request, and use evidence."""
     ancestor = "b" * 40
     marker = (f"<!-- tradecraft:use:v1 head={ancestor} status=pass changed=false "
               "staffing_status=qualified -->")

@@ -40,6 +40,8 @@ def cloud_practice_path(practice: str, *parts: str) -> str:
 
 # A routine run may push to `claude/` branches without being told; report branches live there.
 REPORT_PREFIX = "claude/tradecraft-report-"
+# The Git commands the cloud route runs that change a repository; each is judged by its exit status.
+GIT_WRITES = frozenset({"push", "fetch", "merge"})
 
 
 @functools.cache
@@ -565,7 +567,7 @@ class Transport:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", "replace")
 
-    # The vendor command keeps its own route; only `gh` and `git` are reads.
+    # The vendor command keeps its own route: it is the recipient's start, not the entrance's work.
     def cli(self, argv: list[str], env: dict) -> tuple[int, bytes]:
         try:
             result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=120)
@@ -574,8 +576,11 @@ class Transport:
         return result.returncode, result.stdout
 
     def git(self, root: Path, *arguments: str) -> tuple[int, str]:
+        # Every Git command here takes the contained route so a hung one is stopped with what it
+        # started; a push, fetch or merge is reported by its exit status even if its output was cut.
         result = seat_process.run_read(["git", "-C", str(root), *arguments], input=b"", cwd=Path.cwd(),
-                                       timeout=300, cleanup_deadline=lifecycle.cleanup_deadline())
+                                       timeout=300, cleanup_deadline=lifecycle.cleanup_deadline(),
+                                       writes=bool(arguments) and arguments[0] in GIT_WRITES)
         return result.returncode, (result.stdout or result.stderr).decode("utf-8", "replace").strip()
 
     def sleep(self, seconds: float) -> None:

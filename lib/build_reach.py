@@ -31,6 +31,15 @@ class ReachError(ValueError):
     """Evidence cannot establish reach; the holder must restore or settle it."""
 
 
+# The one home of these texts: the entrance's advice matches them from here.
+TIME_RAN_OUT = "time ran out before this read finished: "
+
+
+def own_bound(bound=None):
+    """Name a read's own time bound, the limit when no run deadline is open."""
+    return f"this read's own {bound:g}-second bound" if isinstance(bound, (int, float)) else "this read's own bound"
+
+
 class ReachTimeout(ReachError):
     """A read stopped because time ran out, which is not a missing object.
 
@@ -38,7 +47,7 @@ class ReachTimeout(ReachError):
     """
 
     def __init__(self, limit):
-        super().__init__("time ran out before this read finished: " + limit)
+        super().__init__(TIME_RAN_OUT + limit)
         self.limit = limit
 
 
@@ -221,10 +230,8 @@ def _timed_out(exc):
         bound = getattr(exc, "timeout", None)
         if deadline is not None and (bound is None or _spent()):
             limit = lifecycle.limit_phrase(deadline)
-        elif isinstance(bound, (int, float)):
-            limit = f"this read's own {bound:g}-second bound"
         else:
-            limit = "this read's own bound"
+            limit = own_bound(bound)
     return ReachTimeout(limit)
 
 

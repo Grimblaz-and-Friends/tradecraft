@@ -178,7 +178,8 @@ def test_978_one_process_per_read(tmp_path):
     assert Path(first).name != Path(sys.executable).name
 
 
-# §2 row 2's modules. A start here is `run_read` or `stream_read` unless §1 keeps its route.
+# The modules whose processes are the entrance's and its launchers' reads. A start here is
+# `run_read` or `stream_read` unless KEPT_ROUTES names it, so a read added on another route fails.
 READ_MODULES = ("dispatch_record", "implementer_policy", "launch_bound", "artifact_tree", "cold_draft",
                 "recipient_tree", "cloud_build", "work", "run_lifecycle", "dispatch_seat")
 KEPT_ROUTES = {
@@ -278,3 +279,44 @@ def test_978_read_is_whole_or_refused(tmp_path, monkeypatch):
     with pytest.raises(process.ReadCutShort):
         process.run_read(command, cwd=tmp_path, timeout=30)
     reap(grandchild(tmp_path / "uncontained"))
+
+
+def test_978_a_write_that_exited_0_is_done_even_when_its_pipe_was_held(tmp_path, monkeypatch):
+    """The same held pipe that refuses a read leaves a write that already happened standing."""
+    if os.name == "nt":
+        monkeypatch.setattr(process, "_stop_job", lambda *_args: None)
+        command = [PYTHON, "-c", EXITS.format(session=""), str(tmp_path / "write")]
+    else:
+        monkeypatch.setattr(process.Descendants, "kill", lambda self: False)
+        command = [PYTHON, "-c", EXITS.format(session=", start_new_session=True"), str(tmp_path / "write")]
+    with pytest.raises(process.ReadCutShort):
+        process.run_read(command, cwd=tmp_path, timeout=30)
+    reap(grandchild(tmp_path / "write"))
+    command[-1] = str(tmp_path / "write-done")
+    result = process.run_read(command, cwd=tmp_path, timeout=30, writes=True)
+    try:
+        assert result.returncode == 0 and result.output_complete is False
+        assert result.stdout.strip() == b"child"
+    finally:
+        reap(grandchild(tmp_path / "write-done"))
+
+
+def test_978_git_writes_are_marked_as_writes(tmp_path, monkeypatch):
+    """The cloud route and the recipient tree mark exactly their Git writes as writes."""
+    import cloud_build
+    import recipient_tree
+    seen = []
+
+    def recorded(command, **keywords):
+        seen.append((command[3], keywords.get("writes", False)))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(cloud_build.seat_process, "run_read", recorded)
+    monkeypatch.setattr(recipient_tree, "run_read", recorded)
+    for verb in ("push", "fetch", "merge", "rev-parse", "status"):
+        cloud_build.Transport().git(tmp_path, verb)
+    for verb in ("init", "config", "commit", "checkout", "rev-parse", "ls-files"):
+        recipient_tree._git(tmp_path, verb)
+    assert seen == [("push", True), ("fetch", True), ("merge", True), ("rev-parse", False), ("status", False),
+                    ("init", True), ("config", True), ("commit", True), ("checkout", True),
+                    ("rev-parse", False), ("ls-files", False)]

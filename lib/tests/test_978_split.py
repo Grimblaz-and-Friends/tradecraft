@@ -37,7 +37,7 @@ def split_lines(text):
 
 
 def assert_sums(split):
-    # A16: the parts and the unattributed remainder sum to the total within one second.
+    # The parts and the unattributed remainder sum to the total within one second.
     assert set(split["parts"]) == {f"{name}_seconds" for name in PARTS}
     assert abs(sum(split["parts"].values()) - split["total_seconds"]) <= 1
 
@@ -227,7 +227,7 @@ def test_978_decide_split(tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("delayed", ["github", "removals", "markers", "launch_preparation", "vendor"])
 def test_978_split_attributes_delay(tmp_path, monkeypatch, capsys, delayed):
-    """A17: a delay of D in one part shows in that part, read in the line after the return, and not in another."""
+    """A delay of D in one part shows in that part, read in the line after the return, and not in another."""
     read = lambda: capsys.readouterr().out  # noqa: E731
     with monkeypatch.context() as undelayed:
         baseline = after_return_split(launched_build(undelayed, tmp_path / "baseline", read)[0])
@@ -237,6 +237,8 @@ def test_978_split_attributes_delay(tmp_path, monkeypatch, capsys, delayed):
     for name in PARTS:
         grown = split["parts"][f"{name}_seconds"] - baseline["parts"][f"{name}_seconds"]
         if name == delayed:
-            assert grown >= D - 0.01, (name, baseline, split)
+            # Both figures are rounded to hundredths, and the part's own undelayed work varies
+            # between the two runs by a few hundredths, so the growth is read within that.
+            assert grown >= D - 0.05, (name, baseline, split)
         else:
             assert grown < D / 2, (name, delayed, baseline, split)

@@ -542,7 +542,7 @@ def _contain_suspended(process):
             raise ContainmentRefused(f"job assignment refused: {exc}") from exc
         # Popen keeps the process handle but not its main thread's handle, and finding that
         # thread means a snapshot of every thread on the machine; NtResumeProcess resumes
-        # the process from the handle we hold, the call the premises spike timed.
+        # the process from the handle we already hold.
         status = api.ntdll.NtResumeProcess(int(process._handle))
         if status < 0:
             raise ContainmentRefused(f"resume failed: NTSTATUS {status & 0xFFFFFFFF:#010x}")
@@ -623,7 +623,7 @@ def _job_settled(api, job, end, held):
             api.kernel.CloseHandle(held.popitem()[1])
 
 
-def _collect(command, process, input, timeout, end, cleanup_deadline, stop, settle):
+def _collect(command, process, input, timeout, end, cleanup_deadline, stop, settle, writes=False):
     """Capture a started read until it exits or reaches `end`, then stop what it left behind."""
     captured = {"stdout": bytearray(), "stderr": bytearray()}
     finished = set()
@@ -689,16 +689,19 @@ def _collect(command, process, input, timeout, end, cleanup_deadline, stop, sett
         error = subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
         error.cleanup_proven = cleanup_proven
         raise error
-    if finished != set(captured):
-        raise ReadCutShort(command, stdout, stderr, cleanup_proven)
     result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     result.cleanup_proven = cleanup_proven
-    return result
+    result.output_complete = finished == set(captured)
+    return _whole(command, result, writes)
 
 
-def _whole(command, result):
-    """The read route's result, refused when a pipe was still open as its drain ended."""
-    if not getattr(result, "output_complete", True):
+def _whole(command, result, writes=False):
+    """The read route's result, refused when a pipe was still open as its drain ended.
+
+    A write's outcome is its exit status, not its output: one that has already
+    happened stands, and only its `output_complete` says the output was cut short.
+    """
+    if not getattr(result, "output_complete", True) and not writes:
         raise ReadCutShort(command, result.stdout, result.stderr, result.cleanup_proven)
     return result
 
@@ -711,14 +714,17 @@ def _killed(process):
             pass
 
 
-def run_read(command, *, input=b"", cwd, timeout, env=None, cleanup_deadline=None):
+def run_read(command, *, input=b"", cwd, timeout, env=None, cleanup_deadline=None, writes=False):
     """Run one read, contained, without starting a second process to hold it.
 
     On Windows the caller holds a kill-on-close job the read joins before it
     runs; if Windows refuses that job, the read takes the worker route and the
     run's read-route tally says so. A read never runs uncontained. A read whose
     pipe is still held when its drain ends raises `ReadCutShort` rather than
-    returning part of its output as the whole.
+    returning part of its output as the whole. A Git write the entrance makes
+    (`writes=True`) takes this route too, so a hung write is stopped with what it
+    started; its exit status is its outcome, so it is reported done or failed
+    by that status even when its output was cut short.
 
     Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     """
@@ -729,12 +735,13 @@ def run_read(command, *, input=b"", cwd, timeout, env=None, cleanup_deadline=Non
     if not _CONTAIN:
         process = subprocess.Popen(command, **pipes)
         return _collect(command, process, input, timeout, end, cleanup_deadline,
-                        lambda: _killed(process), lambda _until: False)
+                        lambda: _killed(process), lambda _until: False, writes)
     if os.name != "nt":
         # A process group and the subreaper already contain a POSIX read in this process.
         preflight.note_read(True)
         return _whole(command, run_process(command, input=input, cwd=cwd, timeout=max(0.0, end - started),
-                                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline))
+                                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline),
+                      writes)
     process = subprocess.Popen(command, creationflags=_CREATE_SUSPENDED, **pipes)
     try:
         api, job = _contain_suspended(process)
@@ -743,7 +750,8 @@ def run_read(command, *, input=b"", cwd, timeout, env=None, cleanup_deadline=Non
         preflight.note_read(False, str(refused))
         return _whole(command, run_process(command, input=input, cwd=cwd,
                                            timeout=max(0.0, end - time.monotonic()),
-                                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline))
+                                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline),
+                      writes)
     except BaseException:
         _abandon_suspended(process)
         raise
@@ -752,7 +760,7 @@ def run_read(command, *, input=b"", cwd, timeout, env=None, cleanup_deadline=Non
     try:
         return _collect(command, process, input, timeout, end, cleanup_deadline,
                         lambda: _stop_job(api, job, held),
-                        lambda until: _job_settled(api, job, until, held))
+                        lambda until: _job_settled(api, job, until, held), writes)
     finally:
         api.kernel.CloseHandle(job)  # Kill-on-close: nothing the read started outlives it.
 

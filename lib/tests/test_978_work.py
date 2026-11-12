@@ -183,6 +183,28 @@ def test_978_refusal_advice_by_cause(monkeypatch):
     assert "raise the limit and run again" in advice
 
 
+def test_978_superset_error_gets_advice_by_cause(monkeypatch):
+    def superset_only(reference, error):
+        return {**turn(reference, ""), "state": "reading-required", "superset_error": error}
+
+    missing = superset_only("turn-superset", "ReachError: restore required Git objects/read capability "
+                            "and retry: blob " + "d" * 40 + " missing")
+    detail = owed_refusal(monkeypatch, [missing]).detail
+    restore = re.search(r"For ([^:]+): restore unavailable objects/read capability and retry\.", detail)
+    assert restore is not None and restore.group(1) == "turn-superset"
+
+    timed = superset_only("turn-superset-timed", f"ReachTimeout: time ran out before this read finished: {LIMIT}")
+    advice = owed_refusal(monkeypatch, [timed]).detail.split("]. ", 1)[1]
+    assert f"For turn-superset-timed: time ran out ({LIMIT}); raise the limit and run again." in advice
+    assert "restore" not in advice.lower()
+
+    # A turn owing a reading with neither trouble adds no advice of its own.
+    timed_out = turn("turn-timed", f"ReachTimeout: time ran out before this read finished: {LIMIT}")
+    neither = {**turn("turn-plain", ""), "state": "reading-required"}
+    alone = owed_refusal(monkeypatch, [timed_out]).detail.split("]. ", 1)[1]
+    assert owed_refusal(monkeypatch, [timed_out, neither]).detail.split("]. ", 1)[1] == alone
+
+
 def test_978_stopped_evaluation_says_time_ran_out(monkeypatch):
     class Stop(work.lifecycle.RunTimeout):
         pass

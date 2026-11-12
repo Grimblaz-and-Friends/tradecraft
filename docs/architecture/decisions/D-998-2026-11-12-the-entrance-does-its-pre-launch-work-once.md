@@ -63,5 +63,6 @@ The holder decided each of these; none changes an affirmed row.
 - The launch comparison's before-snapshot, overlap list and after-walk keep their own reads in the launcher, at another moment and for another question, and their allowances (#984, #989).
 - The vendor program's own start is shown, not shortened.
 - The recipient's own launch, Codex configuration discovery, the cloud vendor command, child scripts that are not reads, and the connected reviewer's workflow keep their routes.
+- The Git writes the cloud route and the recipient tree make (`push`, `fetch`, `merge`; `init`, `config`, `commit`, `checkout`) take the contained route with `writes=True`, over an uncontained route of their own, so a hung write is stopped with what it started. A read held open past its end is refused as cut short, but a write that exited 0 has already happened, so it is judged by its exit status and stands, with `output_complete` false.
 
 The tests are `lib/tests/test_preflight.py`, `lib/tests/test_978_reads.py`, `lib/tests/test_978_store_index.py`, `lib/tests/test_978_work.py`, `lib/tests/test_978_split.py`, `lib/tests/test_978_scale.py`, and the `test_978` tests in the removals, cloud-build and both launchers' suites.
