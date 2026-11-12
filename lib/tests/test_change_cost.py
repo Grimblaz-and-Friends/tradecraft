@@ -1244,7 +1244,7 @@ def test_malformed_holder_dispatch_is_an_unknown_cli_contribution(report_inputs,
     assert result["total"]["unknown_dispatches"] == 1 and result["total"]["floor"]
 
 
-# Pricing every model a run used (D-936): new card rows, per-request tiers, the floor
+# Pricing every model a run used (D-999): new card rows, per-request tiers, the floor
 # route for a missing price, and the guidance that names where to add one.
 
 CENT = Decimal("0.01")

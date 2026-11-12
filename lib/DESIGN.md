@@ -189,4 +189,4 @@ Wherever a model has no price, whether the run ends known, as a floor or unknown
 - A helper subagent writes five-minute cache and a main conversation writes one-hour cache, while `modelUsage` reports only their sum. Without the second reading, every recorded helper share would be flagged against a runtime figure that was right.
 - No reading of the live page while a report runs and no command that writes an entry, because the owner chose report guidance for adding a model.
 
-**Decisions in force:** D-936, price every model a run used and say how to add a missing price.
+**Decisions in force:** D-999, price every model a run used and say how to add a missing price.

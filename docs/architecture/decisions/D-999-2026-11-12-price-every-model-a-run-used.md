@@ -1,4 +1,4 @@
-# D-936 — Price every model a run used, and say how to add a missing price
+# D-999 — Price every model a run used, and say how to add a missing price
 
 **Purpose:** record why #936 adds five Claude prices, prices Haiku 5.5 per request, turns a model with no price from an unknown run into a labelled runtime figure or a named floor, and has the report say where to look up a missing price and where to paste it; and record the calls made inside the brief's rows. **Audience:** a future session changing the rate card, how `change_cost.py` prices a run, or the repository price file. **Success:** that reader can recover what was chosen over what without the issue.
 

@@ -818,7 +818,7 @@ def test_automatic_close_refuses_unpublished_journal_without_advancing_boundary(
 
 
 def test_a_holder_close_on_an_unrated_model_is_a_floor_with_guidance(inputs, transcript):
-    # AC-3.3's transcript, AC-4.1's transcript reply and AC-4.3's transcript run (D-936).
+    # AC-3.3's transcript, AC-4.1's transcript reply and AC-4.3's transcript run (D-999).
     transcript[2].unlink()
     write_lines(transcript[1], [reply("r1", 1, model="claude-unrated-9"), reply("r2", 2, model="claude-unrated-9")])
     row = close(inputs, transcript)
