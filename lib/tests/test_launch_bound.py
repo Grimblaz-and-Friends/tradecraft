@@ -547,3 +547,56 @@ def test_984_ac11_the_allowance_is_two_minutes_unless_the_recording_window_is_ne
     assert seconds <= len(reads) <= seconds + 1
     reason = _uncompared(result)["checkout:" + str(machine["registered"])]
     assert reason == f"comparison allowance ran out ({seconds:.1f}s, {bound}): 0 of 1 changes examined"
+
+
+def _two_repositories(tmp_path):
+    """Two repositories, each with a copy at an overlapping run's root and a branch no run made."""
+    tmp = tmp_path.resolve()
+    store, plan, before, after = tmp / "store", [], {}, {}
+    for name, dispatch in (("a", OTHER), ("b", STALE)):
+        other = tmp / f"{name}-other"
+        _store_run(store, name, dispatch=dispatch, root=other)
+        item = "refs:" + name
+        plan.append({"item": item, "path": str(tmp / name), "method": launch_bound.REFS_METHOD})
+        copies = {launch_bound.path_key(other): {"path": str(other), "head": "h1",
+                                                 "branch": f"refs/heads/run-{name}", "flags": []}}
+        state = {"status": "compared", "default": "trunk", "default_rule": "origin HEAD"}
+        before[item] = {**state, "copies": copies, "branches": {f"refs/heads/run-{name}": "h1"}}
+        after[item] = {**state, "copies": {key: {**copy, "head": "h2"} for key, copy in copies.items()},
+                       "branches": {f"refs/heads/run-{name}": "h2", f"refs/heads/loose-{name}": "h3"}}
+    record = tmp / "run.log"
+    record.write_bytes(b"")
+    return {"plan": plan, "before": before, "after": after, "root": tmp / "own", "holder_session_id": HOLDER,
+            "store": store, "own_dispatch": OWN, "before_at": BEFORE_AT, "after_at": AFTER_AT,
+            "elapsed_seconds": 0.0, "record": record}
+
+
+@pytest.mark.parametrize("credited", [True, False])
+def test_984_the_allowance_is_checked_between_repositories_never_inside_one(tmp_path, monkeypatch, credited):
+    clock = _clock(monkeypatch)
+    work_out = launch_bound._refs_changes
+
+    def slow(name, first, second, root, live):
+        result = work_out(name, first, second, root, live)
+        if name == "refs:a" and bool(live) == credited:
+            clock[0] += 20  # The allowance ends once this repository is worked out.
+        return result
+
+    monkeypatch.setattr(launch_bound, "_refs_changes", slow)
+    in_time = launch_bound.compare(**_two_repositories(tmp_path / "in-time"))
+    assert {a["item"] for a in in_time["attributed"]} == {"refs:a", "refs:b"}
+    result = launch_bound.compare(**_two_repositories(tmp_path), end=clock[0] + 10)
+    reasons = {e["item"]: e["reason"] for e in result["coverage"] if e["status"] == "uncompared"}
+    ran_out = "comparison allowance ran out (10.0s)"
+    if credited:
+        # The first repository's credits stay; the second's creditable copy is not credited.
+        assert {(a["item"], a["to"]["dispatch_id"]) for a in result["attributed"]} == {("refs:a", OTHER)}
+        assert reasons == {"refs:a": f"{ran_out}: 2 of 3 changes examined",
+                           "refs:b": f"{ran_out}: 0 of 2 changes examined"}
+    else:
+        # A repository never reached still stays in the record.
+        assert result["attributed"] == []
+        assert reasons == {"refs:a": f"{ran_out}: 0 of 2 changes examined",
+                           "refs:b": f"{ran_out}: its working copies and branches were not worked out"}
+    assert {f["item"] for f in result["findings"] if f["change"] == "uncompared"} == {"refs:a", "refs:b"}
+    assert result["status"] == "findings" and result["run_record"]["status"] == "not-read"

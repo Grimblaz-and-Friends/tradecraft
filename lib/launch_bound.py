@@ -691,7 +691,8 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
     own_root = Path(root).resolve(strict=False)
     # A change still None when the allowance ends was never examined, so nothing may call it credited or clean.
     outcome: list = [FOUND if change["change"] == "uncompared" else None for change in changes]
-    refs_found = {name: _refs_changes(name, first, second, Path(root), []) for name, first, second in refs}
+    # Each repository's copy and branch entries, worked out one repository at a time.
+    refs_found: dict[str, tuple[list[dict], list[dict]]] = {}
     has_refs = any(item["method"] == REFS_METHOD for item in plan)
     unreadable, named, skipped, expired = None, None, 0, False
     try:
@@ -708,11 +709,18 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             else:
                 needs.append(index)
             _check(limit)
+        # Without the list first, so a repository the allowance never reaches again still
+        # has entries to list and count; one repository's working out is never interrupted.
+        for name, first, second in refs:
+            refs_found[name] = _refs_changes(name, first, second, Path(root), [])
+            _check(limit)
         live = []
         if started and ended and (needs or any(entries for entries, _ in refs_found.values())):
             live = overlapping_runs(store, own_dispatch, started, ended, limit)
-            refs_found = {name: _refs_changes(name, first, second, Path(root), live)
-                          for name, first, second in refs}
+            for name, first, second in refs:
+                if refs_found[name][0]:  # Nothing to credit where nothing changed beyond the run's own.
+                    refs_found[name] = _refs_changes(name, first, second, Path(root), live)
+                    _check(limit)
         for index in needs:
             outcome[index] = _attribute(changes[index], live, holder_session_id) or FOUND
             _check(limit)
@@ -763,15 +771,19 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
                           "reason": "default branch"} for e in entries if _on_default(e, defaults)]
             listed += defaulted
             examined[name] = [len(credited) + len(defaulted), len(credited) + len(entries)]
+    # A repository whose entries were never worked out stays in the record, uncompared if it changed.
+    unworked = {name for name, first, second in refs if name not in refs_found
+                and (first.get("copies"), first.get("branches")) != (second.get("copies"), second.get("branches"))}
     if has_refs and not expired:
         held, listed = _classify_refs([entry for entries, _ in refs_found.values() for entry in entries],
                                       default=defaults, named=named, unreadable=unreadable)
         findings += held
     for entry in coverage:
         done, total = examined.get(entry["item"], (0, 0))
-        if done == total or entry["status"] == "uncompared":
+        if entry["status"] == "uncompared" or (done == total and entry["item"] not in unworked):
             continue
-        reason = f"{ran_out}: {done} of {total} changes examined"
+        reason = (f"{ran_out}: its working copies and branches were not worked out"
+                  if entry["item"] in unworked else f"{ran_out}: {done} of {total} changes examined")
         entry.update(status="uncompared", reason=reason)
         path = next(item["path"] for item in plan if item["item"] == entry["item"])
         findings.append({"id": _finding_id(entry["item"], path, "uncompared"), "item": entry["item"],
