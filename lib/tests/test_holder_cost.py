@@ -818,7 +818,8 @@ def test_automatic_close_refuses_unpublished_journal_without_advancing_boundary(
 
 
 def test_a_holder_close_on_an_unrated_model_is_a_floor_with_guidance(inputs, transcript):
-    # AC-3.3's transcript, AC-4.1's transcript reply and AC-4.3's transcript run (D-999).
+    # Replies on a model with no price leave the holder row known at zero as a floor naming the model
+    # and its reply count, and the guidance names the transcript row among the model's uses.
     transcript[2].unlink()
     write_lines(transcript[1], [reply("r1", 1, model="claude-unrated-9"), reply("r2", 2, model="claude-unrated-9")])
     row = close(inputs, transcript)
@@ -835,7 +836,7 @@ def test_a_holder_close_on_an_unrated_model_is_a_floor_with_guidance(inputs, tra
 
 
 def test_a_dispatch_that_left_a_model_out_does_not_cover_its_subagent_replies(inputs, transcript):
-    # AC-3.5: the dispatch launched before the card's interval, so it priced nothing for the model;
+    # The dispatch launched before the card's interval, so it priced nothing for the model;
     # the subagent's reply is priced in the holder row instead of being dropped as covered.
     inputs["rates_path"].write_bytes(json.dumps({"schema_version": 1, "rates": [card(start=at(1).isoformat())]}).encode())
     bundle(inputs)

@@ -1244,8 +1244,9 @@ def test_malformed_holder_dispatch_is_an_unknown_cli_contribution(report_inputs,
     assert result["total"]["unknown_dispatches"] == 1 and result["total"]["floor"]
 
 
-# Pricing every model a run used (D-999): new card rows, per-request tiers, the floor
-# route for a missing price, and the guidance that names where to add one.
+# Pricing every model a run used: the new card rows, per-request tiers, the floor route
+# for a missing price, and the guidance that names where to add one. The #576 fixture is
+# a real run whose runtime list figures are the reference the card must reproduce.
 
 CENT = Decimal("0.01")
 SHIPPED = cost.load_rates(LIB / "rates.json")
@@ -1274,7 +1275,8 @@ def raw_576(inputs):
 
 
 def test_the_576_run_prices_its_sonnet_share_at_the_runtime_list_charge(tmp_path):
-    # AC-1.1: the card's five-minute reading of the Sonnet 5 share is the runtime's list charge.
+    # A helper writes five-minute cache, so only that reading of the Sonnet 5 share can match its
+    # runtime list charge; the Opus main conversation matches at the one-hour reading.
     value = fixture_prices(inputs_576(tmp_path))[1][FIXTURE_576]
     assert value["status"] == "known" and value["flags"] == [] and not value["floor"]
     shares = {row["model"]: row for row in value["model_prices"]}
@@ -1288,7 +1290,8 @@ def test_the_576_run_prices_its_sonnet_share_at_the_runtime_list_charge(tmp_path
 
 
 def test_new_rows_carry_the_retrieval_and_its_record():
-    # AC-1.2 and AC-1.3: prices, retrieval time and the record of the retrieval.
+    # Pins every new price to the retrieved table, so a mistyped price fails here, and each row's
+    # retrieval time and record, so a reader can check the price against its source.
     rows = {row["model"]: row for row in SHIPPED}
     expected = {  # input, 5m write, 1h write, cache hit, output
         "claude-fable-5-2": (8, 10, 16, .2, 40), "claude-sonnet-5-5": (2, 2.5, 4, .1, 10),
@@ -1339,7 +1342,8 @@ def transcript_reply(identity, model, when, *, input=10, output=1000, read=10000
 @pytest.mark.parametrize("model,when", [
     ("claude-haiku-4-5-20251001", "2026-10-13T03:08:14Z"), ("claude-sonnet-5", "2026-11-01T01:11:45Z")])
 def test_each_new_dispatch_model_prices_from_its_earliest_recorded_run(model, when):
-    # AC-1.4 and AC-1.6: the shipped card alone, with no repository file.
+    # Each row must start before its model's earliest recorded run, or that run stays unpriced;
+    # the shipped card alone must do it, as an adopter has no repository file yet.
     value = cost.rate_card_equivalent(claude_usage({model: populations()}, when), SHIPPED)
     assert value["status"] == "known" and not value["floor"] and Decimal(value["amount"]) > 0
     assert value["rate_sources"][0]["price_file"] == "shipped"
@@ -1349,7 +1353,8 @@ def test_each_new_dispatch_model_prices_from_its_earliest_recorded_run(model, wh
     ("claude-haiku-5-5", "2026-11-03T04:29:01Z", None), ("claude-sonnet-5-5", "2026-11-07T10:22:48Z", None),
     ("claude-fable-5-2", "2026-11-11T04:33:25Z", "0.07608")])
 def test_each_new_transcript_model_prices_from_its_earliest_recorded_reply(model, when, amount):
-    # AC-1.4: a holder close on Fable 5.2 prices like any other.
+    # Transcript replies are dated per reply, so each model's earliest reply must fall inside its row;
+    # Fable 5.2 is a holder model, so its amount is pinned exactly.
     value = cost.rate_card_equivalent(transcript_row([transcript_reply("r1", model, when)]), SHIPPED)
     assert value["status"] == "known" and not value["floor"]
     assert value["rate_sources"][0]["price_file"] == "shipped"
@@ -1365,7 +1370,7 @@ def test_each_new_transcript_model_prices_from_its_earliest_recorded_reply(model
     (59997, "0.00610017", "base"),        # 99,999
 ])
 def test_haiku_5_5_reply_takes_its_own_prompt_tier(read, amount, tier):
-    # AC-2.1 and AC-2.2.
+    # The threshold counts cache reads and writes with input, and a prompt exactly at it is not over it.
     reply_value = transcript_reply("r1", "claude-haiku-5-5", "2026-11-03T04:29:01Z",
                                    input=2, read=read, five=40000, hour=0, output=1000)
     value = cost.rate_card_equivalent(transcript_row([reply_value]), SHIPPED)
@@ -1389,7 +1394,8 @@ def haiku_attempt(basis="list", cloud=False):
 
 @pytest.mark.parametrize("basis", ["list", None, "fallback", "cloud"])
 def test_haiku_5_5_totals_are_never_priced_at_a_guessed_tier(basis):
-    # AC-2.3: totals take the runtime's list figure, or a floor naming the per-request pricing.
+    # Totals can't show which requests crossed the threshold, so a tiered model takes only a runtime
+    # figure marked as a list price, or a floor saying it is priced per request; never a guessed tier.
     value = cost._price(haiku_attempt(None if basis == "cloud" else basis, cloud=basis == "cloud"), SHIPPED)
     opus = cost.rate_card_equivalent(claude_usage({"claude-opus-5-5": populations()}, "2026-11-05T00:00:00Z"),
                                      SHIPPED)
@@ -1416,7 +1422,7 @@ def test_haiku_5_5_totals_never_enter_the_missing_price_guidance(report_inputs):
 
 
 def test_cli_prices_a_haiku_5_5_reply_at_its_tier(report_inputs):
-    # AC-2.5: an adopter's CLI report applies the same tier.
+    # An adopter runs the CLI, so the tier must survive the command line as well as the library.
     reply_value = transcript_reply("r1", "claude-haiku-5-5", "2026-11-03T04:29:01Z",
                                    input=2, read=60000, five=40000, hour=0, output=1000)
     row = transcript_row([reply_value])
@@ -1431,7 +1437,8 @@ def test_cli_prices_a_haiku_5_5_reply_at_its_tier(report_inputs):
 
 
 def test_tiers_are_card_data_and_a_malformed_tier_is_refused(tmp_path):
-    # AC-2.6.
+    # Tiers are card data any row may carry, not code keyed to one model, and a malformed shipped
+    # tier stops the report rather than pricing silently at the wrong prices.
     entry = rate("claude-any")
     entry.update(vendor="claude", per_tokens=1, classes={"input": 1, "output": 1, "cache_read": 1,
                                                          "cache_write_5m": 1, "cache_write_1h": 1})
@@ -1451,7 +1458,8 @@ def test_tiers_are_card_data_and_a_malformed_tier_is_refused(tmp_path):
 
 
 def test_withheld_sonnet_takes_the_runtime_list_charge_labelled(tmp_path):
-    # AC-3.1, through the library and through the CLI.
+    # With Sonnet 5's row withheld, its share comes from the runtime's list charge and is labelled
+    # so, rather than making the whole run unknown; checked through the library and the CLI.
     inputs = inputs_576(tmp_path, withheld="claude-sonnet-5")
     result, prices = fixture_prices(inputs)
     completed = report_cli(inputs)
@@ -1468,7 +1476,8 @@ def test_withheld_sonnet_takes_the_runtime_list_charge_labelled(tmp_path):
 
 @pytest.mark.parametrize("change", ["no-basis", "fallback", "no-charge"])
 def test_withheld_sonnet_without_a_list_charge_is_a_floor_naming_it(tmp_path, change):
-    # AC-3.2 and AC-3.3, and AC-4.3's floor run: only the Sonnet share leaves; its counts stay recorded.
+    # A runtime figure not marked as a list price is untrusted, so only the Sonnet share leaves and the
+    # figure is a floor naming it; its token counts stay recorded, so the floor isn't from missing counts.
     inputs = inputs_576(tmp_path, withheld="claude-sonnet-5")
     path, run = raw_576(inputs)
     sonnet = run["attempts"][0]["observed"]["raw"]["claude-sonnet-5"]
@@ -1502,7 +1511,8 @@ def test_codex_attempt_on_an_unrated_model_is_a_floor_naming_it():
     ("native", "billable native count webSearchRequests for claude-opus-5-5 has no card rate mapping"),
 ])
 def test_a_real_fault_beside_a_missing_price_still_reads_unknown(tmp_path, fault, reason):
-    # AC-3.4, and AC-4.3's unknown run: the guidance still names the missing model.
+    # A real fault keeps the run unknown even beside a missing price, and the guidance still names
+    # the missing model, because it is built from where the price was missing, not from the status.
     inputs = inputs_576(tmp_path, withheld="claude-sonnet-5")
     path, run = raw_576(inputs)
     attempt = run["attempts"][0]
@@ -1556,7 +1566,8 @@ def fill(entry, price):
 
 
 def test_guidance_names_each_vendor_page_entry_and_file(report_inputs):
-    # AC-4.1: a Claude and a Codex run, each on a model with no entry.
+    # Each vendor gets its own page and entry shape, and the paste target is the repository's file,
+    # never the plugin's card, which a plugin update would replace.
     unrated_bundles(report_inputs)
     completed = report_cli(report_inputs)
     assert completed.returncode == 0, completed.stderr
@@ -1581,7 +1592,8 @@ def test_guidance_names_each_vendor_page_entry_and_file(report_inputs):
 
 
 def test_a_filled_entry_pasted_into_the_repository_file_prices_the_next_report(report_inputs):
-    # AC-4.2: only the FILL values change; one left in place is named and rejected.
+    # The guidance's entry, with only its FILL values replaced, must load and price the run, so adding
+    # a model is a lookup and a paste; a FILL left in place is named rather than priced at zero.
     unrated_bundles(report_inputs)
     first = cost.report(**report_inputs)
     target = report_inputs["repository_rates_path"]
@@ -1609,7 +1621,8 @@ def test_a_filled_entry_pasted_into_the_repository_file_prices_the_next_report(r
 
 
 def test_guidance_appears_when_the_run_is_known_from_the_runtime(tmp_path):
-    # AC-4.3's known run; its floor and unknown runs are in the floor and real-fault tests above.
+    # The guidance appears even when the runtime's figure leaves the run known; the floor and unknown
+    # runs are checked in the floor and real-fault tests above.
     result = fixture_prices(inputs_576(tmp_path, withheld="claude-sonnet-5"))[0]
     assert result["dated_rate_card_equivalent"][0]["value"]["status"] == "known"
     assert [entry["model"] for entry in result["missing_prices"]] == ["claude-sonnet-5"]
@@ -1617,7 +1630,8 @@ def test_guidance_appears_when_the_run_is_known_from_the_runtime(tmp_path):
 
 
 def test_a_shipped_price_wins_over_the_repository_entry_and_says_so(tmp_path):
-    # AC-4.4.
+    # The practice checks the shipped card against the posted page, so it wins over a pasted entry,
+    # and the report says the pasted entry can go.
     inputs = inputs_576(tmp_path)
     shipped = next(row for row in SHIPPED if row["model"] == "claude-opus-5-5")
     local = {**deepcopy(shipped), "classes": {name: 99 for name in shipped["classes"]}}
@@ -1635,7 +1649,8 @@ def test_a_shipped_price_wins_over_the_repository_entry_and_says_so(tmp_path):
 
 
 def test_the_report_writes_neither_price_file_and_survives_a_damaged_one(report_inputs):
-    # AC-4.5.
+    # The report only reads both price files, and a damaged repository file must not take any other
+    # figure with it.
     unrated_bundles(report_inputs)
     target = report_inputs["repository_rates_path"]
     write_json(target, {"schema_version": 1, "rates": []})
@@ -1669,3 +1684,73 @@ def test_a_cli_report_outside_a_repository_names_the_file_to_create(report_input
     entry = result["missing_prices"][0]
     assert entry["paste_into"].replace("\\", "/") == "<repository top level>/.tradecraft/rates.json"
     assert "--root" in entry["paste_into_note"] and "new_file" in entry
+
+
+def test_an_unpriced_reply_with_a_malformed_count_stays_unknown_and_still_gets_guidance(report_inputs):
+    # The malformed count is a fault of its own, so the row is unknown; the price is missing too,
+    # and the guidance is built from where it was missing, so it still names the model.
+    reply_value = transcript_reply("r1", "claude-unrated-9", "2026-11-05T00:00:00Z")
+    reply_value["additional_native_classes"] = {"billable_extra_tokens": -1}
+    row = transcript_row([reply_value])
+    row["change"] = {"repository": report_inputs["repo"], "issue": report_inputs["issue"]}
+    write_json(report_inputs["holder_path"], row)
+    write_json(report_inputs["rates_path"], json.loads((LIB / "rates.json").read_bytes()))
+    result = cost.report(**report_inputs)
+    value = result["dated_rate_card_equivalent"][0]["value"]
+    assert value["status"] == "unknown"
+    assert "reply r1 has unmapped or invalid billable native count: billable_extra_tokens" in value["reasons"]
+    [guidance] = result["missing_prices"]
+    assert guidance["model"] == "claude-unrated-9"
+    assert guidance["uses"] == [{"dispatch_id": "holder-close-fixture", "attempt_index": 0, "replies": 1}]
+
+
+def runtime_attempt(figures):
+    models = {model: populations(creation=1_000_000) for model in figures}
+    raw = {model: {"costUSD": amount, "costBasis": "list"} for model, amount in figures.items()}
+    return cost._Attempt(claude_usage(models, "2026-11-05T00:00:00Z"),
+                         evidence={"observed": {"source": "modelUsage", "raw": raw}})
+
+
+@pytest.mark.parametrize("runtime,reading,flagged", [
+    ("2.53002", "5m", False),  # the five-minute reading, to the cent
+    ("4.03002", "1h", False),  # the one-hour reading
+    ("3.2", "1h", True),       # between the readings: matches neither
+    ("5", "1h", True),         # outside both
+])
+def test_a_runtime_figure_matching_neither_cache_write_reading_is_still_flagged(runtime, reading, flagged):
+    # The second reading widens only what counts as agreement; a figure off from both is flagged
+    # and the card's one-hour figure is used, as for any other disagreement.
+    value = cost._price(runtime_attempt({"claude-sonnet-5": runtime}), SHIPPED)
+    [share] = value["model_prices"]
+    assert share["card_cache_write_reading"] == reading
+    assert bool(value["flags"]) == flagged
+    expected = Decimal("4.03002") if flagged else Decimal(runtime)
+    assert Decimal(value["amount"]) == expected
+
+
+def test_one_model_matching_its_five_minute_reading_cannot_hide_another_models_mismatch():
+    # The whole-run check sums each model's matched reading, so a second model off by a dollar
+    # flags the run even though the first agrees at its five-minute reading.
+    value = cost._price(runtime_attempt({"claude-sonnet-5": "2.53002", "claude-opus-5-5": "9.5"}), SHIPPED)
+    assert set(value["flags"]) == {
+        "runtime/card list-price mismatch above one cent; model population claude-sonnet-5",
+        "runtime/card list-price mismatch above one cent; model population claude-opus-5-5"}
+    assert value["source"] == "rate-card"
+
+
+def test_a_dispatch_no_card_row_priced_reports_in_usd_and_counts_in_the_total(report_inputs):
+    # Its shares are runtime list charges, in USD, or excluded and zero, so it joins the change total
+    # as known rather than as a contribution in no currency.
+    unrated_bundles(report_inputs)
+    result = cost.report(**report_inputs)
+    values = {row["dispatch_id"]: row["value"] for row in result["dated_rate_card_equivalent"]}
+    assert all(value["currency"] == "USD" and value["status"] == "known" for value in values.values())
+    assert result["total"]["unknown_dispatches"] == 0 and result["total"]["priced_dispatches"] == 2
+
+
+def test_a_runtime_charge_is_never_added_to_a_card_figure_in_another_currency():
+    euro = deepcopy(next(row for row in SHIPPED if row["model"] == "claude-opus-5-5"))
+    euro["currency"] = "EUR"
+    value = cost._price(runtime_attempt({"claude-opus-5-5": "8.04004", "claude-unrated-9": "1"}), [euro])
+    assert value["status"] == "unknown"
+    assert "a runtime list charge in USD cannot be added to a EUR card figure" in value["reasons"]

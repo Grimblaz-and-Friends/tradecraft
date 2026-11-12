@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Record plan gauges and render a change's three-part cost report."""
+"""Record plan gauges and render a change's three-part cost report.
+
+Pricing a run from the shipped and repository price files. Design: lib/DESIGN.md#pricing-a-run
+"""
 from __future__ import annotations
 
 import argparse
@@ -333,7 +336,6 @@ def load_rates(path: Path) -> list[dict[str, object]]:
     return value["rates"]
 
 
-# Design: lib/DESIGN.md#pricing-a-run
 _PRICING_PAGES = {"claude": "https://platform.claude.com/docs/en/about-claude/pricing",
                   "codex": "https://developers.openai.com/api/docs/pricing"}
 _ENTRY_CLASSES = {
@@ -396,7 +398,7 @@ def _repository_row_problem(row: object) -> str | None:
 
 
 def repository_rates(path: Path | None) -> tuple[list[dict], dict[str, object]]:
-    """Read a repository's own price file; its damage is reported, never fatal."""
+    """Read a repository's own price file; a bad paste is named and set aside so it can't take every other figure."""
     if path is None:
         return [], {"path": None, "status": "no-repository",
                     "reason": "no repository top level was found; run from inside the repository or pass --root",
@@ -484,7 +486,7 @@ def _missing_reason(card: _Card, vendor, model, when, subject: str) -> str:
 
 
 def _prompt_tier(rate: dict, prompt: Decimal) -> tuple[dict, str]:
-    """A request above a tier's threshold, never at it, takes that tier's prices."""
+    """The posted page prices tokens "over" its threshold, so a prompt exactly at it takes the lower prices."""
     chosen = None
     for tier in rate.get("prompt_tiers") or []:
         if prompt > tier["above_prompt_tokens"] and (
@@ -845,8 +847,7 @@ def _price(item: _Attempt, rates: list[dict]) -> dict:
                     reasons.append(f"billable token class {name} for {exact_model} has no rate mapping")
             continue
         rate, origin = card.lookup(vendor, exact_model, when)
-        # A missing price excludes only its own share; the run keeps a figure.
-        # Design: lib/DESIGN.md#pricing-a-run
+        # One unpriced model must not cost the run every share the card does price.
         if rate is None:
             unpriced[exact_model] = {"model": exact_model, "vendor": vendor, "cause": "no-price",
                                      "first_use": when.isoformat(),
@@ -881,9 +882,13 @@ def _price(item: _Attempt, rates: list[dict]) -> dict:
         if entry["share"] == "runtime-list-price":
             entry["runtime_amount"] = format(runtime[entry["model"]], "f")
     excluded = [entry["reason"] for entry in unpriced.values() if entry["share"] == "excluded"]
+    if currency not in (None, "USD") and any(entry["share"] == "runtime-list-price" for entry in unpriced.values()):
+        reasons.append(f"a runtime list charge in USD cannot be added to a {currency} card figure")
     if reasons:
         value = _unknown_price(reasons)
     else:
+        # With no card row matched, every share is a runtime list charge, which is in USD, or excluded
+        # and so zero; claiming USD lets that figure count in the change total like any other.
         value = {"status": "known", "currency": currency or "USD", "amount": format(total, "f"),
                  "rate_sources": sources, "basis": "API list-price equivalence",
                  "source": "rate-card", "floor": vendor == "codex" or bool(excluded),
@@ -1080,15 +1085,13 @@ def _transcript_price(item, rates, agent_decisions=None):
             continue
         rate, origin = card.lookup("claude", model, when)
         malformed = [name for name, count in extras.items() if type(count) is not int or count < 0]
-        if rate is None and malformed:
-            # A malformed count is a fault of its own; a missing price must not hide it.
-            reasons.extend(f"reply {reply['id']} has unmapped or invalid billable native count: {name}"
-                           for name in malformed)
-            continue
         if rate is None:
             entry = missing.setdefault(model, {"replies": 0, "first": when, "last": when})
             entry["replies"] += 1
             entry["first"], entry["last"] = min(entry["first"], when), max(entry["last"], when)
+            # A malformed count is a fault of its own; a missing price must not hide it.
+            reasons.extend(f"reply {reply['id']} has unmapped or invalid billable native count: {name}"
+                           for name in malformed)
             continue
         required = transcripts.TOKEN_CLASSES
         classes = {name: Decimal(count) for name, count in counts.items() if name != "cache_creation"}
@@ -1133,7 +1136,7 @@ def _transcript_price(item, rates, agent_decisions=None):
     if reasons and not computable:
         value = _unknown_price(reasons + price_gaps)
     else:
-        # Missing prices alone leave a figure, a floor naming each model, even when no reply priced.
+        # A missing price is no fault in the evidence, so it lowers the figure to a floor rather than voiding it.
         floor_reasons = reasons + price_gaps
         value = {"status": "known", "currency": "USD", "amount": format(total, "f"),
                  "basis": "API list-price equivalence", "source": "rate-card",
