@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -469,7 +470,7 @@ def test_ac17_a_recorded_fault_changes_no_decision(home, tmp_path):
     source = Path(work.__file__).read_text(encoding="utf-8")
     assert "keep-warm.jsonl" not in source
     assert [line.strip() for line in source.splitlines() if "keep_warm." in line] == [
-        "keep_warm.drop_work(f\"{repo}#{issue}\")", "keep_warm.discard_pending(keep_warm_token)",
+        "keep_warm.drop_work(f\"{repo}#{issue}\", instalment)", "keep_warm.discard_pending(keep_warm_token)",
         "keep_warm.start_pending(keep_warm_token)"]
 
 
@@ -659,7 +660,10 @@ def test_ac9_linux_runner_survives_the_entrances_cleanup(tmp_path, home, inside)
         keep_warm.start_pending("token", {**os.environ, "KW_PASSED": "yes"}, spawner=lambda _argv, cwd, env:
                                 keep_warm.spawn([sys.executable, str(child), str(marker)], cwd, env))
     Descendants().finish(time.monotonic() + 1)
-    time.sleep(5)
+    # Poll with a bound; the arm that asserts absence waits the whole bound.
+    end = time.monotonic() + 20
+    while time.monotonic() < end and not marker.exists():
+        time.sleep(0.25)
     assert marker.exists() is not inside
 
 
@@ -836,4 +840,134 @@ def test_an_unreadable_prepared_settings_file_is_a_keep_warm_fault_not_a_failed_
     assert run["outcome"] == "success"
     assert spawned == [] and not (home / ".tradecraft" / "keep-warm" / SESSION / "spec.json").exists()
     assert "forced: settings unreadable" in rows(home, "fault")[-1]["reason"]
+
+
+def test_a_ping_that_reached_no_model_spent_a_known_nothing():
+    """A ping that launched nothing records complete zero usage; one with an unreadable call is incomplete."""
+    assert keep_warm.NOTHING_SPENT["complete"] is True and not any(keep_warm.NOTHING_SPENT["total"].values())
+    good = keep_warm.ping_outcome(0, stream((60000, 10)))[2]
+    assert good["complete"] is True
+    broken = json.dumps({"type": "assistant", "message": {"id": "x", "usage": {
+        "input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 5,
+        "cache_creation_input_tokens": 3}}}).encode() + b"\n" + stream((60000, 10))
+    assert keep_warm.ping_outcome(0, broken)[2]["complete"] is False
+
+
+def test_instalments_scope_stop_release_and_registry(home, tmp_path):
+    """A session's keep-warm is stopped, dropped and read as released by its own instalment."""
+    a = keep_warm.after_turn(turn(home, tmp_path, instalment="a"))
+    other = "6f0c2c1e-8a3b-4d6e-9f10-2b3c4d5e6f71"
+    b = keep_warm.after_turn(turn(home, tmp_path, instalment="b", session=other, observed_session=other))
+    with keep_warm.stop_for_launch(WORK, "build", None, instalment="b"):
+        pass
+    assert (a / "spec.json").exists() and not (b / "spec.json").exists()
+    keep_warm.drop_work(WORK, "b")
+    assert (a / "spec.json").exists()
+    keep_warm.drop_work(WORK, "a")
+    assert not (a / "spec.json").exists()
+    (home / ".tradecraft" / "implementation-worktrees.json").write_text(json.dumps({
+        "schema_version": 1, "worktrees": [
+            {"repository": "owner/repo", "issue": 5, "instalment": "a", "active": False},
+            {"repository": "owner/repo", "issue": 5, "instalment": "b", "active": True}]}))
+    assert keep_warm.registry_released(WORK, "a") and not keep_warm.registry_released(WORK, "b")
+    assert not keep_warm.registry_released(WORK)
+
+
+def test_no_instalment_named_scopes_the_whole_change(home, tmp_path):
+    a = keep_warm.after_turn(turn(home, tmp_path, instalment="a"))
+    with keep_warm.stop_for_launch(WORK, "build", None):
+        pass
+    assert not (a / "spec.json").exists()
+
+
+def test_the_first_ping_is_timed_from_when_the_last_call_was_sent(home, tmp_path):
+    """A final call that streamed for minutes: the hour runs from its send, not its last output."""
+    lines = [{"type": "user", "timestamp": iso(T0 - 600)},
+             {"type": "assistant", "timestamp": iso(T0 - 590), "message": {"id": "m1"}},
+             {"type": "assistant", "timestamp": iso(T0), "message": {"id": "m1"}}]
+    facts = turn(home, tmp_path)
+    path = transcript(home)
+    path.write_bytes("".join(json.dumps(line) + "\n" for line in lines).encode())
+    assert keep_warm.last_call_sent_at(path) == T0 - 600
+    directory = keep_warm.after_turn(facts)
+    state = json.loads((directory / "state.json").read_bytes())
+    assert keep_warm._moment(state["last_call_at"]) == T0 - 600
+    run, pings = runner(directory, Clock())
+    assert run.run() == "cap"
+    assert round((pings[0] - (T0 - 600)) / 60) == 55
+
+
+def test_a_busy_session_does_not_stop_the_others_being_stopped(home, tmp_path):
+    a = keep_warm.after_turn(turn(home, tmp_path))
+    other = "6f0c2c1e-8a3b-4d6e-9f10-2b3c4d5e6f71"
+    b = keep_warm.after_turn(turn(home, tmp_path, session=other, observed_session=other))
+    real = keep_warm.mark_gone
+
+    def busy(directory):
+        if directory == a:
+            raise keep_warm.LockBusy("held")
+        return real(directory)
+    keep_warm.mark_gone = busy
+    try:
+        with keep_warm.stop_for_launch(WORK, "build", None):
+            pass
+    finally:
+        keep_warm.mark_gone = real
+    assert not (a / "spec.json").exists() and not (b / "spec.json").exists()
+    assert rows(home, "fault")[-1]["stage"] == "stop"
+
+
+def test_ping_plan_moves_only_the_launchers_import_and_leaves_a_directory_it_did_not_make(home, tmp_path):
+    git_dir = tmp_path / "gitdir"
+    git_dir.mkdir()
+    original = git_dir / "tradecraft-instructions-d1"
+    text = "@an-earlier-line-that-is-not-the-import\n\n@../../tree/AGENTS.md\n"
+    directory = keep_warm.after_turn(turn(home, tmp_path, shim={"directory": str(original), "text": text}))
+    spec = json.loads((directory / "spec.json").read_bytes())
+    spec["ping_argv"] = [*spec["ping_argv"][:-1], "--add-dir", str(original), "--no-session-persistence"]
+    original.mkdir()
+    (original / "CLAUDE.md").write_text("someone else's")
+    with keep_warm.ping_plan(spec, directory):
+        assert (original / "CLAUDE.md").read_text() == "someone else's"
+    assert original.exists()
+    shutil.rmtree(original)
+    git_dir.rmdir()
+    with keep_warm.ping_plan(spec, directory):
+        moved = (directory / original.name / "CLAUDE.md").read_text().splitlines()
+    assert moved[0] == "@an-earlier-line-that-is-not-the-import"
+    assert moved[-1] == "@" + (Path(spec["root"]) / "AGENTS.md").as_posix()
+
+
+@pytest.mark.parametrize("exit_", ["unavailable", "preparation", "existing-output", "no-window"])
+def test_a_launch_that_starts_nothing_leaves_the_waiting_keep_warm(claude, tmp_path, monkeypatch, exit_):
+    """The session stays the one the entrance resumes next, so its keep-warm stays."""
+    args, home, spawned = claude
+    other = "6f0c2c1e-8a3b-4d6e-9f10-2b3c4d5e6f71"
+    waiting = keep_warm.after_turn(turn(home, tmp_path, session=other, observed_session=other))
+    if exit_ == "unavailable":
+        args.claude_unavailable_reason = "forced: no executable"
+        monkeypatch.setattr(implementer, "resolve_command", lambda *_: pytest.fail("rediscovered"))
+        assert implementer.run_implementer(args) == 1
+    elif exit_ == "preparation":
+        monkeypatch.setattr(implementer.policy, "claude_prepare",
+                            lambda *_a, **_k: (_ for _ in ()).throw(OSError("forced preparation failure")))
+        assert implementer.run_implementer(args) == 1
+    elif exit_ == "existing-output":
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text("earlier")
+        with pytest.raises(implementer.ImplementerError):
+            implementer.run_implementer(args)
+    else:
+        args.timeout_seconds = 0.001
+        with pytest.raises(TimeoutError):
+            implementer.run_implementer(args)
+    assert (waiting / "spec.json").exists()
+
+
+def test_a_launch_that_starts_its_process_ends_the_waiting_keep_warm(claude, tmp_path):
+    args, home, spawned = claude
+    other = "6f0c2c1e-8a3b-4d6e-9f10-2b3c4d5e6f71"
+    waiting = keep_warm.after_turn(turn(home, tmp_path, session=other, observed_session=other))
+    assert implementer.run_implementer(args) == 0
+    assert not (waiting / "spec.json").exists()
 

@@ -6332,9 +6332,10 @@ def release_registration(repo: str, issue: int, holder_root: Path,
         write_registry(current)
     else:
         selected = matches[-1]
-    # A released change's waiting sessions stop at once.
+    # A released change gets no more turns, so its waiting sessions get no more
+    # pings; each runner ends at its next step.
     # Design: lib/DESIGN.md#keeping-a-waiting-session-warm
-    keep_warm.drop_work(f"{repo}#{issue}")
+    keep_warm.drop_work(f"{repo}#{issue}", instalment)
     return Path(str(selected["root"])).expanduser().resolve()
 
 

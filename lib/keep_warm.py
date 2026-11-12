@@ -18,7 +18,7 @@ Design: lib/DESIGN.md#keeping-a-waiting-session-warm
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import json
 import math
@@ -47,8 +47,8 @@ INTERVAL_SECONDS = 3300
 # the hour leaves room for the ping's own start-up.
 LAPSE_SECONDS = 3420
 DEFAULT_CAP_HOURS = 8
-# The largest cap the machine setting accepts: every late resume in the record
-# came within a day, so pings past it buy nothing.
+# The largest cap the machine setting accepts: a session nobody resumed within a
+# day is not coming back, so pings past it buy nothing.
 MAX_CAP_HOURS = 24
 # A ping still running then is killed and recorded failed, because a stuck ping
 # must not hold the session's lock against its next real turn.
@@ -61,6 +61,8 @@ WRITE_SHARE = 0.05
 # No ping when the last call's context is at least this share of the window:
 # resuming it would compact, paying for a compaction the ping throws away.
 CONTEXT_SHARE = 0.90
+# A turn that reported no window is read against the largest window the models
+# offer, so an unknown never refuses a ping a known window would allow.
 FALLBACK_CONTEXT_WINDOW = 1000000
 # Mirrors the entrance's RESUME_SOURCE_STAGES; a test pins the two equal.
 STAGE_GROUPS = {"artifact": "artifact", "build": "build", "floor": "build",
@@ -80,6 +82,8 @@ LAUNCH_ENV_NAMES = ("CLAUDE_CODE_ENABLE_FUNCTION_HOOKS",
                     "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "BASH_MAX_TIMEOUT_MS",
                     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "GIT_LFS_SKIP_SMUDGE",
                     "GIT_NO_LAZY_FETCH")
+# The launch strips these inherited plugin directories from its child, so their
+# absence is the launch's own change, not a foreign one.
 REMOVABLE_ENV_NAMES = ("CLAUDE_CODE_PLUGIN_DIR", "CLAUDE_CODE_PLUGIN_DIRS")
 STARTER_SECONDS = 30
 GH_SECONDS = 30
@@ -160,7 +164,7 @@ def fault(work: str, stage: str, reason: str, *, session=None, group=None, gener
 
 
 def read_cap_hours() -> tuple[float, str | None]:
-    """The machine setting: absent is 8 hours, 0 is off, anything unreadable is off."""
+    """The machine setting: absent is the default cap, 0 is off, anything unreadable is off."""
     path = setting_path()
     try:
         value = json.loads(path.read_bytes())
@@ -302,7 +306,11 @@ def _stream_events(raw: bytes) -> list[dict]:
 
 
 def _calls(events: list[dict]) -> list[dict]:
-    """Each assistant call's native usage once, by message id, in first-seen order."""
+    """Each assistant call's native usage once, by message id, in the order calls began.
+
+    A call's later events repeat its id; the last carries its whole usage (output
+    counted to the end), and its input-side counters are the same in every event.
+    """
     order, usage = [], {}
     for event in events:
         message = event.get("message") if event.get("type") == "assistant" else None
@@ -338,7 +346,13 @@ def turn_context(stdout: bytes, model: str) -> tuple[int | None, int | None]:
     return tokens, window
 
 
-def last_assistant_at(transcript: Path) -> float | None:
+def last_call_sent_at(transcript: Path) -> float | None:
+    """When the session's last model call was sent.
+
+    The cache entry's hour runs from the send, and a final call can stream for
+    minutes; the transcript writes the entry that call answered just before
+    sending it, so that entry's time bounds the send from below.
+    """
     try:
         with transcript.open("rb") as stream:
             stream.seek(0, os.SEEK_END)
@@ -346,16 +360,20 @@ def last_assistant_at(transcript: Path) -> float | None:
             tail = stream.read()
     except OSError:
         return None
+    reply = None
     for line in reversed(tail.splitlines()):
         try:
             entry = json.loads(line)
         except (UnicodeError, ValueError):
             continue
-        if isinstance(entry, dict) and entry.get("type") == "assistant":
-            moment = _moment(entry.get("timestamp"))
-            if moment is not None:
-                return moment
-    return None
+        if not isinstance(entry, dict):
+            continue
+        moment = _moment(entry.get("timestamp"))
+        if entry.get("type") == "assistant":
+            reply = moment if moment is not None else reply
+        elif reply is not None and moment is not None:
+            return min(moment, reply)
+    return reply
 
 
 def runner_python() -> str:
@@ -417,12 +435,13 @@ def _write_spec(turn: dict, cap: float) -> Path | None:
     directory = state_root() / session
     directory.mkdir(parents=True, exist_ok=True)
     ended_at = turn.get("completed_at") or _now()
-    last_call = last_assistant_at(transcript) or _moment(ended_at) or time.time()
+    last_call = last_call_sent_at(transcript) or _moment(ended_at) or time.time()
     generation = uuid.uuid4().hex
     plugin = Path(turn.get("plugin_root") or Path(__file__).resolve().parent.parent)
     spec = {
         "schema_version": SCHEMA_VERSION, "generation": generation, "work": work, "repo": repo,
-        "issue": issue, "stage": turn["stage"], "group": group, "session": session,
+        "issue": issue, "instalment": turn.get("instalment"), "stage": turn["stage"],
+        "group": group, "session": session,
         "root": str(turn["root"]), "fallback_root": turn.get("fallback_root"),
         "plugin_root": str(plugin),
         "ping_argv": ping_argv(turn["command"], directory / "ping-settings.json"),
@@ -438,7 +457,7 @@ def _write_spec(turn: dict, cap: float) -> Path | None:
         "model": turn.get("model"), "cap_hours": cap,
     }
     state = {"schema_version": SCHEMA_VERSION, "generation": generation, "work": work,
-             "group": group, "session": session, "created_at": _now(), "process": None,
+             "instalment": turn.get("instalment"), "group": group, "session": session, "created_at": _now(), "process": None,
              "pings": 0, "last_call_at": spec["last_call_at"], "ended": None}
     _write_json(directory / "state.json", state)
     (directory / RELEASED).unlink(missing_ok=True)
@@ -604,8 +623,16 @@ def mark_gone(directory: Path) -> bool:
     return True
 
 
+def _in_scope(owner: dict, work: str, instalment: str | None) -> bool:
+    """The work's session, in the named instalment; no instalment names the whole change."""
+    if str(owner.get("work")).casefold() != work.casefold():
+        return False
+    return instalment is None or owner.get("instalment") == instalment
+
+
 @contextmanager
-def stop_for_launch(work: str, stage: str, resume: str | None, *, wait_seconds: float | None = None):
+def stop_for_launch(work: str, stage: str, resume: str | None, *, wait_seconds: float | None = None,
+                    instalment: str | None = None):
     """Drop the work's waiting sessions in this stage group; hold a resumed session's ping lock.
 
     It runs at the launcher's start, before any route or vendor split, so a
@@ -613,44 +640,47 @@ def stop_for_launch(work: str, stage: str, resume: str | None, *, wait_seconds: 
     """
     group = STAGE_GROUPS.get(stage)
     try:
-        for directory in list(_states()) if group else []:
+        directories = list(_states()) if group else []
+    except Exception as exc:
+        directories = []
+        fault(work, "stop", f"{type(exc).__name__}: {exc}", group=group)
+    for directory in directories:
+        # One session's fault leaves every other matching session still stopped.
+        try:
             spec = _read_json(directory / "spec.json")
             state = _read_json(directory / "state.json") or {}
             owner = spec or state
-            if str(owner.get("work")).casefold() != work.casefold() or owner.get("group") != group:
+            if not _in_scope(owner, work, instalment) or owner.get("group") != group:
                 continue
             (directory / "spec.json").unlink(missing_ok=True)
             (directory / "start.pending").unlink(missing_ok=True)
             mark_gone(directory)
-    except Exception as exc:
-        fault(work, "stop", f"{type(exc).__name__}: {exc}", group=group)
+        except Exception as exc:  # A keep-warm fault never changes a launch.
+            fault(work, "stop", f"{type(exc).__name__}: {exc}", session=directory.name, group=group)
     directory = state_root() / resume if resume and SESSION.match(resume) else None
     if directory is None or not directory.is_dir():
         yield
         return
-    try:
-        limit = PING_TIMEOUT_SECONDS + 60
-        if wait_seconds is not None:
-            limit = max(0.0, min(limit, wait_seconds))
-        lock = session_lock(directory / "ping.lock", timeout=limit)
-        lock.__enter__()
-    except Exception as exc:
-        fault(work, "lock", f"a ping still held the lock: {exc}" if isinstance(exc, LockBusy)
-              else f"{type(exc).__name__}: {exc}", session=resume, group=group)
-        lock = None
-    try:
+    with ExitStack() as held:
+        try:
+            # A ping in flight ends by its own timeout; the margin covers killing it
+            # and writing its row.
+            limit = PING_TIMEOUT_SECONDS + 60
+            if wait_seconds is not None:
+                limit = max(0.0, min(limit, wait_seconds))
+            held.enter_context(session_lock(directory / "ping.lock", timeout=limit))
+        except Exception as exc:
+            fault(work, "lock", f"a ping still held the lock: {exc}" if isinstance(exc, LockBusy)
+                  else f"{type(exc).__name__}: {exc}", session=resume, group=group)
         yield
-    finally:
-        if lock is not None:
-            lock.__exit__(None, None, None)
 
 
-def drop_work(work: str) -> None:
-    """A released change's waiting sessions get no further ping; each runner ends `released` at its next step."""
+def drop_work(work: str, instalment: str | None = None) -> None:
+    """A released change's (or instalment's) waiting sessions get no further ping; each runner ends `released` at its next step."""
     try:
         for directory in list(_states()):
             spec = _read_json(directory / "spec.json")
-            if spec and str(spec.get("work")).casefold() == work.casefold():
+            if spec and _in_scope(spec, work, instalment):
                 (directory / RELEASED).write_bytes(str(spec.get("generation") or "").encode("ascii"))
                 (directory / "spec.json").unlink(missing_ok=True)
                 (directory / "start.pending").unlink(missing_ok=True)
@@ -698,22 +728,28 @@ def ping_plan(spec: dict, directory: Path):
     shim = spec.get("shim")
     made = None
     if shim:
-        # The launch's own instruction file, re-created whole for the ping.
+        # The launch's own instruction file, re-created whole, so the ping is sent what its turns were.
         original = Path(shim["directory"])
         text = shim["text"]
         if original.parent.is_dir() and cwd == root:
             made = original
         else:
             # A relative import resolves only from its own directory; the
-            # absolute form is the launcher's own second placement. Every
-            # other line stays as the launch wrote it.
+            # absolute form is the launcher's own second placement. Only the
+            # launcher's import, its file's last line, moves, so every other
+            # line still sends what the turns were sent.
             made = directory / original.name
             absolute = "@" + (cwd / "AGENTS.md").as_posix().replace(" ", "\\ ") + "\n"
-            text = "".join(absolute if line.startswith("@") else line
-                           for line in text.splitlines(keepends=True))
+            lines = text.splitlines(keepends=True)
+            if lines and lines[-1].startswith("@"):
+                lines[-1] = absolute
+            text = "".join(lines)
             argv = _replace_add_dir(argv, str(original), str(made))
-        made.mkdir(exist_ok=True)
-        (made / "CLAUDE.md").write_bytes(text.encode("utf-8"))
+        if made.exists():
+            made = None  # A directory already there is not the ping's to write or remove.
+        else:
+            made.mkdir()
+            (made / "CLAUDE.md").write_bytes(text.encode("utf-8"))
     try:
         yield cwd, argv
     finally:
@@ -729,6 +765,12 @@ def _replace_add_dir(argv: list[str], old: str, new: str) -> list[str]:
     return result
 
 
+# A ping that never reached the model: a known zero, not an unknown.
+NOTHING_SPENT = {"calls": [], "total": {name: 0 for name in (
+    "input", "output", "cache_read", "cache_creation", "cache_write_5m", "cache_write_1h")},
+    "complete": True}
+
+
 def ping_outcome(returncode: int | None, stdout: bytes, *, timed_out: bool = False
                  ) -> tuple[str, str, dict]:
     """``read``, ``wrote``, ``compacted`` or ``failed``, with a reason and per-call usage."""
@@ -739,9 +781,11 @@ def ping_outcome(returncode: int | None, stdout: bytes, *, timed_out: bool = Fal
             calls.append(transcripts.call_classes(usage)[0])
         except transcripts.TranscriptError as exc:
             problem = str(exc)
+    complete = problem is None
     total = {name: sum(call.get(name, 0) for call in calls)
              for name in ("input", "output", "cache_read", "cache_creation", "cache_write_5m", "cache_write_1h")}
-    usage = {"calls": calls, "total": total}
+    # Incomplete usage is priced unknown; a complete empty one spent nothing.
+    usage = {"calls": calls, "total": total, "complete": complete}
     results = [event for event in events if event.get("type") == "result"]
     tool_use = any(isinstance(block, dict) and block.get("type") == "tool_use"
                    for event in events if event.get("type") == "assistant"
@@ -776,7 +820,7 @@ def run_ping(spec: dict, directory: Path) -> tuple[str, str, dict]:
         plan = ping_plan(spec, directory)
         cwd, argv = plan.__enter__()
     except (KeepWarmError, OSError) as exc:
-        return "failed", str(exc), {"calls": [], "total": {}}
+        return "failed", str(exc), NOTHING_SPENT
     try:
         posix = not WINDOWS
         process = subprocess.Popen(argv, cwd=cwd, env=ping_environment(spec), stdin=subprocess.PIPE,
@@ -796,7 +840,7 @@ def run_ping(spec: dict, directory: Path) -> tuple[str, str, dict]:
             pass
         return ping_outcome(process.returncode, stdout, timed_out=timed_out)
     except OSError as exc:
-        return "failed", f"cannot run the ping: {exc}", {"calls": [], "total": {}}
+        return "failed", f"cannot run the ping: {exc}", NOTHING_SPENT
     finally:
         plan.__exit__(None, None, None)
 
@@ -815,13 +859,14 @@ def _kill_tree(process: subprocess.Popen) -> None:
 
 # --- Change state ------------------------------------------------------------
 
-def registry_released(work: str) -> bool:
-    """The worktree registry has rows for the work and none is active."""
+def registry_released(work: str, instalment: str | None = None) -> bool:
+    """The worktree registry has rows for the work (its instalment, where it has one) and none is active."""
     repo, issue = parse_work(work)
     path = Path.home() / ".tradecraft" / "implementation-worktrees.json"
     value = _read_json(path) or {}
     rows = [row for row in value.get("worktrees") or [] if isinstance(row, dict)
-            and str(row.get("repository") or "").casefold() == repo.casefold() and row.get("issue") == issue]
+            and str(row.get("repository") or "").casefold() == repo.casefold() and row.get("issue") == issue
+            and (instalment is None or row.get("instalment") == instalment)]
     return bool(rows) and not any(row.get("active") is True for row in rows)
 
 
@@ -841,7 +886,7 @@ def _gh(spec: dict, endpoint: str) -> dict | None:
 
 def change_state(spec: dict) -> str | None:
     """``open``, ``closed``, ``merged`` or ``released``; None when it cannot be read."""
-    if registry_released(spec["work"]):
+    if registry_released(spec["work"], spec.get("instalment")):
         return "released"
     issue = _gh(spec, f"repos/{spec['repo']}/issues/{spec['issue']}")
     if issue is None:

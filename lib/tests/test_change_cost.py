@@ -1432,3 +1432,38 @@ def test_unreadable_keep_warm_record_is_unknown_without_failing_the_report(repor
     result = cost.report(**inputs)
     assert result["keep_warm"]["price"]["status"] == "unknown"
     assert "unreadable" in result["keep_warm"]["price"]["reason"] and result["total"]["floor"]
+
+
+def test_a_ping_that_reached_no_model_is_a_known_zero_and_an_incomplete_one_is_unknown(report_inputs):
+    inputs = claude_inputs(report_inputs)
+    nothing = ping(60, outcome="failed")
+    nothing["usage"] = {"calls": [], "total": {name: 0 for name in PING_TOTAL}, "complete": True}
+    keep_warm_rows(keep_warm_file(inputs), ping(30), nothing)
+    known = cost.report(**inputs)
+    assert known["keep_warm"]["price"]["status"] == "known" and not known["total"]["floor"]
+    incomplete = ping(90, outcome="failed")
+    incomplete["usage"]["complete"] = False
+    keep_warm_rows(keep_warm_file(inputs), incomplete)
+    unknown = cost.report(**inputs)
+    assert unknown["keep_warm"]["price"]["status"] == "unknown"
+    assert "incomplete usage" in unknown["keep_warm"]["price"]["reason"]
+
+
+def test_the_reload_lists_first_call_takes_the_last_event_of_its_message():
+    import tempfile
+    events = [{"type": "assistant", "message": {"id": "m1", "usage": {
+                  "input_tokens": 3, "output_tokens": 1, "cache_read_input_tokens": 0,
+                  "cache_creation_input_tokens": 0}}},
+              {"type": "assistant", "message": {"id": "m1", "usage": {
+                  "input_tokens": 3, "output_tokens": 9, "cache_read_input_tokens": 0,
+                  "cache_creation_input_tokens": 40,
+                  "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 40}}}},
+              {"type": "assistant", "message": {"id": "m2", "usage": {
+                  "input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 99,
+                  "cache_creation_input_tokens": 0}}}]
+    with tempfile.TemporaryDirectory() as folder:
+        log = Path(folder) / "out.log"
+        log.write_text("\n".join(json.dumps(event) for event in events))
+        first, problem = cost._first_call(str(log))
+    assert problem is None and first == {"input": 3, "cache_read": 0, "cache_creation": 40}
+

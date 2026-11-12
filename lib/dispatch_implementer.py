@@ -179,6 +179,25 @@ def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path,
     raise ImplementerError("cannot write the launch's instruction file: " + "; ".join(errors))
 
 
+def _stop_waiting(args: argparse.Namespace, deadline, metadata: dict) -> None:
+    """End the waiting sessions this launch replaces, just before it starts its process.
+
+    Any route or vendor counts. A launch that ends before starting anything
+    leaves the waiting session the entrance resumes next, so its keep-warm stays.
+    Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+    """
+    held = getattr(args, "keep_warm_held", None)
+    if held is None:
+        return
+    try:
+        # A ping in flight is waited for only within what the launch's own deadline leaves.
+        wait = deadline.remaining()
+    except TimeoutError:
+        wait = 0.0
+    held.enter_context(keep_warm.stop_for_launch(args.work, args.stage, args.resume, wait_seconds=wait,
+                                                 instalment=metadata.get("instalment")))
+
+
 def _keep_warm_settings(path: Path) -> bytes | str:
     """The prepared settings a ping reuses, or why they can't be read.
 
@@ -585,21 +604,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         output = records.resolved_output(args.output, args.work, args.stage)
     records.require_output_outside_root(output, root)
     args.output = output
-    held = getattr(args, "keep_warm_held", None)
-    if held is not None:
-        # Before any route or vendor split, so any launch replacing a waiting
-        # session ends its keep-warm. Design: lib/DESIGN.md#keeping-a-waiting-session-warm
-        try:
-            # A ping in flight is waited for only within what the launch's own deadline leaves.
-            wait = deadline.remaining()
-        except TimeoutError:
-            wait = 0.0
-        held.enter_context(keep_warm.stop_for_launch(args.work, args.stage, args.resume,
-                                                     wait_seconds=wait))
     if args.vendor == "claude":
         route = _cloud_route(args)
         if route is not None:
             entry, route_source, refusal = route
+            if refusal is None:
+                _stop_waiting(args, deadline, metadata)
             return cloud_build.run(
                 args, deadline, entry=entry, route_source=route_source,
                 effective_prompt=effective_prompt, prompt=prompt, context=context,
@@ -938,6 +948,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         )
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation
+                    _stop_waiting(args, deadline, metadata)
                     process_started = True
                     result = run_process(command, input=native.input if native else effective_prompt, cwd=root, timeout=allocation,
                                          env=child_env,
@@ -1196,6 +1207,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     "launch_unresolved": record.get("launch_unresolved"),
                     "session_identity_error": record.get("session_identity_error"),
                     "stage": args.stage, "work": args.work, "root": str(root),
+                    "instalment": metadata.get("instalment"),
                     "fallback_root": copy.get("holder_root") if copy else None,
                     "plugin_root": str(Path(__file__).resolve().parent.parent),
                     "command": command, "settings_bytes": prepared_settings,

@@ -1005,6 +1005,8 @@ def _ping_price(row: dict, rates: list[dict], reasons: list[str]) -> tuple[dict[
     label = f"ping at {row.get('at')}"
     found: list[str] = []
     usage = _mapping(row.get("usage"))
+    if usage.get("complete") is False:
+        found.append(f"{label} has incomplete usage")
     total = _ping_counts(usage.get("total"), label, found)
     calls = usage.get("calls")
     if not isinstance(calls, list):
@@ -1101,20 +1103,28 @@ def _first_call(path: object) -> tuple[dict | None, str | None]:
         lines = Path(path).read_bytes().splitlines()
     except OSError as exc:
         return None, f"cannot read stdout log: {path}: {exc}"
+    first_id, usage = None, None
     for line in lines:
         try:
             event = json.loads(line)
         except ValueError:
             continue
-        # Later events repeating this message id are the same call, so the first one decides.
+        # A call's later events repeat its id; the last carries its whole usage,
+        # as the keep-warm reader of the same stream takes it.
         message = event.get("message") if isinstance(event, dict) and event.get("type") == "assistant" else None
         if isinstance(message, dict) and isinstance(message.get("usage"), dict):
-            try:
-                counts, _ = transcripts.call_classes(message["usage"])
-            except transcripts.TranscriptError as exc:
-                return None, f"first call usage is unreadable: {path}: {exc}"
-            return {name: counts[name] for name in ("input", "cache_read", "cache_creation")}, None
-    return None, f"stdout log has no assistant event: {path}"
+            if usage is None:
+                first_id = message.get("id")
+            elif first_id is None or message.get("id") != first_id:
+                break
+            usage = message["usage"]
+    if usage is None:
+        return None, f"stdout log has no assistant event: {path}"
+    try:
+        counts, _ = transcripts.call_classes(usage)
+    except transcripts.TranscriptError as exc:
+        return None, f"first call usage is unreadable: {path}: {exc}"
+    return {name: counts[name] for name in ("input", "cache_read", "cache_creation")}, None
 
 
 def _launch_time(item: _Attempt, field_name: str = "launched_at") -> datetime | None:
