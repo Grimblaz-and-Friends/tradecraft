@@ -34,6 +34,7 @@ import cold_draft
 from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claude_launch_notice,
                                 claude_stream_check, claude_terminal, stream_check_reason,
                                 stream_check_record)
+import github_allowance
 import launch_bound
 import launch_settings
 import run_lifecycle as lifecycle
@@ -438,6 +439,30 @@ def compared_launch(args, vendor):
     return vendor == "claude" and args.stage == "use" and args.requires == "execute"
 
 
+def use_consumer_bound(args, root, temporary, allocation_seconds, prompt):
+    """Prepare the use consumer's GitHub write bound, or refuse the launch.
+
+    PROMPT is the bytes the seat launches, so the allowance it states is judged on what the
+    session is told, not on a later read of the dispatch file.
+
+    Design: lib/DESIGN.md#the-github-write-bound
+    """
+    allowance = github_allowance.allowance_for(
+        "use", repository=github_allowance.repository_of(args.work), branch=None, pull_request=None)
+    base = claude_launch_env(os.environ, allocation_seconds)
+    try:
+        # No plugin exclusions: the use consumer runs --safe-mode, which loads no plugin list to
+        # hand down, and its child's GitHub bound rests on the hook and environment, not plugins.
+        bound = github_allowance.prepare(temporary, allowance, carrier="shell-prefix", root=root, env=base)
+    except github_allowance.BoundError as exc:
+        raise DispatchError(f"the use consumer's GitHub write check could not be prepared: {exc}") from exc
+    try:
+        told = not github_allowance.needs_notice(allowance, prompt)
+    except github_allowance.BoundError as exc:
+        raise DispatchError(str(exc)) from exc
+    return {**bound, "notice": b"" if told else github_allowance.notice(allowance)}
+
+
 def request_permission_boundary(args, root, windows_sandbox):
     boundary = permission_boundary(
         args.vendor, args.requires, root,
@@ -726,6 +751,22 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             attempt["runtime_version_unavailable_reason"] = (
                                 None if attempt["runtime_version"] else "runtime version command returned no value"
                             )
+                            github_bound = None
+                            # The bound covers the seat that can write: a Claude use consumer
+                            # given a shell, the launch compared_launch names. Settings hooks
+                            # don't run under --safe-mode, so its check rides the shell prefix.
+                            if compared_launch(args, vendor):
+                                try:
+                                    github_bound = use_consumer_bound(
+                                        args, root, Path(temp), request["recipient_allocation_seconds"],
+                                        prompt)
+                                except DispatchError as exc:
+                                    # Refused before launch: the attempt names why, as a launch
+                                    # that could not start does, so its record is not left blank.
+                                    attempt.update(outcome="error", reason=str(exc))
+                                    attempt["permission_boundary_unavailable_reason"] = str(exc)
+                                    raise
+                                record["github_write_bound"] = github_bound["record"]
                             returned = False
                             started = time.monotonic()
                             try:
@@ -745,6 +786,11 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                     launch_input = prompt + b"\n\n" + claude_notice
                                     launch_env = claude_launch_env(
                                         os.environ, request["recipient_allocation_seconds"])
+                                if github_bound is not None:
+                                    launch_env = github_bound["env"]
+                                    if github_bound["notice"]:
+                                        launch_input = launch_input + b"\n\n" + github_bound["notice"]
+                                        record["github_write_notice"] = github_bound["notice"].decode("utf-8")
                                 if compared_launch(args, vendor):
                                     process_started = True
                                 result = run_process(command, input=launch_input, cwd=root, timeout=allocation,
@@ -792,6 +838,12 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 attempt["launched"] = True
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
+                            finally:
+                                if github_bound is not None:
+                                    # Read on every exit, a launch that never started included,
+                                    # so the report reads this record's refusals, not unknown.
+                                    # A refusal is reported, not held: it changes no outcome.
+                                    github_allowance.record_refusals(record, github_bound["log"])
                             elapsed = time.monotonic() - started
                             if record.get("interruption_cause") == "ceiling":
                                 reason = lifecycle.ceiling_reason(vendor, caller_limit=args.timeout_seconds,

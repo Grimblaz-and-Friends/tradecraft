@@ -144,6 +144,19 @@ The head binds the covered flags; initial adoption may cover historical turns at
 
 A comment counts only when it was posted after the run completed (for an unrecorded comparison, after the launch began) and names only ids that launch flagged, and the hold releases once the comments that count name every finding id between them; an unrecorded comparison is named by the id `unrecorded`. A failed `cloud-check:local_tree` is the exception: only the local tree containing the returned branch tip releases it, never an account, because the next stage builds from that tree. An extra-id, untrusted or malformed comment counts for nothing, the rest of what it names included. The procedure is `launch-findings.md`.
 
+## `write-grant`
+
+- **Exact form:** `<!-- tradecraft:write-grant:v1 brief=COMMENT_ID row=N stage=STAGE write=KIND target=TARGET -->`, followed by a blockquote of the words in that row of the affirmed brief that name the write.
+- **Attributes and lawful values:** `brief` is the affirmed brief comment's numeric id; `row` is the row's number; `stage` is the implementer stage the grant is for (`artifact`, `build`, `floor` or `review-disposition`); `write` is `push`, `comment` or `api`. A `push` target is `owner/name:refs/heads/x` or `owner/name:refs/tags/x`; a `comment` target is `owner/name#n`; an `api` target is `METHOD path`, matched exactly, with a `repos/owner/name/...` path. Every target is in the work's own repository; a grant targeting any other is refused.
+- **Producer, surface, moment:** the holder, posting as a configured marker producer, in an issue comment, before it resumes the step with `run <stage> --grant <this comment's id>`. A holder writing that turn's dispatch prints its allowance sentence with `work.py allowance <stage> ... --grant <this comment's id>`, because the launched sentence names the grant and a dispatch stating the plain one is refused.
+
+The entrance accepts the grant only for a turn that resumes that stage, when a configured marker producer posted it, `brief` is the current affirmed brief, the row exists and the quote is at least three whole words of it, so it shows which of the row's words name the write, and the target has its form; otherwise it refuses before anything launches. An accepted grant allows exactly that write in that turn (a `push` grant its own ref, never a `--tags` or other ref-wide push), a `push` grant keeps git's credential for it, and the run record's `github_write_bound.allowance.grants` and the release report list it with its brief comment and row. A granted turn launches locally; the launcher refuses it on the cloud route, whose routine allows no write beyond the change and report branches. A write the brief does not name has no grant: it goes to the owner as a change to an affirmed row.
+
+```text
+<!-- tradecraft:write-grant:v1 brief=1234567890 row=4 stage=artifact write=push target=owner/product:refs/heads/probe -->
+> The artifact must test a real push
+```
+
 ## `builder-session`
 
 - **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.

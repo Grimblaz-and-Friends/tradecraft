@@ -1915,6 +1915,142 @@ def test_906_a_seat_whose_planning_failed_records_not_launched_unless_it_ran(
         assert comparison["status"] == "not-launched" and comparison["findings"] == []
 
 
+@pytest.mark.parametrize("refuse", [False, True])
+def test_894_a_use_consumer_is_bounded_and_its_refusals_reach_its_run_record(
+        job, tmp_path, monkeypatch, refuse):
+    import github_allowance
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    args.work = "o/r#894"
+    original = seat.run_process
+    seen = {}
+
+    def claude_runs_a_command(command, **kwargs):
+        env = kwargs["env"]
+        seen.update(env)
+        if refuse:
+            # As the runtime does: the shell prefix receives the wrapped command.
+            ran = subprocess.run(
+                [github_allowance.bash_executable(), env["CLAUDE_CODE_SHELL_PREFIX"],
+                 github_allowance.harness_string("gh issue comment 1 -R o/r --body x")],
+                capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+            assert ran.returncode == 126 and b"refused" in ran.stderr
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(seat, "run_process", claude_runs_a_command)
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    bound = logged["github_write_bound"]
+    assert bound["allowance"]["kind"] == "none" and bound["allowance"]["repository"] == "o/r"
+    assert bound["command_check"] == {"carrier": "shell-prefix", "status": "armed", "reason": None,
+                                      "self_test": "passed"}
+    assert bound["push_credential"] == "removed"
+    assert seen["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false" and seen["TRADECRAFT_CHILD_SETTINGS"]
+    assert "Write requests" in logged["github_write_notice"]
+    assert logged["outcome"] == "success"
+    refusals = logged["github_write_refusals"]
+    if refuse:
+        assert [entry["command"] for entry in refusals] == ["gh issue comment 1 -R o/r --body x"]
+        assert refusals[0]["entry"] == "prefix" and refusals[0]["allowance"]["kind"] == "none"
+    else:
+        assert refusals == []
+
+
+def _use_consumer(job, tmp_path, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    args.work = "o/r#894"
+    return args
+
+
+def test_a_use_consumer_that_never_started_reports_its_refusals_read(job, tmp_path, monkeypatch):
+    from test_work import state
+    args = _use_consumer(job, tmp_path, monkeypatch)
+
+    def cannot_start(_command, **_kwargs):
+        raise OSError("no such program")
+
+    monkeypatch.setattr(seat, "run_process", cannot_start)
+    with pytest.raises(seat.DispatchError, match="Cannot launch claude"):
+        seat.run_dispatch(args)
+    logged = record(args)
+    assert [attempt["launched"] for attempt in logged["attempts"]] == [False]
+    assert logged["github_write_bound"]["child_settings"]
+    assert logged["github_write_refusals"] == [] and "github_write_refusals_unknown" not in logged
+    # The entrance report reads this record as read, not as a launch whose log was never read.
+    fixture = state(pr=True)
+    fixture.record_root = tmp_path
+    monkeypatch.setattr(work.lifecycle, "launch_bundles",
+                        lambda *_a, **_k: [(0, "b", {"dispatch_id": "d", "stage": "use"}, logged)])
+    monkeypatch.setattr(work.work_recovery, "scoped", lambda _state, found, **_k: found)
+    assert work._github_write_report(fixture)["status"] == "read"
+
+
+def test_a_use_consumer_dispatch_stating_another_allowance_is_an_unlaunched_attempt(
+        job, tmp_path, monkeypatch):
+    import github_allowance
+    args = _use_consumer(job, tmp_path, monkeypatch)
+    other = github_allowance.sentence(github_allowance.allowance_for(
+        "build", repository="o/r", branch="b", pull_request=None))
+    args.dispatch.write_bytes(args.dispatch.read_bytes() + b"\n\n" + other.encode("utf-8"))
+    launched = []
+    monkeypatch.setattr(seat, "run_process", lambda *a, **k: launched.append(a))
+    with pytest.raises(seat.DispatchError, match="other than"):
+        seat.run_dispatch(args)
+    assert launched == []
+    logged = record(args)
+    attempt, = logged["attempts"]
+    assert attempt["launched"] is False and attempt["outcome"] == "error"
+    assert "other than" in attempt["reason"] and logged["outcome"] == "error"
+    assert "github_write_bound" not in logged
+
+
+def test_a_use_consumer_is_judged_on_the_bytes_it_launches(job, tmp_path, monkeypatch):
+    import github_allowance
+    args = _use_consumer(job, tmp_path, monkeypatch)
+    plain = args.dispatch.read_bytes()
+    other = github_allowance.sentence(github_allowance.allowance_for(
+        "build", repository="o/r", branch="b", pull_request=None))
+    args.dispatch.write_bytes(plain + b"\n\n" + other.encode("utf-8"))
+    prepare = seat.github_allowance.prepare
+
+    def rewritten_after_the_read(*a, **k):
+        # The file no longer states another allowance; the launched bytes still do.
+        args.dispatch.write_bytes(plain)
+        return prepare(*a, **k)
+
+    monkeypatch.setattr(seat.github_allowance, "prepare", rewritten_after_the_read)
+    launched = []
+    monkeypatch.setattr(seat, "run_process", lambda *a, **k: launched.append(a))
+    with pytest.raises(seat.DispatchError, match="other than"):
+        seat.run_dispatch(args)
+    assert launched == []
+
+
+@pytest.mark.parametrize("stage, requires", [("cold-read", "read"), ("cold-reader", "read"),
+                                             ("use", "read")])
+def test_894_a_seat_without_a_shell_carries_no_github_write_bound(job, tmp_path, monkeypatch, stage, requires):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires = stage, requires
+    if stage in ("use", "cold-reader"):
+        args.classification = "cold"
+    seen = {}
+    original = seat.run_process
+
+    def capture(command, **kwargs):
+        seen.update(kwargs["env"] or {})
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(seat, "run_process", capture)
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    assert "github_write_bound" not in logged and "github_write_refusals" not in logged
+    assert "ENABLE_CLAUDEAI_MCP_SERVERS" not in seen and "TRADECRAFT_CHILD_SETTINGS" not in seen
+
+
 def test_the_use_consumers_stdout_log_reaches_finish(job, tmp_path, monkeypatch):
     args, _ = job
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")

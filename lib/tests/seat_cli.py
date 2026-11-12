@@ -65,6 +65,11 @@ if vendor == "claude":
     capture["add_dirs"] = {flags[i + 1]: (Path(flags[i + 1], "CLAUDE.md").read_text(encoding="utf-8")
         if Path(flags[i + 1], "CLAUDE.md").is_file() else None)
         for i, flag in enumerate(flags) if flag == "--add-dir"}
+    if "--settings" in flags:
+        # A test can then see the launch's GitHub write check is armed without running a hook.
+        launch_settings = json.loads(Path(flags[flags.index("--settings") + 1]).read_bytes())
+        capture["github_write_matchers"] = [entry.get("matcher") for entry in
+                                            launch_settings.get("hooks", {}).get("PreToolUse", [])]
     if "guard_decisions" in scenario:
         # Stand in for the launch's write-guard hook (#906): its decisions land
         # in the decision log the launch settings name.

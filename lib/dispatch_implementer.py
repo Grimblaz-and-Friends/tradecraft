@@ -37,6 +37,7 @@ from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TO
                                 claude_launch_controls, claude_launch_env, claude_launch_notice,
                                 claude_stream_check, claude_terminal, claude_write_bound_notice,
                                 stream_check_reason, stream_check_record)
+import github_allowance
 import launch_bound
 import launch_settings
 import run_lifecycle as lifecycle
@@ -553,6 +554,24 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         route = _cloud_route(args)
         if route is not None:
             entry, route_source, refusal = route
+            # A route that is itself refused, such as a broken switch, is reported as that, not
+            # as a grant or an allowance its holder would otherwise go and change.
+            # Design: lib/DESIGN.md#the-github-write-bound
+            if refusal is None:
+                if metadata.get("github_write_grants"):
+                    # The cloud routine's fixed text forbids every write beyond the change and
+                    # report branches, so a cloud turn could not honour a grant.
+                    raise ImplementerError(
+                        "a write grant cannot ride a cloud launch: its routine allows no write beyond the "
+                        "change and report branches; run the granted turn locally or return it to the owner")
+                try:
+                    cloud_notice = github_allowance.cloud_notice(args.stage, prompt)
+                except github_allowance.BoundError as exc:
+                    raise ImplementerError(str(exc)) from exc
+                if cloud_notice:
+                    effective_prompt = effective_prompt + b"\n\n" + cloud_notice
+                    # As on the local paths, the digest names the bytes the run is given.
+                    composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
             return cloud_build.run(
                 args, deadline, entry=entry, route_source=route_source,
                 effective_prompt=effective_prompt, prompt=prompt, context=context,
@@ -560,6 +579,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 settings_sources={"vendor": args.vendor_source, "model": settings.model_source,
                                   "effort": settings.effort_source},
                 validate=validate_artifact_return, preset_failure=refusal)
+    if metadata.get("github_write_grants") and not args.resume:
+        # A grant answers a request the step itself returned, so only its resumed turn may carry
+        # one. The entrance checks this before an explicit restart can turn its decision fresh,
+        # so the launcher, which knows the final continuity, checks it again.
+        raise ImplementerError("a write grant rides only a resumed turn of its step, and this launch "
+                               "resumes no session; resume the step or launch it without the grant")
     request_path = records.sidecar(output, ".request.json")
     record_path = records.sidecar(output, ".run.json")
     input_path = records.sidecar(output, ".dispatch.bin")
@@ -613,15 +638,33 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             child_env = artifact_tree.environment() if args.stage == "artifact" else None
             intent = {"status": "unprepared", "disabled_plugin_ids": [], "allowed_plugins": []}
             preparation_error = None
+            # The GitHub write bound. Design: lib/DESIGN.md#the-github-write-bound
+            allowance = github_allowance.allowance_for(
+                args.stage, repository=github_allowance.repository_of(args.work),
+                branch=args.lineage_branch, pull_request=args.lineage_pull_request,
+                grants=metadata.get("github_write_grants") or ())
+            # Read once, before preparation, so the Codex bound record names the same version.
+            runtime_version = records.runtime_version(executable) if executable is not None else None
             if executable is not None and unavailable_reason is None:
                 try:
                     if args.vendor == "claude":
                         intent, child_env = policy.claude_prepare(executable, root, deadline, temporary,
                             Path(__file__).resolve().parent.parent, env=child_env,
-                            write_guard={"root": root, "session": args.resume or args.session_id})
+                            write_guard={"root": root, "session": args.resume or args.session_id},
+                            github_bound={"allowance": allowance, "root": root,
+                                          "session": args.resume or args.session_id})
                         args.launch_settings_path = intent["settings_path"]
                     else:
+                        try:
+                            codex_bound = github_allowance.prepare_codex(
+                                allowance, dict(os.environ if child_env is None else child_env),
+                                runtime_version, temporary=temporary, root=root)
+                        except github_allowance.BoundError as exc:
+                            raise policy.PreparationError(str(exc)) from exc
+                        child_env = codex_bound["env"]
                         intent = policy.codex_prepare(executable, root, deadline, env=child_env)
+                        intent["github_write_bound"] = {"record": codex_bound["record"],
+                                                        "log": codex_bound["log"]}
                         config = native_codex.read_config(build_command(args, executable, last_message),
                                                          root, deadline, env=child_env)
                         intent["thread_config"] = policy.restriction_config(config, intent)
@@ -638,6 +681,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     # useful window is an ordinary recorded preparation failure.
                     deadline.remaining()
                     preparation_error = "implementer preparation failed: " + str(exc)
+                    intent["status"] = "failed"
+                    intent["reason"] = preparation_error
+            github_notice = b""
+            if preparation_error is None and intent.get("github_write_bound"):
+                # Refused like a failed preparation, so the run records it unlaunched and no
+                # session is left to resume.
+                try:
+                    if github_allowance.needs_notice(allowance, prompt):
+                        github_notice = github_allowance.notice(allowance)
+                except github_allowance.BoundError as exc:
+                    preparation_error = str(exc)
                     intent["status"] = "failed"
                     intent["reason"] = preparation_error
             command = (
@@ -666,7 +720,10 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 },
             )
             request["implementer_role"] = role
-            request["environment_request"] = intent
+            # The bound's record holds this launch's temporary paths, so it lives in the run
+            # record; the request stays comparable across launches of the same work.
+            request["environment_request"] = {key: value for key, value in intent.items()
+                                              if key != "github_write_bound"}
             request["transport"] = "codex-app-server-v2" if args.vendor == "codex" else "claude-stream-json"
             request["lineage_branch"] = args.lineage_branch
             request["lineage_pull_request"] = args.lineage_pull_request
@@ -688,6 +745,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 allocation = min(allocation, supplied)
             request["recipient_allocation_seconds"] = allocation
             request["budget_override_reason"] = budget_reason
+            github_bound = intent.get("github_write_bound") if command is not None and not preparation_error else None
+            if github_bound is None:
+                github_notice = b""
             if args.vendor == "claude" and command is not None and not preparation_error:
                 # The notice is part of the effective input; its digest covers it.
                 notice = claude_launch_notice(allocation)
@@ -696,6 +756,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 child_env = claude_launch_env(child_env, allocation)
                 guard = intent["write_guard"]["config"]
                 bound_notice = claude_write_bound_notice(guard["root"], launch_bound.allowed_scratchpad(guard))
+                # A Claude launch already carries a write-bound notice recorded in launch_controls,
+                # so its GitHub allowance rides inside that one notice and record.
+                bound_notice += github_notice
                 effective_prompt = effective_prompt + b"\n\n" + bound_notice
                 composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
                 request["launch_controls"] = claude_launch_controls(
@@ -718,6 +781,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                                    else {"coverage": [], "unavailable_reason": comparison_error}),
                     "shell": launch_bound.SHELL,
                 }
+            # Codex gets no write-bound notice, so its allowance is appended and recorded alone.
+            if github_bound is not None and args.vendor == "codex" and github_notice:
+                effective_prompt = effective_prompt + b"\n\n" + github_notice
+                composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
+                request["github_write_notice"] = github_notice.decode("utf-8")
             if args.stage != "artifact":
                 request.setdefault("budget_lineage", hashlib.sha256(
                     (args.work + str(root) + str(args.lineage_branch)).encode("utf-8")).hexdigest())
@@ -751,9 +819,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     "from_bundle": args.handover_from, "to_vendor": "claude",
                     "replacement_session": None, "phase": "unavailable",
                 }
-            request["runtime_version"] = (
-                records.runtime_version(executable) if executable is not None else None
-            )
+            request["runtime_version"] = runtime_version
             request["runtime_version_unavailable_reason"] = (
                 unavailable_reason if executable is None else
                 None if request["runtime_version"] else "runtime version command returned no value"
@@ -801,6 +867,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             }
             if "handover" in request:
                 record["handover"] = request["handover"]
+            if github_bound is not None:
+                record["github_write_bound"] = github_bound["record"]
             record["launched_at"] = request["launched_at"]
             growing = records.GrowingRun(record_path, record, streams,
                 expected=args.resume or args.session_id, holder=args.holder_session_id,
@@ -1059,6 +1127,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if "observed" not in attempt:
                     records.add_unobserved(attempt, attempt["reason"])
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
+                if github_bound is not None and github_bound.get("log"):
+                    # A refusal is reported, not held: it changes no outcome.
+                    github_allowance.record_refusals(record, github_bound["log"])
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)
                     if args.stage != "artifact":

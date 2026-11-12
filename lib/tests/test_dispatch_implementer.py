@@ -212,7 +212,10 @@ def test_composition_boundary_belongs_to_exact_retained_effective_input(job, ori
     assert prompt == args.dispatch.read_bytes() and context == args.context.read_bytes()
     assert composition["origin"] == origin
     assert composition["dispatch_sha256"] == hashlib.sha256(prompt).hexdigest()
-    assert composition["effective_input_sha256"] == request["effective_input_sha256"] == hashlib.sha256(context + b"\n\n" + prompt).hexdigest()
+    # A dispatch without the allowance sentence is told it by the launcher.
+    notice = request["github_write_notice"].encode("utf-8")
+    assert composition["effective_input_sha256"] == request["effective_input_sha256"] == hashlib.sha256(
+        context + b"\n\n" + prompt + b"\n\n" + notice).hexdigest()
     composed = datetime.fromisoformat(composition["composed_at"])
     assert composed <= datetime.fromisoformat(request["launched_at"])
     if origin == "entrance":
@@ -1618,6 +1621,14 @@ def test_artifact_byte_bound_keeps_exact_return_and_generated_context(
         effective_input += b"\n\n" + request["launch_controls"]["notice"].encode("utf-8")
         # Then its write-bound notice (#906).
         effective_input += b"\n\n" + request["launch_controls"]["write_bound_notice"].encode("utf-8")
+        # Which carries the GitHub write allowance, so the record of what Claude was told holds it.
+        told = request["launch_controls"]["write_bound_notice"]
+        assert "github_write_notice" not in request
+    else:
+        # Codex is told its GitHub write allowance after the dispatch.
+        effective_input += b"\n\n" + request["github_write_notice"].encode("utf-8")
+        told = request["github_write_notice"]
+    assert told.count(implementer.github_allowance.SENTENCE_OPENING) == 1
     assert base64.b64decode(captured["stdin"]) == effective_input
     assert request["effective_input_sha256"] == hashlib.sha256(effective_input).hexdigest()
     assert request["context"]["sha256"] == hashlib.sha256(effective_context).hexdigest()
@@ -2178,6 +2189,184 @@ def test_a_stage_the_route_does_not_carry_stays_local(job, monkeypatch):
     assert implementer._cloud_route(args) is None
     args.stage = "build"
     assert implementer._cloud_route(args)[0]["routine_id"] == "trig_1"
+
+
+def _run_record(args):
+    return json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
+
+
+@pytest.mark.parametrize("stage, kind", [("build", "branch"), ("review-disposition", "review-disposition")])
+def test_894_ac1_a_claude_builder_records_its_allowance_and_armed_check(job, monkeypatch, stage, kind):
+    args, scenario = job
+    args.vendor, args.stage, args.work = "claude", stage, "o/r#894"
+    args.lineage_branch, args.lineage_pull_request = "tradecraft/894-ab", 12
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    scenario.write_bytes(json.dumps({"claude": native_artifact_result("claude", "built")}).encode())
+    # A refusal the check logged during the turn is reported, and the turn's outcome holds.
+    refusal = {"scope": "parent", "entry": "hook", "command": "gh issue comment 1", "reason": "refused",
+               "allowance": {"kind": kind}}
+    monkeypatch.setattr(implementer.github_allowance, "refusals", lambda _log: [refusal])
+    assert implementer.run_implementer(args) == 0
+    run = _run_record(args)
+    bound = run["github_write_bound"]
+    assert bound["allowance"]["kind"] == kind and bound["allowance"]["repository"] == "o/r"
+    assert bound["command_check"]["carrier"] == "pretooluse-hook"
+    assert bound["command_check"]["status"] == "armed" and bound["push_credential"] == "kept"
+    assert run["github_write_refusals"] == [refusal] and run["outcome"] == "success"
+    assert "write_guard" in run
+    observed = seen_claude(args)
+    assert observed["argv"][observed["argv"].index("--settings") + 1] == args.launch_settings_path
+    assert observed["github_write_matchers"] and "Bash|PowerShell" in observed["github_write_matchers"]
+
+
+def test_894_ac17_a_codex_launch_records_that_no_command_check_ran(job, monkeypatch):
+    args, _ = job
+    args.vendor, args.work = "codex", "o/r#894"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    captured = {}
+    original = implementer.run_process
+
+    def capture(command, **kwargs):
+        captured.update(kwargs.get("env") or {})
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(implementer, "run_process", capture)
+    assert implementer.run_implementer(args) == 0
+    bound = _run_record(args)["github_write_bound"]
+    assert bound["allowance"]["kind"] == "none"  # no registered branch, so no push
+    assert bound["command_check"]["carrier"] == "none" and bound["command_check"]["status"] == "not-run"
+    assert "codex-cli test" in bound["command_check"]["reason"]
+    assert bound["push_credential"] == "removed"
+    # The Codex parent goes unchecked, but the hook its Claude child would carry is proved.
+    assert bound["command_check"]["self_test"] == "passed"
+    assert captured["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
+    assert captured["TRADECRAFT_CHILD_SETTINGS"] and captured["GIT_TERMINAL_PROMPT"] == "0"
+
+
+GRANT = {"marker": 9001, "brief": 7001, "row": 4, "stage": "build", "write": "push",
+         "target": "o/r:refs/heads/probe"}
+
+
+def _granted_turn(args, dispatch_grants):
+    args.vendor, args.work = "codex", "o/r#894"
+    args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"  # a grant rides only a resumed turn
+    args.lineage_branch = "tradecraft/894-ab"
+    stated = implementer.github_allowance.allowance_for(
+        "build", repository="o/r", branch="tradecraft/894-ab", pull_request=None, grants=dispatch_grants)
+    args.dispatch.write_bytes(b"Build the change.\n\n" + implementer.github_allowance.sentence(stated).encode())
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"github_write_grants": [GRANT]}).encode())
+
+
+def test_a_granted_turn_that_resumes_no_session_is_refused_before_launch(job):
+    # An explicit restart turns the entrance's resumed decision fresh after its grant check.
+    args, _ = job
+    _granted_turn(args, [GRANT])
+    args.resume = None
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    with pytest.raises(implementer.ImplementerError, match="rides only a resumed turn"):
+        implementer.run_implementer(args)
+    assert not (args.root / "seen-codex.json").exists()
+    assert not implementer.records.sidecar(args.output, ".request.json").exists()
+
+
+def test_a_granted_turn_is_told_one_allowance_naming_its_grant(job):
+    args, _ = job
+    _granted_turn(args, [GRANT])
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 0
+    sent = base64.b64decode(seen(args)["stdin"]).decode("utf-8")
+    assert sent.count(implementer.github_allowance.SENTENCE_OPENING) == 1
+    assert "the granted push o/r:refs/heads/probe" in sent
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert "github_write_notice" not in request
+
+
+def test_a_granted_turn_is_refused_before_a_cloud_launch(job, monkeypatch):
+    args, _ = job
+    _granted_turn(args, [GRANT])
+    args.vendor, args.resume = "claude", None  # the cloud route takes only a fresh turn
+    _cloud_record(Path.home(), "o/r")
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("a granted turn must not reach the cloud route")
+
+    monkeypatch.setattr(implementer.cloud_build, "run", forbidden)
+    with pytest.raises(implementer.ImplementerError, match="cannot ride a cloud launch"):
+        implementer.run_implementer(args)
+
+
+def test_a_broken_cloud_switch_is_reported_before_a_grant(job, monkeypatch):
+    # The switch is the fault to fix; naming the grant would send the holder to move the turn.
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.")
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"github_write_grants": [GRANT]}).encode())
+    (Path.home() / ".tradecraft" / "cloud-builds.json").write_text("{")
+    assert implementer.run_implementer(args) == 0
+    assert sent["entry"] is None and "malformed" in sent["preset_failure"]
+
+
+def test_a_dispatch_stating_another_allowance_is_refused_before_launch(job):
+    args, _ = job
+    _granted_turn(args, [])  # the dispatch omits the grant the launch holds
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 1
+    assert not (args.root / "seen-codex.json").exists()
+    # A completed, unlaunched record names the refusal, so no session is left to resume.
+    run = _run_record(args)
+    assert run["outcome"] == "error" and run.get("completed_at")
+    assert [attempt["launched"] for attempt in run["attempts"]] == [False]
+    assert "other than the one this launch holds" in run["attempts"][0]["reason"]
+    assert "handover" not in run and "github_write_bound" not in run
+
+
+def _cloud_launch(job, monkeypatch, dispatch):
+    args, _ = job
+    args.work, args.vendor, args.stage = "Owner/product#592", "claude", "build"
+    args.dispatch.write_bytes(dispatch)
+    _cloud_record(Path.home(), "Owner/product")
+    sent = {}
+
+    def cloud_run(_args, _deadline, **kwargs):
+        sent.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(implementer.cloud_build, "run", cloud_run)
+    return args, sent
+
+
+def test_a_cloud_launch_appends_its_routes_sentence_once(job, monkeypatch):
+    sentence = implementer.github_allowance.cloud_sentence("build")
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.")
+    assert implementer.run_implementer(args) == 0
+    assert sent["effective_prompt"].count(sentence.encode()) == 1
+    # The composition digest names the bytes the cloud run is given, notice included.
+    assert sent["composition"]["effective_input_sha256"] == hashlib.sha256(
+        sent["effective_prompt"]).hexdigest()
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.\n\n" + sentence.encode())
+    assert implementer.run_implementer(args) == 0
+    assert sent["effective_prompt"].count(sentence.encode()) == 1
+
+
+def test_a_cloud_launch_refuses_a_dispatch_stating_another_allowance(job, monkeypatch):
+    local = implementer.github_allowance.sentence(implementer.github_allowance.allowance_for(
+        "build", repository="Owner/product", branch="b", pull_request=None))
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.\n\n" + local.encode())
+    with pytest.raises(implementer.ImplementerError, match="other than the cloud route's"):
+        implementer.run_implementer(args)
+    assert sent == {}
+
+
+def test_a_broken_cloud_switch_is_reported_before_the_allowance(job, monkeypatch):
+    # With the switch broken the entrance composes the local sentence; the launch reports the
+    # switch, the real fault, rather than refusing that sentence as a wrong allowance.
+    local = implementer.github_allowance.sentence(implementer.github_allowance.allowance_for(
+        "build", repository="Owner/product", branch="b", pull_request=None))
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.\n\n" + local.encode())
+    (Path.home() / ".tradecraft" / "cloud-builds.json").write_text("{")
+    assert implementer.run_implementer(args) == 0
+    assert sent["entry"] is None and "malformed" in sent["preset_failure"]
 
 
 # --- Every author and builder comparison reads its own record ---------------

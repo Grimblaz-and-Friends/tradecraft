@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+import github_allowance
 import launch_bound
 from seat_process import run_process
 
@@ -80,7 +81,8 @@ def foreign_ids(entries, vendor):
     return foreign, allowed
 
 
-def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=None, write_guard=None):
+def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=None, write_guard=None,
+                   github_bound=None):
     child = dict(os.environ if env is None else env)
     # An explicit process value wins over the user settings' env block. Set it
     # before discovery and retain it for the child; a settings-only override
@@ -161,6 +163,19 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
         except launch_bound.BoundError as exc:
             raise PreparationError(str(exc)) from exc
         settings["hooks"] = guard["hooks"]
+    bound = None
+    if github_bound is not None:
+        # A child's settings carry the parent's plugin exclusions, so a session it starts
+        # loads no plugin the parent was denied.
+        try:
+            bound = github_allowance.prepare(
+                Path(temporary), github_bound["allowance"], carrier="pretooluse-hook",
+                root=github_bound["root"], env=child, enabled_plugins=settings["enabledPlugins"],
+                session=github_bound.get("session"))
+        except github_allowance.BoundError as exc:
+            raise PreparationError(str(exc)) from exc
+        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).extend(bound["hooks"])
+        child = bound["env"]
     data = (json.dumps(settings, ensure_ascii=True) + "\n").encode("utf-8")
     override.write_bytes(data)
     if os.name != "nt":
@@ -172,6 +187,9 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
         "function_hooks_requested": "disabled by child process environment override",
         "tree_instructions_requested": "loaded from --add-dir by child process environment override",
         "settings_path": str(override)}
+    if bound is not None:
+        intent["github_write_bound"] = {"record": bound["record"], "log": bound["log"],
+                                        "config_path": bound["config_path"]}
     if guard is not None:
         intent["write_guard"] = {"config_path": guard["config_path"], "log": guard["log"],
                                  "self_test": guard["self_test"], "config": guard["config"]}

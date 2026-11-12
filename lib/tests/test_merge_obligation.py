@@ -737,23 +737,29 @@ def test_cloud_run_build_reaches_the_cloud_launcher_with_its_lineage_branch(laun
     switch.write_text(json.dumps({"schema_version": 1, "practice": {"repository": "Grimblaz-and-Friends/tradecraft"},
                                   "repositories": {fixture.repo: {"routine_id": "trig_1", "token_file": "t",
                                                                   "setup_record": "s", "set_up_at": "x"}}}))
-    reached = []
+    # The machine's vendor is Claude, so the entrance composes for the Claude cloud launch it
+    # sends, cloud sentence included, and the launcher's real allowance check accepts it.
+    (home / ".tradecraft" / "implementer-vendor").write_text("claude\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    reached, told = [], []
 
     def cloud_run(args, _deadline, **kwargs):
         reached.append((args.work, args.stage, args.lineage_branch, kwargs["entry"]["routine_id"]))
+        told.append(kwargs["effective_prompt"].count(
+            implementer.github_allowance.cloud_sentence("build").encode("utf-8")))
         return 0
 
     def launch_cloud(command, **kwargs):
         args = implementer.parser().parse_args(command[2:])
-        # The entrance named the recorded vendor; a set-up repository's Claude launch is the case here.
-        args.vendor, args.vendor_source, args.claude, args.codex = "claude", "fixture", None, None
-        args.resume = None
+        assert args.vendor == "claude"
+        args.claude, args.codex = None, None
         with monkeypatch.context() as patch:
-            patch.setattr(Path, "home", lambda: home)
             patch.setattr(implementer.cloud_build, "run", cloud_run)
             assert implementer.run_implementer(args) == 0
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(work, "_recipient_run", launch_cloud)
-    compose("build")
+    # Fresh, because a resumed turn follows the fixture's recorded Codex session, not the vendor.
+    compose("build", continuity="fresh")
     assert reached == [(f"{fixture.repo}#{fixture.issue_number}", "build", branch, "trig_1")]
+    assert told == [1]  # the composed cloud sentence, accepted, and not appended twice
