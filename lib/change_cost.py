@@ -304,16 +304,29 @@ _RATE_FIELDS = ("vendor", "model", "effective_from", "effective_to", "currency",
                 "per_tokens", "classes", "source_url", "retrieved_at")
 
 
+def _classes_problem(name: str, classes: object) -> str | None:
+    if not isinstance(classes, dict) or not classes:
+        return f"{name} must be a nonempty object"
+    for key, price in classes.items():
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or _number(price) is None:
+            return f"{name}.{key} must be a finite nonnegative number"
+    return None
+
+
 def _tier_problem(row: dict) -> str | None:
-    tiers = row.get("prompt_tiers")
-    if tiers is None:
+    if "prompt_tiers" not in row:
         return None
+    tiers = row["prompt_tiers"]
+    # An explicit null would silently price a tiered model at its base prices.
     if not isinstance(tiers, list) or not tiers:
-        return "prompt_tiers must be a nonempty list"
+        return "prompt_tiers must be a nonempty list; leave it out for a model priced the same at every prompt length"
     thresholds = []
-    for tier in tiers:
-        if not isinstance(tier, dict) or not isinstance(tier.get("classes"), dict):
-            return "each prompt tier must carry a classes object"
+    for number, tier in enumerate(tiers):
+        if not isinstance(tier, dict):
+            return "each prompt tier must be an object with above_prompt_tokens and classes"
+        problem = _classes_problem(f"prompt_tiers[{number}].classes", tier.get("classes"))
+        if problem:
+            return problem
         threshold = tier.get("above_prompt_tokens")
         if type(threshold) is not int or threshold <= 0:
             return "each prompt tier's above_prompt_tokens must be a positive integer"
@@ -383,6 +396,8 @@ def _repository_row_problem(row: object) -> str | None:
         return f"{placeholder} still holds a FILL placeholder; replace it from the pricing page"
     if not isinstance(row["vendor"], str) or not isinstance(row["model"], str):
         return "vendor and model must be strings"
+    if not isinstance(row["currency"], str) or not row["currency"]:
+        return "currency must be a nonempty string, such as USD"
     if _timestamp(row["effective_from"]) is None:
         return "effective_from is not a timestamp with a zone, such as 2026-11-12T00:00:00Z"
     if row["effective_to"] is not None and _timestamp(row["effective_to"]) is None:
@@ -390,14 +405,9 @@ def _repository_row_problem(row: object) -> str | None:
     denominator = _number(row["per_tokens"])
     if denominator is None or denominator <= 0:
         return "per_tokens must be a positive number"
-    tiers = row.get("prompt_tiers") if isinstance(row.get("prompt_tiers"), list) else []
-    for name, classes in [("classes", row["classes"]),
-                          *((f"prompt_tiers[{n}].classes", _mapping(t).get("classes")) for n, t in enumerate(tiers))]:
-        if not isinstance(classes, dict) or not classes:
-            return f"{name} must be a nonempty object"
-        for key, price in classes.items():
-            if isinstance(price, bool) or not isinstance(price, (int, float)) or _number(price) is None:
-                return f"{name}.{key} must be a finite nonnegative number"
+    problem = _classes_problem("classes", row["classes"])
+    if problem:
+        return problem
     return _tier_problem(row)
 
 
@@ -449,20 +459,37 @@ class _Card:
         self.shipped = list(shipped)
         self.repository = list(repository)
         self.repository_path = repository_path
-        self.now_shipped: dict[tuple[str, str], dict] = {}
 
     def lookup(self, vendor, model, when):
         row = _rate_for(self.shipped, vendor, model, when)
-        local = _rate_for(self.repository, vendor, model, when) if self.repository else None
         if row is not None:
             # A shipped price is checked against the posted page by the practice; a pasted one is not.
-            if local is not None:
-                self.now_shipped.setdefault((vendor, model), {
-                    "vendor": vendor, "model": model, "path": self.repository_path,
-                    "note": "the shipped card now prices this model for these uses; "
-                            "this repository entry can be removed"})
             return row, "shipped"
+        local = _rate_for(self.repository, vendor, model, when) if self.repository else None
         return (local, "repository") if local is not None else (None, None)
+
+    def shipped_covers(self, entry) -> bool:
+        """Whether shipped rows price the entry's model over its whole interval, so deleting it loses nothing."""
+        start, end = _timestamp(entry.get("effective_from")), _timestamp(entry.get("effective_to"))
+        spans = sorted((_timestamp(row.get("effective_from")), _timestamp(row.get("effective_to")))
+                       for row in self.shipped
+                       if row.get("vendor") == entry.get("vendor") and row.get("model") == entry.get("model")
+                       and _timestamp(row.get("effective_from")) is not None)
+        reached = start
+        for span_start, span_end in spans:
+            if span_start > reached:
+                break
+            if span_end is None:
+                return True
+            reached = max(reached, span_end)
+        return end is not None and reached >= end
+
+    def now_shipped(self) -> list[dict]:
+        return [{"vendor": entry["vendor"], "model": entry["model"], "effective_from": entry["effective_from"],
+                 "path": self.repository_path,
+                 "note": "the shipped card now prices this model over this entry's whole interval; "
+                         "this repository entry can be removed"}
+                for entry in self.repository if self.shipped_covers(entry)]
 
     def ended_page(self, vendor, model, when):
         for row in [*self.shipped, *self.repository]:
@@ -1310,10 +1337,13 @@ def _missing_prices(prices: list[dict], files: dict) -> list[dict[str, object]]:
             value["pricing_page_reason"] = f"no posted pricing page is known for vendor {vendor}"
         if repository["status"] == "no-repository":
             value["paste_into_note"] = "run the report from inside the repository, or pass --root"
-        if repository["status"] in {"absent", "no-repository"}:
-            value["new_file"] = {"schema_version": 1, "rates": [entry]}
         value["instructions"] = _GUIDANCE
         answer.append(value)
+    if repository["status"] in {"absent", "no-repository"}:
+        # One file carries every missing entry, so saving any item's new_file loses none of the others.
+        whole = {"schema_version": 1, "rates": [value["entry"] for value in answer]}
+        for value in answer:
+            value["new_file"] = whole
     return answer
 
 
@@ -1427,7 +1457,7 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
         },
         "price_files": price_files,
         "missing_prices": _missing_prices(prices, price_files),
-        "repository_entries_now_shipped": [rates.now_shipped[key] for key in sorted(rates.now_shipped)],
+        "repository_entries_now_shipped": rates.now_shipped(),
         "bill_plan_status": bill_plan_status(rows, terms_path, gauges_path),
     }
 

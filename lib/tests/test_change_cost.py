@@ -1448,9 +1448,14 @@ def test_tiers_are_card_data_and_a_malformed_tier_is_refused(tmp_path):
                for count in (5, 6, 51)]
     amounts = [cost.rate_card_equivalent(transcript_row([item]), [entry])["amount"] for item in replies]
     assert [Decimal(value) for value in amounts] == [5, 60, 5100]
-    for tiers in ([{"above_prompt_tokens": 0, "classes": {}}], [{"above_prompt_tokens": 1.5, "classes": {}}],
-                  [{"above_prompt_tokens": 9, "classes": {}}, {"above_prompt_tokens": 9, "classes": {}}],
-                  [{"above_prompt_tokens": 9}], []):
+    good = {"input": 1}
+    for tiers in ([{"above_prompt_tokens": 0, "classes": good}], [{"above_prompt_tokens": 1.5, "classes": good}],
+                  [{"above_prompt_tokens": 9, "classes": good}, {"above_prompt_tokens": 9, "classes": good}],
+                  [{"above_prompt_tokens": 9}], [], None,
+                  # A tier's prices are checked like a pasted row's, so a bad shipped tier stops the report.
+                  [{"above_prompt_tokens": 9, "classes": {}}], [{"above_prompt_tokens": 9, "classes": {"input": "1"}}],
+                  [{"above_prompt_tokens": 9, "classes": {"input": -1}}],
+                  [{"above_prompt_tokens": 9, "classes": {"input": None}}]):
         path = tmp_path / "card.json"
         write_json(path, {"schema_version": 1, "rates": [{**entry, "prompt_tiers": tiers}]})
         with pytest.raises(cost.CostError, match="prompt"):
@@ -1582,8 +1587,11 @@ def test_guidance_names_each_vendor_page_entry_and_file(report_inputs):
     assert set(claude["entry"]["classes"]) == {"input", "cache_write_5m", "cache_write_1h", "cache_creation",
                                                "cache_read", "output"}
     assert set(codex["entry"]["classes"]) == {"input", "cached_input", "cache_write_input", "output"}
+    # With no file yet, every item offers the same new file holding both entries, so saving
+    # either one loses neither model.
+    whole = {"schema_version": 1, "rates": [claude["entry"], codex["entry"]]}
     for entry in (claude, codex):
-        assert entry["paste_into"] == target and entry["new_file"] == {"schema_version": 1, "rates": [entry["entry"]]}
+        assert entry["paste_into"] == target and entry["new_file"] == whole
         assert set(cost._RATE_FIELDS) <= set(entry["entry"])
         assert entry["uses"] == [{"dispatch_id": entry["vendor"] + "-run", "attempt_index": 0}]
         assert "prompt_tiers" in entry["instructions"] and "above_prompt_tokens" in entry["instructions"]
@@ -1647,8 +1655,10 @@ def test_a_shipped_price_wins_over_the_repository_entry_and_says_so(tmp_path):
     share = next(row for row in value["model_prices"] if row["model"] == "claude-opus-5-5")
     assert _seven(share["card_amount"]) == Decimal("2.9056922")
     assert result["repository_entries_now_shipped"] == [{
-        "vendor": "claude", "model": "claude-opus-5-5", "path": str(target),
-        "note": "the shipped card now prices this model for these uses; this repository entry can be removed"}]
+        "vendor": "claude", "model": "claude-opus-5-5", "effective_from": local["effective_from"],
+        "path": str(target),
+        "note": "the shipped card now prices this model over this entry's whole interval; "
+                "this repository entry can be removed"}]
 
 
 def test_the_report_writes_neither_price_file_and_survives_a_damaged_one(report_inputs):
@@ -1788,3 +1798,45 @@ def test_each_claude_placeholder_names_its_column_as_both_page_forms_show_it():
         assert markdown in classes[name] and f"shown as {rendered})" in classes[name], name
     assert classes["cache_creation"].startswith("FILL: the same price as cache_write_1h")
     assert "column" not in classes["cache_creation"]
+
+
+def test_a_repository_entry_is_called_removable_only_when_shipped_rows_cover_its_whole_interval():
+    # Deleting the entry loses every use the shipped card doesn't price, so one shared use is not enough.
+    shipped = deepcopy(next(row for row in SHIPPED if row["model"] == "claude-opus-5-5"))
+    shipped["effective_from"] = "2026-10-01T00:00:00Z"
+    local = deepcopy(shipped)
+    local.update(effective_from="2026-09-01T00:00:00Z", classes={name: 99 for name in shipped["classes"]})
+    card = cost._Card([shipped], [local], "repo/.tradecraft/rates.json")
+    before, after = (datetime.fromisoformat(when) for when in ("2026-09-15T00:00:00+00:00",
+                                                               "2026-10-15T00:00:00+00:00"))
+    assert card.lookup("claude", "claude-opus-5-5", before)[1] == "repository"
+    assert card.lookup("claude", "claude-opus-5-5", after)[1] == "shipped"
+    assert card.now_shipped() == []
+    earlier = {**shipped, "effective_from": "2026-08-01T00:00:00Z", "effective_to": "2026-10-01T00:00:00Z"}
+    covered = cost._Card([earlier, shipped], [local], "repo/.tradecraft/rates.json")
+    assert [entry["effective_from"] for entry in covered.now_shipped()] == ["2026-09-01T00:00:00Z"]
+    gap = {**earlier, "effective_to": "2026-09-20T00:00:00Z"}
+    assert cost._Card([gap, shipped], [local], "repo/.tradecraft/rates.json").now_shipped() == []
+
+
+@pytest.mark.parametrize("currency", [None, ""])
+def test_a_repository_entry_with_no_currency_is_named_and_unused(tmp_path, currency):
+    # A share priced from it would otherwise be reported as USD with no basis for the claim.
+    entry = fill(cost._entry_template("claude", "claude-unrated-9",
+                                      datetime.fromisoformat("2026-11-05T00:00:00+00:00")), 1)
+    entry["currency"] = currency
+    path = tmp_path / ".tradecraft" / "rates.json"
+    write_json(path, {"schema_version": 1, "rates": [entry]})
+    rows, status = cost.repository_rates(path)
+    assert rows == [] and status["rejected"] == [
+        {"model": "claude-unrated-9", "reason": "currency must be a nonempty string, such as USD"}]
+
+
+def test_a_repository_entry_with_null_prompt_tiers_is_named_and_unused(tmp_path):
+    entry = fill(cost._entry_template("claude", "claude-unrated-9",
+                                      datetime.fromisoformat("2026-11-05T00:00:00+00:00")), 1)
+    entry["prompt_tiers"] = None
+    path = tmp_path / ".tradecraft" / "rates.json"
+    write_json(path, {"schema_version": 1, "rates": [entry]})
+    rows, status = cost.repository_rates(path)
+    assert rows == [] and "prompt_tiers must be a nonempty list" in status["rejected"][0]["reason"]
