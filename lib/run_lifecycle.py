@@ -11,8 +11,11 @@ import os
 from pathlib import Path
 import socket
 import subprocess
-from seat_process import run_process
+import threading
 import time
+
+import preflight
+import seat_process
 
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
@@ -23,6 +26,31 @@ ELAPSED_CHECKPOINT_MARGIN_SECONDS = 10.0
 REPAIR_STAGES = frozenset({"floor", "review-disposition"})
 _DEADLINE = ContextVar("tradecraft_caller_deadline", default=None)
 _CLEANUP = ContextVar("tradecraft_recording_phase", default=False)
+
+
+class RunTimeout(TimeoutError):
+    """The run's own time ended; `limit` names the limit that ended it.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+
+    def __init__(self, message, deadline=None):
+        super().__init__(message)
+        self.limit = limit_phrase(deadline)
+
+
+def limit_phrase(deadline=None):
+    """Name the limit that ends this run, the one place a limit is named."""
+    deadline = deadline if deadline is not None else current_deadline()
+    if deadline is None:
+        return "no run limit is set"
+    stage = getattr(deadline, "stage", None)
+    if stage in REPAIR_STAGES and deadline.end < deadline.started + deadline.limit:
+        return f"the {stage} stage's {DEFAULT_STAGE_TIMEOUT_SECONDS:g}-second ceiling"
+    declared = getattr(deadline, "declared", None)
+    source = ("declared by --timeout-seconds" if declared else
+              "the stage's default" if declared is False else "the caller's limit")
+    return f"the {deadline.limit:g}-second limit ({source})"
 
 
 class Deadline:
@@ -40,7 +68,7 @@ class Deadline:
     def remaining(self, *, cleanup=False):
         remaining = self.end - time.monotonic() - (0 if cleanup else self.reserve)
         if remaining <= 0:
-            raise TimeoutError("caller limit leaves no useful launch window")
+            raise RunTimeout("caller limit leaves no useful launch window", self)
         return remaining
 
     def probe(self, default=20, *, cleanup=False):
@@ -50,9 +78,9 @@ class Deadline:
             # atomically completing the record still need time afterward.
             remaining -= self.reserve / 2
         if remaining <= 0:
-            raise TimeoutError("caller limit leaves no probe window before final recording")
+            raise RunTimeout("caller limit leaves no probe window before final recording", self)
         if cleanup and remaining <= self.probe_seconds:
-            raise TimeoutError("remaining cleanup window is shorter than an observed probe")
+            raise RunTimeout("remaining cleanup window is shorter than an observed probe", self)
         return min(default, remaining)
 
     def note_probe(self, started):
@@ -78,8 +106,9 @@ class Deadline:
         return self.wait_end - self.reserve / 8
 
 
-def stage_deadline(stage, caller_limit, *, started=None):
+def stage_deadline(stage, caller_limit, *, started=None, declared=None):
     deadline = Deadline(caller_limit, started=started)
+    deadline.stage, deadline.declared = stage, declared
     if stage in REPAIR_STAGES:
         deadline.end = min(deadline.end, deadline.started + DEFAULT_STAGE_TIMEOUT_SECONDS)
     return deadline
@@ -164,9 +193,8 @@ def process_identity(pid=None):
         except FileNotFoundError:
             if Path("/proc").is_dir():
                 raise ProcessLookupError(pid) from None
-            result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, timeout=1)
+            result = seat_process.run_read(["ps", "-p", str(pid), "-o", "lstart="],
+                                           cwd=None, timeout=1)
             if result.returncode == 1:
                 raise ProcessLookupError(pid)
             if result.returncode != 0 or not result.stdout.strip():
@@ -209,12 +237,8 @@ def content_snapshot(root, *, timeout=20):
         if allowance <= 0:
             raise TimeoutError("content snapshot deadline")
         command = ["git", "-C", str(root), *args]
-        if current_deadline() is None:
-            result = subprocess.run(command, stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=allowance)
-        else:
-            result = run_process(command, input=b"", cwd=Path.cwd(), timeout=allowance,
-                                 on_tick=lambda: None, cleanup_deadline=cleanup_deadline())
+        result = seat_process.run_read(command, input=b"", cwd=Path.cwd(), timeout=allowance,
+                                       cleanup_deadline=cleanup_deadline())
         if result.returncode:
             raise OSError("cannot read Git content snapshot: " + result.stderr.decode("utf-8", "replace"))
         return result.stdout
@@ -334,20 +358,189 @@ def runtime_account(bundles, *, root=None, branch=None, lineage=None):
             "runs": rows}
 
 
+def _json_copy(value):
+    """A JSON value's own copy; parsed JSON holds only dicts, lists and immutable scalars."""
+    if isinstance(value, dict):
+        return {key: _json_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_copy(item) for item in value]
+    return value
+
+
+def _signature(path):
+    try:
+        status = os.stat(path)
+    except OSError:
+        return None
+    return status.st_size, status.st_mtime_ns
+
+
+def _read_record(path):
+    """One record's signature, bytes (or the OSError) and one parse (or its failure)."""
+    # Taken before the read: a write racing the read then shows as a change at the next refresh.
+    signature = _signature(path)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return signature, exc, exc
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        value = exc
+    return signature, raw, value
+
+
+class _StoreRecords:
+    """One store root's records as this run read them, shared by every spelling of that root.
+
+    Paths are kept relative to the root so each caller's own spelling comes back to it.
+    """
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self._lock = threading.RLock()
+        self._requests = None  # relative paths in rglob order; None until listed
+        self._runs = None
+        self._stale = False
+        self._records = {}  # relative path -> (signature, raw, value)
+
+    def mark_stale(self):
+        with self._lock:
+            self._stale = True
+
+    def forget(self, relative):
+        with self._lock:
+            self._records.pop(relative, None)
+            self._stale = True  # A record the run wrote may be new to the listing too.
+
+    def _relative(self, paths):
+        return [path.relative_to(self.root) for path in paths]
+
+    def _listed(self):
+        """List on first use, and again after a refresh, rereading only what changed."""
+        if self._requests is not None and not self._stale:
+            return
+        if self._stale:
+            for relative, (signature, _raw, _value) in list(self._records.items()):
+                if _signature(self.root / relative) != signature:
+                    del self._records[relative]
+        self._requests = self._relative(self.root.rglob("*.request.json"))
+        self._runs = self._relative(self.root.rglob("*.run.json"))
+        self._stale = False
+
+    def _record(self, relative):
+        found = self._records.get(relative)
+        if found is None:
+            found = self._records[relative] = _read_record(self.root / relative)
+        return found
+
+    # The store is read to check what markers claim, so every read of it counts under markers,
+    # even one made while counting removals, and the store's cost stays in one part.
+    def requests(self):
+        with self._lock, preflight.part("markers"):
+            self._listed()
+            return [(relative, *self._record(relative)[1:]) for relative in self._requests]
+
+    def listing(self):
+        with self._lock, preflight.part("markers"):
+            self._listed()
+            return list(self._requests), list(self._runs)
+
+    def lookup(self, relative):
+        with self._lock, preflight.part("markers"):
+            self._listed()
+            return self._record(relative)[1:]
+
+
+class StoreIndex:
+    """The dispatch store as this run reads it: each request record once, each selected run once.
+
+    Records come back as copies, so a reader that changes one cannot change what another sees.
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+
+    def __init__(self, records, root):
+        self._records = records
+        self.root = Path(root)
+
+    def _relative(self, path):
+        path = Path(path)
+        try:
+            return path.relative_to(self.root)
+        except ValueError:
+            return path.resolve().relative_to(self._records.root.resolve())
+
+    def requests(self, where=None):
+        """`(path, raw, value)` per request record in rglob order; `where` sees the shared value and must not change it."""
+        with preflight.part("markers"):
+            return [(self.root / relative, raw, value if isinstance(value, Exception) else _json_copy(value))
+                    for relative, raw, value in self._records.requests()
+                    if where is None or where(value)]
+
+    def requests_listing(self):
+        return [self.root / relative for relative in self._records.listing()[0]]
+
+    def runs_listing(self):
+        return [self.root / relative for relative in self._records.listing()[1]]
+
+    def run(self, path):
+        """`(raw, value)` for one record, read at most once until it changes or is forgotten."""
+        with preflight.part("markers"):
+            raw, value = self._records.lookup(self._relative(path))
+            return raw, value if isinstance(value, Exception) else _json_copy(value)
+
+    def mark_stale(self):
+        self._records.mark_stale()
+
+    def forget(self, path):
+        self._records.forget(self._relative(path))
+
+
+def store_index(store):
+    """The open run's index of `store`, or None outside a run or when the store is not a directory."""
+    opened = preflight.current()
+    if opened is None or store is None or not Path(store).is_dir():
+        return None
+    root = Path(store)
+    return StoreIndex(opened.index(root, lambda: _StoreRecords(root)), root)
+
+
 def launch_bundles(store, work, stages, *, after=None, exact_work=False, include_missing_stage=False):
     """Discover requests first so an unfinished newest attempt cannot disappear."""
     bundles = {}
     if not Path(store).is_dir():
         return []
-    for path in Path(store).rglob("*.request.json"):
-        try:
-            request = json.loads(path.read_bytes())
-        except (OSError, ValueError):
-            continue  # No attribution can be established.
+
+    def wanted(request):
         attributed = (request.get("work") == work if exact_work else
                       str(request.get("work", "")).lower() == work.lower()) if isinstance(request, dict) else False
-        if not attributed or (request.get("stage") not in stages
-                              and not (include_missing_stage and not request.get("stage"))):
+        return attributed and (request.get("stage") in stages
+                               or (include_missing_stage and not request.get("stage")))
+
+    index = store_index(store)
+    if index is None:
+        def requests():
+            for path in Path(store).rglob("*.request.json"):
+                try:
+                    yield path, json.loads(path.read_bytes())
+                except (OSError, ValueError):
+                    continue  # No attribution can be established.
+
+        def read_run(run_path):
+            try:
+                return json.loads(run_path.read_bytes())
+            except (OSError, ValueError):
+                return None
+    else:
+        # Only attributed requests are copied; a failed parse is never attributed.
+        def requests():
+            return ((path, value) for path, _raw, value in index.requests(where=wanted))
+
+        def read_run(run_path):
+            value = index.run(run_path)[1]
+            return None if isinstance(value, Exception) else value
+    for path, request in requests():
+        if not wanted(request):
             continue
         stamp = request.get("launched_at") or request.get("started_at")
         try:
@@ -361,9 +554,8 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False, include
         if after is not None and order <= datetime.fromisoformat(after.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat():
             continue
         run_path = path.with_name(path.name.removesuffix(".request.json") + ".run.json")
-        try:
-            run = json.loads(run_path.read_bytes())
-        except (OSError, ValueError):
+        run = read_run(run_path)
+        if run is None:
             run = {"recovery_error": "run record missing or unreadable"}
         if not isinstance(run, dict):
             run = {"recovery_error": "run record is not an object"}

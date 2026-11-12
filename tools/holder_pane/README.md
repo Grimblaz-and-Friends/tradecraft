@@ -83,7 +83,7 @@ The marketplace is a folder with a relative source, so sessions read the plugin 
 - **What the pane never reads.** Posts the command text doesn't show (from inside a script, comment edits by id, review comments) and shell body forms beyond those above (a PowerShell here-string, nested substitutions) aren't recognised; they leave the step owed, or unreadable, until the next read. None of this reaches GitHub, writes anywhere but the pane's own state, or starts a turn: the only GitHub reads are still the floored entrance read's.
 - **The reminder** gives the holder one line, `next: <step> (yours)`, before it ends a turn whose next step is its own, once per distinct step, never twice in a row and never starting a turn.
 
-**Decisions in force:** the pane works out the holder's own steps from its commands and local files, and the release report alone needs its title line; a posted report ends only on a new head, another stage decided, or new dispatched work; a restart binds by session id ([D-976](../../docs/architecture/decisions/D-976-2026-11-07-the-holder-pane-works-out-the-holders-own-steps.md)).
+**Decisions in force:** the pane works out the holder's own steps from its commands and local files, and the release report alone needs its title line; a posted report ends only on a new head, another stage decided, new dispatched work, or a `--delete-last` on the change's pull request or issue; a restart binds by session id ([D-976](../../docs/architecture/decisions/D-976-2026-11-07-the-holder-pane-works-out-the-holders-own-steps.md)).
 
 ## The status file
 

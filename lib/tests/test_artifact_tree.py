@@ -81,14 +81,14 @@ def test_source_probes_retry_dubious_ownership_with_only_scoped_trust(tmp_path, 
         holder = target
     git_dir = Path(git(holder, "rev-parse", "--absolute-git-dir").stdout.decode().strip()).resolve()
     commit = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
-    original = trees.run_process
+    original = trees.run_read
     commands = []
     def different_owner(command, **kwargs):
         if command[0] == "git" and command[command.index("-C") + 1] == str(holder):
             kwargs["env"] = {**kwargs["env"], "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
             commands.append(command)
         return original(command, **kwargs)
-    monkeypatch.setattr(trees, "run_process", different_owner)
+    monkeypatch.setattr(trees, "run_read", different_owner)
     # Negative control establishes the real Git ownership refusal being repaired.
     with pytest.raises(trees.ArtifactTreeError, match="dubious ownership"):
         trees.git(holder, "rev-parse", "--show-toplevel")
@@ -251,11 +251,11 @@ def test_retained_unborn_head_keeps_staged_draft_without_database_walk(tmp_path,
         (root / "draft").write_bytes(b"staged-only author draft")
         trees.git(root, "add", "draft")
     before = git(root, "ls-files", "--stage").stdout
-    commands, original = [], trees.run_process
+    commands, original = [], trees.run_read
     def captured(command, **kwargs):
         commands.append(command)
         return original(command, **kwargs)
-    monkeypatch.setattr(trees, "run_process", captured)
+    monkeypatch.setattr(trees, "run_read", captured)
     try:
         assert trees.retained_recovery(copy) is None
         assert git(root, "ls-files", "--stage").stdout == before
@@ -344,7 +344,7 @@ def test_git_failures_are_structured_and_take_stage_remaining_time(tmp_path, mon
         if failure == "spawn":
             raise OSError("Git launch refused")
         raise subprocess.CalledProcessError(2, command)
-    monkeypatch.setattr(trees, "run_process", failed)
+    monkeypatch.setattr(trees, "run_read", failed)
     with lifecycle.deadline_scope(lifecycle.Deadline(900)):
         with pytest.raises(trees.ArtifactTreeError, match="Git.*(failed|deadline)"):
             trees.git(tmp_path, "checkout", "--detach", "HEAD")
@@ -516,7 +516,7 @@ def test_git_copy_operations_obey_caller_deadline_and_clear_config_binding(tmp_p
     def captured(command, **kwargs):
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, b"done", b"")
-    monkeypatch.setattr(trees, "run_process", captured)
+    monkeypatch.setattr(trees, "run_read", captured)
     with lifecycle.deadline_scope(lifecycle.Deadline(30)):
         assert trees.git(tmp_path, "clone", "source", "copy") == "done"
     assert 0 < calls[0][1]["timeout"] <= 20
@@ -525,7 +525,7 @@ def test_git_copy_operations_obey_caller_deadline_and_clear_config_binding(tmp_p
 
 def test_unproved_clone_process_stop_retains_partial_copy_without_launch(tmp_path, monkeypatch, capsys):
     holder = repository(tmp_path)
-    original = trees.run_process
+    original = trees.run_read
     output = tmp_path / "bundle/result.md"
     def unproved(command, **kwargs):
         if "clone" in command:
@@ -534,7 +534,7 @@ def test_unproved_clone_process_stop_retains_partial_copy_without_launch(tmp_pat
             return result
         return original(command, **kwargs)
     with monkeypatch.context() as m:
-        m.setattr(trees, "run_process", unproved)
+        m.setattr(trees, "run_read", unproved)
         with pytest.raises(trees.ArtifactTreeError, match="cleanup is unproved"):
             with trees.checkout(holder, output, work="fixture#1", instalment=None, holder_session_id="holder"):
                 pytest.fail("unproved clone launched an author")

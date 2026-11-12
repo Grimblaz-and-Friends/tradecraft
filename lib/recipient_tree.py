@@ -15,6 +15,8 @@ import subprocess
 import tarfile
 import tempfile
 
+from seat_process import run_read
+
 
 class RecipientTreeError(RuntimeError):
     """A recipient tree cannot be proved against its committed source."""
@@ -85,17 +87,19 @@ def write_record(record: Path, content: bytes) -> None:
         raise
 
 
+# Building the tree writes with these. Like every Git command here they take the contained
+# route, so a hung one is stopped with what it started; a write is judged by its exit status.
+GIT_WRITES = frozenset({"init", "config", "add", "update-index", "commit", "checkout"})
+
+
 def _run(command: list[str], *, cwd: Path | None = None,
-         input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        command, cwd=cwd, input=input_bytes, stdin=(None if input_bytes is not None
-                                                     else subprocess.DEVNULL),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
-    )
+         input_bytes: bytes | None = None, writes: bool = False) -> subprocess.CompletedProcess[bytes]:
+    return run_read(command, cwd=cwd, input=input_bytes or b"", timeout=120, writes=writes)
 
 
 def _git(root: Path, *arguments: str, input_bytes: bytes | None = None) -> bytes:
-    result = _run(["git", "-C", str(root), *arguments], input_bytes=input_bytes)
+    result = _run(["git", "-C", str(root), *arguments], input_bytes=input_bytes,
+                  writes=bool(arguments) and arguments[0] in GIT_WRITES)
     if result.returncode:
         diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
         raise RecipientTreeError(

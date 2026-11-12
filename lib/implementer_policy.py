@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 
 import launch_bound
-from seat_process import run_process
+import preflight
+from seat_process import run_read
 
 TRADECRAFT_ID = "tradecraft@tradecraft"
 HOMEPAGE = "https://github.com/Grimblaz-and-Friends/tradecraft"
@@ -48,9 +49,11 @@ def verified_root(root):
 
 
 def discover(vendor, executable, cwd, deadline, *, env=None):
-    result = run_process([*executable, "plugin", "list", "--json"], input=b"", cwd=cwd,
-                         timeout=deadline.probe(DISCOVERY_PROBE_SECONDS), env=env,
-                         cleanup_deadline=deadline.cleanup_end)
+    # The plugin list is the vendor program starting, so its time is the vendor's.
+    with preflight.part("vendor"):
+        result = run_read([*executable, "plugin", "list", "--json"], cwd=cwd,
+                          timeout=deadline.probe(DISCOVERY_PROBE_SECONDS), env=env,
+                          cleanup_deadline=deadline.cleanup_end)
     if result.returncode:
         raise PreparationError(f"{vendor} plugin discovery exited {result.returncode}: " + result.stderr.decode("utf-8", "replace")[:1000])
     try:

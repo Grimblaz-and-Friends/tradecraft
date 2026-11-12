@@ -27,7 +27,7 @@ import time
 
 from holder_tree_guard import contains, path_key
 import run_lifecycle as lifecycle
-from seat_process import run_process
+from seat_process import run_read
 from tree_write_guard import (BUILTIN_SAFE_TYPES, WORKTREE_TOOLS, Refusal, agent_definitions,
                               logged_raw)
 
@@ -199,10 +199,10 @@ def prepare_guard(temporary: Path, root: Path, session: str, env: dict[str, str]
         payload = {"tool_name": tool, "tool_use_id": f"self-test-{label}",
                    "tool_input": tool_input, "cwd": str(root)}
         try:
-            result = run_process([sys.executable, str(GUARD), "--config", str(test_config_path)],
-                                 input=json.dumps(payload).encode("utf-8"), cwd=Path(root),
-                                 timeout=deadline.probe() if deadline else 20, env=env,
-                                 cleanup_deadline=deadline.cleanup_end if deadline else None)
+            result = run_read([sys.executable, str(GUARD), "--config", str(test_config_path)],
+                              input=json.dumps(payload).encode("utf-8"), cwd=Path(root),
+                              timeout=deadline.probe() if deadline else 20, env=env,
+                              cleanup_deadline=deadline.cleanup_end if deadline else None)
         except (OSError, subprocess.TimeoutExpired, TimeoutError) as exc:
             raise BoundError(f"write guard self-test could not run: {exc}") from exc
         observed = "deny" if b'"permissionDecision":"deny"' in result.stdout else "allow"
@@ -332,9 +332,9 @@ def _registry_rows(path: Path) -> list[dict] | None:
 
 def _git_lines(root: Path, *arguments: str) -> list[str]:
     try:
-        result = run_process(["git", "-C", str(root), *arguments], input=b"", cwd=Path(root),
-                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None,
-                             cleanup_deadline=lifecycle.cleanup_deadline())
+        result = run_read(["git", "-C", str(root), *arguments], cwd=Path(root),
+                          timeout=lifecycle.probe_timeout(),
+                          cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return []
     if result.returncode:
@@ -847,9 +847,8 @@ DIRECTORY_FORMS = re.compile(
 def _git_run(path: Path, timeout: float, *arguments: str):
     # The C locale keeps git's messages in English, which refs_plan reads.
     env = {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
-    return run_process(["git", "-C", str(path), *arguments], input=b"", cwd=Path(path),
-                       timeout=timeout, on_tick=lambda: None, env=env,
-                       cleanup_deadline=lifecycle.cleanup_deadline())
+    return run_read(["git", "-C", str(path), *arguments], cwd=Path(path),
+                    timeout=timeout, env=env, cleanup_deadline=lifecycle.cleanup_deadline())
 
 
 def refs_plan(root: Path, checkouts: list[Path]) -> list[dict[str, str]]:
