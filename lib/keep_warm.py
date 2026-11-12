@@ -50,7 +50,8 @@ DEFAULT_CAP_HOURS = 8
 # The largest cap the machine setting accepts: every late resume in the record
 # came within a day, so pings past it buy nothing.
 MAX_CAP_HOURS = 24
-# A ping still running then is killed and recorded failed.
+# A ping still running then is killed and recorded failed, because a stuck ping
+# must not hold the session's lock against its next real turn.
 PING_TIMEOUT_SECONDS = 300
 # A first call that read nothing paid for the whole conversation, so it is a
 # miss whatever it wrote. Otherwise the allowance absorbs the one-time write at
@@ -86,6 +87,8 @@ UNREADABLE_RETRY_SECONDS = 60
 # A starter that never produced a runner process is gone after this long.
 START_GRACE_SECONDS = 300
 CLEANUP_DAYS = 7
+# Names the generation release stopped, so its runner records a release, not a launch.
+RELEASED = "released"
 CREATE_NO_WINDOW = 0x08000000
 # Whether what keep-warm starts must be windowless Windows processes; one
 # name, so the rule is tested on every platform.
@@ -395,6 +398,8 @@ def _write_spec(turn: dict, cap: float) -> Path | None:
         fault(work, "start", "the launch changed variables outside its own set: " + ", ".join(other),
               session=session, group=group)
         return None
+    if isinstance(turn.get("settings_bytes"), str):
+        raise KeepWarmError(turn["settings_bytes"])
     if not turn.get("command") or not turn.get("settings_bytes"):
         raise KeepWarmError("turn has no recorded command or prepared settings")
     prepared = json.loads(turn["settings_bytes"])
@@ -436,6 +441,7 @@ def _write_spec(turn: dict, cap: float) -> Path | None:
              "group": group, "session": session, "created_at": _now(), "process": None,
              "pings": 0, "last_call_at": spec["last_call_at"], "ended": None}
     _write_json(directory / "state.json", state)
+    (directory / RELEASED).unlink(missing_ok=True)
     _write_json(directory / "spec.json", spec)
     if turn.get("starter") == "entrance":
         (directory / "start.pending").write_bytes(str(turn.get("start_token") or "").encode("ascii"))
@@ -534,6 +540,36 @@ def start_pending(token: str, env: dict[str, str] | None = None, *, spawner=None
         pass  # A keep-warm fault never changes the entrance's result.
 
 
+def discard_pending(token: str) -> None:
+    """A launch the entrance could not see finish starts no runner; its pending start is ended.
+
+    Its run record may be unfinished, so the session is not known to be
+    resumable, and a ping must not chase it; never raises.
+    """
+    try:
+        if not token or not state_root().is_dir():
+            return
+        for marker in state_root().glob("*/start.pending"):
+            try:
+                if marker.read_bytes().decode("ascii") != token:
+                    continue
+            except (OSError, UnicodeError):
+                continue
+            directory = marker.parent
+            spec = _read_json(directory / "spec.json") or {}
+            (directory / "spec.json").unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+            state = _read_json(directory / "state.json") or {}
+            if state.get("generation") == spec.get("generation") and not state.get("ended"):
+                state["ended"] = {"reason": "launch-unfinished", "at": _now()}
+                _write_json(directory / "state.json", state)
+            append_row(spec.get("work"), "end", {"session": spec.get("session"), "group": spec.get("group"),
+                                                   "generation": spec.get("generation"),
+                                                   "reason": "launch-unfinished", "pings": 0})
+    except Exception:
+        pass  # A keep-warm fault never changes the entrance's result.
+
+
 # --- Stop, at the next launch, and release -------------------------------
 
 def _states():
@@ -569,7 +605,7 @@ def mark_gone(directory: Path) -> bool:
 
 
 @contextmanager
-def stop_for_launch(work: str, stage: str, resume: str | None):
+def stop_for_launch(work: str, stage: str, resume: str | None, *, wait_seconds: float | None = None):
     """Drop the work's waiting sessions in this stage group; hold a resumed session's ping lock.
 
     It runs at the launcher's start, before any route or vendor split, so a
@@ -593,7 +629,10 @@ def stop_for_launch(work: str, stage: str, resume: str | None):
         yield
         return
     try:
-        lock = session_lock(directory / "ping.lock", timeout=PING_TIMEOUT_SECONDS + 60)
+        limit = PING_TIMEOUT_SECONDS + 60
+        if wait_seconds is not None:
+            limit = max(0.0, min(limit, wait_seconds))
+        lock = session_lock(directory / "ping.lock", timeout=limit)
         lock.__enter__()
     except Exception as exc:
         fault(work, "lock", f"a ping still held the lock: {exc}" if isinstance(exc, LockBusy)
@@ -607,11 +646,12 @@ def stop_for_launch(work: str, stage: str, resume: str | None):
 
 
 def drop_work(work: str) -> None:
-    """A released change stops at once: its sleeping runners end at their next step."""
+    """A released change's waiting sessions get no further ping; each runner ends `released` at its next step."""
     try:
         for directory in list(_states()):
             spec = _read_json(directory / "spec.json")
             if spec and str(spec.get("work")).casefold() == work.casefold():
+                (directory / RELEASED).write_bytes(str(spec.get("generation") or "").encode("ascii"))
                 (directory / "spec.json").unlink(missing_ok=True)
                 (directory / "start.pending").unlink(missing_ok=True)
     except Exception as exc:
@@ -854,7 +894,11 @@ class Runner:
     def _spec_changed(self) -> str | None:
         current = _read_json(self.directory / "spec.json")
         if current is None:
-            return "stopped-by-launch"
+            try:
+                released = (self.directory / RELEASED).read_bytes().decode("ascii") == self.generation
+            except (OSError, UnicodeError):
+                released = False
+            return "released" if released else "stopped-by-launch"
         if current.get("generation") != self.generation:
             return "superseded"
         return None

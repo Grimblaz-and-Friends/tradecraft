@@ -358,7 +358,12 @@ def test_ac11_release_stops_a_sleeping_runner_without_a_ping(home, tmp_path):
     clock = Clock()
     clock.hooks.append(lambda c: c.now > T0 + 600 and keep_warm.drop_work("Owner/Repo#5"))
     run, pings = runner(directory, clock)
-    assert run.run() == "stopped-by-launch" and pings == []
+    # The record names the release, not a launch.
+    assert run.run() == "released" and pings == []
+    assert rows(home, "end")[-1]["reason"] == "released"
+    # A later turn's spec clears the release, so its own runner is not read as released.
+    fresh = keep_warm.after_turn(turn(home, tmp_path))
+    assert not (fresh / keep_warm.RELEASED).exists()
 
 
 def test_ac12_a_real_turn_restarts_the_count(home, tmp_path):
@@ -464,7 +469,8 @@ def test_ac17_a_recorded_fault_changes_no_decision(home, tmp_path):
     source = Path(work.__file__).read_text(encoding="utf-8")
     assert "keep-warm.jsonl" not in source
     assert [line.strip() for line in source.splitlines() if "keep_warm." in line] == [
-        "keep_warm.drop_work(f\"{repo}#{issue}\")", "keep_warm.start_pending(keep_warm_token)"]
+        "keep_warm.drop_work(f\"{repo}#{issue}\")", "keep_warm.discard_pending(keep_warm_token)",
+        "keep_warm.start_pending(keep_warm_token)"]
 
 
 def test_ac18_a_launch_waits_for_a_ping_in_flight(home, tmp_path):
@@ -786,3 +792,48 @@ def test_status_lists_waiting_sessions(home, tmp_path):
     listed = keep_warm.status(WORK)
     assert [entry["session"] for entry in listed] == [SESSION] and listed[0]["waiting"]
     assert keep_warm.status("owner/repo#6") == []
+
+
+def test_discarded_pending_start_is_ended_and_never_read_as_gone(home, tmp_path):
+    """A launch the entrance could not see finish leaves no pending start and starts no runner."""
+    directory = keep_warm.after_turn(turn(home, tmp_path, starter="entrance", start_token="tok"))
+    assert (directory / "start.pending").exists()
+    started = []
+    keep_warm.discard_pending("other")
+    assert (directory / "start.pending").exists()
+    keep_warm.discard_pending("tok")
+    assert not (directory / "start.pending").exists() and not (directory / "spec.json").exists()
+    keep_warm.start_pending("tok", spawner=lambda *a: started.append(a))
+    assert started == []
+    assert [row["reason"] for row in rows(home, "end")] == ["launch-unfinished"]
+    keep_warm.status()
+    assert [row["reason"] for row in rows(home, "end")] == ["launch-unfinished"]
+
+
+def test_the_lock_wait_is_bounded_by_the_launchs_deadline(home, tmp_path):
+    """A ping in flight is waited for only within what the launch's own deadline leaves."""
+    directory = keep_warm.after_turn(turn(home, tmp_path))
+    with keep_warm.session_lock(directory / "ping.lock"):
+        started = time.monotonic()
+        with keep_warm.stop_for_launch(WORK, "build", SESSION, wait_seconds=0.3):
+            waited = time.monotonic() - started
+    assert waited < 5
+    assert "a ping still held the lock" in rows(home, "fault")[-1]["reason"]
+
+
+def test_an_unreadable_prepared_settings_file_is_a_keep_warm_fault_not_a_failed_launch(claude, monkeypatch):
+    """Row 3: the settings read only keep-warm needs can never fail the launch's preparation."""
+    args, home, spawned = claude
+    real = Path.read_bytes
+
+    def refuse(self):
+        if self.name == "claude-settings.json":
+            raise PermissionError("forced: settings unreadable")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+    assert implementer.run_implementer(args) == 0
+    run = json.loads(real(implementer.records.sidecar(args.output, ".run.json")))
+    assert run["outcome"] == "success"
+    assert spawned == [] and not (home / ".tradecraft" / "keep-warm" / SESSION / "spec.json").exists()
+    assert "forced: settings unreadable" in rows(home, "fault")[-1]["reason"]
+

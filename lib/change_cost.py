@@ -1164,7 +1164,6 @@ def _reloads(items: list[_Attempt], keep_rows: list[dict]) -> tuple[list, list, 
                         "last_end_reason": ends[-1].get("reason") if ends else None})
     scope = {"basis": "local resumed Claude attempts whose first call wrote more cache than it read",
              "cloud_attempts_excluded": cloud,
-             # A cloud turn runs in a remote session; this machine holds no per-call log for it.
              "cloud_reason": "a cloud attempt's calls are not logged on this machine"}
     return reloads, unreadable, scope
 

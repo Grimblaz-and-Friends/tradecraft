@@ -112,8 +112,6 @@ HOLDER_WAITING_PREFIXES: dict[str, str] = {
 FINAL_STAGES = frozenset({"terminal"})
 
 STEWARD = "steward"
-# The keep-warm mod's state directory override; its turn is no time to remind.
-KEEP_WARM_STATE_ENV = "KEEP_WARM_LAB_STATE_DIR"
 RECORD_SEARCH_SECONDS = 600
 RENAME_OFF = "rename off: the app's session records weren't found"
 RENAMING_SOURCES = frozenset({"auto", "tool"})
@@ -2261,29 +2259,12 @@ def _strings(value: Any) -> set[str]:
     return set()
 
 
-def keep_warm_turn_open(ctx: Ctx, session_id: str) -> bool:
-    """Whether the lab's keep-warm mod has a turn open in this session (tools/keep_warm).
-
-    Its state directory is resolved as that mod's core resolves it, less the flag only
-    the mod passes: KEEP_WARM_LAB_STATE_DIR, else `~/.tradecraft-lab/keep-warm`.
-    """
-    configured = ctx.environ.get(KEEP_WARM_STATE_ENV)
-    base = Path(configured).expanduser() if configured else (
-        ctx.home / ".tradecraft-lab" / "keep-warm")
-    state = _read_json(base / "sessions" / f"{_safe(session_id)}.json")
-    return isinstance(state, dict) and state.get("turn_open") is True
-
-
 def remind(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = str(payload["session_id"])
     binding = load_binding(ctx, session_id)
     if binding is None:
         return {"block": None}
     if payload.get("stop_hook_active"):
-        return {"block": None}
-    if keep_warm_turn_open(ctx, session_id):
-        # A keep-warm turn is answered in one word with no tool; a reminder would ask for
-        # tool use, and it stays owed, unspent, for the holder's next real turn.
         return {"block": None}
     state = load_session(ctx, session_id)
     background = state.get("background")

@@ -53,7 +53,7 @@ Each key wakes the Steward once: after the mod submits a trigger's turn it recor
 
 ## The handover
 
-The mod tracks, in memory, whether a turn is running, when the last one ended, the last Stop event's background tasks and crons, the subagents' statuses, and when the owner last spoke. Every prompt's origin goes through `origin-is-owner --record`, which appends the kind, the time and the verdict (no text) to `origins.log`. Only `plugin`, `peer`, `peer-send-message`, `task-notification`, `scheduled-trigger`, `projects-relay`, `coordinator`, `observer` and `observer-activity` are not the owner; every other kind counts as him, so an unsure guard delays a handover rather than firing one. A mod load also counts as the owner having just spoken. A turn opening `[tradecraft keep-warm]` is the lab's desktop keep-warm mod (`tools/keep_warm/README.md`), not the owner, so it never counts as him having spoken: answer it with one word and no tool.
+The mod tracks, in memory, whether a turn is running, when the last one ended, the last Stop event's background tasks and crons, the subagents' statuses, and when the owner last spoke. Every prompt's origin goes through `origin-is-owner --record`, which appends the kind, the time and the verdict (no text) to `origins.log`. Only `plugin`, `peer`, `peer-send-message`, `task-notification`, `scheduled-trigger`, `projects-relay`, `coordinator`, `observer` and `observer-activity` are not the owner; every other kind counts as him, so an unsure guard delays a handover rather than firing one. A mod load also counts as the owner having just spoken.
 
 **The gate** (`handover-due`) opens only when all of these hold: context above 250,000 tokens; no turn running; 60 seconds since the last turn ended with none started since; no background task, cron or busy subagent; an hour since the owner last spoke; and no `handover-disabled` file. When it is waiting on anything but size, the status line names what.
 
@@ -122,7 +122,7 @@ Then, with the default state directory and no probe variable set:
 
 1. With tradecraft's main checkout as the working directory: `claude plugin uninstall steward-wake@tradecraft-lab --scope local`. This removes the `enabledPlugins` entry Install added to `<main checkout>/.claude/settings.local.json`.
 2. `claude plugin marketplace remove tradecraft-lab`
-3. Remove `env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` from `<main checkout>/.claude/settings.local.json` only if Install's step 8 record says the key was not there before, and no `holder-pane@…` or `keep-warm@…` entry in that file's `enabledPlugins` is still enabled, because the pane's and the desktop keep-warm's installers write the same key. Drop `env` if that leaves it empty. Otherwise leave the key where it is.
+3. Remove `env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` from `<main checkout>/.claude/settings.local.json` only if Install's step 8 record says the key was not there before, and no `holder-pane@…` entry in that file's `enabledPlugins` is still enabled, because the pane's installer writes the same key. Drop `env` if that leaves it empty. Otherwise leave the key where it is.
 4. Ask the owner to restart the Steward's session.
 5. `python tools/steward_watch.py cover-task --unregister`, which also removes the cover's registration record.
 6. Close the alert issue.

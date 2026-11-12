@@ -12783,7 +12783,7 @@ def test_938_a_missing_or_malformed_reply_block_names_the_step_with_its_fault(tm
     assert decision.stage == "cloud-replies" and "can't be read" in decision.detail
 
 
-def _keep_warm_floor_launch(tmp_path, monkeypatch, plant):
+def _keep_warm_floor_launch(tmp_path, monkeypatch, plant, *, raise_launch=False):
     home = tmp_path / "home"
     (home / ".tradecraft").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -12803,10 +12803,18 @@ def _keep_warm_floor_launch(tmp_path, monkeypatch, plant):
     def capture(command, *args, **kwargs):
         if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
             launches.append((command, (waiting / "spec.json").exists()))
+            if raise_launch:
+                raise subprocess.TimeoutExpired(command, 1)
             return subprocess.CompletedProcess(command, 0)
         return subprocess.CompletedProcess(command, 0, b"", b"")
     monkeypatch.setattr(work, "_recipient_run", capture)
     monkeypatch.setattr(work.keep_warm, "start_pending", lambda token, *a, **k: started.append(token))
+    monkeypatch.setattr(work.keep_warm, "discard_pending", lambda token: started.append("discard:" + token))
+    if raise_launch:
+        with pytest.raises(work.WorkError):
+            work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"), root, None,
+                               "holder", floor_command="python fixture-check.py")
+        return launches, started
     assert work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"), root, None,
                               "holder", floor_command="python fixture-check.py") == 0
     return launches, started
@@ -12864,3 +12872,11 @@ def test_983_ac17_a_recorded_keep_warm_fault_changes_no_decision(tmp_path, monke
         {"work": f"{fixture.repo}#{fixture.issue_number}", "group": "build", "generation": "g"}))
     assert work.keep_warm.record_path(fixture.repo, fixture.issue_number).read_text().count('"fault"') == 1
     assert reported()[0] == without
+
+
+def test_983_a_launch_that_raises_discards_its_pending_keep_warm(tmp_path, monkeypatch):
+    """A launch the entrance could not see finish starts no keep-warm runner, and its pending start is cleared."""
+    launches, started = _keep_warm_floor_launch(tmp_path, monkeypatch, False, raise_launch=True)
+    (command, _present), = launches
+    assert started == ["discard:" + command[command.index("--keep-warm-token") + 1]]
+

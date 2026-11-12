@@ -179,7 +179,21 @@ def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path,
     raise ImplementerError("cannot write the launch's instruction file: " + "; ".join(errors))
 
 
+def _keep_warm_settings(path: Path) -> bytes | str:
+    """The prepared settings a ping reuses, or why they can't be read.
+
+    Only keep-warm needs them, so a failed read is a keep-warm fault at the
+    turn's end and never a failed preparation of the launch.
+    """
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        return f"cannot read the prepared settings {path}: {exc}"
+
+
 def _shim_record(shim: Path | None) -> dict[str, str] | None:
+    # An unreadable instruction file must never change the launch, so keep-warm
+    # goes without it; the ping then misses only that file, not the cached conversation.
     if shim is None:
         return None
     try:
@@ -575,7 +589,13 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     if held is not None:
         # Before any route or vendor split, so any launch replacing a waiting
         # session ends its keep-warm. Design: lib/DESIGN.md#keeping-a-waiting-session-warm
-        held.enter_context(keep_warm.stop_for_launch(args.work, args.stage, args.resume))
+        try:
+            # A ping in flight is waited for only within what the launch's own deadline leaves.
+            wait = deadline.remaining()
+        except TimeoutError:
+            wait = 0.0
+        held.enter_context(keep_warm.stop_for_launch(args.work, args.stage, args.resume,
+                                                     wait_seconds=wait))
     if args.vendor == "claude":
         route = _cloud_route(args)
         if route is not None:
@@ -648,7 +668,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                             Path(__file__).resolve().parent.parent, env=child_env,
                             write_guard={"root": root, "session": args.resume or args.session_id})
                         args.launch_settings_path = intent["settings_path"]
-                        prepared_settings = Path(intent["settings_path"]).read_bytes()
+                        prepared_settings = _keep_warm_settings(Path(intent["settings_path"]))
                     else:
                         intent = policy.codex_prepare(executable, root, deadline, env=child_env)
                         config = native_codex.read_config(build_command(args, executable, last_message),

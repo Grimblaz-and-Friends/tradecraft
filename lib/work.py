@@ -10034,7 +10034,12 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 setting_resolution.print_plan(launch_plan, label="work")
                 if artifact_run:
                     invoked["value"] = True
-                result = _invoke_recipient(command, deadline)
+                try:
+                    result = _invoke_recipient(command, deadline)
+                except BaseException:
+                    # A launch the entrance couldn't see finish starts no keep-warm.
+                    keep_warm.discard_pending(keep_warm_token)
+                    raise
                 keep_warm.start_pending(keep_warm_token)
                 _emit_report({"stage": decision.stage, "implementer_returned": True}, state, flush=True)
                 return result
