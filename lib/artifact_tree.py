@@ -16,7 +16,7 @@ import uuid
 
 import dispatch_record as records
 import run_lifecycle as lifecycle
-from seat_process import run_process
+from seat_process import run_process, run_read
 from winio import utf8_stdio
 
 MECHANISM_VERSION = "0.188.0"
@@ -83,9 +83,8 @@ def git(root, *args, trust=(), lazy_fetch=False):
     if lazy_fetch:
         env["GIT_NO_LAZY_FETCH"] = "0"
     try:
-        result = run_process(command, input=b"", cwd=Path.cwd(), env=env,
-                             timeout=_remaining(), on_tick=lambda: None,
-                             cleanup_deadline=lifecycle.cleanup_deadline())
+        result = run_read(command, cwd=Path.cwd(), env=env, timeout=_remaining(),
+                          cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.SubprocessError) as exc:
         error = ArtifactTreeError(f"artifact Git {args[0] if args else 'probe'} failed at {root}: {exc}")
         error.cleanup_proven = getattr(exc, "cleanup_proven", True)

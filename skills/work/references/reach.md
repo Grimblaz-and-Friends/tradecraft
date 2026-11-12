@@ -73,3 +73,5 @@ Unread flags or unsettled historical uncertainty prevent recommendations for rea
 Every composed builder stage carries this instruction. Carry it yourself when composing a custom builder dispatch; supplied dispatches remain byte-for-byte:
 
 > Remove or rewrite existing content only where a governing row or criterion requires it; keep the rest, and name in your return any additional removal or rewrite you recommend.
+
+A turn whose uncertainty begins `ReachTimeout: time ran out` was not reached before the run's time ended, and names the limit that ended it; raise that limit and run again rather than fetching, because its objects may be present. Only `commit object … unavailable` names an object the checkout lacks.

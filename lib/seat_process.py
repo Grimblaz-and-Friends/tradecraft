@@ -1,6 +1,7 @@
 """Capture a seat while keeping its descendants inside the attempt lifetime."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -11,15 +12,32 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 
 # The isolated Windows worker does not inherit the script directory on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from winio import utf8_stdio
 from posix_tree import Descendants
+import preflight
+
+# Tests turn this off to show what an uncontained read leaves behind; production never does.
+_CONTAIN = True
+_READ_DRAIN_SECONDS = 0.25
+_CREATE_SUSPENDED = 0x00000004
 
 
-def _join_kill_on_close_job():
-    """Join a worker-owned Windows job before starting any vendor process."""
+class ContainmentRefused(OSError):
+    """Windows would not hold a read in a parent-held job; nothing was run."""
+
+
+_JOB_API = None
+
+
+def _job_api():
+    """The kernel32 and ntdll calls a kill-on-close job needs, bound once per process."""
+    global _JOB_API
+    if _JOB_API is not None:
+        return _JOB_API
     import ctypes
     from ctypes import wintypes
 
@@ -39,25 +57,58 @@ def _join_kill_on_close_job():
             ("peak_process_memory", ctypes.c_size_t), ("peak_job_memory", ctypes.c_size_t),
         ]
 
+    class Accounting(ctypes.Structure):
+        _fields_ = [
+            ("user_time", ctypes.c_longlong), ("kernel_time", ctypes.c_longlong),
+            ("period_user_time", ctypes.c_longlong), ("period_kernel_time", ctypes.c_longlong),
+            ("page_faults", wintypes.DWORD), ("total_processes", wintypes.DWORD),
+            ("active_processes", wintypes.DWORD), ("terminated_processes", wintypes.DWORD),
+        ]
+
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     signatures = {
         "CreateJobObjectW": ([wintypes.LPVOID, wintypes.LPCWSTR], wintypes.HANDLE),
         "SetInformationJobObject": ([wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD], wintypes.BOOL),
+        "QueryInformationJobObject": ([wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+                                       ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL),
         "AssignProcessToJobObject": ([wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+        "TerminateJobObject": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+        "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
         "GetCurrentProcess": ([], wintypes.HANDLE),
+        "OpenProcess": ([wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+        "WaitForSingleObject": ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
     }
     for name, (arguments, result) in signatures.items():
         function = getattr(kernel, name)
         function.argtypes, function.restype = arguments, result
-    handle = kernel.CreateJobObjectW(None, None)
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes, ntdll.NtResumeProcess.restype = [wintypes.HANDLE], ctypes.c_long
+    _JOB_API = SimpleNamespace(ctypes=ctypes, kernel=kernel, ntdll=ntdll,
+                               ExtendedLimits=ExtendedLimits, Accounting=Accounting)
+    return _JOB_API
+
+
+def _kill_on_close_job(api):
+    """A new job whose handle no child inherits; closing it stops everything inside."""
+    ctypes = api.ctypes
+    handle = api.kernel.CreateJobObjectW(None, None)
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
-    limits = ExtendedLimits()
+    limits = api.ExtendedLimits()
     limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; no breakaway.
-    if not kernel.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    if not kernel.AssignProcessToJobObject(handle, kernel.GetCurrentProcess()):
-        raise ctypes.WinError(ctypes.get_last_error())
+    if not api.kernel.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+        error = ctypes.WinError(ctypes.get_last_error())
+        api.kernel.CloseHandle(handle)
+        raise error
+    return handle
+
+
+def _join_kill_on_close_job():
+    """Join a worker-owned Windows job before starting any vendor process."""
+    api = _job_api()
+    handle = _kill_on_close_job(api)
+    if not api.kernel.AssignProcessToJobObject(handle, api.kernel.GetCurrentProcess()):
+        raise api.ctypes.WinError(api.ctypes.get_last_error())
     # This worker owns the sole non-inherited handle. Its exit (including a
     # timeout kill) closes it and stops the job. Closing it here kills us too.
     return handle
@@ -430,6 +481,356 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
         result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         result.cleanup_proven = cleanup_proven
         return result
+
+
+def _no_tick():
+    pass
+
+
+def _read_end(timeout, cleanup_deadline, started):
+    """The read's own end, early enough that its drain still finishes by the cleanup end."""
+    end = started + timeout
+    if cleanup_deadline is not None:
+        end = min(end, max(started, cleanup_deadline - _READ_DRAIN_SECONDS))
+    return end
+
+
+def _drain_end(now, cleanup_deadline):
+    end = now + _READ_DRAIN_SECONDS
+    return min(end, cleanup_deadline) if cleanup_deadline is not None else end
+
+
+def _assign_read(api, job, process):
+    """Put the suspended read in its job; a test replaces this to refuse containment."""
+    if not api.kernel.AssignProcessToJobObject(job, int(process._handle)):
+        raise api.ctypes.WinError(api.ctypes.get_last_error())
+
+
+def _contain_suspended(process):
+    """Hold a still-suspended child in a parent-held kill-on-close job, then let it run.
+
+    The child cannot start anything before it is in the job, so no descendant escapes it.
+    """
+    try:
+        api = _job_api()
+        job = _kill_on_close_job(api)
+    except (OSError, AttributeError) as exc:
+        raise ContainmentRefused(f"job could not be created: {exc}") from exc
+    try:
+        try:
+            _assign_read(api, job, process)
+        except OSError as exc:
+            raise ContainmentRefused(f"job assignment refused: {exc}") from exc
+        status = api.ntdll.NtResumeProcess(int(process._handle))
+        if status < 0:
+            raise ContainmentRefused(f"resume failed: NTSTATUS {status & 0xFFFFFFFF:#010x}")
+    except BaseException:
+        api.kernel.CloseHandle(job)  # Kill-on-close also stops a child already assigned.
+        raise
+    return api, job
+
+
+def _abandon_suspended(process):
+    """Stop a child that never ran because its containment was refused."""
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            stream.close()
+
+
+def _hold_members(api, job, held):
+    """Open every process now in the job, so its exit can be waited for after it leaves."""
+    ctypes = api.ctypes
+
+    class Members(ctypes.Structure):
+        _fields_ = [("assigned", ctypes.c_ulong), ("listed", ctypes.c_ulong),
+                    ("ids", ctypes.c_size_t * 256)]
+
+    members = Members()
+    api.kernel.QueryInformationJobObject(job, 3, ctypes.byref(members), ctypes.sizeof(members), None)
+    for pid in members.ids[:min(members.listed, 256)]:
+        if pid and pid not in held:
+            handle = api.kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if handle:
+                held[pid] = handle
+
+
+def _stop_job(api, job, held):
+    _hold_members(api, job, held)
+    api.kernel.TerminateJobObject(job, 1)
+
+
+def _job_settled(api, job, end, held):
+    """Whether every process in the job has exited by `end`.
+
+    The job's count drops before a dying process has exited, so the held
+    handles are what prove the tree is gone.
+    """
+    ctypes = api.ctypes
+    accounting = api.Accounting()
+    try:
+        while True:
+            _hold_members(api, job, held)
+            if not api.kernel.QueryInformationJobObject(job, 1, ctypes.byref(accounting),
+                                                        ctypes.sizeof(accounting), None):
+                return False
+            if accounting.active_processes == 0 and all(
+                    api.kernel.WaitForSingleObject(handle, 0) == 0 for handle in held.values()):
+                return True
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.005)
+    finally:
+        while held:
+            api.kernel.CloseHandle(held.popitem()[1])
+
+
+def _collect(command, process, input, timeout, end, cleanup_deadline, stop, settle):
+    """Capture a started read until it exits or reaches `end`, then stop what it left behind."""
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+
+    def drain(name):
+        stream = getattr(process, name)
+        try:
+            while chunk := os.read(stream.fileno(), 65536):
+                captured[name].extend(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            # The reader owns closure, so no other thread closes a pipe it is reading.
+            stream.close()
+
+    def supply():
+        try:
+            view = memoryview(input)
+            while view:
+                view = view[process.stdin.write(view):]
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+
+    readers = [threading.Thread(target=drain, args=(name,), daemon=True) for name in captured]
+    stopped = False
+    failure = None
+    try:
+        for reader in readers:
+            reader.start()
+        if input:
+            threading.Thread(target=supply, daemon=True).start()
+        else:
+            process.stdin.close()
+        try:
+            process.wait(timeout=max(0, end - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            stopped = True
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        # A normal exit stops leftovers too, exactly as the worker's exit does.
+        stop()
+        wait_end = _drain_end(time.monotonic(), cleanup_deadline)
+        cleanup_proven = settle(wait_end)
+        for reader in readers:
+            if reader.is_alive():
+                reader.join(max(0, wait_end - time.monotonic()))
+        try:
+            process.wait(timeout=max(0, wait_end - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            cleanup_proven = False
+        if failure is not None:
+            failure.cleanup_proven = cleanup_proven
+    stdout, stderr = bytes(captured["stdout"]), bytes(captured["stderr"])
+    if stopped:
+        error = subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+        error.cleanup_proven = cleanup_proven
+        raise error
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    result.cleanup_proven = cleanup_proven
+    return result
+
+
+def _killed(process):
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def run_read(command, *, input=b"", cwd, timeout, env=None, cleanup_deadline=None):
+    """Run one read, contained, without starting a second process to hold it.
+
+    On Windows the caller holds a kill-on-close job the read joins before it
+    runs; if Windows refuses that job, the read takes the worker route and the
+    run's read-route tally says so. A read never runs uncontained.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    started = time.monotonic()
+    end = _read_end(timeout, cleanup_deadline, started)
+    pipes = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                 cwd=cwd, env=env, bufsize=0)
+    if not _CONTAIN:
+        process = subprocess.Popen(command, **pipes)
+        return _collect(command, process, input, timeout, end, cleanup_deadline,
+                        lambda: _killed(process), lambda _until: False)
+    if os.name != "nt":
+        # A process group and the subreaper already contain a POSIX read in this process.
+        preflight.note_read(True)
+        return run_process(command, input=input, cwd=cwd, timeout=max(0.0, end - started),
+                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline)
+    process = subprocess.Popen(command, creationflags=_CREATE_SUSPENDED, **pipes)
+    try:
+        api, job = _contain_suspended(process)
+    except ContainmentRefused as refused:
+        _abandon_suspended(process)
+        preflight.note_read(False, str(refused))
+        return run_process(command, input=input, cwd=cwd, timeout=max(0.0, end - time.monotonic()),
+                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline)
+    except BaseException:
+        _abandon_suspended(process)
+        raise
+    preflight.note_read(True)
+    held = {}
+    try:
+        return _collect(command, process, input, timeout, end, cleanup_deadline,
+                        lambda: _stop_job(api, job, held),
+                        lambda until: _job_settled(api, job, until, held))
+    finally:
+        api.kernel.CloseHandle(job)  # Kill-on-close: nothing the read started outlives it.
+
+
+class _Stream:
+    """A contained child's pipes, and the time its read has left."""
+
+    def __init__(self, command, process, timeout, end):
+        self.command, self.process, self.timeout, self._end = command, process, timeout, end
+        self.stdin, self.stdout = process.stdin, process.stdout
+        self.expired = False
+        self._stderr = bytearray()
+
+    def remaining(self):
+        left = self._end - time.monotonic()
+        if self.expired or left <= 0:
+            raise subprocess.TimeoutExpired(self.command, self.timeout, stderr=self.stderr_output())
+        return left
+
+    def stderr_output(self):
+        return bytes(self._stderr)
+
+
+@contextmanager
+def stream_read(command, *, cwd, timeout, cleanup_deadline=None):
+    """Yield a contained read's pipes for a caller that must read it piece by piece.
+
+    The same containment as `run_read`. Where Windows refuses the job this
+    raises `ContainmentRefused` before anything runs, already counted as a
+    fallback in the run's tally; the caller takes its per-read route instead.
+    A timer stops the tree at the bound even while a read blocks, and leaving
+    the block raises `TimeoutExpired` if that happened.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    started = time.monotonic()
+    end = _read_end(timeout, cleanup_deadline, started)
+    pipes = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                 cwd=cwd, bufsize=0)
+    api = job = descendants = None
+    if not _CONTAIN:
+        process = subprocess.Popen(command, **pipes)
+    elif os.name == "nt":
+        process = subprocess.Popen(command, creationflags=_CREATE_SUSPENDED, **pipes)
+        try:
+            api, job = _contain_suspended(process)
+        except ContainmentRefused as refused:
+            _abandon_suspended(process)
+            preflight.note_read(False, str(refused))
+            raise
+        except BaseException:
+            _abandon_suspended(process)
+            raise
+    else:
+        descendants = Descendants()
+        process = subprocess.Popen(command, start_new_session=True, **pipes)
+    if _CONTAIN:
+        preflight.note_read(True)
+
+    held = {}
+
+    def stop():
+        if job is not None:
+            _stop_job(api, job, held)
+        elif descendants is not None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            descendants.kill()
+        else:
+            _killed(process)
+
+    stream = _Stream(command, process, timeout, end)
+
+    def drain_errors():
+        try:
+            while chunk := os.read(process.stderr.fileno(), 65536):
+                stream._stderr.extend(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            process.stderr.close()
+
+    def expire():
+        stream.expired = True
+        stop()
+
+    errors = threading.Thread(target=drain_errors, daemon=True)
+    timer = threading.Timer(max(0.0, end - time.monotonic()), expire)
+    timer.daemon = True
+    try:
+        errors.start()
+        timer.start()
+        yield stream
+    finally:
+        timer.cancel()
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        wait_end = _drain_end(time.monotonic(), cleanup_deadline)
+        try:
+            # A batch reader ends at its input's end; give it the drain to do so.
+            process.wait(timeout=max(0, wait_end - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        stop()
+        if job is not None:
+            _job_settled(api, job, wait_end, held)
+        elif descendants is not None:
+            descendants.finish(wait_end)
+        if errors.is_alive():
+            errors.join(max(0, wait_end - time.monotonic()))
+        try:
+            process.wait(timeout=max(0, wait_end - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        process.stdout.close()
+        if job is not None:
+            api.kernel.CloseHandle(job)
+    if stream.expired:
+        raise subprocess.TimeoutExpired(command, timeout, stderr=stream.stderr_output())
 
 
 def main():

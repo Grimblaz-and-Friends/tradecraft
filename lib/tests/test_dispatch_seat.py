@@ -890,8 +890,8 @@ def test_root_guard_ignores_inherited_git_directory_variables(job, tmp_path, mon
 def test_root_guard_surfaces_a_git_probe_failure(job, monkeypatch):
     args, _ = job
     monkeypatch.setattr(
-        seat.subprocess,
-        "run",
+        seat.seat_process,
+        "run_read",
         lambda command, **_kwargs: subprocess.CompletedProcess(command, 128, b"", b"fatal: fixture Git failure"),
     )
     assert "Git root probe failed: fatal: fixture Git failure" in seat.detached_worktree_root(
@@ -1948,3 +1948,107 @@ def test_984_a_use_consumers_slow_comparison_still_records_its_note(job, tmp_pat
     assert logged["outcome"] == "success"
     assert logged["result"]["published_output"] == str(args.output) and args.output.read_bytes()
     check_expired(slow, logged, step)
+
+
+SPLIT_PARTS = {"github_seconds", "removals_seconds", "markers_seconds", "launch_preparation_seconds",
+               "vendor_seconds", "unattributed_seconds"}
+
+
+def assert_978_split(split, until):
+    """A16: the parts and the unattributed remainder sum to the total within one second."""
+    assert split["until"] == until and set(split["parts"]) == SPLIT_PARTS, split
+    assert abs(sum(split["parts"].values()) - split["total_seconds"]) <= 1, split
+
+
+def assert_978_attempt(attempt):
+    assert set(attempt["pre_spawn_parts"]) == SPLIT_PARTS, attempt["pre_spawn_parts"]
+    assert abs(sum(attempt["pre_spawn_parts"].values()) - attempt["pre_spawn_seconds"]) <= 1, attempt
+
+
+def entrance_handoff(path, delay):
+    """The entrance's work before its handoff, with `delay` spent in its GitHub part."""
+    import preflight
+    with preflight.scope():
+        with preflight.part("github"):
+            time.sleep(delay)
+        return preflight.write_handoff(path)
+
+
+def test_978_request_record_split(job, tmp_path, monkeypatch):
+    # A13 (i) to (iii): the request record's split ends at its first write and nowhere else.
+    # Each delay is bounded by clock readings within the one run, so the preparation's
+    # own run-to-run variance cannot decide the result.
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    D, slack = 2.0, 0.02  # slack: the split's rounding to hundredths.
+    seen = {}
+    original_controls = seat.claude_launch_controls
+    original_before = seat.launch_bound.Comparison.take_before
+    original_run = seat.run_process
+
+    def controls(*a, **k):
+        time.sleep(D)  # (ii): between launched_at's stamp and the write.
+        seen["ii"] = time.monotonic()
+        return original_controls(*a, **k)
+
+    def before(self, seconds):
+        seen["iii"] = time.monotonic()
+        time.sleep(D)  # (iii): after the write, in the comparison.
+        return original_before(self, seconds)
+
+    def spawn(command, **kwargs):
+        seen.setdefault("spawn", time.monotonic())
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(seat, "claude_launch_controls", controls)
+    monkeypatch.setattr(seat.launch_bound.Comparison, "take_before", before)
+    monkeypatch.setattr(seat, "run_process", spawn)
+    args.preflight_input = entrance_handoff(tmp_path / "handoff.json", D)  # (i)
+    started = json.loads(args.preflight_input.read_bytes())["started_monotonic"]
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    attempts = record(args)["attempts"]
+    attempt = [attempt for attempt in attempts if attempt["vendor"] == "claude"][0]
+    split = request["preflight"]
+    assert_978_split(split, "request-record")
+    for spawned in attempts:
+        assert_978_attempt(spawned)
+    # (i) The entrance's delay arrives through --preflight-input, in its own part.
+    assert split["parts"]["github_seconds"] >= D
+    # (i) and (ii) fall before the write and show in its total.
+    assert split["total_seconds"] >= max(2 * D, seen["ii"] - started - slack)
+    assert split["parts"]["launch_preparation_seconds"] >= D
+    # (iii) adds nothing to it: the split ended before the comparison began.
+    assert started + split["total_seconds"] <= seen["iii"] + slack
+    # (iii) shows in the attempt's interval, and (ii) does not.
+    assert attempt["pre_spawn_seconds"] >= max(D, seen["spawn"] - seen["iii"] - slack)
+    assert attempt["pre_spawn_seconds"] <= seen["spawn"] - seen["ii"] + slack
+    assert attempt["pre_spawn_parts"]["launch_preparation_seconds"] >= D
+
+
+def test_978_launcher_refusal_split_before_the_request_record(job, tmp_path, capsys):
+    # A seat that refuses before any request record prints the split from the call.
+    args, _ = job
+    import preflight
+    handoff = tmp_path / "handoff.json"
+    handoff.write_text(json.dumps({"schema_version": 1, "started_monotonic": time.monotonic() - 2.0,
+                                   "parts": {"github": 2.0}, "read_route": {}}), encoding="utf-8")
+    missing = tmp_path / "missing-root"
+    assert seat.main([
+        "--dispatch", str(args.dispatch), "--root", str(missing), "--vendor", "claude",
+        "--own-vendor", "codex", "--output", str(tmp_path / "refused" / "verdict.md"),
+        "--work", "issue-592", "--stage", "cold-read", "--classification", "ordinary",
+        "--requires", "read", "--settings-source", "fixture", "--settings-scope", "fixture",
+        "--hold-file", str(tmp_path / "holds"), "--timeout-seconds", "60",
+        "--preflight-input", str(handoff),
+    ]) == 1
+    assert preflight.current() is None
+    line = [line for line in capsys.readouterr().err.splitlines() if line.startswith("seat: refusal ")]
+    assert len(line) == 1, line
+    refusal = json.loads(line[0][len("seat: refusal "):])
+    assert "Root is not a directory" in refusal["reason"]
+    assert_978_split(refusal["preflight"], "handoff")
+    assert refusal["preflight"]["total_seconds"] >= 2.0
+    assert refusal["preflight"]["parts"]["github_seconds"] == 2.0
+    assert not seat.sidecar(tmp_path / "refused" / "verdict.md", ".request.json").exists()

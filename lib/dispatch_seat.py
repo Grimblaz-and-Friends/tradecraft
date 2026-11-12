@@ -16,6 +16,7 @@ and records each attempted boundary. The dispatch owns its job context.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import json
 import math
@@ -36,9 +37,11 @@ from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claud
                                 stream_check_record)
 import launch_bound
 import launch_settings
+import preflight
 import run_lifecycle as lifecycle
 from codex_pytest import pytest_addopts_override
 from vendor_cli import CliError, CliNotFound, resolve_command
+import seat_process
 from seat_process import run_process
 from winio import utf8_stdio
 
@@ -247,15 +250,16 @@ def git_diagnostic(raw: bytes) -> str:
 def detached_worktree_root(root):
     """Return None for a lawful root, otherwise the reason for its refusal."""
     try:
-        toplevel = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(),
-            env=git_environment(),
+        # Contained reads: a hung Git leaves no child behind (#978).
+        toplevel = seat_process.run_read(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"], cwd=Path.cwd(),
+            timeout=lifecycle.probe_timeout(), env=git_environment(),
+            cleanup_deadline=lifecycle.cleanup_deadline(),
         )
-        head = subprocess.run(
-            ["git", "-C", str(root), "symbolic-ref", "-q", "HEAD"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(),
-            env=git_environment(),
+        head = seat_process.run_read(
+            ["git", "-C", str(root), "symbolic-ref", "-q", "HEAD"], cwd=Path.cwd(),
+            timeout=lifecycle.probe_timeout(), env=git_environment(),
+            cleanup_deadline=lifecycle.cleanup_deadline(),
         )
     except subprocess.TimeoutExpired:
         return "Git root probe timed out"
@@ -506,7 +510,14 @@ def run_dispatch(args, *, now=None) -> int:
                                       started=getattr(args, "invocation_started_monotonic", None))
     except ValueError as exc:
         raise DispatchError(str(exc)) from exc
-    with lifecycle.deadline_scope(deadline):
+    # A launcher called directly has no handoff and measures from its own start.
+    # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    seed = preflight.load_handoff(getattr(args, "preflight_input", None))
+    with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline):
+        # Everything before a recipient's spawn that no other part claims; each
+        # spawn closes it, so a recipient's own time is never counted here.
+        preparation.enter_context(preflight.part("launch_preparation"))
+        args.preparation_timer = preparation
         try:
             return _run_dispatch(args, deadline, now=now)
         except TimeoutError as exc:
@@ -635,11 +646,17 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
         request["input"] = str(input_path)
         if judged_draft is not None:
             request["judged_draft"] = judged_draft
+        # The launch is this write: the split ends here, and each attempt's
+        # pre-spawn interval starts here (#978).
+        scope = preflight.current()
+        request["preflight"] = scope.snapshot("request-record")
         streams[request_path].write(records.json_bytes(request))
+        mark = scope.mark()
         streams[request_path].flush()
         streams[input_path].write(prompt)
         streams[input_path].flush()
         streams.mark_ready()
+        args.request_recorded = True
         print(f"seat: dispatch {request['dispatch_id']} -> {output}")
         record = {"schema_version": records.SCHEMA_VERSION,
                   "dispatch_id": request["dispatch_id"], "request": str(request_path),
@@ -671,6 +688,9 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
 
         try:
             for vendor in vendors:
+                # A later attempt's preparation is timed again until its own spawn.
+                args.preparation_timer.close()
+                args.preparation_timer.enter_context(preflight.part("launch_preparation"))
                 model = selected_model(args, vendor)
                 effort = selected_effort(args, vendor)
                 launch_settings.print_plan({"attempt_vendor": vendor,
@@ -722,7 +742,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 compared=compared_launch(args, vendor),
                             )
                             attempt["command"] = command
-                            attempt["runtime_version"] = records.runtime_version(executable)
+                            with preflight.part("vendor"):
+                                attempt["runtime_version"] = records.runtime_version(executable)
                             attempt["runtime_version_unavailable_reason"] = (
                                 None if attempt["runtime_version"] else "runtime version command returned no value"
                             )
@@ -747,6 +768,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                         os.environ, request["recipient_allocation_seconds"])
                                 if compared_launch(args, vendor):
                                     process_started = True
+                                attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = scope.since(mark)
+                                args.preparation_timer.close()
                                 result = run_process(command, input=launch_input, cwd=root, timeout=allocation,
                                                      env=launch_env,
                                                      on_output=growing.output, on_tick=growing.tick,
@@ -1000,6 +1023,7 @@ def parser() -> argparse.ArgumentParser:
         help="declared caller limit for the whole invocation, including fallback and recording",
     )
     cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
+    cli.add_argument("--preflight-input", type=Path, help=argparse.SUPPRESS)
     for vendor, model in DEFAULT_MODELS.items():
         cli.add_argument("--" + vendor, help="explicit CLI executable")
         cli.add_argument("--" + vendor + "-unavailable-reason",
@@ -1015,14 +1039,27 @@ def parser() -> argparse.ArgumentParser:
     return cli
 
 
+def refusal_line(args, scope, exc) -> str:
+    """A refusal before the request record carries the split from the call (`until: handoff`).
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    if getattr(args, "request_recorded", False):
+        return f"seat: {exc}"
+    return "seat: refusal " + json.dumps(
+        {"reason": str(exc), "preflight": scope.snapshot("handoff")}, ensure_ascii=True, sort_keys=True)
+
+
 def main(argv=None) -> int:
     utf8_stdio()
-    try:
-        return run_dispatch(parser().parse_args(argv))
-    except (OSError, UnicodeError, CliError, records.RecordError, DispatchError,
-            launch_settings.SettingsError) as exc:
-        print(f"seat: {exc}", file=sys.stderr)
-        return 1
+    args = parser().parse_args(argv)
+    with preflight.scope(seed=preflight.load_handoff(args.preflight_input)) as scope:
+        try:
+            return run_dispatch(args)
+        except (OSError, UnicodeError, CliError, records.RecordError, DispatchError,
+                launch_settings.SettingsError) as exc:
+            print(refusal_line(args, scope, exc), file=sys.stderr)
+            return 1
 
 
 if __name__ == "__main__":

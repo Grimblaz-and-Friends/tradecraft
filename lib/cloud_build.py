@@ -27,6 +27,7 @@ import dispatch_record as records
 from dispatch_lifecycle import CLAUDE_DISALLOWED_TOOLS
 import launch_bound
 import run_lifecycle as lifecycle
+import seat_process
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
@@ -537,8 +538,8 @@ class Transport:
         if body is not None:
             command += ["--input", "-"]
             data = json.dumps(body).encode("utf-8")
-        result = subprocess.run(command, input=data if data is not None else b"", capture_output=True,
-                                timeout=120)
+        result = seat_process.run_read(command, input=data if data is not None else b"", cwd=Path.cwd(),
+                                       timeout=120, cleanup_deadline=lifecycle.cleanup_deadline())
         raw = result.stdout.replace(b"\r\n", b"\n")
         head, _, payload = raw.partition(b"\n\n")
         match = re.match(rb"HTTP/[0-9.]+ ([0-9]{3})", head)
@@ -563,6 +564,7 @@ class Transport:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", "replace")
 
+    # The vendor command keeps its own route; only `gh` and `git` are reads.
     def cli(self, argv: list[str], env: dict) -> tuple[int, bytes]:
         try:
             result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=120)
@@ -571,8 +573,8 @@ class Transport:
         return result.returncode, result.stdout
 
     def git(self, root: Path, *arguments: str) -> tuple[int, str]:
-        result = subprocess.run(["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL,
-                                capture_output=True, timeout=300)
+        result = seat_process.run_read(["git", "-C", str(root), *arguments], input=b"", cwd=Path.cwd(),
+                                       timeout=300, cleanup_deadline=lifecycle.cleanup_deadline())
         return result.returncode, (result.stdout or result.stderr).decode("utf-8", "replace").strip()
 
     def sleep(self, seconds: float) -> None:
@@ -694,23 +696,45 @@ def post_report(transport: Transport, work: str, stage: str, session_url: str, b
 
 # ---- the follow-up's session record ------------------------------------------
 
+def _utf8_json(raw: object) -> bool:
+    """Whether bytes the index parsed would also parse as strict UTF-8 text, as this module reads records."""
+    if not isinstance(raw, bytes) or json.detect_encoding(raw) != "utf-8":
+        return False  # `json.loads` on bytes also accepts a byte-order mark and UTF-16 or UTF-32.
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def session_attempts(record_root: Path, session: str) -> list[tuple[dict, dict]]:
     """Every recorded (request, run) for this cloud session, oldest first."""
     found = []
-    for path in sorted(record_root.rglob("*.request.json")):
-        try:
-            request = json.loads(path.read_text("utf-8"))
-        except (OSError, ValueError):
-            continue
-        cloud = request.get("cloud") if isinstance(request, dict) else None
-        if not isinstance(cloud, dict) or cloud.get("session_id") != session:
-            continue
-        run_path = path.with_name(path.name[:-len(".request.json")] + ".run.json")
-        try:
-            run = json.loads(run_path.read_text("utf-8"))
-        except (OSError, ValueError):
-            run = {}
-        found.append((request, run))
+    index = lifecycle.store_index(record_root)
+    if index is None:
+        for path in sorted(record_root.rglob("*.request.json")):
+            try:
+                request = json.loads(path.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+            cloud = request.get("cloud") if isinstance(request, dict) else None
+            if not isinstance(cloud, dict) or cloud.get("session_id") != session:
+                continue
+            run_path = path.with_name(path.name[:-len(".request.json")] + ".run.json")
+            try:
+                run = json.loads(run_path.read_text("utf-8"))
+            except (OSError, ValueError):
+                run = {}
+            found.append((request, run))
+    else:
+        def ours(value: object) -> bool:
+            cloud = value.get("cloud") if isinstance(value, dict) else None
+            return isinstance(cloud, dict) and cloud.get("session_id") == session
+        for path, raw, request in sorted(index.requests(where=ours), key=lambda entry: entry[0]):
+            if not _utf8_json(raw):
+                continue
+            run_raw, run = index.run(path.with_name(path.name[:-len(".request.json")] + ".run.json"))
+            found.append((request, run if _utf8_json(run_raw) and not isinstance(run, Exception) else {}))
     found.sort(key=lambda pair: pair[0].get("launched_at") or "")
     return found
 

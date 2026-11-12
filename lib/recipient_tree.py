@@ -15,6 +15,8 @@ import subprocess
 import tarfile
 import tempfile
 
+from seat_process import run_read
+
 
 class RecipientTreeError(RuntimeError):
     """A recipient tree cannot be proved against its committed source."""
@@ -87,11 +89,7 @@ def write_record(record: Path, content: bytes) -> None:
 
 def _run(command: list[str], *, cwd: Path | None = None,
          input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        command, cwd=cwd, input=input_bytes, stdin=(None if input_bytes is not None
-                                                     else subprocess.DEVNULL),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
-    )
+    return run_read(command, cwd=cwd, input=input_bytes or b"", timeout=120)
 
 
 def _git(root: Path, *arguments: str, input_bytes: bytes | None = None) -> bytes:

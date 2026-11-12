@@ -82,7 +82,20 @@ def fixture_state(*, version="2.9.9", base_version="2.9.9", files=None,
     return state, transport
 
 
+def _cross_reference(number):
+    """The issue timeline's mention by the pull request that implements it (#978)."""
+    return {"event": "cross-referenced", "source": {"issue": {
+        "number": number, "pull_request": {}, "repository": {"full_name": REPO}}}}
+
+
+def _no_closing_references(_query, _variables):
+    return {"data": {"repository": {"issue": {"closedByPullRequestsReferences": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}}
+
+
 class RecordingGitHub:
+    closing_pull_requests = staticmethod(_no_closing_references)
+
     def __init__(self, state, *, version="2.9.9", base_version="2.9.9", merge_base_version=None):
         self.state = state
         self.version = json.dumps({SPEC["field"]: version}).encode()
@@ -137,8 +150,8 @@ class RecordingGitHub:
             return deepcopy(self.state.issue)
         if endpoint == f"{prefix}/issues/12/comments":
             return deepcopy(self.state.issue_comments)
-        if "/pulls?" in endpoint:
-            return [deepcopy(self.state.pr)] if self.state.pr else []
+        if endpoint == f"{prefix}/issues/12/timeline?per_page=100":
+            return [_cross_reference(self.state.pr["number"])] if self.state.pr else []
         if endpoint == f"{prefix}/pulls/7":
             return deepcopy(self.state.pr)
         if endpoint == f"{prefix}/pulls/7/files":
@@ -365,6 +378,8 @@ def _version_document(value):
 
 
 class LiveGitHub:
+    closing_pull_requests = staticmethod(_no_closing_references)
+
     """Public GitHub records derived, at each call, from the scenario's bare origin."""
 
     def __init__(self, root):
@@ -471,8 +486,8 @@ class LiveGitHub:
             return deepcopy(self.data["issue"])
         if suffix == "issues/12/comments":
             return deepcopy(self.data["issue_comments"])
-        if suffix.startswith("pulls?"):
-            return [self.pull()]
+        if suffix == "issues/12/timeline?per_page=100":
+            return [_cross_reference(self.pull()["number"])]
         if suffix == f"pulls/{PULL}":
             return self.pull()
         if suffix == f"pulls/{PULL}/files":

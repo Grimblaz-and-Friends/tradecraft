@@ -1,14 +1,21 @@
 """Measure committed builder contributions and enforce explicit holder accounts."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import zlib
+
+import preflight
+import run_lifecycle as lifecycle
+import seat_process
 
 
 SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
@@ -22,6 +29,17 @@ REFERENCES = {"row-or-criterion": "requirement", "generator": "generator",
 
 class ReachError(ValueError):
     """Evidence cannot establish reach; the holder must restore or settle it."""
+
+
+class ReachTimeout(ReachError):
+    """A read stopped because time ran out, which is not a missing object.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+
+    def __init__(self, limit):
+        super().__init__("time ran out before this read finished: " + limit)
+        self.limit = limit
 
 
 def test_path(path):
@@ -123,21 +141,188 @@ def payload(body):
     return value
 
 
-class Git:
-    """Read-only Git with the entrance's bounded subprocess adapter."""
+# Full object ids name content that cannot change, so these reads keep their answer for the run.
+MEMOISED = frozenset({"rev-list", "diff", "show", "ls-tree", "merge-base", "cat-file"})
+CONSTANT_READS = frozenset({("rev-parse", "--path-format=absolute", "--git-path", "objects"),
+                            ("rev-parse", "--show-object-format")})
+OBJECT_TYPES = frozenset({"blob", "tree", "commit", "tag"})
+READ_BOUND_SECONDS = 120
+SNIFF_BYTES = 8000
 
-    def __init__(self, root, run):
-        self.root, self.run = Path(root), run
+
+def _environment():
+    return {key: value for key, value in os.environ.items()
+            if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}}
+
+
+def run_git(command, root):
+    """One bounded Git read through the contained read route; `Git`'s default runner.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    return seat_process.run_read(["git", "-C", str(root), *command], input=b"", cwd=Path.cwd(),
+                                 timeout=lifecycle.probe_timeout(READ_BOUND_SECONDS), env=_environment(),
+                                 cleanup_deadline=lifecycle.cleanup_deadline())
+
+
+def _full_id(argument):
+    argument = argument[1:] if argument.startswith("^") else argument
+    argument = argument[:-len("^{commit}")] if argument.endswith("^{commit}") else argument
+    return SHA.fullmatch(argument) is not None
+
+
+def _memo_for(args):
+    """The scope dict a successful read is kept in, or None when it is read every time.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    opened = preflight.current()
+    if opened is None or not args:
+        return None
+    if args in CONSTANT_READS:
+        return opened.memo
+    if args[0] == "rev-parse" and len(args) == 3 and args[1] == "--verify":
+        if args[2].startswith("refs/heads/"):
+            # A builder's return moves its branch, so a refresh forgets this answer.
+            return opened.ref_memo
+        return opened.memo if args[2].endswith("^{commit}") and _full_id(args[2]) else None
+    # A blob's verdict is kept instead of its content, so memory stays bounded by one blob.
+    if args[0] not in MEMOISED or args[:2] == ("cat-file", "blob"):
+        return None
+    operands = args[1:args.index("--")] if "--" in args else args[1:]
+    revisions = [value for value in operands if not value.startswith("-")
+                 and not (args[0] == "cat-file" and value in OBJECT_TYPES)]
+    return opened.memo if revisions and all(_full_id(value) for value in revisions) else None
+
+
+def _spent():
+    try:
+        lifecycle.probe_timeout(READ_BOUND_SECONDS)
+    except lifecycle.RunTimeout:
+        return True
+    return False
+
+
+def _check_time():
+    """Once the run's time is spent, a read stops here instead of starting a process."""
+    if lifecycle.current_deadline() is None:
+        return
+    try:
+        lifecycle.probe_timeout(READ_BOUND_SECONDS)
+    except lifecycle.RunTimeout as exc:
+        raise ReachTimeout(exc.limit) from exc
+
+
+def _timed_out(exc):
+    """Name the limit that stopped a read: the run's own, or the read's own bound."""
+    limit = getattr(exc, "limit", None)
+    if not limit:
+        deadline = lifecycle.current_deadline()
+        bound = getattr(exc, "timeout", None)
+        if deadline is not None and (bound is None or _spent()):
+            limit = lifecycle.limit_phrase(deadline)
+        elif isinstance(bound, (int, float)):
+            limit = f"this read's own {bound:g}-second bound"
+        else:
+            limit = "this read's own bound"
+    return ReachTimeout(limit)
+
+
+def _build_view(view, objects, object_format):
+    (view / "objects" / "info").mkdir(parents=True)
+    (view / "refs").mkdir()
+    (view / "HEAD").write_bytes(b"ref: refs/heads/unused\n")
+    (view / "config").write_bytes(b"[core]\nrepositoryformatversion = 1\nbare = true\n"
+                                   b"[extensions]\nobjectformat = " + object_format + b"\n")
+    # Bare diffs can consult the compared tree's .gitattributes too.
+    # Pin the attribute source to an empty tree in this disposable
+    # object store; the holder's shared objects remain untouched.
+    empty = b"tree 0\0"
+    tree = hashlib.new(object_format.decode("ascii"), empty).hexdigest()
+    loose = view / "objects" / tree[:2]
+    loose.mkdir()
+    (loose / tree[2:]).write_bytes(zlib.compress(empty))
+    (view / "objects" / "info" / "alternates").write_bytes(
+        (json.dumps(_path(objects), ensure_ascii=False) + "\n").encode("utf-8"))
+    attributes = view / "attributes"
+    attributes.write_bytes(b"* diff\n")
+    return view, attributes, tree
+
+
+def _batch_line(stream):
+    line = stream.stdout.readline(4096)
+    if not line.endswith(b"\n"):
+        stream.remaining()
+        raise ReachError("restore local Git read capability and retry: cat-file batch ended early")
+    return line
+
+
+def _batch_verdict(stream, blob):
+    """Read one blob from the batch, holding only its first bytes for the NUL test."""
+    stream.remaining()
+    stream.stdin.write(blob + b"\n")
+    if hasattr(stream.stdin, "flush"):
+        stream.stdin.flush()
+    fields = _batch_line(stream).split()
+    name = blob.decode("ascii", errors="replace")
+    if len(fields) == 2 and fields[1] in {b"missing", b"ambiguous"}:
+        raise ReachError("restore required Git objects/read capability and retry: blob "
+                         + name + " " + fields[1].decode("ascii"))
+    if len(fields) != 3 or fields[0].lower() != blob.lower() or fields[1] != b"blob" or not fields[2].isdigit():
+        raise ReachError("unsupported cat-file batch header for blob " + name)
+    size = int(fields[2])
+    head = bytearray()
+    remaining = size + 1  # the blob, then the batch's own newline
+    last = b""
+    while remaining:
+        chunk = stream.stdout.read(min(remaining, 65536))
+        if not chunk:
+            stream.remaining()
+            raise ReachError("restore local Git read capability and retry: cat-file batch ended early")
+        if len(head) < SNIFF_BYTES:
+            head += chunk[:SNIFF_BYTES - len(head)]
+        remaining -= len(chunk)
+        last = chunk[-1:]
+    if last != b"\n":
+        raise ReachError("unsupported cat-file batch record for blob " + name)
+    return b"\0" in head[:min(SNIFF_BYTES, size)]
+
+
+class Git:
+    """Read-only Git with the entrance's bounded subprocess adapter.
+
+    Inside a preflight scope, successful reads of fixed objects are kept for the
+    run, so a turn already measured starts no process.
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+
+    def __init__(self, root, run=None):
+        self.root, self.run = Path(root), run or run_git
         self._binary = {}
 
+    def _key(self, kind, args):
+        return (str(self.root.resolve()), kind, tuple(args))
+
     def read(self, *args):
+        return self._read(args, "read", args)
+
+    def _read(self, args, kind, invocation):
+        memo = _memo_for(args)
+        key = self._key(kind, args) if memo is not None else None
+        if memo is not None and key in memo:
+            return memo[key]
+        _check_time()
         try:
-            result = self.run(["-c", "core.quotePath=true", *args], self.root)
-        except (OSError, TimeoutError, subprocess.SubprocessError) as exc:
+            result = self.run(["-c", "core.quotePath=true", *invocation], self.root)
+        except (TimeoutError, subprocess.TimeoutExpired) as exc:
+            raise _timed_out(exc) from exc
+        except (OSError, subprocess.SubprocessError) as exc:
             raise ReachError("restore local Git read capability and retry: " + str(exc)) from exc
         if result.returncode:
             reason = result.stderr.decode("utf-8", errors="replace").strip()
             raise ReachError("restore required Git objects/read capability and retry: " + reason)
+        if memo is not None:
+            memo[key] = result.stdout
         return result.stdout
 
     def commit(self, revision):
@@ -145,6 +330,8 @@ class Git:
             raise ReachError("missing or invalid full commit endpoint: " + str(revision))
         try:
             resolved = self.read("rev-parse", "--verify", revision + "^{commit}").decode("ascii").strip()
+        except ReachTimeout:
+            raise
         except ReachError as exc:
             raise ReachError(f"commit object {revision} unavailable: fetch that revision into the holder checkout "
                              f"or restore Git read capability and retry: {exc}") from exc
@@ -173,39 +360,85 @@ class Git:
                 return False
             raise
 
+    def _known(self, blob):
+        if blob in self._binary:
+            return self._binary[blob]
+        opened = preflight.current()
+        return opened.memo.get(self._key("binary", (blob,))) if opened is not None else None
+
+    def _remember(self, blob, verdict):
+        self._binary[blob] = verdict
+        opened = preflight.current()
+        if opened is not None:
+            opened.memo[self._key("binary", (blob,))] = verdict
+
     def binary(self, blob):
-        if blob not in self._binary:
-            self._binary[blob] = b"\0" in self.read("cat-file", "blob", blob.decode("ascii"))[:8000]
-        return self._binary[blob]
+        verdict = self._known(blob)
+        if verdict is None:
+            verdict = b"\0" in self.read("cat-file", "blob", blob.decode("ascii"))[:SNIFF_BYTES]
+            self._remember(blob, verdict)
+        return verdict
+
+    def classify(self, blobs):
+        """Learn every unknown blob's verdict through one `cat-file --batch`, one blob at a time.
+
+        Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+        """
+        wanted = list(dict.fromkeys(blob for blob in blobs if self._known(blob) is None))
+        if not wanted:
+            return
+        _check_time()
+        try:
+            with seat_process.stream_read(["git", "-C", str(self.root), "cat-file", "--batch"], cwd=Path.cwd(),
+                                          timeout=lifecycle.probe_timeout(READ_BOUND_SECONDS),
+                                          cleanup_deadline=lifecycle.cleanup_deadline()) as stream:
+                for blob in wanted:
+                    try:
+                        verdict = _batch_verdict(stream, blob)
+                    except OSError:
+                        # A pipe the bound closed is time running out, not a missing object.
+                        stream.remaining()
+                        raise
+                    self._remember(blob, verdict)
+        except seat_process.ContainmentRefused:
+            # Without containment, `binary` reads each remaining blob alone through the read route.
+            return
+        except (TimeoutError, subprocess.TimeoutExpired) as exc:
+            raise _timed_out(exc) from exc
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ReachError("restore local Git read capability and retry: " + str(exc)) from exc
+
+    @contextmanager
+    def _view(self):
+        # One bare view per root serves a whole scope; outside a scope each read builds its own.
+        opened = preflight.current()
+        key = self._key("view", ())
+        if opened is not None and key in opened.memo:
+            yield opened.memo[key]
+            return
+        objects = self.read("rev-parse", "--path-format=absolute", "--git-path", "objects").rstrip(b"\r\n")
+        object_format = self.read("rev-parse", "--show-object-format").strip()
+        if opened is None:
+            with tempfile.TemporaryDirectory(prefix="tradecraft-reach-") as directory:
+                yield _build_view(Path(directory), objects, object_format)
+            return
+        directory = tempfile.mkdtemp(prefix="tradecraft-reach-")
+        opened.on_close(lambda: shutil.rmtree(directory, ignore_errors=True))
+        opened.memo[key] = _build_view(Path(directory), objects, object_format)
+        yield opened.memo[key]
 
     def text_read(self, *args):
         # --text does not override binary attributes for numstat or combined
         # patches. An ephemeral bare view shares only the holder's objects:
         # no worktree/index/info attributes, and our rule overrides global or
         # system attributes. No objects or files in the checkout are written.
-        objects = self.read("rev-parse", "--path-format=absolute", "--git-path", "objects").rstrip(b"\r\n")
-        object_format = self.read("rev-parse", "--show-object-format").strip()
-        with tempfile.TemporaryDirectory(prefix="tradecraft-reach-") as directory:
-            view = Path(directory)
-            (view / "objects" / "info").mkdir(parents=True)
-            (view / "refs").mkdir()
-            (view / "HEAD").write_bytes(b"ref: refs/heads/unused\n")
-            (view / "config").write_bytes(b"[core]\nrepositoryformatversion = 1\nbare = true\n"
-                                           b"[extensions]\nobjectformat = " + object_format + b"\n")
-            # Bare diffs can consult the compared tree's .gitattributes too.
-            # Pin the attribute source to an empty tree in this disposable
-            # object store; the holder's shared objects remain untouched.
-            empty = b"tree 0\0"
-            tree = hashlib.new(object_format.decode("ascii"), empty).hexdigest()
-            loose = view / "objects" / tree[:2]
-            loose.mkdir()
-            (loose / tree[2:]).write_bytes(zlib.compress(empty))
-            (view / "objects" / "info" / "alternates").write_bytes(
-                (json.dumps(_path(objects), ensure_ascii=False) + "\n").encode("utf-8"))
-            attributes = view / "attributes"
-            attributes.write_bytes(b"* diff\n")
-            return self.read("--git-dir=" + str(view), "--attr-source=" + tree, "-c", "core.bare=true",
-                             "-c", "core.attributesFile=" + str(attributes), *args)
+        memo = _memo_for(args)
+        if memo is not None and self._key("text", args) in memo:
+            return memo[self._key("text", args)]
+        with self._view() as (view, attributes, tree):
+            return self._read(args, "text", ("--git-dir=" + str(view), "--attr-source=" + tree, "-c",
+                                             "core.bare=true", "-c", "core.attributesFile=" + str(attributes),
+                                             *args))
 
 
 DIFF_OPTIONS = ("--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--text",
@@ -238,7 +471,7 @@ def _ordinary(git, before, after):
             counts[_path(name)] = (int(added), int(removed))
         else:
             raise ReachError("unavailable numeric diff counts")
-    items = []
+    rows = []
     for index in range(0, len(status) - 1, 2):
         metadata, name = status[index:index + 2]
         fields = metadata.split()
@@ -248,7 +481,12 @@ def _ordinary(git, before, after):
         kind = fields[-1]
         if kind not in {b"A", b"M", b"D", b"T"} or name not in counts:
             raise ReachError("incomplete diff inventory/counts: " + name)
-        binary = _binary_blobs(git, [fields[0].lstrip(b":"), fields[1]], fields[2:4])
+        rows.append((name, kind, [fields[0].lstrip(b":"), fields[1]], fields[2:4]))
+    # One batch learns every blob in this inventory, so processes do not grow with files.
+    git.classify(blob for _name, _kind, modes, blobs in rows for blob in _content_blobs(modes, blobs))
+    items = []
+    for name, kind, modes, blobs in rows:
+        binary = _binary_blobs(git, modes, blobs)
         numbers = counts.pop(name)
         items.append(_item(name, kind == b"D", *((None, None) if binary else numbers),
                            {"basis": "non-merge", "before": before, "after": after}))
@@ -257,11 +495,14 @@ def _ordinary(git, before, after):
     return items
 
 
+def _content_blobs(modes, blobs):
+    # Gitlinks are commit pointers, rather than blobs to read as file content.
+    return [blob for mode, blob in zip(modes, blobs) if mode.startswith(b"100") or mode == b"120000"]
+
+
 def _binary_blobs(git, modes, blobs):
     # Match Git's content heuristic, independently of attributes and drivers.
-    # Gitlinks are commit pointers, rather than blobs to read as file content.
-    return any(git.binary(blob) for mode, blob in zip(modes, blobs)
-               if mode.startswith(b"100") or mode == b"120000")
+    return any(git.binary(blob) for blob in _content_blobs(modes, blobs))
 
 
 def _combined_counts(section, parents):
@@ -315,9 +556,10 @@ def _merge(git, revision, parents):
                 or len(fields[-1]) != len(parents) or any(c not in b"AMDT" for c in fields[-1])):
             raise ReachError("unsupported combined raw record")
         width = len(parents) + 1
-        modes = [mode.lstrip(b":") for mode in fields[:width]]
         inventory.append((_path(name), fields[-1] == b"D" * len(parents),
-                          _binary_blobs(git, modes, fields[width:2 * width])))
+                          [mode.lstrip(b":") for mode in fields[:width]], fields[width:2 * width]))
+    git.classify(blob for _name, _deleted, modes, blobs in inventory for blob in _content_blobs(modes, blobs))
+    inventory = [(name, deleted, _binary_blobs(git, modes, blobs)) for name, deleted, modes, blobs in inventory]
     patch = git.text_read("show", "--format=", "-c", "--patch", "--unified=3", "--inter-hunk-context=0",
                      *DIFF_OPTIONS, revision, "--")
     sections = re.split(rb"(?m)^diff --(?:combined|cc) ", patch)[1:]
@@ -399,6 +641,8 @@ def _pr_bounds(git, pr, *, head=None):
         value = (pr.get(bound) or {}).get("sha")
         try:
             resolved[bound] = git.commit(value)
+        except ReachTimeout:
+            raise
         except ReachError as exc:
             raise ReachError(f"PR #{pr['number']} requires {bound} object {value}: {exc}") from exc
     base, current_head = resolved["base"], resolved["head"]

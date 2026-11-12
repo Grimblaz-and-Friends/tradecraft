@@ -1,4 +1,5 @@
 """Git-backed reach and account controls for artifact C1-C4."""
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 import json
@@ -9,6 +10,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build_reach as reach
+import preflight
+import run_lifecycle as lifecycle
+import seat_process
 from work import Marker
 
 
@@ -869,3 +873,162 @@ def test_C1_attribute_neutral_view_keeps_sha256_objects(tmp_path):
     after = commit(root, {"doc": "a\n"})
     item, = measure(root, before, after)
     assert item["path"] == "doc" and (item["added"], item["removed"]) == (0, 2)
+
+
+# (#978) A Git process the measurement starts, counted by the audit hook only while a test asks.
+_STARTED = None
+
+
+def _audit(event, args):
+    if event == "subprocess.Popen" and _STARTED is not None:
+        _STARTED.append(args)
+
+
+sys.addaudithook(_audit)
+
+
+@contextmanager
+def started_processes():
+    global _STARTED
+    _STARTED = []
+    try:
+        yield _STARTED
+    finally:
+        _STARTED = None
+
+
+def local_run(args, path):
+    return git(path, *args, check=False)
+
+
+def test_978_second_measure_in_one_scope_starts_no_git_process(repo):
+    before = commit(repo, {"a": "a\nb\nc\n", "b.bin": b"\0a\nb\n"})
+    after = commit(repo, {"a": "a\n", "b.bin": b"\0a\n"})
+    rows = [turn(repo, before, after)]
+    with preflight.scope() as opened:
+        first = evaluate(repo, rows, head=after, base=before, run=local_run)
+        assert first["state"] == "reading-required"
+        with started_processes() as started:
+            again = evaluate(repo, rows, head=after, base=before, run=local_run)
+            items = reach.measure(reach.Git(repo, local_run), before, after, base=before)
+        assert started == [] and again == first
+        assert [item["path"] for item in items] == ["a"]
+        views = [value[0] for key, value in opened.memo.items() if key[1] == "view"]
+        assert len(views) == 1 and views[0].is_dir()
+    assert not views[0].exists()
+
+
+def test_978_branch_read_is_kept_only_until_refresh(repo):
+    with preflight.scope() as opened:
+        adapter = reach.Git(repo, local_run)
+        with started_processes() as started:
+            adapter.read("rev-parse", "--verify", "refs/heads/topic")
+            adapter.read("rev-parse", "--verify", "refs/heads/topic")
+            assert len(started) == 1
+            opened.refresh()
+            adapter.read("rev-parse", "--verify", "refs/heads/topic")
+            assert len(started) == 2
+
+
+def test_978_process_count_does_not_grow_with_files(repo):
+    names = [f"file{index:02}.md" for index in range(39)]
+    base = commit(repo, {**{name: "a\nb\nc\n" for name in names}, "image.bin": b"\0a\nb\n", "one.md": "a\nb\n"})
+    one = commit(repo, {"one.md": "a\n"})
+    many = commit(repo, {**{name: "a\n" for name in names}, "image.bin": b"\0a\n"})
+    counts = []
+    reads = []
+    for before, after in ((base, one), (one, many)):
+        def run(args, path):
+            reads.append(args)
+            return local_run(args, path)
+        with preflight.scope(), started_processes() as started:
+            items = reach.measure(reach.Git(repo, run), before, after)
+        counts.append(len(started))
+        assert items
+    assert counts[0] == counts[1], counts
+    assert not any("cat-file" in args for args in reads)
+
+
+def test_978_refused_containment_reads_each_blob_alone(repo, monkeypatch):
+    before = commit(repo, {"a.bin": b"\0a\nb\n", "b.md": "a\nb\n"})
+    after = commit(repo, {"a.bin": b"\0a\n", "b.md": "a\n"})
+
+    @contextmanager
+    def refused(command, **kwargs):
+        raise seat_process.ContainmentRefused("job assignment refused")
+        yield
+
+    monkeypatch.setattr(seat_process, "stream_read", refused)
+    reads = []
+
+    def run(args, path):
+        reads.append(args)
+        return local_run(args, path)
+    observed = []
+    reach.measure(reach.Git(repo, run), before, after, observations=observed)
+    items = {item["path"]: item for item in observed}
+    assert items["a.bin"]["binary"] and items["a.bin"]["removed"] is None
+    assert (items["b.md"]["added"], items["b.md"]["removed"]) == (0, 1)
+    # One read per blob, stopping at a path's first binary blob, as before the batch.
+    assert sum(1 for args in reads if "cat-file" in args) == 3
+
+
+def test_978_missing_commit_keeps_message(repo):
+    before = commit(repo, {"a": "a\nb\n"})
+    commit(repo, {"a": "a\n"})
+    absent = "e" * 40
+    with preflight.scope():
+        report = evaluate(repo, [turn(repo, before, absent)], base=before, run=local_run)
+    assert f"commit object {absent} unavailable" in report["turns"][0]["uncertainty"]
+
+
+def _three_turns(repo):
+    base = commit(repo, {"a": "a\nb\nc\n", "b": "a\nb\nc\n", "c": "a\nb\nc\n"})
+    first = commit(repo, {"a": "a\n"})
+    second = commit(repo, {"b": "a\n"})
+    third = commit(repo, {"c": "a\n"})
+    rows = [turn(repo, base, first),
+            turn(repo, first, second, identity="build-2", order="2026-10-06T11:05:00Z",
+                 returned="2026-10-06T11:30:00Z"),
+            turn(repo, second, third, identity="build-3", order="2026-10-06T11:35:00Z",
+                 returned="2026-10-06T11:50:00Z")]
+    return base, second, rows
+
+
+def test_978_time_running_out_mid_measure_says_so(repo):
+    base, second, rows = _three_turns(repo)
+    deadline = lifecycle.stage_deadline("proof", 3600, declared=True)
+    calls = []
+
+    def run(args, path):
+        if any(second in value for value in args) or calls:
+            # The stage's time ends while this read runs.
+            calls.append(args)
+            deadline.end = deadline.started - 1
+            lifecycle.probe_timeout(120)
+        return local_run(args, path)
+    with lifecycle.deadline_scope(deadline):
+        report = evaluate(repo, rows, base=base, run=run)
+    first, *unmeasured = report["turns"]
+    assert first["uncertainty"] is None and first["items"]
+    for entry in unmeasured:
+        assert entry["uncertainty"].startswith("ReachTimeout: time ran out before this read finished: "), entry
+        assert "the 3600-second limit (declared by --timeout-seconds)" in entry["uncertainty"]
+    assert report["superset_error"].startswith("ReachTimeout: time ran out")
+    assert len(calls) == 1
+    text = json.dumps(report).lower()
+    assert "fetch" not in text and "restore" not in text
+
+
+def test_978_a_read_past_its_own_bound_says_so(repo):
+    base, second, rows = _three_turns(repo)
+
+    def run(args, path):
+        if any(second in value for value in args):
+            raise subprocess.TimeoutExpired(["git", *args], 120)
+        return local_run(args, path)
+    report = evaluate(repo, rows, base=base, run=run)
+    assert "time ran out before this read finished: this read's own 120-second bound" in report["turns"][1]["uncertainty"]
+    assert "time ran out" in report["superset_error"]
+    text = json.dumps(report).lower()
+    assert "fetch" not in text and "restore" not in text

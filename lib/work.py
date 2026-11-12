@@ -71,18 +71,19 @@ import raw_output
 import build_reach
 import change_cost
 import holder_transcript
+import preflight
 from winio import utf8_stdio
-from seat_process import run_process, run_inherited_process
+from seat_process import run_inherited_process, run_read
 
 
 def _run_probe(command, **kwargs):
-    """Contain invocation preflight as well as the recipient's own processes."""
-    if lifecycle.current_deadline() is None:
-        return subprocess.run(command, **kwargs)
-    return run_process(command, input=kwargs.get("input", b""),
-                       cwd=kwargs.get("cwd", Path.cwd()), timeout=kwargs["timeout"],
-                       env=kwargs.get("env"), on_tick=lambda: None,
-                       cleanup_deadline=lifecycle.cleanup_deadline())
+    """Contain every read the entrance makes, the decide's included, as the recipient's processes are.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    return run_read(command, input=kwargs.get("input") or b"",
+                    cwd=kwargs.get("cwd", Path.cwd()), timeout=kwargs["timeout"],
+                    env=kwargs.get("env"), cleanup_deadline=lifecycle.cleanup_deadline())
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
@@ -323,6 +324,16 @@ REVIEW_THREADS_QUERY = """query($owner:String!,$name:String!,$number:Int!,$after
     }
   }
 }"""
+CLOSING_PULL_REQUESTS_QUERY = """query($owner:String!,$name:String!,$number:Int!,$after:String){
+  repository(owner:$owner,name:$name){
+    issue(number:$number){
+      closedByPullRequestsReferences(first:100,includeClosedPrs:true,after:$after){
+        pageInfo { hasNextPage endCursor }
+        nodes { number repository { nameWithOwner } }
+      }
+    }
+  }
+}"""
 RESOLVE_THREAD_COMMAND = (
     "gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id})"
     "{thread{isResolved}}}' -f id=THREAD_ID"
@@ -545,11 +556,17 @@ def _use_holder_decision(reason: str) -> Decision:
 class GitHubREST:
     """Authenticated GitHub requests through the user's gh credential store."""
 
+    @staticmethod
+    def _call(command, **kwargs):
+        # Every GitHub request counts toward the run's GitHub part of its timing split.
+        with preflight.part("github"):
+            return _run_probe(command, **kwargs)
+
     def get(self, endpoint: str, *, paginate: bool = False) -> object:
         command = ["gh", "api", "--method", "GET", endpoint]
         if paginate:
             command.extend(("--paginate", "--slurp"))
-        result = _run_probe(
+        result = self._call(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
         )
@@ -575,7 +592,7 @@ class GitHubREST:
         if method not in {"POST", "PATCH"}:
             raise WorkError(f"unsupported GitHub mutation method: {method}")
         command = ["gh", "api", "--method", method, endpoint, "--input", "-"]
-        result = _run_probe(
+        result = self._call(
             command, input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
         )
@@ -612,7 +629,7 @@ class GitHubREST:
             "query": WORKFLOW_RUN_FILES_QUERY,
             "variables": {"ids": check_suite_ids},
         }
-        result = _run_probe(
+        result = self._call(
             ["gh", "api", "graphql", "--input", "-"],
             input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
@@ -643,7 +660,7 @@ class GitHubREST:
             "query": REVIEW_THREADS_QUERY,
             "variables": {"owner": owner, "name": name, "number": number, "after": after},
         }
-        result = _run_probe(
+        result = self._call(
             ["gh", "api", "graphql", "--input", "-"],
             input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
@@ -657,6 +674,40 @@ class GitHubREST:
             return json.loads(result.stdout.decode("utf-8"))
         except (UnicodeError, ValueError) as exc:
             raise WorkError("GitHub GraphQL review-thread read returned invalid JSON") from exc
+
+    def closing_pull_requests(self, query: str, variables: dict[str, object]) -> object:
+        """Run the fixed read-only query naming the pull requests that close one issue.
+
+        Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+        """
+        if (query != CLOSING_PULL_REQUESTS_QUERY
+                or set(variables) != {"owner", "name", "number", "after"}):
+            raise WorkError("closing-reference reading accepts only the fixed closing-reference query")
+        owner, name, number, after = (
+            variables["owner"], variables["name"], variables["number"], variables["after"]
+        )
+        if (not isinstance(owner, str) or not owner or not isinstance(name, str) or not name
+                or type(number) is not int or number <= 0
+                or (after is not None and not isinstance(after, str))):
+            raise WorkError("closing-reference reading requires a repository, number and cursor")
+        payload = {
+            "query": CLOSING_PULL_REQUESTS_QUERY,
+            "variables": {"owner": owner, "name": name, "number": number, "after": after},
+        }
+        result = self._call(
+            ["gh", "api", "graphql", "--input", "-"],
+            input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
+        )
+        if result.returncode:
+            diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
+            raise WorkError(
+                f"GitHub GraphQL closing-reference read failed: {diagnostic or result.returncode}"
+            )
+        try:
+            return json.loads(result.stdout.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
+            raise WorkError("GitHub GraphQL closing-reference read returned invalid JSON") from exc
 
 
 def _dict(value: object, endpoint: str) -> dict[str, object]:
@@ -733,12 +784,10 @@ def _state_markers(state: WorkState) -> list[Marker]:
     return list(_classify_sources(_state_sources(state)).claims)
 
 
-def _candidate_pr_classes(issue_number: int, issue: dict[str, object],
-                          comments: list[dict[str, object]], pulls: list[dict[str, object]],
-                          config: WorkConfig) -> tuple[set[int], set[int]]:
+def _marker_candidate_numbers(issue: dict[str, object], comments: list[dict[str, object]],
+                              config: WorkConfig) -> set[int]:
+    """Numbers that authorized `implementing-pr` markers in issue comments name."""
     found: set[int] = set()
-    if isinstance(issue.get("pull_request"), dict):
-        found.add(issue_number)
     sources: list[tuple] = [(
         str(issue.get("body") or ""), _author(issue), "issue", None, None, None,
     )]
@@ -751,6 +800,16 @@ def _candidate_pr_classes(issue_number: int, issue: dict[str, object],
                 and _marker_value_error(marker) is None
                 and number.isdigit() and int(number) > 0):
             found.add(int(number))
+    return found
+
+
+def _candidate_pr_classes(issue_number: int, issue: dict[str, object],
+                          comments: list[dict[str, object]], pulls: list[dict[str, object]],
+                          config: WorkConfig) -> tuple[set[int], set[int]]:
+    found: set[int] = set()
+    if isinstance(issue.get("pull_request"), dict):
+        found.add(issue_number)
+    found |= _marker_candidate_numbers(issue, comments, config)
     for pull in pulls:
         number = pull.get("number")
         body = str(pull.get("body") or "")
@@ -779,6 +838,94 @@ def _candidate_prs(issue_number: int, issue: dict[str, object],
         issue_number, issue, comments, pulls, config
     )
     return open_candidates or merged_candidates
+
+
+def _same_repository(name: object, repo: str) -> bool:
+    return isinstance(name, str) and name.lower() == repo.lower()
+
+
+def _timeline_pull_numbers(transport: GitHubREST, repo: str, issue_number: int) -> set[int]:
+    """Pull requests in this repository that cross-reference the issue on its timeline."""
+    endpoint = f"repos/{repo}/issues/{issue_number}/timeline?per_page=100"
+    found: set[int] = set()
+    for event in _get_list(transport, endpoint):
+        source = event.get("source") if event.get("event") == "cross-referenced" else None
+        item = source.get("issue") if isinstance(source, dict) else None
+        if not isinstance(item, dict) or not isinstance(item.get("pull_request"), dict):
+            continue
+        repository = item.get("repository")
+        name = repository.get("full_name") if isinstance(repository, dict) else None
+        number = item.get("number")
+        # A pull request in another repository can mention the issue but never implements it here.
+        if (_same_repository(name, repo) and isinstance(number, int)
+                and not isinstance(number, bool) and number > 0):
+            found.add(number)
+    return found
+
+
+def _closing_pull_numbers(transport: GitHubREST, repo: str, issue_number: int) -> set[int]:
+    """Pull requests in this repository that GitHub's closing-reference graph links to the issue."""
+    owner, _, name = repo.partition("/")
+    found: set[int] = set()
+    after: str | None = None
+    while True:
+        value = transport.closing_pull_requests(CLOSING_PULL_REQUESTS_QUERY, {
+            "owner": owner, "name": name, "number": issue_number, "after": after,
+        })
+        if not isinstance(value, dict) or value.get("errors"):
+            raise WorkError(f"GitHub GraphQL closing-reference read failed for {repo}#{issue_number}")
+        data = value.get("data")
+        repository = data.get("repository") if isinstance(data, dict) else None
+        issue = repository.get("issue") if isinstance(repository, dict) else None
+        connection = issue.get("closedByPullRequestsReferences") if isinstance(issue, dict) else None
+        nodes = connection.get("nodes") if isinstance(connection, dict) else None
+        page = connection.get("pageInfo") if isinstance(connection, dict) else None
+        if not isinstance(nodes, list) or not isinstance(page, dict):
+            raise WorkError(f"GitHub GraphQL closing-reference read is malformed for {repo}#{issue_number}")
+        for node in nodes:
+            node_repository = node.get("repository") if isinstance(node, dict) else None
+            number = node.get("number") if isinstance(node, dict) else None
+            if (isinstance(node_repository, dict)
+                    and _same_repository(node_repository.get("nameWithOwner"), repo)
+                    and isinstance(number, int) and not isinstance(number, bool) and number > 0):
+                found.add(number)
+        cursor = page.get("endCursor")
+        if page.get("hasNextPage") is not True or not isinstance(cursor, str) or not cursor:
+            return found
+        after = cursor
+
+
+def _implementing_candidates(transport: GitHubREST, repo: str, issue_number: int,
+                             issue: dict[str, object], comments: list[dict[str, object]],
+                             config: WorkConfig) -> list[dict[str, object]]:
+    """Fetch every pull request that may implement the issue, found from the issue itself.
+
+    The result feeds `_candidate_pr_classes` as the repository-wide listing once did: the issue
+    itself and authorized markers count as they are, and a timeline or closing-graph pull
+    request counts only when its current body closes the issue. No request lists the
+    repository's pull requests, a collection that grows without bound.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    is_pull = isinstance(issue.get("pull_request"), dict)
+    named = _marker_candidate_numbers(issue, comments, config)
+    numbers = set(named) | ({issue_number} if is_pull else set())
+    numbers |= _timeline_pull_numbers(transport, repo, issue_number)
+    # The closing graph is an issue's; a pull request's own number resolves to no issue there.
+    if not is_pull:
+        numbers |= _closing_pull_numbers(transport, repo, issue_number)
+    pulls: list[dict[str, object]] = []
+    for number in sorted(numbers):
+        endpoint = f"repos/{repo}/pulls/{number}"
+        try:
+            pulls.append(_dict(transport.get(endpoint), endpoint))
+        except WorkError as exc:
+            # A marker naming a number that is no pull request leaves nothing to fetch, as the
+            # listing this replaces simply lacked that number.
+            if getattr(exc, "http_status", None) == 404 and number in named:
+                continue
+            raise
+    return pulls
 
 
 ACTION_RUN = re.compile(r"/actions/runs/([1-9][0-9]*)(?:/|\?|\Z)")
@@ -1281,8 +1428,7 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     issue_endpoint = f"{base}/issues/{issue_number}"
     issue = _dict(transport.get(issue_endpoint), issue_endpoint)
     issue_comments = _get_list(transport, f"{issue_endpoint}/comments")
-    pulls_endpoint = f"{base}/pulls?state=all&per_page=100"
-    pulls = _get_list(transport, pulls_endpoint)
+    pulls = _implementing_candidates(transport, repo, issue_number, issue, issue_comments, work_config)
     open_candidates, merged_candidates = _candidate_pr_classes(
         issue_number, issue, issue_comments, pulls, work_config
     )
@@ -1836,6 +1982,13 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
 
 
 def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[str, object]]]:
+    # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    # Marker validation is one part of the run's timing split.
+    with preflight.part("markers"):
+        return _validate_marker_claims(state)
+
+
+def _validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[str, object]]]:
     lawful: list[Marker] = []
     invalid: list[dict[str, object]] = []
     state.artifact_phase = None
@@ -2911,10 +3064,21 @@ def _handover_attempts(path: Path, source: ResumeSource,
                        session: str) -> list[tuple[Path, dict[str, object],
                                                    dict[str, object] | None]]:
     attempts = []
+    # Its directory is the dispatch store's root, which the run's index already holds.
+    index = lifecycle.store_index(path.parent.parent)
     try:
-        requests = path.parent.parent.rglob("*.request.json")
-        for request_path in requests:
-            request = _json_object(request_path)
+        if index is None:
+            requests = ((request_path, _json_object(request_path))
+                        for request_path in path.parent.parent.rglob("*.request.json"))
+            read_run = _json_object
+        else:
+            requests = ((request_path, value) for request_path, _raw, value in index.requests(
+                where=lambda value: isinstance(value, dict) and isinstance(value.get("handover"), dict)))
+
+            def read_run(run_path):
+                value = index.run(run_path)[1]
+                return value if isinstance(value, dict) else None
+        for request_path, request in requests:
             handover = request.get("handover") if request else None
             if not isinstance(handover, dict):
                 continue
@@ -2937,7 +3101,7 @@ def _handover_attempts(path: Path, source: ResumeSource,
             run_path = request_path.with_name(
                 request_path.name.removesuffix(".request.json") + ".run.json"
             )
-            attempts.append((request_path, request, _json_object(run_path)))
+            attempts.append((request_path, request, read_run(run_path)))
     except OSError as exc:
         raise WorkError(f"cannot inspect handover dispatch bundles below {path.parent.parent}") from exc
     return sorted(attempts, key=lambda item: (str(item[1].get("started_at") or ""), str(item[0])))
@@ -3580,6 +3744,9 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
+    if "preflight" not in payload and preflight.current() is not None:
+        # Where this run's time before the launch (or this report) went (#978).
+        payload = {**payload, "preflight": preflight.snapshot("report")}
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
 
 
@@ -3751,6 +3918,13 @@ def _reach_readings(state: WorkState) -> list[Marker]:
 
 def _evaluate_reach(state: WorkState) -> None:
     """PR identity selects reach; registrations continue to own execution only."""
+    # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    # The removals count is one part of the run's timing split.
+    with preflight.part("removals"):
+        _evaluate_reach_in_part(state)
+
+
+def _evaluate_reach_in_part(state: WorkState) -> None:
     head = None
     lineage = None
     pr = state.pr or state.merged_pr
@@ -3829,10 +4003,69 @@ def _evaluate_reach(state: WorkState) -> None:
             turns, readings, root=state.holder_root, head=head, pr=pr, run=_git,
             lineage=lineage, instalment=state.instalment)
     except Exception as exc:
-        reason = f"reach evaluation unproved: {type(exc).__name__}: {exc}"
+        limit = _time_ran_out(exc)
+        # Time running out is not missing evidence, so it never reads as something to restore.
+        reason = (f"reach evaluation stopped: time ran out: {limit}" if limit is not None
+                  else f"reach evaluation unproved: {type(exc).__name__}: {exc}")
         state.reach = build_reach.uncertainty(
             reason, readings, root=state.holder_root, head=head, pr=pr, run=_git,
             lineage=lineage, instalment=state.instalment)
+
+
+def _time_ran_out(exc: BaseException) -> str | None:
+    """The limit that stopped a reach evaluation, or None when something other than time did.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    if not isinstance(exc, (TimeoutError, subprocess.TimeoutExpired, build_reach.ReachTimeout)):
+        return None
+    limit = getattr(exc, "limit", None)
+    if isinstance(limit, str) and limit:
+        return limit
+    bound = getattr(exc, "timeout", None)
+    if lifecycle.current_deadline() is None and isinstance(bound, (int, float)):
+        return f"this read's own {bound:g}-second bound"
+    return lifecycle.limit_phrase()
+
+
+REACH_TIMEOUT_PREFIXES = (
+    "ReachTimeout: time ran out before this read finished: ",
+    "ReachError: reach evaluation stopped: time ran out: ",
+)
+
+
+def _reach_timeout_limit(uncertainty: object) -> str | None:
+    """The limit an owed turn's uncertainty names when time, not evidence, stopped it."""
+    if isinstance(uncertainty, str):
+        for prefix in REACH_TIMEOUT_PREFIXES:
+            if uncertainty.startswith(prefix):
+                return uncertainty[len(prefix):]
+        if uncertainty.startswith("ReachTimeout: "):
+            return uncertainty[len("ReachTimeout: "):]
+    return None
+
+
+def _reach_advice(owed: list[dict[str, object]]) -> str:
+    """Advice chosen per cause: time ran out, or evidence is unavailable and must be restored.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    timed_out: dict[str, list[str]] = {}
+    unavailable: list[str] = []
+    for turn in owed:
+        if not turn.get("uncertainty"):
+            continue
+        limit = _reach_timeout_limit(turn["uncertainty"])
+        if limit is not None:
+            timed_out.setdefault(limit, []).append(str(turn["turn"]))
+        else:
+            unavailable.append(str(turn["turn"]))
+    advice = [f"For {', '.join(turns)}: time ran out ({limit}); raise the limit and run again."
+              for limit, turns in timed_out.items()]
+    if unavailable:
+        advice.append(f"For {', '.join(unavailable)}: restore unavailable objects/read capability "
+                      "and retry.")
+    return "".join(" " + item for item in advice)
 
 
 def _reach_session_matches(observed: Marker, request: dict, record: dict) -> bool:
@@ -3865,8 +4098,8 @@ def _reach_refusal(state: WorkState, stage: str) -> Decision | None:
         "reach-read", False, None, "reach-" + str(report.get("state")),
         f"Before {stage} at head {report.get('current_head')}, the holder owes reach-reading coverage "
         + json.dumps(owed or report.get("diagnostics"), ensure_ascii=True, sort_keys=True)
-        + ". Account for the computed current-head PR superset; restore unavailable "
-        "objects/read capability and retry. Read the builder's returned should-also-go notes alongside "
+        + ". Account for the computed current-head PR superset." + _reach_advice(owed)
+        + " Read the builder's returned should-also-go notes alongside "
         "the report, including flag-free turns. Existing live/stopped recovery remains separate.",
         status="holder-owned")
 
@@ -5106,9 +5339,32 @@ def _damaged_cold_reader_record(store: Path, work: str) -> Path | None:
     if not store.is_dir():
         return None
     slug = re.sub(r"[^A-Za-z0-9]+", "-", work).strip("-").lower()
-    for run_path in store.rglob("*.run.json"):
+    index = lifecycle.store_index(store)
+    if index is None:
+        run_paths = store.rglob("*.run.json")
+        pair = lambda run_path, request_path: (_json_object(run_path), _json_object(request_path))
+    else:
+        # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+        # A parsed request for another stage or change can never name a damaged cold-reader record,
+        # so only damaged requests and this change's cold-reader requests are kept, and only the
+        # latter's runs are read.
+        listed = set(index.requests_listing())
+        kept = {path: value for path, _raw, value in index.requests(
+            where=lambda value: not isinstance(value, dict)
+            or (value.get("stage") == "cold-reader" and str(value.get("work") or "").lower() == work.lower()))}
+        run_paths = index.runs_listing()
+
+        def pair(run_path, request_path):
+            if request_path in listed and request_path not in kept:
+                return {}, {}
+            request = kept.get(request_path)
+            if not isinstance(request, dict):
+                return None, None
+            run = index.run(run_path)[1]
+            return (run if isinstance(run, dict) else None), request
+    for run_path in run_paths:
         request_path = run_path.with_name(run_path.name.removesuffix(".run.json") + ".request.json")
-        run, request = _json_object(run_path), _json_object(request_path)
+        run, request = pair(run_path, request_path)
         if run is not None and request is not None:
             continue
         if request is not None:
@@ -6351,9 +6607,9 @@ def sweep_registry(transport: GitHubREST) -> None:
             issue_endpoint = f"{base}/issues/{issue_number}"
             issue = _dict(transport.get(issue_endpoint), issue_endpoint)
             comments = _get_list(transport, f"{issue_endpoint}/comments")
-            pulls = _get_list(transport, f"{base}/pulls?state=all&per_page=100")
             config_root = Path(str(row.get("holder_root") or row.get("root") or ""))
             config = load_work_config(config_root.expanduser().resolve())
+            pulls = _implementing_candidates(transport, repo, issue_number, issue, comments, config)
             candidates = sorted(_candidate_prs(
                 issue_number, issue, comments, pulls, config, include_closed=True
             ))
@@ -6775,11 +7031,30 @@ def _matching_bundles(
         return candidates
     boundary = _time(completed_no_later_than)
     term_start = _time(completed_after)
+    index = lifecycle.store_index(record_root)
     try:
-        for run_path in record_root.rglob("*.run.json"):
-            run = _json_object(run_path)
+        if index is None:
+            run_paths = record_root.rglob("*.run.json")
+            pair = lambda run_path, request_path: (_json_object(run_path), _json_object(request_path))
+        else:
+            # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+            # Only this change's requests for these stages are copied, and only their runs are read;
+            # any other request is skipped below whatever its run holds, so the result is unchanged.
+            wanted = {path: value for path, _raw, value in index.requests(
+                where=lambda value: isinstance(value, dict)
+                and str(value.get("work") or "").lower() == work_value.lower()
+                and isinstance(value.get("stage"), str) and value.get("stage") in stages)}
+            run_paths = index.runs_listing()
+
+            def pair(run_path, request_path):
+                request = wanted.get(request_path)
+                if request is None:
+                    return None, None
+                run = index.run(run_path)[1]
+                return (run if isinstance(run, dict) else None), request
+        for run_path in run_paths:
             request_name = run_path.name.removesuffix(".run.json") + ".request.json"
-            request = _json_object(run_path.with_name(request_name))
+            run, request = pair(run_path, run_path.with_name(request_name))
             if run is None or request is None:
                 continue
             if (str(request.get("work") or "").lower() != work_value.lower()
@@ -8794,6 +9069,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
         landed = subprocess.run([sys.executable, str(script), "--expect-branch", branch,
                                  "-m", f"Catch up {branch} with its pinned base"], cwd=root,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        preflight.refresh()  # The landing script moved the branch.
         resulting = _git_text(["rev-parse", "HEAD"], root, "read catch-up result")
         attempt["result"] = resulting
         attempt_path.write_bytes((json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8"))
@@ -9112,11 +9388,19 @@ def _invoke_recipient(command, deadline):
     # Let the child spend its recording reserve, then stop a stuck launcher
     # with time still left for the entrance's own containment and return.
     wait_end = deadline.wait_end
-    try:
-        return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
-                              cleanup_deadline=deadline.end - deadline.reserve / 8).returncode
-    except subprocess.TimeoutExpired:
-        raise WorkError("launcher exceeded its bounded recording allowance; retained bundle may be unfinished") from None
+    with tempfile.TemporaryDirectory(prefix="tradecraft-preflight-") as temporary:
+        # The launcher continues this run's split from the entrance's handoff.
+        handoff = Path(temporary) / "preflight.json"
+        if "--preflight-input" not in command and preflight.write_handoff(handoff):
+            command.extend(("--preflight-input", str(handoff)))
+        try:
+            return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
+                                  cleanup_deadline=deadline.end - deadline.reserve / 8).returncode
+        except subprocess.TimeoutExpired:
+            raise WorkError("launcher exceeded its bounded recording allowance; retained bundle may be unfinished") from None
+        finally:
+            # The launcher wrote its bundle; the run's store index reads what changed.
+            preflight.refresh()
 
 
 def _release_holder_close(state):
@@ -9173,10 +9457,14 @@ def _stage_root(state, decision, root, instalment, holder, source):
     forbidden = [Path(row["root"]) for row in read_registry().get("worktrees", [])
                  if isinstance(row, dict) and isinstance(row.get("root"), str)]
     copy_source = _artifact_copy_source(state, source)
-    with artifact_tree.checkout(root, output, work=f"{state.repo}#{state.issue_number}",
-            instalment=instalment, holder_session_id=holder, predecessor=copy_source,
-            forbidden=forbidden) as (copy, invoked, record):
-        yield (Path(copy["root"]), None, False), (copy, invoked, record, output)
+    try:
+        with artifact_tree.checkout(root, output, work=f"{state.repo}#{state.issue_number}",
+                instalment=instalment, holder_session_id=holder, predecessor=copy_source,
+                forbidden=forbidden) as (copy, invoked, record):
+            yield (Path(copy["root"]), None, False), (copy, invoked, record, output)
+    finally:
+        # The copy's disposal ran a child that may have changed the store.
+        preflight.refresh()
 
 
 def _artifact_copy_source(state, source):
@@ -10174,10 +10462,12 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
         issue_endpoint = f"{base}/issues/{args.issue}"
         # Only an open pull request is the change under test; a merged one is work already landed, such as
         # an earlier instalment.
+        issue = _dict(transport.get(issue_endpoint), issue_endpoint)
+        comments = _get_list(transport, f"{issue_endpoint}/comments")
+        config = load_work_config(root)
         open_numbers, _merged = _candidate_pr_classes(
-            args.issue, _dict(transport.get(issue_endpoint), issue_endpoint),
-            _get_list(transport, f"{issue_endpoint}/comments"),
-            _get_list(transport, f"{base}/pulls?state=all&per_page=100"), load_work_config(root),
+            args.issue, issue, comments,
+            _implementing_candidates(transport, args.repo, args.issue, issue, comments, config), config,
         )
     except (WorkError, OSError, ValueError) as exc:
         # Without the open pull request's number the path can't be cleared of it, so nothing is built.
@@ -10244,7 +10534,11 @@ def run(
     if args.command == "run":
         limit = args.timeout_seconds if args.timeout_seconds is not None else (
             DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else DEFAULT_STAGE_TIMEOUT_SECONDS)
-        with lifecycle.deadline_scope(lifecycle.stage_deadline(args.stage, limit)):
+        opened = preflight.current()
+        # The stage's deadline and the run's timing split share the run's one clock.
+        deadline = lifecycle.stage_deadline(args.stage, limit, started=opened.started if opened else None,
+                                            declared=args.timeout_seconds is not None)
+        with lifecycle.deadline_scope(deadline):
             if args.stage == "artifact":
                 with artifact_tree.isolated_git_environment():
                     return _run(args, transport=transport, executor=executor)
@@ -10459,20 +10753,26 @@ def _run(
 
 
 def main(argv: list[str] | None = None) -> int:
-    utf8_stdio()
-    try:
-        return run(parser().parse_args(argv))
-    except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
-        if (getattr(exc, "raw_output", None) is not None or getattr(exc, "reach", None) is not None
-                or getattr(exc, "version_obligation", None) is not None):
-            _emit_report({"status": "refused", "reason": str(exc),
-                          "stage": getattr(exc, "stage", None), "head": getattr(exc, "head", None),
-                          "version_obligation": getattr(exc, "version_obligation", None),
-                          "proof_version_obligation": getattr(exc, "proof_version_obligation", None),
-                          "reach": getattr(exc, "reach", None)},
-                         raw=getattr(exc, "raw_output", None))
-        print(f"work: {exc}", file=sys.stderr)
-        return 1
+    # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    # One scope per run, opened at the call, holds its clock, timing split, read memo and store indexes.
+    with preflight.scope():
+        utf8_stdio()
+        try:
+            return run(parser().parse_args(argv))
+        except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
+            if (getattr(exc, "raw_output", None) is not None or getattr(exc, "reach", None) is not None
+                    or getattr(exc, "version_obligation", None) is not None):
+                _emit_report({"status": "refused", "reason": str(exc),
+                              "stage": getattr(exc, "stage", None), "head": getattr(exc, "head", None),
+                              "version_obligation": getattr(exc, "version_obligation", None),
+                              "proof_version_obligation": getattr(exc, "proof_version_obligation", None),
+                              "reach": getattr(exc, "reach", None)},
+                             raw=getattr(exc, "raw_output", None))
+            print(f"work: {exc}", file=sys.stderr)
+            split = preflight.snapshot("report")
+            if split is not None:
+                print("work: preflight " + json.dumps(split, ensure_ascii=True, sort_keys=True), file=sys.stderr)
+            return 1
 
 
 if __name__ == "__main__":

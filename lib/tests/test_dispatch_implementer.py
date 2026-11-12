@@ -779,8 +779,8 @@ def test_discovery_and_config_reads_use_their_allowance_capped_by_the_window():
     def fake_run(command, **kwargs):
         captured.append(kwargs["timeout"])
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-    original = (implementer.policy.run_process, implementer.native_codex.run_process)
-    implementer.policy.run_process = implementer.native_codex.run_process = fake_run
+    original = (implementer.policy.run_read, implementer.native_codex.run_process)
+    implementer.policy.run_read = implementer.native_codex.run_process = fake_run
     try:
         for remaining in (500, 30):
             deadline = Recorder(remaining)
@@ -791,7 +791,7 @@ def test_discovery_and_config_reads_use_their_allowance_capped_by_the_window():
             assert deadline.defaults == [implementer.policy.DISCOVERY_PROBE_SECONDS] * 2
         assert captured == [120, 120, 30, 30]
     finally:
-        implementer.policy.run_process, implementer.native_codex.run_process = original
+        implementer.policy.run_read, implementer.native_codex.run_process = original
     # Git and version probes keep the unchanged 20 s default.
     assert implementer.lifecycle.Deadline(3600).probe() == 20
 
@@ -2124,6 +2124,8 @@ def _comparable(args):
     value["request"].pop("progress_baseline", None)
     # The remaining window measured at launch, a clock reading like a timestamp.
     value["request"].pop("recipient_allocation_seconds", None)
+    # The timing split from the call to the launch, also a clock reading (#978).
+    value["request"].pop("preflight", None)
     return value
 
 
@@ -2270,3 +2272,112 @@ def test_984_after_a_ceiling_stop_a_slow_store_read_still_records_before_the_wai
         assert entry["status"] == "uncompared", entry
         assert "comparison allowance ran out" in entry["reason"]
         assert "the launch's recording window" in entry["reason"]
+
+
+SPLIT_PARTS = {"github_seconds", "removals_seconds", "markers_seconds", "launch_preparation_seconds",
+               "vendor_seconds", "unattributed_seconds"}
+
+
+def assert_978_split(split, until):
+    """A16: the parts and the unattributed remainder sum to the total within one second."""
+    assert split["until"] == until and set(split["parts"]) == SPLIT_PARTS, split
+    assert abs(sum(split["parts"].values()) - split["total_seconds"]) <= 1, split
+
+
+def assert_978_attempt(attempt):
+    assert set(attempt["pre_spawn_parts"]) == SPLIT_PARTS, attempt["pre_spawn_parts"]
+    assert abs(sum(attempt["pre_spawn_parts"].values()) - attempt["pre_spawn_seconds"]) <= 1, attempt
+
+
+def entrance_handoff(path, delay):
+    """The entrance's work before its handoff, with `delay` spent in its GitHub part."""
+    import time
+    import preflight
+    with preflight.scope():
+        with preflight.part("github"):
+            time.sleep(delay)
+        return preflight.write_handoff(path)
+
+
+def test_978_request_record_split(job, tmp_path, monkeypatch):
+    # A13 (i) to (iii): the request record's split ends at its first write and nowhere else.
+    # Each delay is bounded by clock readings within the one run, so the preparation's
+    # own run-to-run variance cannot decide the result.
+    import time
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command",
+        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps(
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": FIXTURE_SESSION,
+         "result": "built"})}}).encode())
+    D, slack = 2.0, 0.02  # slack: the split's rounding to hundredths.
+    seen = {}
+    original_snapshot = implementer.lifecycle.content_snapshot
+    original_before = implementer.launch_bound.Comparison.take_before
+    original_run = implementer.run_process
+
+    def snapshot(*a, **k):
+        if "ii" not in seen:
+            time.sleep(D)  # (ii): between launched_at's stamp and the write.
+            seen["ii"] = time.monotonic()
+        return original_snapshot(*a, **k)
+
+    def before(self, seconds):
+        seen["iii"] = time.monotonic()
+        time.sleep(D)  # (iii): after the write, in the comparison.
+        return original_before(self, seconds)
+
+    def spawn(command, **kwargs):
+        seen.setdefault("spawn", time.monotonic())
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(implementer.lifecycle, "content_snapshot", snapshot)
+    monkeypatch.setattr(implementer.launch_bound.Comparison, "take_before", before)
+    monkeypatch.setattr(implementer, "run_process", spawn)
+    args.preflight_input = entrance_handoff(tmp_path / "handoff.json", D)  # (i)
+    started = json.loads(args.preflight_input.read_bytes())["started_monotonic"]
+    implementer.run_implementer(args)
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    attempt = record(args)["attempts"][0]
+    assert "write_bound" in request
+    split = request["preflight"]
+    assert_978_split(split, "request-record")
+    assert_978_attempt(attempt)
+    # (i) The entrance's delay arrives through --preflight-input, in its own part.
+    assert split["parts"]["github_seconds"] >= D
+    # (i) and (ii) fall before the write and show in its total.
+    assert split["total_seconds"] >= max(2 * D, seen["ii"] - started - slack)
+    assert split["parts"]["launch_preparation_seconds"] >= D
+    # (iii) adds nothing to it: the split ended before the comparison began.
+    assert started + split["total_seconds"] <= seen["iii"] + slack
+    # (iii) shows in the attempt's interval, and (ii) does not.
+    assert attempt["pre_spawn_seconds"] >= max(D, seen["spawn"] - seen["iii"] - slack)
+    assert attempt["pre_spawn_seconds"] <= seen["spawn"] - seen["ii"] + slack
+    assert attempt["pre_spawn_parts"]["launch_preparation_seconds"] >= D
+
+
+def test_978_launcher_refusal_split_before_the_request_record(job, capsys):
+    # An implementer that refuses before any request record prints the split from the call.
+    import time
+    import preflight
+    args, _ = job
+    handoff = args.dispatch.with_name("handoff.json")
+    handoff.write_text(json.dumps({"schema_version": 1, "started_monotonic": time.monotonic() - 2.0,
+                                   "parts": {"github": 2.0}, "read_route": {}}), encoding="utf-8")
+    args.dispatch.write_bytes(b"   \n")
+    assert implementer.main([
+        "--dispatch", str(args.dispatch), "--root", str(args.root), "--work", "issue-592",
+        "--stage", "build", "--vendor", "codex", "--settings-source", "fixture",
+        "--settings-scope", "fixture", "--output", str(args.output), "--timeout-seconds", "60",
+        "--model", "fixture-model", "--effort", "high", "--preflight-input", str(handoff),
+    ]) == 1
+    assert preflight.current() is None
+    line = [line for line in capsys.readouterr().err.splitlines() if line.startswith("implementer: refusal ")]
+    assert len(line) == 1, line
+    refusal = json.loads(line[0][len("implementer: refusal "):])
+    assert "dispatch is empty" in refusal["reason"]
+    assert_978_split(refusal["preflight"], "handoff")
+    assert refusal["preflight"]["total_seconds"] >= 2.0
+    assert refusal["preflight"]["parts"]["github_seconds"] == 2.0
+    assert not implementer.records.sidecar(args.output, ".request.json").exists()

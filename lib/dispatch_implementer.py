@@ -14,7 +14,7 @@ Every invocation is a separate record. ``--resume`` is explicit; ``--last`` and
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import hashlib
@@ -39,6 +39,7 @@ from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TO
                                 stream_check_reason, stream_check_record)
 import launch_bound
 import launch_settings
+import preflight
 import run_lifecycle as lifecycle
 from codex_pytest import implementer_pytest_overrides
 from seat_process import run_process
@@ -414,7 +415,14 @@ def run_implementer(args: argparse.Namespace) -> int:
         args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
     deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
                                          started=getattr(args, "invocation_started_monotonic", None))
-    with lifecycle.deadline_scope(deadline):
+    # A launcher called directly has no handoff and measures from its own start.
+    # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    seed = preflight.load_handoff(getattr(args, "preflight_input", None))
+    with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline):
+        # Everything before the recipient's spawn that no other part claims; the
+        # spawn closes it, so the recipient's own time is never counted here.
+        preparation.enter_context(preflight.part("launch_preparation"))
+        args.preparation_timer = preparation
         if args.stage == "artifact":
             with artifact_tree.isolated_git_environment():
                 return _run_implementer(args, deadline)
@@ -621,9 +629,10 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                             write_guard={"root": root, "session": args.resume or args.session_id})
                         args.launch_settings_path = intent["settings_path"]
                     else:
-                        intent = policy.codex_prepare(executable, root, deadline, env=child_env)
-                        config = native_codex.read_config(build_command(args, executable, last_message),
-                                                         root, deadline, env=child_env)
+                        with preflight.part("vendor"):
+                            intent = policy.codex_prepare(executable, root, deadline, env=child_env)
+                            config = native_codex.read_config(build_command(args, executable, last_message),
+                                                             root, deadline, env=child_env)
                         intent["thread_config"] = policy.restriction_config(config, intent)
                         intent["discovery_sources"].append("Codex native config/read for recipient cwd")
                     intent["status"] = "prepared"
@@ -751,9 +760,10 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     "from_bundle": args.handover_from, "to_vendor": "claude",
                     "replacement_session": None, "phase": "unavailable",
                 }
-            request["runtime_version"] = (
-                records.runtime_version(executable) if executable is not None else None
-            )
+            with preflight.part("vendor"):
+                request["runtime_version"] = (
+                    records.runtime_version(executable) if executable is not None else None
+                )
             request["runtime_version_unavailable_reason"] = (
                 unavailable_reason if executable is None else
                 None if request["runtime_version"] else "runtime version command returned no value"
@@ -765,7 +775,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 except artifact_tree.ArtifactTreeError as exc:
                     raise ImplementerError(str(exc)) from exc
             request["input"] = str(input_path)
+            # The launch is this write: the split ends here, and each attempt's
+            # pre-spawn interval starts here (#978).
+            scope = preflight.current()
+            request["preflight"] = scope.snapshot("request-record")
             streams[request_path].write(records.json_bytes(request))
+            mark = scope.mark()
             streams[request_path].flush()
             streams[input_path].write(prompt)
             streams[input_path].flush()
@@ -780,6 +795,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             # no bundle that would displace an earlier stopped, resumable run.
             deadline.remaining()
             streams.mark_ready()
+            args.request_recorded = True
             print(f"implementer: dispatch {request['dispatch_id']} -> {output}")
             attempt: dict[str, object] = {
                 "vendor": args.vendor, "launched": False, "exit_code": None,
@@ -889,6 +905,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         )
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation
+                    attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = scope.since(mark)
+                    args.preparation_timer.close()
                     process_started = True
                     result = run_process(command, input=native.input if native else effective_prompt, cwd=root, timeout=allocation,
                                          env=child_env,
@@ -1192,17 +1210,31 @@ def parser() -> argparse.ArgumentParser:
                      help="declared caller limit; build defaults to 7200, other stages to 3600")
     cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
     cli.add_argument("--lifecycle-input", type=Path, help=argparse.SUPPRESS)
+    cli.add_argument("--preflight-input", type=Path, help=argparse.SUPPRESS)
     cli.add_argument("--budget-override-reason")
     return cli
 
 
+def refusal_line(args: argparse.Namespace, scope, exc: BaseException) -> str:
+    """A refusal before the request record carries the split from the call (`until: handoff`).
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    if getattr(args, "request_recorded", False):
+        return f"implementer: {exc}"
+    return "implementer: refusal " + json.dumps(
+        {"reason": str(exc), "preflight": scope.snapshot("handoff")}, ensure_ascii=True, sort_keys=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
-    try:
-        return run_implementer(parser().parse_args(argv))
-    except (OSError, UnicodeError, ValueError, CliError, records.RecordError, ImplementerError) as exc:
-        print(f"implementer: {exc}", file=sys.stderr)
-        return 1
+    args = parser().parse_args(argv)
+    with preflight.scope(seed=preflight.load_handoff(args.preflight_input)) as scope:
+        try:
+            return run_implementer(args)
+        except (OSError, UnicodeError, ValueError, CliError, records.RecordError, ImplementerError) as exc:
+            print(refusal_line(args, scope, exc), file=sys.stderr)
+            return 1
 
 
 if __name__ == "__main__":

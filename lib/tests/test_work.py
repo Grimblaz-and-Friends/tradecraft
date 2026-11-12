@@ -4930,6 +4930,29 @@ class FakeTransport:
             raise value
         return value
 
+    def closing_pull_requests(self, query, variables):
+        assert query == work.CLOSING_PULL_REQUESTS_QUERY
+        return self.values.get("closing-references", closing_page([]))
+
+
+def closing_page(numbers, repo="acme/widget"):
+    """One page of the closing-reference graph naming these pull requests."""
+    return {"data": {"repository": {"issue": {"closedByPullRequestsReferences": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": [{"number": number, "repository": {"nameWithOwner": repo}} for number in numbers],
+    }}}}}
+
+
+def listing(base, issue, pulls):
+    """The reads that find an issue's pull requests: its timeline's cross-references and each pull."""
+    repo = base.removeprefix("repos/")
+    reads = {f"{base}/issues/{issue}/timeline?per_page=100": [
+        {"event": "cross-referenced", "source": {"type": "issue", "issue": {
+            "number": pull["number"], "pull_request": {}, "repository": {"full_name": repo}}}}
+        for pull in pulls]}
+    reads.update({f"{base}/pulls/{pull['number']}": pull for pull in pulls})
+    return reads
+
 
 @pytest.mark.parametrize("risk,lane", work.LANES)
 @pytest.mark.parametrize("paths", [["lib/runtime.py"], ["README.md"]])
@@ -5138,10 +5161,8 @@ def actions_transport(*, reviews=None, run=None, job_pages=None, config=ACTIONS_
     values = {
         f"{base}/issues/12": template.issue,
         f"{base}/issues/12/comments": template.issue_comments,
-        f"{base}/pulls?state=all&per_page=100": [{
-            "number": 7, "state": "open", "body": "Closes #12",
-        }],
-        f"{base}/pulls/7": {**template.pr, "changed_files": 1},
+        **listing(base, 12, [{"number": 7}]),
+        f"{base}/pulls/7": {**template.pr, "changed_files": 1, "body": "Closes #12"},
         f"{base}/rules/branches/main": [],
         f"{base}/issues/7/comments": [],
         f"{base}/pulls/7/reviews": reviews if reviews is not None else [actions_review()],
@@ -5500,8 +5521,8 @@ def test_actions_collector_handles_real_rest_object_pages(monkeypatch):
 
     def gh(command, **kwargs):
         commands.append(command)
-        assert kwargs["stdin"] == subprocess.DEVNULL
-        assert kwargs["stdout"] == kwargs["stderr"] == subprocess.PIPE
+        # Every GitHub read goes through the contained read route (#978).
+        assert kwargs["input"] == b""
         return subprocess.CompletedProcess(command, 0, json.dumps(pages).encode("utf-8"), b"")
 
     class RESTJobsTransport(FakeTransport):
@@ -5510,7 +5531,7 @@ def test_actions_collector_handles_real_rest_object_pages(monkeypatch):
                 return work.GitHubREST().get(endpoint, paginate=paginate)
             return super().get(endpoint, paginate=paginate)
 
-    monkeypatch.setattr(work.subprocess, "run", gh)
+    monkeypatch.setattr(work, "run_read", gh)
     fixture = collect_actions(RESTJobsTransport(actions_transport().values))
     assert work._reviewer_ran(fixture)
     assert commands == [[
@@ -5571,9 +5592,7 @@ def gate_read_values(*, rules, checks, runs, base_ref="release/next",
             {"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->",
              "user": {"login": PRODUCER}},
         ],
-        f"{base}/pulls?state=all&per_page=100": [
-            {"number": 9, "state": "open", "body": ""},
-        ],
+        **listing(base, 3, []),
         f"{base}/pulls/9": {
             "number": 9, "state": "open", "draft": True, "changed_files": 1,
             "head": {"sha": SHA},
@@ -5937,9 +5956,7 @@ def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
             {"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->",
              "user": {"login": PRODUCER}},
         ],
-        f"{base}/pulls?state=all&per_page=100": [
-            {"number": 9, "state": "open", "body": ""},
-        ],
+        **listing(base, 3, []),
         f"{base}/pulls/9": {"number": 9, "state": "open", "draft": True,
                              "changed_files": 1,
                              "head": {"sha": SHA}},
@@ -5954,7 +5971,8 @@ def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
     assert fixture.pr["number"] == 9
     assert fixture.changed_paths == ["lib/runtime.py"]
     assert {method for method, _endpoint, _paginate in transport.calls} == {"GET"}
-    assert len(transport.calls) == 10
+    # The candidate's own read and the timeline replace the repository's pull-request listing.
+    assert len(transport.calls) == 11
 
 
 def test_merged_pull_request_cited_as_evidence_is_not_a_candidate_or_terminal():
@@ -5965,10 +5983,10 @@ def test_merged_pull_request_cited_as_evidence_is_not_a_candidate_or_terminal():
             "body": "Evidence was recorded in https://github.com/acme/widget/pull/9",
         },
         f"{base}/issues/12/comments": [],
-        f"{base}/pulls?state=all&per_page=100": [{
+        **listing(base, 12, [{
             "number": 9, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
             "body": "This records evidence and mentions closes #12 inline.",
-        }],
+        }]),
     }
     fixture = work.read_state(FakeTransport(values), "acme/widget", 12)
     assert fixture.pr is None
@@ -6054,12 +6072,12 @@ def test_multiple_merged_candidates_are_ambiguous_only_without_an_open_candidate
     values = {
         f"{base}/issues/12": {"number": 12, "state": "open", "body": "", "labels": []},
         f"{base}/issues/12/comments": [],
-        f"{base}/pulls?state=all&per_page=100": [
+        **listing(base, 12, [
             {"number": 7, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
              "body": "Fixes #12"},
             {"number": 8, "state": "closed", "merged_at": "2026-09-02T00:00:00Z",
              "body": "Fixes #12"},
-        ],
+        ]),
     }
     fixture = work.read_state(FakeTransport(values), "acme/widget", 12)
     assert fixture.ambiguous_prs == [7, 8]
@@ -6098,10 +6116,10 @@ def test_two_pull_request_bodies_closing_the_issue_are_ambiguous():
     values = {
         f"{base}/issues/12": {"number": 12, "state": "open", "body": "", "labels": []},
         f"{base}/issues/12/comments": [],
-        f"{base}/pulls?state=all&per_page=100": [
+        **listing(base, 12, [
             {"number": 7, "state": "open", "body": "Fixes #12"},
             {"number": 8, "state": "open", "body": "RESOLVED #12"},
-        ],
+        ]),
     }
     fixture = work.read_state(FakeTransport(values), "acme/widget", 12)
     assert fixture.pr is None
@@ -6109,7 +6127,7 @@ def test_two_pull_request_bodies_closing_the_issue_are_ambiguous():
     assert work.decide(fixture, RULES).stage == "ambiguous-pr"
 
 
-def test_cross_reference_timeline_is_not_read_as_a_candidate():
+def test_cross_reference_without_a_closing_body_is_not_a_candidate():
     base = "repos/acme/widget"
     values = {
         f"{base}/issues/12": {
@@ -6117,13 +6135,12 @@ def test_cross_reference_timeline_is_not_read_as_a_candidate():
             "timeline_url": "https://api.github.test/repos/acme/widget/issues/12/timeline",
         },
         f"{base}/issues/12/comments": [],
-        f"{base}/pulls?state=all&per_page=100": [],
+        **listing(base, 12, [{"number": 9, "state": "open", "body": "Mentions #12 in passing"}]),
     }
     transport = FakeTransport(values)
     fixture = work.read_state(transport, "acme/widget", 12)
     assert fixture.pr is None
     assert fixture.ambiguous_prs == []
-    assert all("timeline" not in endpoint for _method, endpoint, _paginate in transport.calls)
 
 
 def test_review_disposition_marker_is_part_of_the_entrance_evidence():
@@ -6143,10 +6160,13 @@ def test_run_reads_the_work_configuration_from_root(tmp_path, monkeypatch, capsy
         "--repo", "example/tradecraft", "--issue", "3", "--root", str(tmp_path),
     ])
     class PracticeTransport:
+        def closing_pull_requests(self, query, variables):
+            return closing_page([])
+
         def get(self, endpoint, *, paginate=False):
             if endpoint.endswith("/comments"):
                 return [{"body": AFFIRMED, "user": {"login": PRODUCER}}]
-            if "/pulls?" in endpoint:
+            if endpoint.endswith("/timeline?per_page=100"):
                 return []
             return {
                 "number": 3,
@@ -6169,8 +6189,11 @@ def test_ordinary_entrance_is_repeatable_and_never_sweeps_or_executes(
     ])
 
     class MinimalTransport:
+        def closing_pull_requests(self, query, variables):
+            return closing_page([])
+
         def get(self, endpoint, *, paginate=False):
-            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+            if endpoint.endswith("/comments") or endpoint.endswith("/timeline?per_page=100"):
                 return []
             return {"number": 3, "state": "open", "body": "", "labels": [],
                     "user": {"login": PRODUCER}}
@@ -6200,12 +6223,10 @@ def adopter_transport():
         f"{base}/issues/3/comments": [
             {"body": AFFIRMED, "user": {"login": PRODUCER}},
         ],
-        f"{base}/pulls?state=all&per_page=100": [
-            {"number": 9, "state": "open", "body": "Closes #3"},
-        ],
+        **listing(base, 3, [{"number": 9}]),
         f"{base}/pulls/9": {
             "number": 9, "state": "open", "draft": True, "changed_files": 1,
-            "head": {"sha": SHA},
+            "head": {"sha": SHA}, "body": "Closes #3",
         },
         f"{base}/issues/9/comments": [],
         f"{base}/pulls/9/reviews": [],
@@ -7688,8 +7709,11 @@ def test_ordinary_read_uses_worktree_policy_while_reporting_dirtiness(
     observed = {}
 
     class MinimalTransport:
+        def closing_pull_requests(self, query, variables):
+            return closing_page([])
+
         def get(self, endpoint, *, paginate=False):
-            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+            if endpoint.endswith("/comments") or endpoint.endswith("/timeline?per_page=100"):
                 return []
             return {"number": 3, "state": "open", "body": "", "labels": [],
                     "user": {"login": PRODUCER}}
@@ -8615,11 +8639,15 @@ class _BoundaryTransport:
     def __init__(self, pulls):
         self.pulls = pulls
 
+    def closing_pull_requests(self, query, variables):
+        return closing_page([])
+
     def get(self, endpoint, *, paginate=False):
         if endpoint.endswith("/comments"):
             return []
-        if "/pulls?" in endpoint:
-            return self.pulls
+        reads = listing("repos/example/product", 12, self.pulls)
+        if endpoint in reads:
+            return reads[endpoint]
         return {"number": 12, "state": "open", "body": "", "labels": [], "user": {"login": PRODUCER}}
 
 
@@ -8753,13 +8781,16 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
     from test_dispatch_implementer import fixture_session
     monkeypatch.setattr(implementer, "new_session_id", lambda: fixture_session(scenario))
     class ArtifactTransport:
+        def closing_pull_requests(self, query, variables):
+            return closing_page([])
+
         def get(self, endpoint, *, paginate=False):
             if endpoint.endswith("/comments"):
                 return [{"id": 751, "body": ARTIFACT_BRIEF,
                          "created_at": "2026-09-19T00:00:00Z",
                          "html_url": "https://github.example/issue#issuecomment-751",
                          "user": {"login": PRODUCER}}]
-            if "/pulls?" in endpoint:
+            if endpoint.endswith("/timeline?per_page=100"):
                 return []
             return {"number": 12, "state": "open", "body": "", "labels": [],
                     "user": {"login": PRODUCER}}
@@ -9645,7 +9676,7 @@ def tree_reads(repo="example/product", issue=12, pulls=(), *, failing=None):
     """The three reads `tree` makes to learn the change's open pull request."""
     reads = {f"repos/{repo}/issues/{issue}": {"number": issue, "state": "open", "body": ""},
              f"repos/{repo}/issues/{issue}/comments": [],
-             f"repos/{repo}/pulls?state=all&per_page=100": list(pulls)}
+             **listing(f"repos/{repo}", issue, list(pulls))}
     if failing is not None:
         reads[failing.format(repo=repo, issue=issue)] = work.WorkError("503 fixture read failed")
     return reads
@@ -9850,7 +9881,7 @@ def test_tree_builds_where_the_number_is_part_of_a_longer_run_or_only_higher_up(
 
 
 @pytest.mark.parametrize("failing", [None, "repos/{repo}/issues/{issue}", "repos/{repo}/issues/{issue}/comments",
-                                     "repos/{repo}/pulls?state=all&per_page=100"])
+                                     "repos/{repo}/issues/{issue}/timeline?per_page=100"])
 def test_tree_refuses_a_folder_naming_the_open_pull_request_and_fails_closed_without_it(
         tmp_path, monkeypatch, failing):
     home = tmp_path / "home"
@@ -10013,8 +10044,11 @@ def test_power_user_commands_run_one_named_stage(stage, tmp_path, monkeypatch):
     captured = []
 
     class MinimalTransport:
+        def closing_pull_requests(self, query, variables):
+            return closing_page([])
+
         def get(self, endpoint, *, paginate=False):
-            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+            if endpoint.endswith("/comments") or endpoint.endswith("/timeline?per_page=100"):
                 return []
             return {"number": 3, "state": "open", "body": "", "labels": []}
 
@@ -10034,8 +10068,11 @@ def test_power_user_use_is_an_explicit_named_stage(tmp_path, monkeypatch):
     captured = []
 
     class MinimalTransport:
+        def closing_pull_requests(self, query, variables):
+            return closing_page([])
+
         def get(self, endpoint, *, paginate=False):
-            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+            if endpoint.endswith("/comments") or endpoint.endswith("/timeline?per_page=100"):
                 return []
             return {"number": 3, "state": "open", "body": "", "labels": []}
 
@@ -10656,8 +10693,8 @@ def test_raw_output_inventory_failure_refuses_ready_use_and_panel_routing(
     transport = FakeTransport({
         f"{base}/issues/12": fixture.issue,
         f"{base}/issues/12/comments": fixture.issue_comments,
-        f"{base}/pulls?state=all&per_page=100": [{"number": 7, "state": "open", "body": "Closes #12"}],
-        f"{base}/pulls/7": {**fixture.pr, "changed_files": 1},
+        **listing(base, 12, [{"number": 7}]),
+        f"{base}/pulls/7": {**fixture.pr, "changed_files": 1, "body": "Closes #12"},
         f"{base}/issues/7/comments": fixture.pr_comments,
         f"{base}/pulls/7/reviews": [],
         f"{base}/pulls/7/comments": [],
@@ -11443,7 +11480,6 @@ def test_sweep_releases_only_proven_terminal_rows_and_keeps_worktrees(
     values = {}
     rows = []
     roots = {}
-    all_pulls = [pull for _issue_state, pulls in states.values() for pull in pulls]
     for issue_number in range(1, 8):
         root = tmp_path / f"kept-{issue_number}"
         root.mkdir()
@@ -11459,7 +11495,7 @@ def test_sweep_releases_only_proven_terminal_rows_and_keeps_worktrees(
                 "number": issue_number, "state": issue_state, "body": "",
             }
             values[f"{base}/issues/{issue_number}/comments"] = []
-            values[f"{base}/pulls?state=all&per_page=100"] = all_pulls
+            values.update(listing(base, issue_number, pulls))
     write_registry_rows(rows)
     work.sweep_registry(FakeTransport(values))
     recorded = {row["issue"]: row["active"] for row in work.read_registry()["worktrees"]}
@@ -11497,10 +11533,10 @@ def test_sweep_releases_only_a_terminal_pull_request_for_the_registered_branch(
             "number": 12, "state": "open", "body": "",
         },
         f"{base}/issues/12/comments": [],
-        f"{base}/pulls?state=all&per_page=100": [{
+        **listing(base, 12, [{
             "number": 112, "state": "closed", "merged_at": merged_at,
             "body": "Fixes #12", "head": {"ref": pull_branch},
-        }],
+        }]),
     }
 
     work.sweep_registry(FakeTransport(values))
@@ -12136,8 +12172,11 @@ def test_named_stage_report_uses_named_role_not_recommendation(tmp_path, monkeyp
     ])
     captured = []
     class Transport:
+        def closing_pull_requests(self, query, variables):
+            return closing_page([])
+
         def get(self, endpoint, *, paginate=False):
-            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+            if endpoint.endswith("/comments") or endpoint.endswith("/timeline?per_page=100"):
                 return []
             return {"number": 3, "state": "open", "body": "", "labels": []}
     work.run(args, transport=Transport(), executor=lambda state, decision, *_a: captured.append(decision) or 0)

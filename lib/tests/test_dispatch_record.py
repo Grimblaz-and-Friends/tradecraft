@@ -286,7 +286,7 @@ def test_native_claude_usage_keeps_the_returned_model_and_tokens():
 
 def test_git_revision_timeout_is_unknown(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        records, "run_process",
+        records, "run_read",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             subprocess.TimeoutExpired(["git", "rev-parse"], 20)
         ),
