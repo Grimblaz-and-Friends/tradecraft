@@ -892,6 +892,7 @@ def judge_gh_api(positional: list[str], values: dict[str, list[str]], ctx: Conte
     fields = _fields(values)
     has_body = bool(fields) or "--input" in values
     if not method:
+        # As gh does: given fields or --input and no method, it sends POST.
         method = "POST" if has_body else "GET"
     if endpoint == "graphql":
         return judge_graphql(fields, ctx)

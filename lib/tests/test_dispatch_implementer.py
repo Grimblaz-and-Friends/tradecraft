@@ -2277,6 +2277,16 @@ def test_a_granted_turn_is_refused_before_a_cloud_launch(job, monkeypatch):
         implementer.run_implementer(args)
 
 
+def test_a_broken_cloud_switch_is_reported_before_a_grant(job, monkeypatch):
+    # The switch is the fault to fix; naming the grant would send the holder to move the turn.
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.")
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"github_write_grants": [GRANT]}).encode())
+    (Path.home() / ".tradecraft" / "cloud-builds.json").write_text("{")
+    assert implementer.run_implementer(args) == 0
+    assert sent["entry"] is None and "malformed" in sent["preset_failure"]
+
+
 def test_a_dispatch_stating_another_allowance_is_refused_before_launch(job):
     args, _ = job
     _granted_turn(args, [])  # the dispatch omits the grant the launch holds

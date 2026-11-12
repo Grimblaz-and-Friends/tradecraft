@@ -553,17 +553,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     if args.vendor == "claude":
         route = _cloud_route(args)
         if route is not None:
-            if metadata.get("github_write_grants"):
-                # The cloud routine's fixed text forbids every write beyond the change and
-                # report branches, so a cloud turn could not honour a grant.
-                raise ImplementerError(
-                    "a write grant cannot ride a cloud launch: its routine allows no write beyond the "
-                    "change and report branches; run the granted turn locally or return it to the owner")
             entry, route_source, refusal = route
-            # A cloud run is told its route's allowance once, as a local launch is told its own,
-            # and a dispatch stating another is refused before anything fires. A route that is
-            # itself refused, such as a broken switch, is reported as that, not as an allowance.
+            # A route that is itself refused, such as a broken switch, is reported as that, not
+            # as a grant or an allowance its holder would otherwise go and change.
+            # Design: lib/DESIGN.md#the-github-write-bound
             if refusal is None:
+                if metadata.get("github_write_grants"):
+                    # The cloud routine's fixed text forbids every write beyond the change and
+                    # report branches, so a cloud turn could not honour a grant.
+                    raise ImplementerError(
+                        "a write grant cannot ride a cloud launch: its routine allows no write beyond the "
+                        "change and report branches; run the granted turn locally or return it to the owner")
                 try:
                     cloud_notice = github_allowance.cloud_notice(args.stage, prompt)
                 except github_allowance.BoundError as exc:
@@ -630,6 +630,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             child_env = artifact_tree.environment() if args.stage == "artifact" else None
             intent = {"status": "unprepared", "disabled_plugin_ids": [], "allowed_plugins": []}
             preparation_error = None
+            # The GitHub write bound. Design: lib/DESIGN.md#the-github-write-bound
             allowance = github_allowance.allowance_for(
                 args.stage, repository=github_allowance.repository_of(args.work),
                 branch=args.lineage_branch, pull_request=args.lineage_pull_request,
@@ -732,8 +733,6 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             request["recipient_allocation_seconds"] = allocation
             request["budget_override_reason"] = budget_reason
             github_bound = intent.get("github_write_bound") if command is not None and not preparation_error else None
-            # Every bounded launch is told its allowance exactly once: a composed prompt
-            # already carries it, and a dispatch stating another allowance is refused.
             try:
                 github_notice = (github_allowance.notice(allowance)
                                  if github_bound is not None and github_allowance.needs_notice(allowance, prompt)

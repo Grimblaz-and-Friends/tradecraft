@@ -1957,6 +1957,56 @@ def test_894_a_use_consumer_is_bounded_and_its_refusals_reach_its_run_record(
         assert refusals == []
 
 
+def _use_consumer(job, tmp_path, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    args.work = "o/r#894"
+    return args
+
+
+def test_a_use_consumer_that_never_started_reports_its_refusals_read(job, tmp_path, monkeypatch):
+    from test_work import state
+    args = _use_consumer(job, tmp_path, monkeypatch)
+
+    def cannot_start(_command, **_kwargs):
+        raise OSError("no such program")
+
+    monkeypatch.setattr(seat, "run_process", cannot_start)
+    with pytest.raises(seat.DispatchError, match="Cannot launch claude"):
+        seat.run_dispatch(args)
+    logged = record(args)
+    assert [attempt["launched"] for attempt in logged["attempts"]] == [False]
+    assert logged["github_write_bound"]["child_settings"]
+    assert logged["github_write_refusals"] == [] and "github_write_refusals_unknown" not in logged
+    # The entrance report reads this record as read, not as a launch whose log was never read.
+    fixture = state(pr=True)
+    fixture.record_root = tmp_path
+    monkeypatch.setattr(work.lifecycle, "launch_bundles",
+                        lambda *_a, **_k: [(0, "b", {"dispatch_id": "d", "stage": "use"}, logged)])
+    monkeypatch.setattr(work.work_recovery, "scoped", lambda _state, found, **_k: found)
+    assert work._github_write_report(fixture)["status"] == "read"
+
+
+def test_a_use_consumer_dispatch_stating_another_allowance_is_an_unlaunched_attempt(
+        job, tmp_path, monkeypatch):
+    import github_allowance
+    args = _use_consumer(job, tmp_path, monkeypatch)
+    other = github_allowance.sentence(github_allowance.allowance_for(
+        "build", repository="o/r", branch="b", pull_request=None))
+    args.dispatch.write_bytes(args.dispatch.read_bytes() + b"\n\n" + other.encode("utf-8"))
+    launched = []
+    monkeypatch.setattr(seat, "run_process", lambda *a, **k: launched.append(a))
+    with pytest.raises(seat.DispatchError, match="other than"):
+        seat.run_dispatch(args)
+    assert launched == []
+    logged = record(args)
+    attempt, = logged["attempts"]
+    assert attempt["launched"] is False and attempt["outcome"] == "error"
+    assert "other than" in attempt["reason"] and logged["outcome"] == "error"
+    assert "github_write_bound" not in logged
+
+
 @pytest.mark.parametrize("stage, requires", [("cold-read", "read"), ("cold-reader", "read"),
                                              ("use", "read")])
 def test_894_a_seat_without_a_shell_carries_no_github_write_bound(job, tmp_path, monkeypatch, stage, requires):

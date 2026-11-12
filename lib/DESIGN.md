@@ -182,7 +182,7 @@ Before anything is built or launched:
 - A push grant names one ref, so a ref-wide push would carry refs no row named.
 - A grant must rest on a brief row, not the holder's judgment that a write is reversible, because in a product repository a pushed branch can start workflows or a deploy that deleting it doesn't undo.
 - The installed Codex loads command rules only from user or project `.rules` files and `requirements.toml`, so no source can be supplied for one launch without writing into the product tree, the owner's Codex home or the machine's policy.
-- The self-test runs through the installed entry, the hook command or the written wrapper, because that is what the session will run; a check proved only in-process could still be missing from, or broken in, what the launch carries. It is not an `OSError`, so a self-test that ran and failed is never reported as one that could not run.
+- The self-test runs through the installed entry, the hook command or the written wrapper, because that is what the session will run; a check proved only in-process could still be missing from, or broken in, what the launch carries.
 - A refusal is reported, not held: it fails the command and the turn goes on, because the check exists to make a write that didn't happen visible, not to stop work the step can finish another way.
 - The allowance command takes the branch and pull request the launcher will, so the sentence it prints is the one the launch will hold; a sentence for any other allowance would be refused at launch, and so would one carrying the cloud sentence instead.
 - A grant writes only to the work's own repository, because it answers a write the change's own step needs; nothing in the affirmed work provides for a grant to write anywhere else.

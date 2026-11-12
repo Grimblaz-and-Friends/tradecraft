@@ -339,6 +339,8 @@ def prepare(temporary, allowance: dict, *, carrier: str, root, env: dict[str, st
     child_path = temporary / "github-write-child.json"
     child_settings = temporary / "child-settings.json"
     log = temporary / "github-write.log.jsonl"
+    # The hook command and the wrapper put every path inside double quotes, and nothing there
+    # escapes one, so a path holding one would end its quoting early.
     for path in (sys.executable, GUARD, config_path, child_settings):
         if '"' in str(path):
             raise BoundError(f"GitHub write check path contains a double quote: {path}")

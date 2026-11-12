@@ -753,8 +753,15 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             # given a shell, the launch compared_launch names. Settings hooks
                             # don't run under --safe-mode, so its check rides the shell prefix.
                             if compared_launch(args, vendor):
-                                github_bound = use_consumer_bound(
-                                    args, root, Path(temp), request["recipient_allocation_seconds"])
+                                try:
+                                    github_bound = use_consumer_bound(
+                                        args, root, Path(temp), request["recipient_allocation_seconds"])
+                                except DispatchError as exc:
+                                    # Refused before launch: the attempt names why, as a launch
+                                    # that could not start does, so its record is not left blank.
+                                    attempt.update(outcome="error", reason=str(exc))
+                                    attempt["permission_boundary_unavailable_reason"] = str(exc)
+                                    raise
                                 record["github_write_bound"] = github_bound["record"]
                             returned = False
                             started = time.monotonic()
@@ -827,10 +834,13 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 attempt["launched"] = True
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
+                            finally:
+                                if github_bound is not None:
+                                    # Read on every exit, a launch that never started included,
+                                    # so the report reads this record's refusals, not unknown.
+                                    # A refusal is reported, not held: it changes no outcome.
+                                    github_allowance.record_refusals(record, github_bound["log"])
                             elapsed = time.monotonic() - started
-                            if github_bound is not None:
-                                # A refusal is reported, not held: it changes no outcome.
-                                github_allowance.record_refusals(record, github_bound["log"])
                             if record.get("interruption_cause") == "ceiling":
                                 reason = lifecycle.ceiling_reason(vendor, caller_limit=args.timeout_seconds,
                                                                   allocation=allocation, elapsed=elapsed) + "; no fallback"
