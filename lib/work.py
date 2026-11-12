@@ -10322,14 +10322,13 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
     return 0
 
 
-def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState | None = None,
-                       root: Path | None = None) -> int:
+def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState,
+                       root: Path) -> int:
     """Print the allowance sentence a holder-written dispatch for STAGE carries.
 
-    Given the issue's state and the holder root, as the entrance passes them, it takes the
-    branch from the registered implementation tree and the pull request from the issue, as
-    the launcher will, and refuses a tree or pull request other than those: the launcher
-    refuses a dispatch stating any other allowance. Design: lib/DESIGN.md#the-github-write-bound
+    It takes the branch from the registered implementation tree and the pull request from the
+    issue, as the launcher will, and refuses a tree or pull request other than those: the
+    launcher refuses a dispatch stating any other allowance. Design: lib/DESIGN.md#the-github-write-bound
     """
     if args.stage not in GITHUB_BOUND_STAGES | {"use"}:
         raise WorkError("allowance requires an implementer stage or use: "
@@ -10348,26 +10347,19 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState 
         if args.implementation_root is None:
             raise WorkError(f"allowance {args.stage} requires --implementation-root, the tree whose "
                             "branch the step may push")
-        branch = subprocess.run(
-            ["git", "-C", str(args.implementation_root.expanduser()), "symbolic-ref", "--short", "-q", "HEAD"],
-            capture_output=True, stdin=subprocess.DEVNULL, timeout=30).stdout.decode("utf-8").strip() or None
-        if branch is None:
-            raise WorkError(f"allowance {args.stage}: --implementation-root is on no branch")
-        if root is not None:
-            registered = resolve_implementation_root(root, args.repo, args.issue, args.instalment,
-                                                     migrate=False)
-            if registered is None or not _same_path(registered[0],
-                                                    args.implementation_root.expanduser().resolve()):
-                raise WorkError(f"allowance {args.stage}: --implementation-root is not this change's "
-                                "registered implementation tree, which the launch pushes from")
-            branch = registered[1]
+        registered = resolve_implementation_root(root, args.repo, args.issue, args.instalment,
+                                                 migrate=False)
+        if registered is None or not _same_path(registered[0],
+                                                args.implementation_root.expanduser().resolve()):
+            raise WorkError(f"allowance {args.stage}: --implementation-root is not this change's "
+                            "registered implementation tree, which the launch pushes from")
+        branch = registered[1]
     pull_request = args.pull_request
-    if state is not None:
-        number = state.pr.get("number") if state.pr else None
-        if pull_request is not None and pull_request != number:
-            raise WorkError(f"allowance: --pull-request {pull_request} is not this issue's pull request "
-                            f"({number}), which the launch holds")
-        pull_request = number
+    number = state.pr.get("number") if state.pr else None
+    if pull_request is not None and pull_request != number:
+        raise WorkError(f"allowance: --pull-request {pull_request} is not this issue's pull request "
+                        f"({number}), which the launch holds")
+    pull_request = number
     if args.stage == "review-disposition" and pull_request is None:
         raise WorkError("allowance review-disposition requires --pull-request, the pull request "
                         "whose threads the step may answer")

@@ -319,7 +319,7 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
         findings.extend(judge_text(sub, Context(ctx.cwd, ctx.config, ctx.assigned, ctx.cleared,
                                                 ctx.depth + 1)))
     for words in commands:
-        findings.extend(judge_simple(words, ctx, text))
+        findings.extend(judge_simple(words, ctx))
     ctx.docs = outer_docs
     return findings
 
@@ -369,7 +369,7 @@ JUDGED_PROGRAMS = {"git", "gh", "claude", "codex", "cmd", "eval", "invoke-expres
                    "npx", "bunx", "pnpx", "pnpm", "yarn", *SHELLS, *POWERSHELLS}
 
 
-def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
+def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
     words = list(words)
     local_cleared = False
     passed_through = False
@@ -1010,7 +1010,11 @@ def judge_graphql(fields: dict[str, str], ctx: Context) -> list[Finding]:
 
 
 def thread_owner(thread: str) -> tuple[str, int] | None:
-    """(owner/name, number) of a review thread, read from GitHub; None when unreadable."""
+    """(owner/name, number) of a review thread, read from GitHub; None when unreadable.
+
+    A thread's id names no pull request, so this read is the only way to hold a reply or
+    resolve to the allowance's own; an unreadable answer leaves it unconfirmed, and refused.
+    """
     try:
         result = subprocess.run(["gh", "api", "graphql", "-f", f"query={THREAD_LOOKUP}",
                                  "-f", f"n={thread}"], capture_output=True, timeout=30,

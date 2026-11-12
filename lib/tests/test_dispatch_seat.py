@@ -2007,6 +2007,28 @@ def test_a_use_consumer_dispatch_stating_another_allowance_is_an_unlaunched_atte
     assert "github_write_bound" not in logged
 
 
+def test_a_use_consumer_is_judged_on_the_bytes_it_launches(job, tmp_path, monkeypatch):
+    import github_allowance
+    args = _use_consumer(job, tmp_path, monkeypatch)
+    plain = args.dispatch.read_bytes()
+    other = github_allowance.sentence(github_allowance.allowance_for(
+        "build", repository="o/r", branch="b", pull_request=None))
+    args.dispatch.write_bytes(plain + b"\n\n" + other.encode("utf-8"))
+    prepare = seat.github_allowance.prepare
+
+    def rewritten_after_the_read(*a, **k):
+        # The file no longer states another allowance; the launched bytes still do.
+        args.dispatch.write_bytes(plain)
+        return prepare(*a, **k)
+
+    monkeypatch.setattr(seat.github_allowance, "prepare", rewritten_after_the_read)
+    launched = []
+    monkeypatch.setattr(seat, "run_process", lambda *a, **k: launched.append(a))
+    with pytest.raises(seat.DispatchError, match="other than"):
+        seat.run_dispatch(args)
+    assert launched == []
+
+
 @pytest.mark.parametrize("stage, requires", [("cold-read", "read"), ("cold-reader", "read"),
                                              ("use", "read")])
 def test_894_a_seat_without_a_shell_carries_no_github_write_bound(job, tmp_path, monkeypatch, stage, requires):

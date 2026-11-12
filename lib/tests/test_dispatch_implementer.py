@@ -1621,9 +1621,14 @@ def test_artifact_byte_bound_keeps_exact_return_and_generated_context(
         effective_input += b"\n\n" + request["launch_controls"]["notice"].encode("utf-8")
         # Then its write-bound notice (#906).
         effective_input += b"\n\n" + request["launch_controls"]["write_bound_notice"].encode("utf-8")
+        # Which carries the GitHub write allowance, so the record of what Claude was told holds it.
+        told = request["launch_controls"]["write_bound_notice"]
+        assert "github_write_notice" not in request
     else:
         # Codex is told its GitHub write allowance after the dispatch.
         effective_input += b"\n\n" + request["github_write_notice"].encode("utf-8")
+        told = request["github_write_notice"]
+    assert told.count(implementer.github_allowance.SENTENCE_OPENING) == 1
     assert base64.b64decode(captured["stdin"]) == effective_input
     assert request["effective_input_sha256"] == hashlib.sha256(effective_input).hexdigest()
     assert request["context"]["sha256"] == hashlib.sha256(effective_context).hexdigest()

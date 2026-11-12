@@ -27,6 +27,19 @@ def _bound_tree(tmp_path):
     return tree
 
 
+def _allowance_at(tmp_path, monkeypatch, argv, *, pr=True):
+    """Run the allowance command as the entrance does: on the issue's state, with BRANCH's tree registered."""
+    tree = tmp_path / "bound-tree"
+    if not tree.exists():
+        _bound_tree(tmp_path)
+    monkeypatch.setattr(work, "resolve_implementation_root",
+                        lambda *_a, **_k: (tree.resolve(), BRANCH, False))
+    argv = [value.replace("{tree}", str(tree)) for value in argv]
+    args = work.parser().parse_args([*argv, "--repo", "example/product", "--issue", "12",
+                                     "--root", str(tree)])
+    return work._allowance_command(args, state=state(pr=pr), root=tree)
+
+
 def _prompt_commands(prompt):
     """Every command a composed prompt gives: a line or code span opening with gh or git."""
     found = [line.strip() for line in prompt.splitlines() if re.match(r"^(gh|git) ", line.strip())]
@@ -77,11 +90,9 @@ def test_ac11_every_composed_implementer_prompt_names_its_writes(stage, monkeypa
         assert expected in prompt and "**Write requests**" in prompt
 
 
-def test_ac10_the_allowance_command_prints_the_sentence(tmp_path, capsys):
-    tree = _bound_tree(tmp_path)
-    args = work.parser().parse_args(["allowance", "build", "--repo", "example/product", "--issue", "12",
-                                     "--root", str(tree), "--implementation-root", str(tree)])
-    assert work._allowance_command(args) == 0
+def test_ac10_the_allowance_command_prints_the_sentence(tmp_path, monkeypatch, capsys):
+    assert _allowance_at(tmp_path, monkeypatch, ["allowance", "build", "--implementation-root", "{tree}"],
+                         pr=False) == 0
     expected = github_allowance.sentence(github_allowance.allowance_for(
         "build", repository="example/product", branch=BRANCH, pull_request=None))
     assert capsys.readouterr().out.strip() == expected
@@ -259,20 +270,16 @@ def test_a_composed_prompt_names_the_grants_in_force(monkeypatch):
     (["allowance", "floor"], "--implementation-root"),
     (["allowance", "review-disposition", "--implementation-root", "{tree}"], "--pull-request"),
 ])
-def test_the_allowance_command_refuses_rather_than_print_the_wrong_sentence(tmp_path, capsys, arguments, missing):
-    tree = _bound_tree(tmp_path)
-    arguments = [value.replace("{tree}", str(tree)) for value in arguments]
-    args = work.parser().parse_args([*arguments, "--repo", "example/product", "--issue", "12",
-                                     "--root", str(tree)])
+def test_the_allowance_command_refuses_rather_than_print_the_wrong_sentence(tmp_path, monkeypatch, capsys,
+                                                                            arguments, missing):
     with pytest.raises(work.WorkError, match=missing):
-        work._allowance_command(args)
+        _allowance_at(tmp_path, monkeypatch, arguments, pr=False)
     assert capsys.readouterr().out == ""
 
 
-def test_the_allowance_command_prints_the_sentence_the_use_consumer_launcher_holds(tmp_path, capsys):
-    args = work.parser().parse_args(["allowance", "use", "--repo", "example/product", "--issue", "12",
-                                     "--root", str(tmp_path)])
-    assert work._allowance_command(args) == 0
+def test_the_allowance_command_prints_the_sentence_the_use_consumer_launcher_holds(tmp_path, monkeypatch,
+                                                                                  capsys):
+    assert _allowance_at(tmp_path, monkeypatch, ["allowance", "use"]) == 0
     printed = capsys.readouterr().out.strip()
     # The allowance dispatch_seat.use_consumer_bound holds for this work.
     held = github_allowance.allowance_for("use", repository=github_allowance.repository_of(
@@ -288,13 +295,11 @@ def test_a_stage_outside_run_or_allowance_is_refused_naming_both(tmp_path):
         work._run(args, transport=object())
 
 
-def test_the_allowance_command_prints_review_dispositions_own_pull_request(tmp_path, capsys):
-    tree = _bound_tree(tmp_path)
-    args = work.parser().parse_args(["allowance", "review-disposition", "--repo", "example/product",
-                                     "--issue", "12", "--root", str(tree), "--implementation-root",
-                                     str(tree), "--pull-request", "7"])
-    assert work._allowance_command(args) == 0
-    assert "example/product#7" in capsys.readouterr().out
+def test_the_allowance_command_prints_review_dispositions_own_pull_request(tmp_path, monkeypatch, capsys):
+    number = state(pr=True).pr["number"]
+    assert _allowance_at(tmp_path, monkeypatch, ["allowance", "review-disposition", "--implementation-root",
+                                                 "{tree}", "--pull-request", str(number)]) == 0
+    assert f"example/product#{number}" in capsys.readouterr().out
 
 
 def test_the_allowance_command_takes_the_launchers_tree_and_pull_request(tmp_path, monkeypatch, capsys):
@@ -321,19 +326,18 @@ def test_the_allowance_command_takes_the_launchers_tree_and_pull_request(tmp_pat
     assert capsys.readouterr().out == ""
 
 
-def test_the_allowance_command_prints_the_cloud_routes_sentence(tmp_path, capsys):
+def test_the_allowance_command_prints_the_cloud_routes_sentence(tmp_path, monkeypatch, capsys):
     def allowance(*arguments):
-        return work.parser().parse_args(["allowance", *arguments, "--repo", "example/product",
-                                         "--issue", "12", "--root", str(tmp_path), "--cloud"])
+        return _allowance_at(tmp_path, monkeypatch, ["allowance", *arguments, "--cloud"])
 
-    assert work._allowance_command(allowance("build")) == 0
+    assert allowance("build") == 0
     printed = capsys.readouterr().out.strip()
     assert printed == github_allowance.cloud_sentence("build")
     assert github_allowance.cloud_notice("build", printed.encode()) == b""
     with pytest.raises(work.WorkError, match="never takes the cloud route"):
-        work._allowance_command(allowance("use"))
+        allowance("use")
     with pytest.raises(work.WorkError, match="cannot ride a cloud launch"):
-        work._allowance_command(allowance("build", "--grant", "9001"))
+        allowance("build", "--grant", "9001")
 
 
 def _granted_allowance_run(tmp_path, monkeypatch, capsys, *, grant_brief=7001, continuity="resume",

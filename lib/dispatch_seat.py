@@ -439,8 +439,11 @@ def compared_launch(args, vendor):
     return vendor == "claude" and args.stage == "use" and args.requires == "execute"
 
 
-def use_consumer_bound(args, root, temporary, allocation_seconds):
+def use_consumer_bound(args, root, temporary, allocation_seconds, prompt):
     """Prepare the use consumer's GitHub write bound, or refuse the launch.
+
+    PROMPT is the bytes the seat launches, so the allowance it states is judged on what the
+    session is told, not on a later read of the dispatch file.
 
     Design: lib/DESIGN.md#the-github-write-bound
     """
@@ -454,7 +457,7 @@ def use_consumer_bound(args, root, temporary, allocation_seconds):
     except github_allowance.BoundError as exc:
         raise DispatchError(f"the use consumer's GitHub write check could not be prepared: {exc}") from exc
     try:
-        told = not github_allowance.needs_notice(allowance, args.dispatch.expanduser().read_bytes())
+        told = not github_allowance.needs_notice(allowance, prompt)
     except github_allowance.BoundError as exc:
         raise DispatchError(str(exc)) from exc
     return {**bound, "notice": b"" if told else github_allowance.notice(allowance)}
@@ -755,7 +758,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             if compared_launch(args, vendor):
                                 try:
                                     github_bound = use_consumer_bound(
-                                        args, root, Path(temp), request["recipient_allocation_seconds"])
+                                        args, root, Path(temp), request["recipient_allocation_seconds"],
+                                        prompt)
                                 except DispatchError as exc:
                                     # Refused before launch: the attempt names why, as a launch
                                     # that could not start does, so its record is not left blank.
