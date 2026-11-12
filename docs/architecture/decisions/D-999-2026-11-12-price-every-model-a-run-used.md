@@ -33,6 +33,7 @@ Product artifact turns (Daemon #95, Organizations-of-Verra #568) used Sonnet 5 h
 - **C4: a damaged repository price file doesn't stop the report.** The file or each unusable row is named under `price_files`, so a half-filled paste can't take away every other figure. A damaged shipped card stays fatal.
 - **C5: the report finds the repository file by `--root`,** falling back to the current directory's git top level, matching the work entrance's `--root`.
 - **From the holder's reading:** the guidance shows the `prompt_tiers` shape inline instead of pointing at the shipped Haiku 5.5 row, and a transcript reply on an unpriced model enters the guidance with its reply count.
+- **From the first use session:** each Claude placeholder names its column under both headers the page is served with, the Markdown table's and the rendered table's, and `cache_creation`'s says to repeat the `cache_write_1h` price instead of naming a column, because a consumer otherwise had to read the code to fill it.
 - **A malformed native count on a reply with no price stays a fault of its own,** so a missing price can't hide it and the row stays unknown when nothing else priced.
 - **Keep-warm pings are not touched.** The pull request adding `_ping_price` (#993) had not merged when this was built; whichever merges second carries this rule into it.
 

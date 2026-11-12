@@ -175,7 +175,7 @@ A row may carry `prompt_tiers`, each a threshold and its own classes: a request 
 
 When a dispatch carries only the aggregate cache-write count, the comparison with the runtime's list figure accepts the card's figure at either the one-hour or the five-minute write price, and records which reading matched; a runtime figure more than a cent from both readings is flagged and the card's one-hour figure used.
 
-Wherever a model has no price, whether the run ends known, as a floor or unknown, the report's `missing_prices` names it with the vendor's posted pricing page, the uses that met it, the repository file to paste into, and a ready-to-fill entry in the vendor's shape. Each price and the retrieval time in the entry is a `FILL` placeholder naming the page column to copy, `effective_from` is midnight UTC of the earliest affected use, and `new_file` gives the whole file when none exists.
+Wherever a model has no price, whether the run ends known, as a floor or unknown, the report's `missing_prices` names it with the vendor's posted pricing page, the uses that met it, the repository file to paste into, and a ready-to-fill entry in the vendor's shape. Each price and the retrieval time in the entry is a `FILL` placeholder naming the page column to copy, under each header the page is served with; `cache_creation`'s says to repeat the one-hour write price, because the card keeps that class at the one-hour price for records that report only their total cache writes. `effective_from` is midnight UTC of the earliest affected use, and `new_file` gives the whole file when none exists.
 
 **Why.**
 

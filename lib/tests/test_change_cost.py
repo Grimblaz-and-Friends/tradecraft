@@ -1773,3 +1773,18 @@ def test_a_pasted_tier_whose_threshold_is_still_a_placeholder_is_named_and_unuse
     assert rows == []
     assert status["rejected"] == [{"model": "claude-tiered-9", "reason": "prompt_tiers[0].above_prompt_tokens "
                                    "still holds a FILL placeholder; replace it from the pricing page"}]
+
+
+def test_each_claude_placeholder_names_its_column_as_both_page_forms_show_it():
+    # The page's Markdown and rendered tables use different headers, and a reader holding either
+    # must find the column; cache_creation is not a page column, so it says which price to repeat.
+    classes = cost._entry_template("claude", "claude-unrated-9",
+                                   datetime.fromisoformat("2026-11-05T00:00:00+00:00"))["classes"]
+    headers = {"input": ("Base input tokens", "Input"), "cache_write_5m": ("5m cache writes", "5m writes"),
+               "cache_write_1h": ("1h cache writes", "1h writes"),
+               "cache_read": ("Cache hits and refreshes", "Hits and refreshes"),
+               "output": ("Output tokens", "Output")}
+    for name, (markdown, rendered) in headers.items():
+        assert markdown in classes[name] and f"shown as {rendered})" in classes[name], name
+    assert classes["cache_creation"].startswith("FILL: the same price as cache_write_1h")
+    assert "column" not in classes["cache_creation"]

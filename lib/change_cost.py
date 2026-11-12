@@ -338,10 +338,14 @@ def load_rates(path: Path) -> list[dict[str, object]]:
 
 _PRICING_PAGES = {"claude": "https://platform.claude.com/docs/en/about-claude/pricing",
                   "codex": "https://developers.openai.com/api/docs/pricing"}
+# The Claude page is served as Markdown and as a rendered table with shorter headers, so each
+# label names the column both ways; a reader of either form finds it without reading this code.
 _ENTRY_CLASSES = {
-    "claude": {"input": "Base input tokens", "cache_write_5m": "5m cache writes",
-               "cache_write_1h": "1h cache writes", "cache_creation": "1h cache writes price again",
-               "cache_read": "Cache hits and refreshes", "output": "Output tokens"},
+    "claude": {"input": "Base input tokens (shown as Input)",
+               "cache_write_5m": "5m cache writes (shown as 5m writes)",
+               "cache_write_1h": "1h cache writes (shown as 1h writes)", "cache_creation": None,
+               "cache_read": "Cache hits and refreshes (shown as Hits and refreshes)",
+               "output": "Output tokens (shown as Output)"},
     "codex": {"input": "Input", "cached_input": "Cached input",
               "cache_write_input": "30m write", "output": "Output"},
 }
@@ -1258,7 +1262,9 @@ def _entry_template(vendor: str, model: str, first_use: datetime) -> dict[str, o
         # Midnight of the earliest affected use, so the filled entry covers the run that asked for it.
         "effective_from": first_use.astimezone(timezone.utc).strftime("%Y-%m-%dT00:00:00Z"),
         "effective_to": None, "currency": "USD", "per_tokens": 1000000,
-        "classes": {name: f"FILL: the {column} column's price for {model}, {unit}"
+        "classes": {name: f"FILL: the {column} column's price for {model}, {unit}" if column else
+                    "FILL: the same price as cache_write_1h, because the card keeps this class at the "
+                    f"one-hour price for records that report only their total cache writes; {unit}"
                     for name, column in names.items()},
         "source_url": _PRICING_PAGES.get(vendor),
         "retrieved_at": "FILL: the UTC time you read the page, such as 2026-11-12T05:21:04Z",
