@@ -456,6 +456,9 @@ def test_an_acceptance_line_names_one_flag_by_location_kind_and_if_needed_text()
     assert cold_reader.acceptances("Accepted: a.py " + dash + " what-comment " + dash + " above the heading"
                                    + review, flags) == ({1: "fine here"}, [])
     assert cold_reader.acceptances(review.replace("b.py:1", "b.py"), flags)[0] == {1: "fine here"}
+    ranged = [dict(flags[1], lines="1-3")]
+    for spelled in ("b.py:1-3", "b.py:1" + cold_reader.EN_DASH + "3"):
+        assert cold_reader.acceptances(review.replace("b.py:1", spelled), ranged) == ({0: "fine here"}, [])
     twins = [dict(flags[0], text="one - with a dash"), dict(flags[0], text="two")]
     told = cold_reader.acceptances(
         review.replace(accept("b.py:1", "fine here", "missing-reason"),
@@ -841,7 +844,7 @@ def test_a_reading_recorded_before_the_records_kept_it_is_unverifiable_without_i
 
 
 @pytest.mark.cold_reading
-def test_a_return_refused_for_its_form_was_never_a_reading(change):
+def test_a_return_the_form_check_refuses_is_not_a_reading(change):
     change.read(clean().replace("## Flags\nnone\n", ""))
     assert change.decide().reason == "cold-reading-absent"
 
@@ -1215,3 +1218,189 @@ def test_a_flag_on_the_diff_file_is_refused_for_the_changed_file_it_shows():
     message = "flag names the diff file rather than the changed file it shows: " + cold_reader.DIFF_FILE
     assert cold_reader.form_errors(account) == [message]
     assert cold_reader.form_errors(account, {"a.py", cold_reader.DIFF_FILE}) == [message]
+
+
+def listed(lines="1,3-4,7", tell="yes"):
+    """An account whose one flag names several lines and ranges of `a.py`."""
+    return ACCOUNT.replace("a.py:2", "a.py:" + lines).format(dash=cold_reader.EM_DASH, tell=tell)
+
+
+SPACED = "1, 3-4, 7"
+
+
+def test_a_flag_may_name_several_lines_and_ranges_with_or_without_spaces():
+    for lines in ("1,3-4,7", SPACED, "1,3" + cold_reader.EN_DASH + "4,7", "1,\t3-4"):
+        assert cold_reader.form_errors(listed(lines), {"a.py"}) == []
+        assert cold_reader.parse_account(listed(lines))["flags"][0]["lines"] == lines
+
+
+def test_a_location_that_is_not_a_list_of_lines_still_refuses_the_whole_reading():
+    for lines in ("1,", "1,,3", "1;3", "1,b.py:3", "1 ,3"):
+        assert cold_reader.form_errors(listed(lines)) == [
+            "malformed flag line: a.py:" + lines + " " + cold_reader.EM_DASH + " what-comment "
+            + cold_reader.EM_DASH + " the second line restates the code"]
+    # Indented sub-points under a flag are no flag line, so they still refuse the reading.
+    pointed = listed().replace("restates the code\n", "restates the code\n  - it adds a reason\n")
+    assert cold_reader.form_errors(pointed) == ["malformed flag line:   - it adds a reason"]
+
+
+def test_every_flag_form_that_parsed_before_lists_parses_the_same():
+    dash, en = cold_reader.EM_DASH, cold_reader.EN_DASH
+    table = {
+        f"a.py:2 {dash} what-comment {dash} text": ("a.py", "2", "what-comment", "text"),
+        f"- a.py:2 {dash} history {dash} text": ("a.py", "2", "history", "text"),
+        f"* a.py:2 {dash} history {dash} text": ("a.py", "2", "history", "text"),
+        f"`a.py:2` {dash} history {dash} text": ("a.py", "2", "history", "text"),
+        f"./lib/a.py:2-5 {dash} history {dash} text": ("./lib/a.py", "2-5", "history", "text"),
+        f"a.py {dash} missing-reason {dash} text": ("a.py", None, "missing-reason", "text"),
+        f"a.py:2{en}5 {dash} history {dash} text": ("a.py", "2" + en + "5", "history", "text"),
+        "a.py:2 - history - text - with a dash": ("a.py", "2", "history", "text - with a dash"),
+    }
+    for line, expected in table.items():
+        match = cold_reader.FLAG_LINE.match(line)
+        assert match and (match["path"], match["lines"], match["kind"], match["text"]) == expected, line
+
+
+def test_the_reader_is_told_a_location_may_list_several_lines(repository):
+    prompt = cold_reader.compose_prompt(cold_reader.load_metadata(build(repository)), "S", "d").decode("utf-8")
+    assert "one line, one range, or several of either separated by commas" in prompt
+    assert all(example in prompt for example in ("`path:12`", "`path:12-18`", "`path:12,40-44,97`"))
+
+
+@pytest.mark.cold_reading
+@pytest.mark.parametrize("lines", ["1,3-4,7", SPACED])
+def test_a_reading_whose_flag_lists_lines_counts_and_posts_whole(change, lines):
+    change.read(listed(lines))
+    assert change.decide().reason == "cold-reading-post-owed"
+    change.post_open(listed(lines))
+    decision = change.decide()
+    assert (decision.reason, decision.invalid) == ("cold-reading-review-owed", [])
+
+
+@pytest.mark.cold_reading
+def test_a_reading_with_a_list_flag_and_an_indented_sub_point_is_not_a_reading(change):
+    change.read(listed().replace("restates the code\n", "restates the code\n  - it adds a reason\n"))
+    assert change.decide().reason == "cold-reading-absent"
+
+
+@pytest.mark.cold_reading
+def test_the_release_report_shows_a_list_flag_as_the_reader_wrote_it(change):
+    change.reviewed(listed(SPACED))
+    change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
+    change.reviewed(clean(), covered=covered(change.decide()))
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    rows = work._cold_reading_measures(fixture)["readings"]
+    dash = cold_reader.EM_DASH
+    assert rows[0]["flags"] == [f"a.py:{SPACED} {dash} what-comment {dash} the second line restates the code"]
+
+
+def test_an_acceptance_names_a_list_flag_by_its_whole_location_in_order():
+    review = "\n### Holder's review against the brief\n\n"
+    flags = cold_reader.parse_account(listed())["flags"]
+    spaced = cold_reader.parse_account(listed(SPACED))["flags"]
+    for location, against in (("a.py:1,3-4,7", flags), ("a.py:" + SPACED, flags),
+                              ("a.py:1,3" + cold_reader.EN_DASH + "4,7", flags), ("a.py:1,3-4,7", spaced),
+                              ("a.py", flags)):
+        assert cold_reader.acceptances(review + accept(location, "fine"), against) == ({0: "fine"}, []), location
+    for part in ("a.py:1,3-4", "a.py:7,1,3-4", "a.py:1"):
+        assert cold_reader.acceptances(review + accept(part, "fine"), flags) == (
+            {}, ["acceptance matches no flag in the account: " + accept(part, "fine")])
+
+
+@pytest.mark.cold_reading
+def test_a_whole_list_acceptance_closes_the_reading_and_the_report_shows_it(change):
+    change.read(listed(SPACED))
+    change.post_open(listed(SPACED), accept("a.py:1,3-4,7", "each place restates its line on purpose"))
+    assert change.decide().reason == "cold-reading-close"
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    row = work._cold_reading_measures(fixture)["readings"][0]
+    dash = cold_reader.EM_DASH
+    assert row["accepted"] == [{"flag": f"a.py:{SPACED} {dash} what-comment {dash} the second line restates "
+                                        "the code", "reason": "each place restates its line on purpose"}]
+    assert row["routed"] == []
+    change.post_clean()
+    decision = change.decide()
+    assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+
+
+@pytest.mark.cold_reading
+def test_an_acceptance_naming_part_of_a_list_sets_the_open_reading_aside_naming_its_line(change):
+    change.read(listed())
+    change.post_open(listed(), accept("a.py:1,3-4"))
+    decision = change.decide()
+    assert decision.reason == "cold-reading-post-owed"
+    assert [claim["reason"] for claim in decision.invalid] == [
+        "cold-reading acceptance matches no flag in the account: " + accept("a.py:1,3-4")]
+
+
+REFUSED = clean().replace("## Flags\nnone\n", "")
+
+
+@pytest.mark.cold_reading
+def test_an_open_quoting_a_refused_return_is_set_aside_saying_so(change):
+    change.read(REFUSED)
+    change.post_open(REFUSED)
+    decision = change.decide()
+    assert decision.reason == "cold-reading-absent"
+    assert [claim["reason"] for claim in decision.invalid] == [
+        "cold-reading account quotes a cold-reader return the form check refuses, so it is not a reading: "
+        "missing heading ## Flags"]
+
+
+@pytest.mark.cold_reading
+def test_an_open_quoting_a_refused_return_of_another_change_still_differs(change):
+    change.read(REFUSED)
+    lineage(change, "reading-1", lineage_branch="feature/other", lineage_pull_request=999)
+    change.post_open(REFUSED)
+    assert [claim["reason"] for claim in change.decide().invalid] == [
+        "cold-reading account differs from every retained cold-reader return"]
+
+
+@pytest.mark.cold_reading
+def test_a_refused_return_without_lineage_is_named_only_when_this_change_holds_its_head(change):
+    change.read(REFUSED)
+    git(change.root, "checkout", "-q", "--detach", change.base)
+    change.head = commit(change.root, {"a.py": "# Design: design/x.md#s\nA = 9\n"}, "elsewhere")
+    change.post_open(REFUSED)
+    assert [claim["reason"] for claim in change.decide().invalid] == [
+        "cold-reading account differs from every retained cold-reader return"]
+
+
+@pytest.mark.cold_reading
+def test_an_open_matching_no_return_differs_even_beside_a_refused_one(change):
+    change.read(REFUSED)
+    change.read(clean())
+    change.post_open(clean().replace("opens with its pointer", "opens with a pointer"))
+    decision = change.decide()
+    assert decision.reason == "cold-reading-post-owed"
+    assert [claim["reason"] for claim in decision.invalid] == [
+        "cold-reading account differs from every retained cold-reader return"]
+
+
+# The location pattern before a flag could list lines: one line or one range.
+SINGLE_LOCATION = re.compile(cold_reader.FLAG_LINE.pattern.replace(
+    cold_reader.LINES, r"[0-9]+(?:[-" + cold_reader.EN_DASH + r"][0-9]+)?"))
+
+
+@pytest.mark.cold_reading
+def test_a_newest_return_once_refused_only_for_a_list_is_owed_its_post(change):
+    change.read(listed())
+    flag = [line for line in listed().splitlines() if line.startswith("a.py:1,")]
+    assert len(flag) == 1 and SINGLE_LOCATION.match(flag[0]) is None
+    decision = change.decide()
+    assert decision.reason == "cold-reading-post-owed" and "reading-1" in decision.detail
+
+
+@pytest.mark.cold_reading
+def test_an_overtaken_once_refused_reading_is_listed_unposted_and_owes_nothing(change):
+    change.read(listed())
+    change.reviewed(clean())
+    assert change.decide().reason == "cold-reading-close"
+    change.post_clean()
+    assert change.decide().stage == "ready-reviewers"
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    rows = work._cold_reading_measures(fixture)["readings"]
+    assert [(row["posted"], row["can_tell"]) for row in rows] == [(False, True), (True, True)]
