@@ -540,6 +540,9 @@ def _contain_suspended(process):
             _assign_read(api, job, process)
         except OSError as exc:
             raise ContainmentRefused(f"job assignment refused: {exc}") from exc
+        # Popen keeps the process handle but not its main thread's handle, and finding that
+        # thread means a snapshot of every thread on the machine; NtResumeProcess resumes
+        # the process from the handle we hold, the call the premises spike timed.
         status = api.ntdll.NtResumeProcess(int(process._handle))
         if status < 0:
             raise ContainmentRefused(f"resume failed: NTSTATUS {status & 0xFFFFFFFF:#010x}")
@@ -564,17 +567,26 @@ def _abandon_suspended(process):
             stream.close()
 
 
+JOB_BASIC_ACCOUNTING = 1  # JobObjectBasicAccountingInformation: the job's live process count.
+JOB_BASIC_PROCESS_IDS = 3  # JobObjectBasicProcessIdList: the ids of the job's processes.
+# A read starts a handful of processes. Past this many, the job still kills the rest when
+# it is terminated and closed; they are only not waited on, so `_job_settled` can report
+# cleanup proven while one of them is still exiting.
+HELD_MEMBERS = 256
+
+
 def _hold_members(api, job, held):
     """Open every process now in the job, so its exit can be waited for after it leaves."""
     ctypes = api.ctypes
 
     class Members(ctypes.Structure):
         _fields_ = [("assigned", ctypes.c_ulong), ("listed", ctypes.c_ulong),
-                    ("ids", ctypes.c_size_t * 256)]
+                    ("ids", ctypes.c_size_t * HELD_MEMBERS)]
 
     members = Members()
-    api.kernel.QueryInformationJobObject(job, 3, ctypes.byref(members), ctypes.sizeof(members), None)
-    for pid in members.ids[:min(members.listed, 256)]:
+    api.kernel.QueryInformationJobObject(job, JOB_BASIC_PROCESS_IDS, ctypes.byref(members),
+                                         ctypes.sizeof(members), None)
+    for pid in members.ids[:min(members.listed, HELD_MEMBERS)]:
         if pid and pid not in held:
             handle = api.kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
             if handle:
@@ -597,7 +609,7 @@ def _job_settled(api, job, end, held):
     try:
         while True:
             _hold_members(api, job, held)
-            if not api.kernel.QueryInformationJobObject(job, 1, ctypes.byref(accounting),
+            if not api.kernel.QueryInformationJobObject(job, JOB_BASIC_ACCOUNTING, ctypes.byref(accounting),
                                                         ctypes.sizeof(accounting), None):
                 return False
             if accounting.active_processes == 0 and all(

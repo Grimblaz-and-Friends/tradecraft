@@ -1,4 +1,4 @@
-"""The entrance finds pull requests from the issue and says when time ran out (#978)."""
+"""The entrance finds pull requests from the issue and says when time ran out."""
 import json
 from pathlib import Path
 import re

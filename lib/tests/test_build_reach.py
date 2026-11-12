@@ -875,7 +875,7 @@ def test_C1_attribute_neutral_view_keeps_sha256_objects(tmp_path):
     assert item["path"] == "doc" and (item["added"], item["removed"]) == (0, 2)
 
 
-# (#978) A Git process the measurement starts, counted by the audit hook only while a test asks.
+# A Git process the measurement starts, counted by the audit hook only while a test asks.
 _STARTED = None
 
 

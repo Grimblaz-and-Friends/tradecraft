@@ -14,6 +14,8 @@ import time
 
 PARTS = ("github", "removals", "markers", "launch_preparation", "vendor")
 UNTIL = ("report", "handoff", "request-record", "spawn")
+# A tally line names each distinct refusal; a refusal repeated per read must not grow every report.
+FALLBACK_REASONS_KEPT = 20
 _SCOPE: ContextVar["Scope | None"] = ContextVar("tradecraft_preflight", default=None)
 
 
@@ -34,7 +36,7 @@ class Scope:
         route = seed.get("read_route") or {}
         self.contained = int(route.get("contained", 0) or 0)
         self.fallback = int(route.get("fallback", 0) or 0)
-        self.fallback_reasons = [str(item) for item in route.get("fallback_reasons", [])][:20]
+        self.fallback_reasons = [str(item) for item in route.get("fallback_reasons", [])][:FALLBACK_REASONS_KEPT]
         self._stack: list[list] = []
         self._lock = threading.Lock()
         self.memo: dict = {}
@@ -76,7 +78,7 @@ class Scope:
                 self.contained += 1
             else:
                 self.fallback += 1
-                if reason and reason not in self.fallback_reasons and len(self.fallback_reasons) < 20:
+                if reason and reason not in self.fallback_reasons and len(self.fallback_reasons) < FALLBACK_REASONS_KEPT:
                     self.fallback_reasons.append(str(reason))
 
     def read_route(self):

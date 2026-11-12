@@ -2124,7 +2124,7 @@ def _comparable(args):
     value["request"].pop("progress_baseline", None)
     # The remaining window measured at launch, a clock reading like a timestamp.
     value["request"].pop("recipient_allocation_seconds", None)
-    # The timing split from the call to the launch, also a clock reading (#978).
+    # The timing split from the call to the launch, also a clock reading.
     value["request"].pop("preflight", None)
     return value
 

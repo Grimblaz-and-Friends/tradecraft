@@ -1,4 +1,4 @@
-"""Every report carries the run's timing split, and a launched stage's line after the return carries it to the spawn (#978)."""
+"""Every report carries the run's timing split, and a launched stage's line after the return carries it to the spawn."""
 import json
 from pathlib import Path
 import subprocess

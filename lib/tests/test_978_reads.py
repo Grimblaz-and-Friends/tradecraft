@@ -1,4 +1,4 @@
-"""The read route (#978 row 2): one contained process per read, stopped at its bound."""
+"""The read route: one contained process per read, stopped at its bound."""
 import ast
 import os
 from pathlib import Path

@@ -776,7 +776,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     raise ImplementerError(str(exc)) from exc
             request["input"] = str(input_path)
             # The launch is this write: the split ends here, and each attempt's
-            # pre-spawn interval starts here (#978).
+            # pre-spawn interval starts here.
             scope = preflight.current()
             request["preflight"] = scope.snapshot("request-record")
             streams[request_path].write(records.json_bytes(request))

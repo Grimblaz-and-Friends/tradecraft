@@ -559,7 +559,7 @@ class GitHubREST:
 
     @staticmethod
     def _call(command, **kwargs):
-        # Every GitHub request counts toward the run's GitHub part of its timing split.
+        # One wrapper times every request, so no GitHub read escapes the split by another route.
         with preflight.part("github"):
             return _run_probe(command, **kwargs)
 
@@ -1984,7 +1984,6 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
 
 def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[str, object]]]:
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
-    # Marker validation is one part of the run's timing split.
     with preflight.part("markers"):
         return _validate_marker_claims(state)
 
@@ -3746,7 +3745,7 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
     if "preflight" not in payload and preflight.current() is not None:
-        # Where this run's time before the launch (or this report) went (#978).
+        # Where this run's time before the launch (or this report) went.
         payload = {**payload, "preflight": _reported_split()}
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
 
@@ -3920,7 +3919,6 @@ def _reach_readings(state: WorkState) -> list[Marker]:
 def _evaluate_reach(state: WorkState) -> None:
     """PR identity selects reach; registrations continue to own execution only."""
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
-    # The removals count is one part of the run's timing split.
     with preflight.part("removals"):
         _evaluate_reach_in_part(state)
 
@@ -4041,8 +4039,6 @@ def _reach_timeout_limit(uncertainty: object) -> str | None:
         for prefix in REACH_TIMEOUT_PREFIXES:
             if uncertainty.startswith(prefix):
                 return uncertainty[len(prefix):]
-        if uncertainty.startswith("ReachTimeout: "):
-            return uncertainty[len("ReachTimeout: "):]
     return None
 
 

@@ -1,4 +1,4 @@
-"""The dispatch store index: each record read once per run, with today's results (#978)."""
+"""The dispatch store index: each record read once per run, with today's results."""
 from collections import Counter
 import contextvars
 import json

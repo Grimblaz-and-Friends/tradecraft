@@ -5521,7 +5521,7 @@ def test_actions_collector_handles_real_rest_object_pages(monkeypatch):
 
     def gh(command, **kwargs):
         commands.append(command)
-        # Every GitHub read goes through the contained read route (#978).
+        # Every GitHub read goes through the contained read route.
         assert kwargs["input"] == b""
         return subprocess.CompletedProcess(command, 0, json.dumps(pages).encode("utf-8"), b"")
 

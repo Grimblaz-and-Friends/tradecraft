@@ -1,4 +1,4 @@
-"""The entrance's pre-launch work at scale: each piece done once, no listing, time named (#978).
+"""The entrance's pre-launch work at scale: each piece done once, no listing, time named.
 
 Design: lib/DESIGN.md#the-entrances-work-before-a-launch
 """
@@ -92,6 +92,12 @@ def allowed_rest(repo):
         "one path's contents at a commit": rf"{r}/contents/[^?]+",
         "one comment by id": rf"{r}/issues/comments/[0-9]+",
         "one workflow run by id": rf"{r}/actions/runs/[0-9]+",
+        # Added beyond the artifact's list, each scoped to one object: the review workflow
+        # run's jobs and the base branch's protection (read_state for an open pull request),
+        # and one commit by its sha (use evidence classifying each commit since a use marker).
+        "one workflow run's jobs": rf"{r}/actions/runs/[0-9]+/jobs",
+        "one commit": rf"{r}/commits/{SHA_ID}",
+        "one branch's protection": rf"{r}/branches/[^/?]+/protection",
         "the authenticated account": r"user",
     }
 
@@ -686,3 +692,54 @@ def test_978_timeout_says_time_ran_out_without_a_run_deadline(tmp_path, monkeypa
     out, err = _searched(capfd)
     assert outlived["times"] >= 1
     _assert_time_named(out, err, [r"this read's own"])
+
+
+class _Recording:
+    """A transport wrapper recording each request before the wrapped fixture answers it."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.requests = []
+
+    def get(self, endpoint, *, paginate=False):
+        self.requests.append(("GET", endpoint))
+        return self.inner.get(endpoint, paginate=paginate)
+
+    def _query(self, name, query, variables):
+        self.requests.append(("GRAPHQL", query))
+        return getattr(self.inner, name)(query, variables)
+
+    def closing_pull_requests(self, query, variables):
+        return self._query("closing_pull_requests", query, variables)
+
+    def review_threads(self, query, variables):
+        return self._query("review_threads", query, variables)
+
+    def workflow_run_files(self, query, variables):
+        return self._query("workflow_run_files", query, variables)
+
+    def __getattr__(self, name):
+        def other(*arguments, **keywords):
+            self.requests.append((name.upper(), repr(arguments)[:160]))
+            return getattr(self.inner, name)(*arguments, **keywords)
+        return other
+
+
+def test_978_open_pull_request_reads_are_on_the_allowed_list():
+    """A6(e) over what the scale test stubs: `read_state` for an open pull request, and use evidence."""
+    ancestor = "b" * 40
+    marker = (f"<!-- tradecraft:use:v1 head={ancestor} status=pass changed=false "
+              "staffing_status=qualified -->")
+    inner = tw.actions_transport()
+    inner.values["repos/example/product/issues/12/comments"] = tw.state(
+        tw.AFFIRMED, tw.ARTIFACT, tw.WOULD, tw.HOLDER, tw.FLOOR, marker).issue_comments
+    transport = _Recording(inner)
+    fixture = tw.collect_actions(transport)
+    ancestry = _Recording(tw.AncestryTransport(ancestor, tw.SHA, {"c" * 40: [{"filename": "README.md"}]}))
+    work.prepare_use_evidence(fixture, ancestry, tw.RULES)
+    requests = transport.requests + ancestry.requests
+    assert unlisted(requests, [], "example/product") == []
+    paths = {value.partition("?")[0] for kind, value in requests if kind == "GET"}
+    for read in ("pulls/7", "pulls/7/reviews", "pulls/7/files", "rules/branches/main",
+                 f"commits/{tw.SHA}/check-runs", f"compare/{ancestor}...{tw.SHA}"):
+        assert f"repos/example/product/{read}" in paths, read

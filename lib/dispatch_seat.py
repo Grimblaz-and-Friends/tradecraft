@@ -250,7 +250,7 @@ def git_diagnostic(raw: bytes) -> str:
 def detached_worktree_root(root):
     """Return None for a lawful root, otherwise the reason for its refusal."""
     try:
-        # Contained reads: a hung Git leaves no child behind (#978).
+        # Contained reads: a hung Git leaves no child behind.
         toplevel = seat_process.run_read(
             ["git", "-C", str(root), "rev-parse", "--show-toplevel"], cwd=Path.cwd(),
             timeout=lifecycle.probe_timeout(), env=git_environment(),
@@ -647,7 +647,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
         if judged_draft is not None:
             request["judged_draft"] = judged_draft
         # The launch is this write: the split ends here, and each attempt's
-        # pre-spawn interval starts here (#978).
+        # pre-spawn interval starts here.
         scope = preflight.current()
         request["preflight"] = scope.snapshot("request-record")
         streams[request_path].write(records.json_bytes(request))

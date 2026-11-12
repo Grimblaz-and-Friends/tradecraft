@@ -74,4 +74,4 @@ Every composed builder stage carries this instruction. Carry it yourself when co
 
 > Remove or rewrite existing content only where a governing row or criterion requires it; keep the rest, and name in your return any additional removal or rewrite you recommend.
 
-A turn whose uncertainty begins `ReachTimeout: time ran out` was not reached before the run's time ended, and names the limit that ended it; raise that limit and run again rather than fetching, because its objects may be present. Only `commit object … unavailable` names an object the checkout lacks.
+A turn whose uncertainty begins `ReachTimeout: time ran out before this read finished:` or `ReachError: reach evaluation stopped: time ran out:` was not reached before the run's time ended, and names the limit that ended it; raise that limit and run again rather than fetching, because its objects may be present. An object the checkout lacks is named as a `commit object … unavailable` or a `blob … missing`.

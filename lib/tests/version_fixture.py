@@ -83,7 +83,7 @@ def fixture_state(*, version="2.9.9", base_version="2.9.9", files=None,
 
 
 def _cross_reference(number):
-    """The issue timeline's mention by the pull request that implements it (#978)."""
+    """The issue timeline's mention by the pull request that implements it."""
     return {"event": "cross-referenced", "source": {"issue": {
         "number": number, "pull_request": {}, "repository": {"full_name": REPO}}}}
 
@@ -271,7 +271,7 @@ def _gh_serve(transport, save):
     try:
         if endpoint == "graphql" and "--input" in arguments:
             payload = json.loads(sys.stdin.buffer.read())
-            # The closing-reference read is a query, not an effect (#978).
+            # The closing-reference read is a query, not an effect.
             value = (transport.closing_pull_requests(payload["query"], payload["variables"])
                      if "closedByPullRequestsReferences" in payload["query"]
                      else transport.graphql(payload["query"], payload["variables"]))
@@ -384,9 +384,9 @@ def _version_document(value):
 
 
 class LiveGitHub:
-    closing_pull_requests = staticmethod(_no_closing_references)
-
     """Public GitHub records derived, at each call, from the scenario's bare origin."""
+
+    closing_pull_requests = staticmethod(_no_closing_references)
 
     def __init__(self, root):
         self.layout = catch_up_layout(root)
