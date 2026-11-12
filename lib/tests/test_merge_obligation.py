@@ -759,6 +759,7 @@ def test_cloud_run_build_reaches_the_cloud_launcher_with_its_lineage_branch(laun
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(work, "_recipient_run", launch_cloud)
+    # Fresh, because a resumed turn follows the fixture's recorded Codex session, not the vendor.
     compose("build", continuity="fresh")
     assert reached == [(f"{fixture.repo}#{fixture.issue_number}", "build", branch, "trig_1")]
     assert told == [1]  # the composed cloud sentence, accepted, and not appended twice

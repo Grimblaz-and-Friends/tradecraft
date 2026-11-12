@@ -336,7 +336,8 @@ def test_the_allowance_command_prints_the_cloud_routes_sentence(tmp_path, capsys
         work._allowance_command(allowance("build", "--grant", "9001"))
 
 
-def _granted_allowance_run(tmp_path, monkeypatch, capsys, *, grant_brief=7001, continuity="resume"):
+def _granted_allowance_run(tmp_path, monkeypatch, capsys, *, grant_brief=7001, continuity="resume",
+                           extra=()):
     """Drive the documented route: `work.py allowance build --grant ID` for a resumed, granted build."""
     from test_work import FakeTransport, write_policy
     fixture, brief = _grant_state(_grant_body(brief=grant_brief, stage="build"))
@@ -356,7 +357,7 @@ def _granted_allowance_run(tmp_path, monkeypatch, capsys, *, grant_brief=7001, c
 
     args = work.parser().parse_args([
         "allowance", "build", "--repo", "example/product", "--issue", "12", "--root", str(tree),
-        "--implementation-root", str(tree), "--grant", "9001"])
+        "--implementation-root", str(tree), "--grant", "9001", *extra])
     return work.run(args, transport=Transport()), capsys.readouterr().out
 
 
@@ -385,6 +386,14 @@ def test_allowance_refuses_a_grant_the_entrance_would_refuse(tmp_path, monkeypat
     with pytest.raises(work.WorkError) as entrance:
         work.validated_grants(fixture, [9001], "build", continuity)
     assert str(refused.value) == str(entrance.value)
+
+
+@pytest.mark.parametrize("continuity", ["fresh", "resume"])
+def test_allowance_names_the_cloud_route_before_a_grants_validity(tmp_path, monkeypatch, capsys,
+                                                                   continuity):
+    with pytest.raises(work.WorkError, match="cannot ride a cloud launch"):
+        _granted_allowance_run(tmp_path, monkeypatch, capsys, continuity=continuity,
+                               extra=("--cloud",))
 
 
 def test_a_grant_from_an_author_who_is_not_a_marker_producer_is_refused(monkeypatch):

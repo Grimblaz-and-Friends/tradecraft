@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,11 @@ import codex_implementer as native
 from seat_process import run_process
 from vendor_cli import resolve_command
 import run_lifecycle as lifecycle
+import github_allowance
+import github_write_guard as guard
+from github_write_guard import REFUSED
+from dispatch_lifecycle import claude_launch_env
+from dispatch_seat import build_command as seat_command
 
 PUBLIC = "4b2a04c9890e06b4d6d87204d79874133ee9cbf3"
 REPOSITORY = "https://github.com/Grimblaz-and-Friends/tradecraft.git"
@@ -463,12 +469,6 @@ def legacy_resume(base, root):
 # Grimblaz-and-Friends/tc894-absent-<uuid>, which a GET read must show absent (404)
 # before anything runs. Raw streams stay under --base and are never committed.
 
-import shutil  # noqa: E402
-import github_allowance  # noqa: E402
-from github_write_guard import REFUSED  # noqa: E402
-from dispatch_lifecycle import claude_launch_env  # noqa: E402
-from dispatch_seat import build_command as seat_command  # noqa: E402
-
 OWNER = "Grimblaz-and-Friends"
 
 
@@ -632,7 +632,6 @@ def bound_case_author(args, base):
     turn = bound_claude_turn(args.model, settings, prompt, cwd=tree, env=bound["env"], out=base / "author.jsonl")
     refusals = github_allowance.refusals(bound["log"])
     text = bound_final_text(turn.stdout)
-    import github_write_guard as guard
     config = {"allowance": allowance, "root": str(tree), "child_settings": ""}
     commands = [str((block.get("input") or {}).get("command")) for e in bound_events(turn.stdout)
                 if e.get("type") == "assistant" for block in (e.get("message") or {}).get("content") or ()

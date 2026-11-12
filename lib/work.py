@@ -6399,10 +6399,12 @@ def sweep_registry(transport: GitHubREST) -> None:
         write_registry(current)
 
 
-# The implementer stages whose prompts the entrance composes with an allowance sentence, and for
-# which `allowance` prints one. The use consumer's bound is set by the seat launcher instead.
+# The implementer stages that can write, so the entrance composes each one's prompt with its
+# allowance sentence. The use consumer is bounded too, but the holder writes its dispatch and its
+# seat launcher appends the notice, so it joins this set only where its records are read.
 # Design: lib/DESIGN.md#the-github-write-bound (GITHUB_BOUND_STAGES through validated_grants)
 GITHUB_BOUND_STAGES = frozenset({"artifact", "build", "floor", "review-disposition"})
+CLOUD_GRANT_REFUSED = "allowance --cloud: a write grant cannot ride a cloud launch"
 
 
 def _stage_allowance(state: WorkState, stage: str, branch: str | None,
@@ -10338,7 +10340,7 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState 
         if args.stage == "use":
             raise WorkError("allowance --cloud: the use consumer never takes the cloud route")
         if grants or getattr(args, "grant", None):
-            raise WorkError("allowance --cloud: a write grant cannot ride a cloud launch")
+            raise WorkError(CLOUD_GRANT_REFUSED)
         print(github_allowance.cloud_sentence(args.stage))
         return 0
     branch = None
@@ -10579,6 +10581,9 @@ def _run(
     state.collection_diagnostics.extend(policy_diagnostics)
     recommendation = decide(state, rules)
     if args.command == "allowance":
+        if getattr(args, "cloud", False) and args.grant:
+            # No grant rides the cloud route, so that is the refusal, not the grant's own validity.
+            raise WorkError(CLOUD_GRANT_REFUSED)
         # The sentence is the one the launch holds: its grants are validated exactly as run --grant
         # will, and its branch and pull request are the registered tree's and the issue's.
         grants = validated_grants(state, args.grant, args.stage,

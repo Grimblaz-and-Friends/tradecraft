@@ -349,8 +349,22 @@ def test_a_harmless_command_env_runs_passes(tree, command):
     assert decision(command, tree, "branch") == "allow"
 
 
+@pytest.mark.parametrize("command", [
+    "echo 1 | xargs --max-args 1 gh pr merge",
+    "echo 1 | xargs --delimiter x gh pr merge",
+    "echo 1 | xargs --max-args=1 gh pr merge",
+    "echo 1 | xargs -n 1 gh pr merge",
+    # --replace takes its value only joined by "=", so the word after it is the program.
+    "echo 1 | xargs --replace gh pr merge",
+    "echo 1 | xargs --unlisted 5 gh pr merge",
+])
+def test_a_write_xargs_runs_is_judged(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
 @pytest.mark.parametrize("command", ["nice -n 10 git status", "timeout -k 5 10 git status",
-                                     "nice -n 10 python -c pass"])
+                                     "nice -n 10 python -c pass",
+                                     "echo 1 | xargs --max-args 1 git status"])
 def test_a_harmless_command_behind_a_pass_through_program_passes(tree, command):
     assert decision(command, tree, "branch") == "allow"
 

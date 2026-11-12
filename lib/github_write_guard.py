@@ -52,13 +52,19 @@ CONNECTORS = "ENABLE_CLAUDEAI_MCP_SERVERS"
 GUARDED_VARIABLES = (CHILD_VARIABLE, "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SHELL_PREFIX")
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "git-bash"}
 POWERSHELLS = {"pwsh", "powershell"}
-PASS_THROUGH = {"command", "exec", "nohup", "time", "builtin", "stdbuf", "timeout", "nice"}
+PASS_THROUGH = {"command", "exec", "nohup", "time", "builtin", "stdbuf", "timeout", "nice",
+                "xargs"}
 # Each option takes the next word as its value, which would otherwise sit where the program
 # the pass-through runs is expected.
 PASS_THROUGH_VALUES = {"nice": {"-n", "--adjustment"},
                        "timeout": {"-k", "--kill-after", "-s", "--signal"},
                        "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
-                       "exec": {"-a"}, "time": {"-f", "--format", "-o", "--output"}}
+                       "exec": {"-a"}, "time": {"-f", "--format", "-o", "--output"},
+                       # GNU and BSD xargs. --eof, --replace and --max-lines take a value only
+                       # joined by "=", so a separate word after them is the program.
+                       "xargs": {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-L", "-n",
+                                 "--max-args", "-P", "--max-procs", "-s", "--max-chars",
+                                 "--process-slot-var", "-J", "-R", "-S"}}
 REDIRECTS = {">", ">>", "<", ">&", "&>", "<&", ">|", "&>>", "<>", "<<<"}
 SEPARATORS = {";", "&", "&&", "||", "|", "|&", "(", ")", ";;", ";&"}
 GH_READS = {
@@ -300,6 +306,7 @@ def _variable_findings(ctx: Context) -> list[Finding]:
 
 
 def judge_text(text: str, ctx: Context) -> list[Finding]:
+    # No command a step runs nests shells this deep; the limit bounds the recursion.
     if ctx.depth > 8:
         return [Finding("deeply nested command", "the command nests shells too deeply to judge")]
     try:
@@ -415,13 +422,6 @@ def judge_simple(words: list[str], ctx: Context, raw: str) -> list[Finding]:
                     words.pop(0)
             if name == "timeout" and words:
                 _duration = words.pop(0)
-            continue
-        if name == "xargs":
-            words.pop(0)
-            while words and words[0].startswith("-"):
-                flag = words.pop(0)
-                if flag in ("-I", "-n", "-P", "-L", "-d", "-a", "-E", "-s") and words:
-                    words.pop(0)
             continue
         break
     if not words:
