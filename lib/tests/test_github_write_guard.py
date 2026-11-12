@@ -79,10 +79,39 @@ def test_branch_refuses_other_refs_deletions_and_forces(tree, command):
     "GIT_DIR=../other/.git git push origin HEAD:refs/heads/tradecraft/894-ab",
     "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=https://github.com/other/x.git "
     "git push origin HEAD:refs/heads/tradecraft/894-ab",
+    "GIT_CONFIG_NOSYSTEM=1 git push origin HEAD:refs/heads/tradecraft/894-ab",
 ])
 def test_a_push_carrying_a_redirecting_git_option_is_refused(tree, command):
     assert decision("git push origin HEAD:refs/heads/tradecraft/894-ab", tree, "branch") == "allow"
     assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    # git takes the value as a separate word, so HEAD is not the subcommand.
+    "git --attr-source HEAD push origin main",
+    "git --attr-source=HEAD push origin main",
+    # An option this check does not know may swallow a word; a later push is not passed unjudged.
+    "git --some-future-option HEAD push origin main",
+])
+def test_a_push_behind_a_value_taking_global_option_is_judged(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "git --attr-source HEAD status",
+    "git --no-pager --attr-source HEAD log -1",
+    # Bare --exec-path prints git's exec path and stops; nothing after it runs.
+    "git --exec-path push origin main",
+    "git --some-future-option HEAD status",
+])
+def test_a_harmless_command_behind_a_global_option_passes(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+
+
+def test_a_push_behind_exec_path_with_a_value_is_judged(tree):
+    assert decision("git --exec-path=/x push origin main", tree, "branch") == "deny"
+    assert decision("git --exec-path=/x push origin HEAD:refs/heads/tradecraft/894-ab", tree,
+                    "branch") == "allow"
 
 
 @pytest.mark.parametrize("setting", [

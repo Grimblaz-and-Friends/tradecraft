@@ -268,7 +268,12 @@ def test_a_composed_prompt_names_the_grants_in_force(monkeypatch):
 @pytest.mark.parametrize("arguments, missing", [
     (["allowance", "build"], "--implementation-root"),
     (["allowance", "floor"], "--implementation-root"),
-    (["allowance", "review-disposition", "--implementation-root", "{tree}"], "--pull-request"),
+    (["allowance", "review-disposition", "--implementation-root", "{tree}"], "has no pull request yet"),
+    # Naming a number does not help: the issue has none, so the message says that instead.
+    (["allowance", "review-disposition", "--implementation-root", "{tree}", "--pull-request", "7"],
+     "no thread to answer"),
+    (["allowance", "build", "--implementation-root", "{tree}", "--pull-request", "7"],
+     "has no pull request yet"),
 ])
 def test_the_allowance_command_refuses_rather_than_print_the_wrong_sentence(tmp_path, monkeypatch, capsys,
                                                                             arguments, missing):

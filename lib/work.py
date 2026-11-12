@@ -10354,15 +10354,17 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState,
             raise WorkError(f"allowance {args.stage}: --implementation-root is not this change's "
                             "registered implementation tree, which the launch pushes from")
         branch = registered[1]
-    pull_request = args.pull_request
     number = state.pr.get("number") if state.pr else None
-    if pull_request is not None and pull_request != number:
-        raise WorkError(f"allowance: --pull-request {pull_request} is not this issue's pull request "
-                        f"({number}), which the launch holds")
+    if args.stage == "review-disposition" and number is None:
+        raise WorkError("allowance review-disposition: this issue has no pull request yet, so the "
+                        "step has no thread to answer")
+    if args.pull_request is not None and args.pull_request != number:
+        if number is None:
+            raise WorkError(f"allowance: --pull-request {args.pull_request}: this issue has no pull "
+                            "request yet, and the launch holds none")
+        raise WorkError(f"allowance: --pull-request {args.pull_request} is not this issue's pull "
+                        f"request ({number}), which the launch holds")
     pull_request = number
-    if args.stage == "review-disposition" and pull_request is None:
-        raise WorkError("allowance review-disposition requires --pull-request, the pull request "
-                        "whose threads the step may answer")
     allowance = github_allowance.allowance_for(
         args.stage, repository=args.repo, branch=branch, pull_request=pull_request, grants=grants)
     print(github_allowance.sentence(allowance))

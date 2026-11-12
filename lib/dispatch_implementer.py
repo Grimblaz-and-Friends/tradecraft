@@ -747,6 +747,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 child_env = claude_launch_env(child_env, allocation)
                 guard = intent["write_guard"]["config"]
                 bound_notice = claude_write_bound_notice(guard["root"], launch_bound.allowed_scratchpad(guard))
+                # A Claude launch already carries a write-bound notice recorded in launch_controls,
+                # so its GitHub allowance rides inside that one notice and record.
                 bound_notice += github_notice
                 effective_prompt = effective_prompt + b"\n\n" + bound_notice
                 composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
@@ -770,6 +772,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                                    else {"coverage": [], "unavailable_reason": comparison_error}),
                     "shell": launch_bound.SHELL,
                 }
+            # Codex gets no write-bound notice, so its allowance is appended and recorded alone.
             if github_bound is not None and args.vendor == "codex" and github_notice:
                 effective_prompt = effective_prompt + b"\n\n" + github_notice
                 composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()

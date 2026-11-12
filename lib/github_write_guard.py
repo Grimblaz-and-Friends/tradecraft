@@ -43,9 +43,20 @@ CHILD_START = f'claude --setting-sources user --strict-mcp-config --settings "${
 # Each changes where or what a git push writes, so a push carrying one is refused rather than
 # judged from the stored configuration it overrides; a step's own push never needs one.
 REDIRECTING_GIT_OPTIONS = {"-c", "--config-env", "--git-dir", "--work-tree", "--namespace"}
-REDIRECTING_GIT_VARIABLES = {"GIT_DIR", "GIT_WORK_TREE", "GIT_NAMESPACE", "GIT_CONFIG",
-                             "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL",
-                             "GIT_CONFIG_SYSTEM"}
+REDIRECTING_GIT_VARIABLES = {"GIT_DIR", "GIT_WORK_TREE", "GIT_NAMESPACE"}
+# Every GIT_CONFIG* variable chooses or adds the configuration a push reads, so all are refused
+# by prefix rather than by a list the next one would slip past.
+REDIRECTING_GIT_PREFIX = "GIT_CONFIG"
+# git's global options that take the next word as their value, and those that take none. An
+# option in neither set ahead of the subcommand may have swallowed a word, so the subcommand
+# cannot be read from what follows it.
+GIT_VALUE_OPTIONS = {"--attr-source", "--super-prefix"}
+GIT_FLAG_OPTIONS = {"-p", "--paginate", "-P", "--no-pager", "--no-replace-objects", "--no-lazy-fetch",
+                    "--no-optional-locks", "--no-advice", "--bare", "--literal-pathspecs",
+                    "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs"}
+# Each prints something and exits, or runs help or version, so nothing after it is written.
+GIT_ENDING_OPTIONS = {"--exec-path", "--html-path", "--man-path", "--info-path", "--version",
+                      "--help", "-h", "-v"}
 CONNECTORS = "ENABLE_CLAUDEAI_MCP_SERVERS"
 # Each turns off the command check or the connector switch in a session started
 # from the shell, so no command may set or remove it.
@@ -566,12 +577,21 @@ def judge_git(arguments: list[str], ctx: Context) -> list[Finding]:
             redirecting.append(stem)
             if "=" not in flag and words:
                 words.pop(0)
-        elif flag == "--exec-path" and words:
-            words.pop(0)
+        elif flag in GIT_ENDING_OPTIONS:
+            # Bare --exec-path takes no value: like these others, git prints and stops there.
+            return []
+        elif stem in GIT_VALUE_OPTIONS or stem == "--exec-path":
+            if "=" not in flag and words:
+                words.pop(0)
+        elif flag not in GIT_FLAG_OPTIONS:
+            if "push" in words:
+                return [Finding("git push", f"git push behind {stem}, an option this check cannot "
+                                "read, so which subcommand runs is not known")]
+            return []
     if not words or words[0] != "push":
         return []
     redirecting.extend(name for name in ctx.assigned if name in REDIRECTING_GIT_VARIABLES
-                       or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")))
+                       or name.startswith(REDIRECTING_GIT_PREFIX))
     if redirecting:
         return [Finding("git push", f"git push with {', '.join(sorted(set(redirecting)))}, which can "
                         "change where or what it writes")]
