@@ -148,14 +148,20 @@ def needs_notice(allowance: dict, prompt: bytes) -> bool:
     A dispatch already stating this allowance is not told twice. One stating any other
     allowance is refused, because a session told two allowances cannot know which holds.
     """
-    if sentence(allowance).encode("utf-8") in prompt:
-        return False
-    # The cloud sentence states an allowance too, so a local launch refuses it the same way.
-    if any(opening.encode("utf-8") in prompt for opening in (SENTENCE_OPENING, CLOUD_SENTENCE_OPENING)):
+    own = sentence(allowance).encode("utf-8")
+    # Any other allowance stated beside this one is refused too; the cloud sentence states an
+    # allowance as well, so a local launch refuses it the same way.
+    if _states_another(prompt, own):
         raise BoundError("the dispatch states a GitHub write allowance other than the one this "
                          "launch holds; recompose it, or print the right sentence with the work "
                          "entrance's allowance command")
-    return True
+    return own not in prompt
+
+
+def _states_another(prompt: bytes, own: bytes) -> bool:
+    """Whether the prompt states an allowance besides every copy of ``own``."""
+    rest = prompt.replace(own, b"")
+    return any(opening.encode("utf-8") in rest for opening in (SENTENCE_OPENING, CLOUD_SENTENCE_OPENING))
 
 
 def cloud_sentence(stage: str) -> str:
@@ -178,12 +184,12 @@ def cloud_notice(stage: str, prompt: bytes) -> bytes:
     A prompt stating any other allowance is refused, as a local launch refuses one.
     """
     stated = cloud_sentence(stage)
-    if stated.encode("utf-8") in prompt:
-        return b""
-    if any(opening.encode("utf-8") in prompt for opening in (SENTENCE_OPENING, CLOUD_SENTENCE_OPENING)):
+    if _states_another(prompt, stated.encode("utf-8")):
         raise BoundError("the dispatch states a GitHub write allowance other than the cloud route's; "
                          "print the cloud route's sentence with the work entrance's allowance command "
                          "and --cloud")
+    if stated.encode("utf-8") in prompt:
+        return b""
     return ("Launcher GitHub write bound: " + stated + "\n").encode("utf-8")
 
 
@@ -202,7 +208,10 @@ def _quoted(path) -> str:
 
 def hook_entry(config_path: Path) -> dict[str, object]:
     command = f"{_quoted(sys.executable)} {_quoted(GUARD)} --hook --config {_quoted(config_path)}"
-    return {"matcher": MATCHER, "hooks": [{"type": "command", "command": command}]}
+    # Named bash: Claude Code otherwise runs a hook through PowerShell on a Windows machine
+    # without Git Bash, which does not run a line opening with a quoted path, and the check
+    # would fail as a non-blocking error. The practice needs Git, which installs Git Bash.
+    return {"matcher": MATCHER, "hooks": [{"type": "command", "command": command, "shell": "bash"}]}
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -265,9 +274,9 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
               wrapper: dict | None = None, env: dict[str, str] | None = None) -> str:
     """Prove the check allows and refuses as it must, and that the launch's entry carries it.
 
-    Every case is judged by the check's own decision; one refusal (and, for the
-    shell prefix, one pass-through) runs through the entry the launch uses, so
-    the self-test costs one or two processes rather than one per case.
+    Every case is judged by the check's own decision in this process; only the entry runs
+    as a process, once for its refusal (and for the shell prefix once more for its
+    pass-through), because the entry, not each case, is what the launch installs.
     """
     directory.mkdir()
     failures = []

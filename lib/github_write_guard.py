@@ -57,6 +57,22 @@ GIT_FLAG_OPTIONS = {"-p", "--paginate", "-P", "--no-pager", "--no-replace-object
 # Each prints something and exits, or runs help or version, so nothing after it is written.
 GIT_ENDING_OPTIONS = {"--exec-path", "--html-path", "--man-path", "--info-path", "--version",
                       "--help", "-h", "-v"}
+# Each writes refs to a remote outside `git push`; a step's own push goes through git push, so
+# these are refused rather than judged.
+GIT_OTHER_PUSHES = {"send-pack", "http-push"}
+# git's own commands, which no alias can replace, so a subcommand outside them is looked up as
+# a stored alias before it is judged.
+GIT_BUILTINS = {
+    "add", "am", "annotate", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file",
+    "check-attr", "check-ignore", "checkout", "cherry", "cherry-pick", "clean", "clone", "commit",
+    "commit-tree", "config", "count-objects", "credential", "describe", "diff", "diff-files",
+    "diff-index", "diff-tree", "fetch", "fetch-pack", "for-each-ref", "format-patch", "fsck", "gc",
+    "grep", "hash-object", "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "maintenance",
+    "merge", "merge-base", "mv", "name-rev", "notes", "pull", "push", "range-diff", "read-tree",
+    "rebase", "reflog", "remote", "request-pull", "reset", "restore", "rev-list", "rev-parse", "revert",
+    "rm", "shortlog", "show", "show-ref", "sparse-checkout", "stash", "status", "submodule", "switch",
+    "symbolic-ref", "tag", "update-index", "update-ref", "var", "version", "whatchanged", "worktree",
+    "write-tree", "send-pack", "http-push", "subtree"}
 CONNECTORS = "ENABLE_CLAUDEAI_MCP_SERVERS"
 # Each turns off the command check or the connector switch in a session started
 # from the shell, so no command may set or remove it.
@@ -597,6 +613,9 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
         return _inner(ctx, " ".join(words[1:]))
     if name == "git":
         return judge_git(words[1:], ctx)
+    if name.startswith("git-") and len(name) > 4:
+        # git-push and its kin are git's own commands, named directly.
+        return judge_git([name[4:], *words[1:]], ctx)
     if name == "gh":
         return judge_gh(words[1:], ctx)
     if name in ("curl", "wget", "invoke-restmethod", "irm", "invoke-webrequest", "iwr"):
@@ -617,7 +636,8 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
         # Any other program may run a later word as a command, as setsid, sudo or watch do, so
         # a judged program standing as its own word after it is judged as the command it starts.
         for index in range(1, len(words)):
-            if program(words[index]) in JUDGED_PROGRAMS | PASS_THROUGH | {"env"}:
+            named = program(words[index])
+            if named in JUDGED_PROGRAMS | PASS_THROUGH | {"env"} or named.startswith("git-"):
                 found = judge_simple(words[index:], ctx)
                 if found:
                     return found
@@ -652,7 +672,26 @@ def _run_git(cwd: str | None, *arguments: str) -> str | None:
 
 # --- git ------------------------------------------------------------------------
 
-def judge_git(arguments: list[str], ctx: Context) -> list[Finding]:
+def _stored_alias(cwd: str | None, name: str) -> tuple[str, str | None]:
+    """("none", None), ("alias", value), or ("unreadable", None) for a stored git alias."""
+    try:
+        result = subprocess.run(["git", *(["-C", cwd] if cwd else []), "config", "--get",
+                                 f"alias.{name}"], capture_output=True, timeout=20,
+                                stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return "unreadable", None
+    if result.returncode == 1:
+        return "none", None
+    if result.returncode:
+        return "unreadable", None
+    return "alias", result.stdout.decode("utf-8", "replace").strip()
+
+
+def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[Finding]:
+    """Judge every route git offers to write a remote: push, an alias, and the other pushes.
+
+    A push made by any other program, or from inside a script, stays out of reach.
+    """
     cwd = ctx.cwd
     words = list(arguments)
     redirecting: list[str] = []
@@ -663,8 +702,11 @@ def judge_git(arguments: list[str], ctx: Context) -> list[Finding]:
             cwd = _resolve_dir(cwd, words.pop(0))
         elif stem in REDIRECTING_GIT_OPTIONS:
             redirecting.append(stem)
-            if "=" not in flag and words:
-                words.pop(0)
+            value = flag.split("=", 1)[1] if "=" in flag else (words.pop(0) if words else "")
+            if stem in ("-c", "--config-env") and value.lower().startswith("alias."):
+                # An alias defined on the command line can make any subcommand a push.
+                return [Finding("git alias", "a git alias defined on the command line, which can "
+                                "run a push or a shell under another name")]
         elif flag in GIT_ENDING_OPTIONS:
             # Bare --exec-path takes no value: like these others, git prints and stops there.
             return []
@@ -676,7 +718,39 @@ def judge_git(arguments: list[str], ctx: Context) -> list[Finding]:
                 return [Finding("git push", f"git push behind {stem}, an option this check cannot "
                                 "read, so which subcommand runs is not known")]
             return []
-    if not words or words[0] != "push":
+    if any(name.startswith(REDIRECTING_GIT_PREFIX) and "alias." in str(value).lower()
+           for name, value in ctx.assigned.items()):
+        return [Finding("git alias", "a git alias defined in the environment, which can run a "
+                        "push or a shell under another name")]
+    if not words:
+        return []
+    subcommand = words[0]
+    if subcommand == "config" and any(word.lower().startswith("alias.") for word in words[1:]) and not (
+            {"--get", "--get-all", "--get-regexp", "-l", "--list"} & set(words[1:])
+            or words[1:2] in (["get"], ["list"])):
+        # A stored alias is resolved when it runs, but one stored and run in the same command
+        # is not stored yet when the command is judged.
+        return [Finding("git config alias", "storing a git alias, which can run a push or a shell "
+                        "under another name")]
+    if subcommand in GIT_OTHER_PUSHES or (subcommand == "subtree" and "push" in words[1:]):
+        return [Finding(f"git {subcommand}", f"`git {subcommand}`, which writes refs to a remote; "
+                        "a step's own push goes through git push")]
+    if subcommand not in GIT_BUILTINS:
+        found, value = _stored_alias(cwd, subcommand)
+        if found == "unreadable":
+            return [Finding(f"git {subcommand}", f"`git {subcommand}`, which may be an alias "
+                            "whose configuration could not be read")]
+        if found == "alias":
+            if value.startswith("!") or expansions >= 5 or redirecting:
+                return [Finding(f"git {subcommand}", f"the git alias {subcommand}, which runs a "
+                                "shell command, nests too deeply, or runs under a redirecting option")]
+            try:
+                expanded = shlex.split(value)
+            except ValueError:
+                return [Finding(f"git {subcommand}", f"the git alias {subcommand}, which cannot be read")]
+            prefix = ["-C", cwd] if cwd else []
+            return judge_git([*prefix, *expanded, *words[1:]], ctx, expansions + 1)
+    if subcommand != "push":
         return []
     redirecting.extend(name for name in ctx.assigned if name in REDIRECTING_GIT_VARIABLES
                        or name.startswith(REDIRECTING_GIT_PREFIX))

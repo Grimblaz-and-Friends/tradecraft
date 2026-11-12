@@ -335,10 +335,7 @@ def runtime_account(bundles, *, root=None, branch=None, lineage=None):
 
 
 def launch_bundles(store, work, stages, *, after=None, exact_work=False, include_missing_stage=False):
-    """Discover requests first so an unfinished newest attempt cannot disappear.
-
-    ``stages`` of None reads every stage.
-    """
+    """Discover requests first so an unfinished newest attempt cannot disappear."""
     bundles = {}
     if not Path(store).is_dir():
         return []

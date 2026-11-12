@@ -98,6 +98,36 @@ def test_a_push_behind_a_value_taking_global_option_is_judged(tree, command):
 
 
 @pytest.mark.parametrize("command", [
+    "git -c alias.x=push x origin HEAD:refs/heads/main",
+    "git -c alias.x=push x origin HEAD:refs/heads/tradecraft/894-ab",
+    "git --config-env=alias.x=VAR x origin HEAD:refs/heads/main",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=push git x origin HEAD:refs/heads/main",
+    "git config alias.p push; git p origin HEAD:refs/heads/main",
+    "git send-pack https://github.com/o/r HEAD:refs/heads/main",
+    "git http-push https://github.com/o/r HEAD:refs/heads/main",
+    "git subtree push --prefix=x origin main",
+    "git-push origin HEAD:refs/heads/main",
+    "git-send-pack https://github.com/o/r HEAD:refs/heads/main",
+    "setsid git-push origin HEAD:refs/heads/main",
+])
+def test_a_push_under_another_name_is_refused(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+def test_a_stored_alias_is_judged_as_what_it_runs(tree):
+    git(tree, "config", "alias.p", "push")
+    git(tree, "config", "alias.sh", "!git push origin HEAD:refs/heads/tradecraft/894-ab")
+    git(tree, "config", "alias.st", "status")
+    assert decision("git p origin HEAD:refs/heads/main", tree, "branch") == "deny"
+    # Judged, not refused: the step's own push through an alias still passes.
+    assert decision("git p origin HEAD:refs/heads/tradecraft/894-ab", tree, "branch") == "allow"
+    assert decision("git sh", tree, "branch") == "deny"  # a shell alias runs anything
+    assert decision("git st", tree, "branch") == "allow"
+    assert decision("git-push origin HEAD:refs/heads/tradecraft/894-ab", tree, "branch") == "allow"
+    assert decision("git config --get alias.p", tree, "branch") == "allow"
+
+
+@pytest.mark.parametrize("command", [
     "git --attr-source HEAD status",
     "git --no-pager --attr-source HEAD log -1",
     # Bare --exec-path prints git's exec path and stops; nothing after it runs.
@@ -430,6 +460,27 @@ def test_a_damaged_refusal_log_line_reads_as_unknown(tmp_path):
     allowance_module.record_refusals(record, log)
     assert [r["command"] for r in record["github_write_refusals"]] == ["gh issue comment 1"]
     assert "could not be read" in record["github_write_refusals_unknown"]
+
+
+@pytest.mark.parametrize("other", ["local", "cloud"])
+def test_a_dispatch_stating_its_own_allowance_and_another_is_refused(tree, other):
+    allowance = config("branch", tree)["allowance"]
+    own = allowance_module.sentence(allowance)
+    another = (allowance_module.sentence(config("none", tree)["allowance"]) if other == "local"
+               else allowance_module.cloud_sentence("build"))
+    with pytest.raises(allowance_module.BoundError):
+        allowance_module.needs_notice(allowance, f"Build.\n\n{own}\n\n{another}".encode())
+    assert allowance_module.needs_notice(allowance, f"Build.\n\n{own}".encode()) is False
+    # The cloud route refuses the same mix of its own sentence and a local one.
+    cloud = allowance_module.cloud_sentence("build")
+    with pytest.raises(allowance_module.BoundError):
+        allowance_module.cloud_notice("build", f"Build.\n\n{cloud}\n\n{own}".encode())
+    assert allowance_module.cloud_notice("build", f"Build.\n\n{cloud}".encode()) == b""
+
+
+def test_the_hook_entry_names_bash_as_its_shell(tmp_path):
+    entry = allowance_module.hook_entry(tmp_path / "config.json")
+    assert [hook["shell"] for hook in entry["hooks"]] == ["bash"]
 
 
 def test_a_dispatch_carrying_the_cloud_sentence_is_refused_locally(tree):
