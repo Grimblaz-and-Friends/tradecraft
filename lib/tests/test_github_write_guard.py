@@ -154,6 +154,37 @@ def test_a_command_that_only_names_a_judged_program_passes(tree, command):
     assert decision(command, tree, "branch") == "allow"
 
 
+@pytest.mark.parametrize("command", [
+    # shlex joins punctuation run together; the separators inside are still read.
+    "true;(gh pr merge 1)",
+    "echo x&&(gh pr merge 1)",
+    "echo x||(gh pr merge 1)",
+    "(echo x);gh pr merge 1",
+    # Process substitution runs its body.
+    "cat <(gh pr merge 1)",
+    "tee >(gh pr merge 1) < /dev/null",
+    # A shell with no -c and no script runs what is piped into it.
+    "echo 'gh pr merge 1' | bash",
+    "echo 'gh pr merge 1' | sh",
+    "printf 'git push origin main' | bash -s",
+    "(echo 'gh pr merge 1') | bash",
+])
+def test_a_write_hidden_in_shell_punctuation_or_a_pipe_is_judged(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "bash < script.sh",
+    "cat notes.txt | bash script.sh",
+    "echo 'gh pr merge 1' | grep gh",
+    "echo hi; bash -c 'git status'",
+    "git status && (git log -1)",
+    "diff <(git show HEAD:a) a",
+])
+def test_a_shell_reading_a_script_or_a_harmless_pipe_passes(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+
+
 def test_a_push_behind_exec_path_with_a_value_is_judged(tree):
     assert decision("git --exec-path=/x push origin main", tree, "branch") == "deny"
     assert decision("git --exec-path=/x push origin HEAD:refs/heads/tradecraft/894-ab", tree,

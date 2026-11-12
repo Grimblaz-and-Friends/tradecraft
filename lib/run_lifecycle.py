@@ -335,7 +335,10 @@ def runtime_account(bundles, *, root=None, branch=None, lineage=None):
 
 
 def launch_bundles(store, work, stages, *, after=None, exact_work=False, include_missing_stage=False):
-    """Discover requests first so an unfinished newest attempt cannot disappear."""
+    """Discover requests first so an unfinished newest attempt cannot disappear.
+
+    ``stages`` of None reads every stage.
+    """
     bundles = {}
     if not Path(store).is_dir():
         return []
@@ -346,7 +349,7 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False, include
             continue  # No attribution can be established.
         attributed = (request.get("work") == work if exact_work else
                       str(request.get("work", "")).lower() == work.lower()) if isinstance(request, dict) else False
-        if not attributed or (request.get("stage") not in stages
+        if not attributed or (stages is not None and request.get("stage") not in stages
                               and not (include_missing_stage and not request.get("stage"))):
             continue
         stamp = request.get("launched_at") or request.get("started_at")

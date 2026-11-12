@@ -202,6 +202,28 @@ def test_release_report_lists_grants_and_refusals(tmp_path, capsys, monkeypatch)
     assert "write_grants" not in report and "write_refusals" not in report
 
 
+def test_the_report_reads_a_bounded_launch_of_any_stage(tmp_path, monkeypatch):
+    import json
+    fixture = state(pr=True)
+    fixture.record_root = tmp_path
+    refusal = {"scope": "parent", "entry": "hook", "command": "gh pr merge 1", "reason": "refused",
+               "allowance": {"kind": "none"}}
+    # The launcher bounds any implementer stage it is given, not only the composed ones.
+    for name, stage in (("verify", "source-verification"), ("cold", "cold-seat")):
+        request = {"schema_version": 2, "work": f"{fixture.repo}#{fixture.issue_number}",
+                   "stage": stage, "dispatch_id": name, "launched_at": "2026-11-12T10:00:00Z"}
+        run = {"schema_version": 2, "dispatch_id": name}
+        if stage == "source-verification":
+            run.update(github_write_bound={"allowance": {"kind": "none", "grants": []}},
+                       github_write_refusals=[refusal])
+        (tmp_path / f"{name}.request.json").write_text(json.dumps(request), encoding="utf-8")
+        (tmp_path / f"{name}.run.json").write_text(json.dumps(run), encoding="utf-8")
+    monkeypatch.setattr(work.work_recovery, "scoped", lambda _state, found, **_k: found)
+    report = work._github_write_report(fixture)
+    assert report["status"] == "read"
+    assert report["refusals"] == [{"dispatch_id": "verify", "stage": "source-verification", **refusal}]
+
+
 def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkeypatch):
     fixture = state(pr=True)
     fixture.record_root = tmp_path
@@ -215,12 +237,12 @@ def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkey
 
     def bundles(_store, _work, stages, **_k):
         seen["stages"] = stages
-        return rows
+        return [row for row in rows if stages is None or row[2]["stage"] in stages]
 
     monkeypatch.setattr(work.lifecycle, "launch_bundles", bundles)
     monkeypatch.setattr(work.work_recovery, "scoped", lambda _state, found, **_k: found)
     report = work._github_write_report(fixture)
-    assert "use" in seen["stages"]
+    assert seen["stages"] is None  # every stage, use and the implementer's included
     assert report["status"] == "read"
     assert report["refusals"] == [{"dispatch_id": "d1", "stage": "use", **refusal}]
     assert report["grants"] == [{"dispatch_id": "d2", "stage": "artifact", **grant}]

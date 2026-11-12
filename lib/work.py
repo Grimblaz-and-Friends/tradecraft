@@ -6418,9 +6418,10 @@ def _stage_allowance(state: WorkState, stage: str, branch: str | None,
 def _github_write_report(state: WorkState) -> dict[str, object]:
     """Refusals and grants recorded by this term's bounded launches; gates nothing."""
     try:
+        # Every stage: the launcher arms the bound for any implementer stage it is given, so a
+        # refusal can come from one outside GITHUB_BOUND_STAGES; a launch it did not bound adds nothing.
         rows = lifecycle.launch_bundles(state.record_root or records.default_record_root(),
-            f"{state.repo}#{state.issue_number}",
-            GITHUB_BOUND_STAGES | {"use"})
+            f"{state.repo}#{state.issue_number}", None)
         rows = work_recovery.scoped(state, rows, include_released=True)
     except Exception as exc:
         # This rides on every entrance and release report, so any failure reading records is

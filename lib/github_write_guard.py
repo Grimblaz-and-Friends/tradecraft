@@ -129,6 +129,8 @@ class Context:
     cleared: bool = False
     depth: int = 0
     docs: list[str] = field(default_factory=list)
+    # The words of the commands piped into this one, which a shell reading stdin runs.
+    piped: str = ""
 
 
 @dataclass
@@ -177,7 +179,8 @@ def _scan(text: str, start: int = 0, closer: str | None = None
             out.append(text[i:i + 2])
             i += 2
             continue
-        if char == "$" and text[i + 1:i + 2] == "(":
+        if char in "$<>" and text[i + 1:i + 2] == "(" and not (char in "<>" and quote):
+            # $( ) runs its body, and so do <( ) and >( ), whose output stands in as a file.
             _out, _subs, _docs, end = _scan(text, i + 2, ")")
             subs.append(text[i + 2:end])
             out.append("__tradecraft_substitution__")
@@ -249,8 +252,31 @@ def _scan(text: str, start: int = 0, closer: str | None = None
     return "".join(out), subs, docs, i
 
 
-def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str]]:
-    """Simple commands as word lists, their command substitutions, and here-document bodies."""
+OPERATORS = sorted(SEPARATORS | REDIRECTS, key=len, reverse=True)
+
+
+def _operators(token: str) -> list[str]:
+    """The separators and redirections a run of shell punctuation is made of.
+
+    shlex joins adjacent punctuation into one token, so ``;(`` or ``&&(`` would otherwise
+    hide the separator it holds and leave the next command inside the one before it.
+    """
+    found = []
+    i = 0
+    while i < len(token):
+        for operator in OPERATORS:
+            if token.startswith(operator, i):
+                found.append(operator)
+                i += len(operator)
+                break
+        else:
+            raise Unparsed(f"shell punctuation {token!r} the check cannot read")
+    return found
+
+
+def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str], list[str]]:
+    """Simple commands as word lists, their command substitutions, here-document bodies, and
+    for each command the words piped into it from earlier in its pipeline."""
     outer, subs, docs, _end = _scan(text)
     lexer = shlex.shlex(outer, posix=True, punctuation_chars="();<>|&")
     lexer.whitespace_split = True
@@ -260,25 +286,39 @@ def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str]]:
     except ValueError as exc:
         raise Unparsed(str(exc)) from exc
     commands: list[list[str]] = []
+    feeds: list[str] = []
+    pipeline: list[str] = []
     current: list[str] = []
     skip = False
+
+    def close(operator: str) -> None:
+        nonlocal current, pipeline
+        if current:
+            commands.append(current)
+            feeds.append(" ".join(pipeline))
+            pipeline = pipeline + current
+        # A pipe, or a bracket around part of a pipeline, carries output on to what follows.
+        if operator not in ("|", "|&", "(", ")"):
+            pipeline = []
+        current = []
+
     for token in tokens:
         if skip:
             skip = False
             continue
-        if token in SEPARATORS:
-            if current:
-                commands.append(current)
-            current = []
-        elif token in REDIRECTS or (set(token) <= set("<>&|") and token not in SEPARATORS):
-            if current and current[-1].isdigit():
-                current.pop()
-            skip = True
+        if token and set(token) <= set("();<>|&"):
+            for operator in _operators(token):
+                if operator in SEPARATORS:
+                    close(operator)
+                    skip = False
+                else:
+                    if current and current[-1].isdigit():
+                        current.pop()
+                    skip = True
         else:
             current.append(token)
-    if current:
-        commands.append(current)
-    return commands, subs, docs
+    close(";")
+    return commands, subs, docs, feeds
 
 
 def program(word: str) -> str:
@@ -330,7 +370,7 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
     if ctx.depth > 8:
         return [Finding("deeply nested command", "the command nests shells too deeply to judge")]
     try:
-        commands, subs, docs = split_commands(text)
+        commands, subs, docs, feeds = split_commands(text)
     except Unparsed as exc:
         return _tripwire(text, str(exc))
     outer_docs, ctx.docs = ctx.docs, docs
@@ -338,8 +378,11 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
     for sub in subs:
         findings.extend(judge_text(sub, Context(ctx.cwd, ctx.config, ctx.assigned, ctx.cleared,
                                                 ctx.depth + 1)))
-    for words in commands:
+    outer_piped = ctx.piped
+    for words, fed in zip(commands, feeds):
+        ctx.piped = fed
         findings.extend(judge_simple(words, ctx))
+    ctx.piped = outer_piped
     ctx.docs = outer_docs
     return findings
 
@@ -357,6 +400,27 @@ def _tripwire(text: str, why: str) -> list[Finding]:
                         f"the command could not be parsed ({why}) and carries an unparsed "
                         "GitHub-write or session-start signature")]
     return []
+
+
+SHELL_VALUE_OPTIONS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
+
+
+def _shell_script(arguments: list[str]) -> str | None:
+    """The script operand a shell runs, or None when it reads its commands from stdin."""
+    words = list(arguments)
+    while words:
+        word = words.pop(0)
+        if word == "--":
+            return words[0] if words else None
+        if word in SHELL_VALUE_OPTIONS:
+            if words:
+                words.pop(0)
+        elif word.startswith(("-", "+")) or HEREDOC.fullmatch(word):
+            if word.startswith("-") and not word.startswith("--") and "s" in word[1:]:
+                return None  # -s reads commands from stdin even with operands after it
+        else:
+            return word
+    return None
 
 
 def _inner(ctx: Context, text: str) -> list[Finding]:
@@ -504,10 +568,17 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
                 return []
         # A shell reading a here-document runs its body; any other program reads it as data.
         found: list[Finding] = []
+        reads_heredoc = False
         for word in words[1:]:
             match = HEREDOC.fullmatch(word)
             if match and int(match.group(1)) < len(ctx.docs):
+                reads_heredoc = True
                 found.extend(_inner(ctx, ctx.docs[int(match.group(1))]))
+        if not reads_heredoc and ctx.piped and _shell_script(words[1:]) is None:
+            # With no -c and no script, a shell runs what is piped into it; text piped from
+            # earlier in this command line is in view, so its signatures are judged. A script
+            # file read from stdin, as with bash < script.sh, stays out of reach.
+            found.extend(_tripwire(ctx.piped, "a shell reading commands piped into it"))
         return found
     if name in POWERSHELLS:
         for index, word in enumerate(words[1:], 1):

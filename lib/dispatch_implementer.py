@@ -570,6 +570,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     raise ImplementerError(str(exc)) from exc
                 if cloud_notice:
                     effective_prompt = effective_prompt + b"\n\n" + cloud_notice
+                    # As on the local paths, the digest names the bytes the run is given.
+                    composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
             return cloud_build.run(
                 args, deadline, entry=entry, route_source=route_source,
                 effective_prompt=effective_prompt, prompt=prompt, context=context,

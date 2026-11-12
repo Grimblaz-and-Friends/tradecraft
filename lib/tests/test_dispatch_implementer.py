@@ -2341,6 +2341,9 @@ def test_a_cloud_launch_appends_its_routes_sentence_once(job, monkeypatch):
     args, sent = _cloud_launch(job, monkeypatch, b"Build the change.")
     assert implementer.run_implementer(args) == 0
     assert sent["effective_prompt"].count(sentence.encode()) == 1
+    # The composition digest names the bytes the cloud run is given, notice included.
+    assert sent["composition"]["effective_input_sha256"] == hashlib.sha256(
+        sent["effective_prompt"]).hexdigest()
     args, sent = _cloud_launch(job, monkeypatch, b"Build the change.\n\n" + sentence.encode())
     assert implementer.run_implementer(args) == 0
     assert sent["effective_prompt"].count(sentence.encode()) == 1
