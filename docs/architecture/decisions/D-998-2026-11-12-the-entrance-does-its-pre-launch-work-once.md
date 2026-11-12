@@ -36,15 +36,16 @@ In this practice's records the launch is the launcher's first write of the reque
 So the split has two intervals:
 
 1. **The request record's split** (`until: request-record`) runs from the call to that first write, and is carried in the write. It ends at the write rather than at the stamp so the reads between the two are counted.
-2. **Each spawned attempt's `pre_spawn_seconds` and `pre_spawn_parts`** run from that write to the attempt's spawn: the before-snapshot and, in the seat launcher, the attempt's version read.
+2. **Each spawned attempt's `pre_spawn_seconds` and `pre_spawn_parts`** run to the attempt's spawn: the before-snapshot and, in the seat launcher, the attempt's version read. The first attempt is measured from that write and each later attempt from the end of the attempt before it, when that attempt's recipient returned, because a recipient's run is not the launcher's work; counted from the write, a fallback's interval would carry the whole primary run. An attempt that spawned nothing starts no new interval, so its preparation is counted in the next.
 
-Together they run from the call to the recipient's start, the interval the second pull request will cap. After a launch returns, the entrance prints `until: spawn`, the request record's split with the first spawned attempt's parts added part by part; a decide or a refusal by the entrance prints `until: report`, and a launcher that refuses before writing its request record prints its own `until: handoff` line on the standard error it shares with the holder, which the entrance neither reads nor repeats: its own line after that refusal reads `until: report`. The parts are `github`, `removals`, `markers`, `launch_preparation` and `vendor`, the innermost part winning, with the rest `unattributed`.
+Together they run from the call to the recipient's start, the interval the second pull request will cap. After a launch returns, the entrance prints `until: spawn`, the request record's split with the first spawned attempt's parts added part by part; where no attempt was spawned, it prints the request record's split as written (`until: request-record`); a decide or a refusal by the entrance prints `until: report`, and a launcher that refuses before writing its request record prints its own `until: handoff` line on the standard error it shares with the holder, which the entrance neither reads nor repeats: its own line after that refusal reads `until: report`. The parts are `github`, `removals`, `markers`, `launch_preparation` and `vendor`, the innermost part winning, with the rest `unattributed`.
 
 Set aside:
 
 - **Writing the request record later, after the before-snapshot, so one interval reaches the spawn.** A launcher stopped during the snapshot would then leave no request record, the loss #833 fixed, and the comparison covers the run's own request record, which must exist first.
 - **Ending the split at the `launched_at` stamp.** The reads between the stamp and the write would fall in no interval.
 - **Moving `launched_at`.** D-996's overlap list reads it as the run's opening.
+- **Measuring every attempt from the request record's write.** A fallback after a primary that ran for its whole window would report that window as the launcher's own work.
 
 ## Calls made inside the rows
 

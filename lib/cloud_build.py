@@ -541,6 +541,8 @@ class Transport:
         if body is not None:
             command += ["--input", "-"]
             data = json.dumps(body).encode("utf-8")
+        # Not passed as a write even when it changes GitHub: each `gh api` response is parsed, so it
+        # must be whole or refused, unlike a Git write whose caller reads only its exit status.
         result = seat_process.run_read(command, input=data if data is not None else b"", cwd=Path.cwd(),
                                        timeout=120, cleanup_deadline=lifecycle.cleanup_deadline())
         raw = result.stdout.replace(b"\r\n", b"\n")

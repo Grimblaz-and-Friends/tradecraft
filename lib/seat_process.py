@@ -848,6 +848,10 @@ def stream_read(command, *, cwd, timeout, env=None, cleanup_deadline=None):
     def expire():
         stream.expired = True
         stop()
+        if descendants is not None:
+            # An escapee adopted after the stop's one scan still holds the pipe the caller is
+            # blocked on, so keep killing until none is left or the drain ends.
+            descendants.finish(_drain_end(time.monotonic(), cleanup_deadline))
 
     errors = threading.Thread(target=drain_errors, daemon=True)
     timer = threading.Timer(max(0.0, end - time.monotonic()), expire)
@@ -858,6 +862,10 @@ def stream_read(command, *, cwd, timeout, env=None, cleanup_deadline=None):
         yield stream
     finally:
         timer.cancel()
+        if timer.ident is not None:
+            # An expiry already running would otherwise stop the tree and mark the read expired
+            # while the cleanup below settles and reaps it.
+            timer.join()
         try:
             process.stdin.close()
         except OSError:

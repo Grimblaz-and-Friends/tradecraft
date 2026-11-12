@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -1045,3 +1046,14 @@ def test_978_blob_batch_ignores_an_inherited_git_dir(repo, tmp_path, monkeypatch
     adapter = reach.Git(repo)
     adapter.classify([binary, text])
     assert (adapter._known(binary), adapter._known(text)) == (True, False)
+
+
+def test_978_a_read_names_its_own_bound_until_the_run_limit_is_spent():
+    stopped = subprocess.TimeoutExpired(["git", "diff"], reach.READ_BOUND_SECONDS)
+    assert reach.limit_reached(stopped) == "this read's own 120-second bound"
+    with lifecycle.deadline_scope(lifecycle.stage_deadline("proof", 3600, declared=True)):
+        assert reach.limit_reached(stopped) == "this read's own 120-second bound"
+    spent = lifecycle.stage_deadline("proof", 60, started=time.monotonic() - 61, declared=True)
+    with lifecycle.deadline_scope(spent):
+        assert reach.limit_reached(stopped) == "the 60-second limit (declared by --timeout-seconds)"
+        assert reach._timed_out(stopped).limit == reach.limit_reached(stopped)

@@ -89,7 +89,7 @@ def write_record(record: Path, content: bytes) -> None:
 
 # Building the tree writes with these. Like every Git command here they take the contained
 # route, so a hung one is stopped with what it started; a write is judged by its exit status.
-GIT_WRITES = frozenset({"init", "config", "commit", "checkout"})
+GIT_WRITES = frozenset({"init", "config", "add", "update-index", "commit", "checkout"})
 
 
 def _run(command: list[str], *, cwd: Path | None = None,

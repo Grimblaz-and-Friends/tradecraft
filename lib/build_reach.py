@@ -35,9 +35,13 @@ class ReachError(ValueError):
 TIME_RAN_OUT = "time ran out before this read finished: "
 
 
+# Begins every own-bound name, so advice can tell a read's own bound from the run's limit.
+OWN_BOUND = "this read's own "
+
+
 def own_bound(bound=None):
-    """Name a read's own time bound, the limit when no run deadline is open."""
-    return f"this read's own {bound:g}-second bound" if isinstance(bound, (int, float)) else "this read's own bound"
+    """Name a read's own time bound, the limit when the run's own limit is not spent."""
+    return f"{OWN_BOUND}{bound:g}-second bound" if isinstance(bound, (int, float)) else f"{OWN_BOUND}bound"
 
 
 class ReachTimeout(ReachError):
@@ -160,6 +164,7 @@ SNIFF_BYTES = 8000
 
 
 def _environment():
+    # An inherited GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR would point `git -C root` at another repository.
     return {key: value for key, value in os.environ.items()
             if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}}
 
@@ -222,17 +227,24 @@ def _check_time():
         raise ReachTimeout(exc.limit) from exc
 
 
-def _timed_out(exc):
-    """Name the limit that stopped a read: the run's own, or the read's own bound."""
+def limit_reached(exc):
+    """Name the limit that stopped a read: the run's when it is spent, else the read's own bound.
+
+    Every reader of a timed-out read names its limit here, so one stop is never called by two names.
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
     limit = getattr(exc, "limit", None)
-    if not limit:
-        deadline = lifecycle.current_deadline()
-        bound = getattr(exc, "timeout", None)
-        if deadline is not None and (bound is None or _spent()):
-            limit = lifecycle.limit_phrase(deadline)
-        else:
-            limit = own_bound(bound)
-    return ReachTimeout(limit)
+    if isinstance(limit, str) and limit:
+        return limit
+    deadline = lifecycle.current_deadline()
+    bound = getattr(exc, "timeout", None)
+    if deadline is not None and (bound is None or _spent()):
+        return lifecycle.limit_phrase(deadline)
+    return own_bound(bound)
+
+
+def _timed_out(exc):
+    return ReachTimeout(limit_reached(exc))
 
 
 def _build_view(view, objects, object_format):

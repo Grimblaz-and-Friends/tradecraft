@@ -84,7 +84,8 @@ def _run_probe(command, **kwargs):
     """
     return run_read(command, input=kwargs.get("input") or b"",
                     cwd=kwargs.get("cwd", Path.cwd()), timeout=kwargs["timeout"],
-                    env=kwargs.get("env"), cleanup_deadline=lifecycle.cleanup_deadline())
+                    env=kwargs.get("env"), cleanup_deadline=lifecycle.cleanup_deadline(),
+                    writes=kwargs.get("writes", False))
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
@@ -593,6 +594,8 @@ class GitHubREST:
         if method not in {"POST", "PATCH"}:
             raise WorkError(f"unsupported GitHub mutation method: {method}")
         command = ["gh", "api", "--method", method, endpoint, "--input", "-"]
+        # The caller parses the response, so one cut short is refused as any read is rather than parsed
+        # as whole; a Git write is passed as a write because its caller reads only its exit status.
         result = self._call(
             command, input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
@@ -890,9 +893,13 @@ def _closing_pull_numbers(transport: GitHubREST, repo: str, issue_number: int) -
                     and _same_repository(node_repository.get("nameWithOwner"), repo)
                     and isinstance(number, int) and not isinstance(number, bool) and number > 0):
                 found.add(number)
-        cursor = page.get("endCursor")
-        if page.get("hasNextPage") is not True or not isinstance(cursor, str) or not cursor:
+        if page.get("hasNextPage") is not True:
             return found
+        cursor = page.get("endCursor")
+        # A candidate on the unread page would go unseen and a second builder could start beside it.
+        if not isinstance(cursor, str) or not cursor:
+            raise WorkError(f"GitHub GraphQL closing-reference read for {repo}#{issue_number} "
+                            "reports another page but names no cursor to read it; run again")
         after = cursor
 
 
@@ -3744,7 +3751,7 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
     if "preflight" not in payload and preflight.current() is not None:
-        # Where this run's time before the launch (or this report) went.
+        # Each report carries the split, so a slow run shows which part spent its time before the launch.
         payload = {**payload, "preflight": _reported_split()}
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
 
@@ -4017,13 +4024,7 @@ def _time_ran_out(exc: BaseException) -> str | None:
     """
     if not isinstance(exc, (TimeoutError, subprocess.TimeoutExpired, build_reach.ReachTimeout)):
         return None
-    limit = getattr(exc, "limit", None)
-    if isinstance(limit, str) and limit:
-        return limit
-    bound = getattr(exc, "timeout", None)
-    if lifecycle.current_deadline() is None and isinstance(bound, (int, float)):
-        return build_reach.own_bound(bound)
-    return lifecycle.limit_phrase()
+    return build_reach.limit_reached(exc)
 
 
 REACH_STOPPED = "reach evaluation stopped: time ran out: "
@@ -4059,7 +4060,11 @@ def _reach_advice(owed: list[dict[str, object]]) -> str:
             causes = timed_out.setdefault(limit, []) if limit is not None else unavailable
             if str(turn["turn"]) not in causes:
                 causes.append(str(turn["turn"]))
-    advice = [f"For {', '.join(turns)}: time ran out ({limit}); raise the limit and run again."
+    # --timeout-seconds lengthens only the run's limit, so a read stopped by its own bound is not told to raise it.
+    advice = [f"For {', '.join(turns)}: time ran out ({limit}); "
+              + ("--timeout-seconds does not lengthen that bound; run again when the machine is less loaded, "
+                 "or check why Git reads slowly in that repository."
+                 if limit.startswith(build_reach.OWN_BOUND) else "raise the limit and run again.")
               for limit, turns in timed_out.items()]
     if unavailable:
         advice.append(f"For {', '.join(unavailable)}: restore unavailable objects/read capability "
@@ -6977,14 +6982,24 @@ def _cold_stage_prompt(state: WorkState, root: Path) -> bytes:
     return b"".join((opening, artifact_bytes, middle, brief.body.encode("utf-8"), procedure))
 
 
+# Git commands here that change a repository, working copy or remote; their callers read only the exit status.
+GIT_WRITES = (("worktree", "add"), ("push",), ("fetch",), ("merge",), ("add",))
+
+
+def _git_writes(command: list[str]) -> bool:
+    return any(tuple(command[:len(prefix)]) == prefix for prefix in GIT_WRITES)
+
+
 def _git(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
     environment = {
         key: value for key, value in os.environ.items()
         if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
     }
+    # A write that exited 0 stands even when a held pipe cut its output short; a read's output must be whole.
     return _run_probe(
         ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120), env=environment,
+        writes=_git_writes(command),
     )
 
 
@@ -10315,9 +10330,14 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     raise WorkError("implementer lineage changed after launch planning; reread and retry")
                 if decision.continuity == "resume":
                     planned_source = launch_plan.get("predecessor") or launch_plan.get("session") or {}
+                    source_root = state.record_root or records.default_record_root().expanduser().resolve()
+                    # The run's index answers from what planning read, so another writer's change since
+                    # then shows only once the index rereads what changed on disk.
+                    source_index = lifecycle.store_index(source_root)
+                    if source_index is not None:
+                        source_index.mark_stale()
                     current_source = (_resume_source(
-                        f"{state.repo}#{state.issue_number}", decision.stage,
-                        state.record_root or records.default_record_root().expanduser().resolve(), state=state)
+                        f"{state.repo}#{state.issue_number}", decision.stage, source_root, state=state)
                         if resume_source is not None else None)
                     if (planned_source.get("id") != session
                             or (resume_source is not None and (

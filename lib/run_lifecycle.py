@@ -434,7 +434,8 @@ class _StoreRecords:
             found = self._records[relative] = _read_record(self.root / relative)
         return found
 
-    # Every read of the index, wherever it happens, counts under the markers part.
+    # The store is read to check what markers claim, so every read of it counts under markers,
+    # even one made while counting removals, and the store's cost stays in one part.
     def requests(self):
         with self._lock, preflight.part("markers"):
             self._listed()
@@ -487,8 +488,6 @@ class StoreIndex:
         with preflight.part("markers"):
             raw, value = self._records.lookup(self._relative(path))
             return raw, value if isinstance(value, Exception) else _json_copy(value)
-
-    request = run
 
     def mark_stale(self):
         self._records.mark_stale()

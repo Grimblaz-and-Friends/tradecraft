@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -16,11 +17,13 @@ import run_lifecycle
 import seat_process as process
 
 PYTHON = getattr(sys, "_base_executable", sys.executable)
-# The child starts a 60-second grandchild that shares its pipes, records its pid, and sleeps.
+# Each fixture's processes outlast any bound under test by sleeping this long.
+HOLD_SECONDS = 60
+# The child starts a grandchild that shares its pipes, records its pid, and both sleep HOLD_SECONDS.
 PARENT = ("import pathlib, subprocess, sys, time; "
-          "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']{streams}); "
+          f"g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep({HOLD_SECONDS})']{{streams}}); "
           "pathlib.Path(sys.argv[1]).write_text(str(g.pid)); "
-          "print('started', flush=True); time.sleep(60)")
+          f"print('started', flush=True); time.sleep({HOLD_SECONDS})")
 SHARED = PARENT.format(streams="")
 # A stream's grandchild holds no pipe, so an uncontained stream still reaches its end.
 DETACHED = PARENT.format(streams=", stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
@@ -92,7 +95,7 @@ def test_978_read_bound_stops_what_it_started(tmp_path, monkeypatch, stream):
 
 @pytest.mark.parametrize("stream", [False, True], ids=["run_read", "stream_read"])
 def test_978_read_never_passes_cleanup_end(tmp_path, stream):
-    # A 12-second stage two seconds old has its cleanup end five seconds away.
+    # The stage's cleanup end falls well before the read's own timeout, so it is the bound that holds.
     deadline = run_lifecycle.stage_deadline("build", 12, started=time.monotonic() - 2)
     pid_file = tmp_path / "grandchild"
     code = DETACHED if stream else SHARED
@@ -194,6 +197,17 @@ KEPT_ROUTES = {
 }
 
 
+# Names that start a process whoever owns them, and names that do only as `owner.name`; `run`,
+# `call` and `system` are common method names, so only their module-qualified form counts.
+STARTS = frozenset({"Popen", "run_process", "check_output", "check_call"})
+QUALIFIED_STARTS = {"subprocess": frozenset({"run", "call", "check_call", "check_output", "Popen"}),
+                    "os": frozenset({"system", "popen"})}
+
+
+def starts_process(owner, name):
+    return name in STARTS or name in QUALIFIED_STARTS.get(owner, ())
+
+
 def process_starts(module):
     tree = ast.parse((LIB / f"{module}.py").read_text(encoding="utf-8"))
     found = []
@@ -207,10 +221,9 @@ def process_starts(module):
                 function = child.func
                 name = (function.attr if isinstance(function, ast.Attribute)
                         else function.id if isinstance(function, ast.Name) else None)
-                bare_run = name == "run" and not (isinstance(function, ast.Attribute)
-                                                  and isinstance(function.value, ast.Name)
-                                                  and function.value.id == "subprocess")
-                if name in ("run", "Popen", "run_process") and not bare_run:
+                owner = (function.value.id if isinstance(function, ast.Attribute)
+                         and isinstance(function.value, ast.Name) else None)
+                if starts_process(owner, name):
                     found.append((module, ".".join(inner), name, child.lineno))
             visit(child, inner)
 
@@ -225,9 +238,9 @@ def test_978_read_sites():
     assert not stray, "a read outside run_read or stream_read:\n" + "\n".join(stray)
 
 
-# The child exits at once, leaving a 60-second grandchild that holds its stdout.
+# The child exits at once, leaving a grandchild that sleeps HOLD_SECONDS holding its stdout.
 EXITS = ("import pathlib, subprocess, sys; "
-         "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+         f"g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep({HOLD_SECONDS})'], "
          "stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr{session}); "
          "pathlib.Path(sys.argv[1]).write_text(str(g.pid)); print('child', flush=True)")
 
@@ -302,7 +315,7 @@ def test_978_a_write_that_exited_0_is_done_even_when_its_pipe_was_held(tmp_path,
 
 
 def test_978_git_writes_are_marked_as_writes(tmp_path, monkeypatch):
-    """The cloud route and the recipient tree mark exactly their Git writes as writes."""
+    """The cloud route, the recipient tree and the artifact copy mark exactly their Git writes as writes."""
     import cloud_build
     import recipient_tree
     seen = []
@@ -315,8 +328,87 @@ def test_978_git_writes_are_marked_as_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(recipient_tree, "run_read", recorded)
     for verb in ("push", "fetch", "merge", "rev-parse", "status"):
         cloud_build.Transport().git(tmp_path, verb)
-    for verb in ("init", "config", "commit", "checkout", "rev-parse", "ls-files"):
+    for verb in ("init", "config", "add", "update-index", "commit", "checkout", "rev-parse", "ls-files"):
         recipient_tree._git(tmp_path, verb)
     assert seen == [("push", True), ("fetch", True), ("merge", True), ("rev-parse", False), ("status", False),
-                    ("init", True), ("config", True), ("commit", True), ("checkout", True),
-                    ("rev-parse", False), ("ls-files", False)]
+                    ("init", True), ("config", True), ("add", True), ("update-index", True), ("commit", True),
+                    ("checkout", True), ("rev-parse", False), ("ls-files", False)]
+    # The artifact copy's caller names each write, so every literal Git call there is checked.
+    sites = artifact_git_calls()
+    wrong = [f"artifact_tree.py:{line} git {' '.join(map(str, words))} passes writes={writes}"
+             for line, words, writes in sites if writes != changes_repository(words)]
+    assert not wrong, "\n".join(wrong)
+    assert sum(writes for _line, _words, writes in sites) == 7, sites
+
+
+def changes_repository(words):
+    verb, options = words[0], words[1:]
+    if verb == "config":
+        return "--list" not in options
+    if verb == "remote":
+        return bool(options)
+    return verb in {"clone", "checkout", "fetch", "push", "merge", "add", "commit", "init", "worktree"}
+
+
+def artifact_git_calls():
+    """`(line, words, writes)` for each `git` or `source_git` call in artifact_tree whose words are literal."""
+    tree = ast.parse((LIB / "artifact_tree.py").read_text(encoding="utf-8"))
+    tuples = {target.id: [item.value if isinstance(item, ast.Constant) else None for item in node.value.elts]
+              for node in ast.walk(tree) if isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple)
+              for target in node.targets if isinstance(target, ast.Name)}
+    sites = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in ("git", "source_git")):
+            continue
+        words = []
+        for argument in node.args[1:]:
+            if isinstance(argument, ast.Starred) and isinstance(argument.value, ast.Name):
+                words.extend(tuples.get(argument.value.id, [None]))
+            else:
+                words.append(argument.value if isinstance(argument, ast.Constant) else None)
+        while words[:1] == ["-c"]:
+            words = words[2:]
+        if not words or not isinstance(words[0], str):
+            continue  # A pass-through of its caller's words; its caller's call is the site.
+        writes = any(keyword.arg == "writes" and isinstance(keyword.value, ast.Constant)
+                     and keyword.value.value is True for keyword in node.keywords)
+        sites.append((node.lineno, words, writes))
+    return sites
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX setsid descendant")
+def test_978_stream_bound_reaches_an_escapee_adopted_after_the_stop(tmp_path):
+    # The grandchild leaves the read's process group but keeps the output pipe the caller blocks on.
+    code = PARENT.format(streams=", start_new_session=True")
+    bound = 1.0
+    elapsed, pid = read_until_bound(tmp_path, code, bound=bound, stream=True)
+    try:
+        assert elapsed < bound + process._READ_DRAIN_SECONDS + 1.0, f"returned after {elapsed:.2f}s"
+        assert not alive(pid), "the escaped grandchild outlived the stream's bound"
+    finally:
+        reap(pid)
+
+
+def test_978_stream_cleanup_waits_for_a_running_expiry(tmp_path, monkeypatch):
+    """Cleanup starts only after an expiry already running has finished stopping the tree."""
+    monkeypatch.setattr(process, "_CONTAIN", False)
+    stopping, order = threading.Event(), []
+    original = process._killed
+
+    def killed(child):
+        if isinstance(threading.current_thread(), threading.Timer):
+            stopping.set()
+            time.sleep(0.5)  # Longer than the cleanup's drain, so an unjoined cleanup overtakes it.
+            original(child)
+            order.append("expiry")
+        else:
+            order.append("cleanup")
+            original(child)
+
+    monkeypatch.setattr(process, "_killed", killed)
+    with pytest.raises(subprocess.TimeoutExpired):
+        with process.stream_read([PYTHON, "-c", f"import time; time.sleep({HOLD_SECONDS})"], cwd=tmp_path,
+                                 timeout=0.2):
+            assert stopping.wait(10), "the expiry never ran"
+    assert order[0] == "expiry", order

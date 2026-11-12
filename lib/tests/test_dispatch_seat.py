@@ -2027,6 +2027,52 @@ def test_978_request_record_split(job, tmp_path, monkeypatch):
     assert attempt["pre_spawn_parts"]["launch_preparation_seconds"] >= D
 
 
+def test_978_a_fallback_attempt_is_measured_from_the_end_of_the_attempt_before_it(job, monkeypatch):
+    # The primary's recipient runs for D and is unavailable, so the fallback runs;
+    # that run is not the launcher's work and stays out of the fallback's interval.
+    import preflight
+    args, _ = job
+    D, probe, slack = 2.0, 0.3, 0.02  # slack: the interval's rounding to hundredths.
+    configure(job, {"claude": {"message": "Not logged in", "sleep": D}})
+    marks, spawns, returns = [], [], []
+    original_mark = preflight.Scope.mark
+    original_run = seat.run_process
+
+    def mark(self):
+        taken = original_mark(self)
+        marks.append(taken[0])
+        return taken
+
+    def version(*_):
+        time.sleep(probe)  # Each attempt's own preparation, before its spawn.
+        return "fixture-cli 1.0"
+
+    def spawn(command, **kwargs):
+        spawns.append(time.monotonic())
+        try:
+            return original_run(command, **kwargs)
+        finally:
+            returns.append(time.monotonic())
+
+    monkeypatch.setattr(preflight.Scope, "mark", mark)
+    monkeypatch.setattr(seat.records, "runtime_version", version)
+    monkeypatch.setattr(seat, "run_process", spawn)
+    assert seat.run_dispatch(args, now=NOW) == 0
+    primary, fallback = record(args)["attempts"]
+    assert (primary["vendor"], fallback["vendor"]) == ("claude", "codex")
+    assert primary["outcome"] == "unavailable" and returns[0] - spawns[0] >= D
+    for attempt in (primary, fallback):
+        assert_978_attempt(attempt)
+        assert attempt["pre_spawn_parts"]["vendor_seconds"] >= probe
+    # The first attempt is measured from the request record's write.
+    assert len(marks) == 3 and marks[0] < spawns[0]
+    assert abs(primary["pre_spawn_seconds"] - (spawns[0] - marks[0])) <= slack
+    # The fallback is measured from the primary's return, so its run stays out.
+    assert returns[0] - slack <= marks[1] < spawns[1]
+    assert abs(fallback["pre_spawn_seconds"] - (spawns[1] - marks[1])) <= slack
+    assert fallback["pre_spawn_seconds"] < D / 2
+
+
 def test_978_launcher_refusal_split_before_the_request_record(job, tmp_path, capsys):
     # A seat that refuses before any request record prints the split from the call.
     args, _ = job

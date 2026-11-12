@@ -510,7 +510,9 @@ def run_dispatch(args, *, now=None) -> int:
                                       started=getattr(args, "invocation_started_monotonic", None))
     except ValueError as exc:
         raise DispatchError(str(exc)) from exc
-    # A launcher called directly has no handoff and measures from its own start.
+    # This joins the scope `main` opened, and gives a launcher called without
+    # `main` (in process, as the entrance's tests and the cloud route do) its own
+    # scope seeded from the handoff.
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     seed = preflight.load_handoff(getattr(args, "preflight_input", None))
     with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline):
@@ -646,7 +648,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
         request["input"] = str(input_path)
         if judged_draft is not None:
             request["judged_draft"] = judged_draft
-        # The launch is this write: the split ends here, and each attempt's
+        # The launch is this write: the split ends here, and the first attempt's
         # pre-spawn interval starts here.
         scope = preflight.current()
         request["preflight"] = scope.snapshot("request-record")
@@ -815,6 +817,9 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 attempt["launched"] = True
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
+                            # A later attempt is measured from here, because the
+                            # recipient's run that just ended is not the launcher's work.
+                            mark = scope.mark()
                             elapsed = time.monotonic() - started
                             if record.get("interruption_cause") == "ceiling":
                                 reason = lifecycle.ceiling_reason(vendor, caller_limit=args.timeout_seconds,

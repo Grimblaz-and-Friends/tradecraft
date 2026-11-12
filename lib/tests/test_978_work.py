@@ -2,13 +2,16 @@
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
+import time
 
 import pytest
 
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import preflight
+import test_work as base
 import work
 
 PRODUCER = "holder-fixture"
@@ -267,3 +270,90 @@ def test_978_main_opens_the_scope_and_the_deadline_shares_its_clock(tmp_path, mo
     assert seen["scope"] is not None and preflight.current() is None
     assert seen["deadline"].started == seen["scope"].started
     assert seen["deadline"].declared is (declared is not None)
+
+
+def rewrite_run(record_root):
+    path = record_root / "build" / "result.md.run.json"
+    row = json.loads(path.read_bytes())
+    row["attempts"][0]["observed"]["session_id"] = base.OTHER_SESSION
+    path.write_bytes(json.dumps(row).encode())
+
+
+def newer_bundle(record_root):
+    base.dispatch_bundle(record_root, name="newer.md", session=base.OTHER_SESSION,
+                         completed_at="2026-09-21T10:00:00+00:00")
+
+
+@pytest.mark.parametrize("change", [rewrite_run, newer_bundle])
+def test_978_resume_check_sees_another_writer_inside_a_scope(tmp_path, monkeypatch, change):
+    base.ruling_file(tmp_path, monkeypatch)
+    fixture = base.state(base.AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    base.dispatch_bundle(fixture.record_root)
+    root = tmp_path / "implementation"
+    root.mkdir()
+
+    # The root is proved after planning and before the check, so the store changes between them.
+    def changed_between(*_a, **_k):
+        change(fixture.record_root)
+        return root, None, False
+    monkeypatch.setattr(work, "_dispatch_root", changed_between)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_k: pytest.fail("launched a changed source"))
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched a changed source"))
+    with preflight.scope(), pytest.raises(work.WorkError, match="resume source changed after launch planning"):
+        work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"),
+                           tmp_path, None, "holder", floor_command="python fixture-check.py")
+
+
+def test_978_own_bound_gets_its_own_name_and_advice(monkeypatch):
+    stopped = subprocess.TimeoutExpired(["git", "status"], 120)
+    with work.lifecycle.deadline_scope(work.lifecycle.stage_deadline("proof", 3600, declared=True)):
+        # A read outside the reach adapter is named by the same rule as one inside it.
+        own = work._time_ran_out(stopped)
+        assert own == work.build_reach._timed_out(stopped).limit == "this read's own 120-second bound"
+    advice = owed_refusal(monkeypatch, [turn("turn-own", f"ReachTimeout: time ran out before this read finished: {own}")]
+                          ).detail.split("]. ", 1)[1]
+    assert f"For turn-own: time ran out ({own}); --timeout-seconds does not lengthen that bound;" in advice
+    assert "raise the limit" not in advice and "restore" not in advice.lower()
+
+    spent = work.lifecycle.stage_deadline("proof", 60, started=time.monotonic() - 61, declared=True)
+    with work.lifecycle.deadline_scope(spent):
+        limit = work._time_ran_out(stopped)
+    assert limit == LIMIT
+    advice = owed_refusal(monkeypatch, [turn("turn-spent", f"ReachTimeout: time ran out before this read finished: {limit}")]
+                          ).detail.split("]. ", 1)[1]
+    assert f"For turn-spent: time ran out ({LIMIT}); raise the limit and run again." in advice
+    assert "does not lengthen" not in advice
+
+
+@pytest.mark.parametrize("cursor", [None, ""])
+def test_978_closing_page_with_more_and_no_cursor_is_refused(cursor):
+    page = closing_page([9])
+    page["data"]["repository"]["issue"]["closedByPullRequestsReferences"]["pageInfo"] = {
+        "hasNextPage": True, "endCursor": cursor}
+    transport = Recorder({}, closing={None: page})
+    with pytest.raises(work.WorkError, match="reports another page but names no cursor"):
+        work._closing_pull_numbers(transport, REPO, 12)
+
+
+def test_978_git_writes_are_passed_as_writes_and_reads_stay_strict(tmp_path, monkeypatch):
+    seen = []
+
+    def recorded(command, **kwargs):
+        seen.append((command[3:], kwargs["writes"]))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+    monkeypatch.setattr(work, "run_read", recorded)
+    writes = [["worktree", "add", "-b", "branch", str(tmp_path / "copy"), "HEAD"],
+              ["push", "--set-upstream", "origin", "HEAD:refs/heads/branch"],
+              ["fetch", "--no-tags", "origin", "refs/heads/main"],
+              ["merge", "--no-commit", "--no-ff", "a" * 40], ["merge", "--abort"],
+              ["add", "--", ":(literal)VERSION"]]
+    # write-tree's tree id is read from its output, so it stays strict like any read.
+    reads = [["rev-parse", "HEAD"], ["merge-base", "--is-ancestor", "a" * 40, "HEAD"], ["worktree", "list"],
+             ["write-tree"], ["merge-file", "--stdout", "a", "b", "c"], ["ls-remote", "--heads", "origin"]]
+    for command in writes + reads:
+        work._git(command, tmp_path)
+    work._git_text(["add", "--", ":(literal)VERSION"], tmp_path, "stage")
+    assert seen == [(command, True) for command in writes] + [(command, False) for command in reads] + [
+        (["add", "--", ":(literal)VERSION"], True)]

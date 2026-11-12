@@ -415,7 +415,9 @@ def run_implementer(args: argparse.Namespace) -> int:
         args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
     deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
                                          started=getattr(args, "invocation_started_monotonic", None))
-    # A launcher called directly has no handoff and measures from its own start.
+    # This joins the scope `main` opened, and gives a launcher called without
+    # `main` (in process, as the entrance's tests and the cloud route do) its own
+    # scope seeded from the handoff.
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     seed = preflight.load_handoff(getattr(args, "preflight_input", None))
     with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline):
