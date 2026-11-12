@@ -391,6 +391,7 @@ class Git:
         try:
             with seat_process.stream_read(["git", "-C", str(self.root), "cat-file", "--batch"], cwd=Path.cwd(),
                                           timeout=lifecycle.probe_timeout(READ_BOUND_SECONDS),
+                                          env=_environment(),
                                           cleanup_deadline=lifecycle.cleanup_deadline()) as stream:
                 for blob in wanted:
                     try:

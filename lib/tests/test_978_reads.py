@@ -222,3 +222,59 @@ def test_978_read_sites():
              for module in READ_MODULES for module, where, name, line in process_starts(module)
              if (module, where, name) not in KEPT_ROUTES]
     assert not stray, "a read outside run_read or stream_read:\n" + "\n".join(stray)
+
+
+# The child exits at once, leaving a 60-second grandchild that holds its stdout.
+EXITS = ("import pathlib, subprocess, sys; "
+         "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+         "stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr{session}); "
+         "pathlib.Path(sys.argv[1]).write_text(str(g.pid)); print('child', flush=True)")
+
+
+def reap(pid):
+    kill(pid)
+    if os.name != "nt":
+        try:
+            os.waitpid(pid, 0)  # The subreaper adopted it; leave no zombie for later baselines.
+        except ChildProcessError:
+            pass
+
+
+def test_978_read_is_whole_or_refused(tmp_path, monkeypatch):
+    command = [PYTHON, "-c", EXITS.format(session=""), str(tmp_path / "contained")]
+    # Contained, the job (or process group) stops the grandchild as the child exits, so its pipe closes.
+    started = time.monotonic()
+    result = process.run_read(command, cwd=tmp_path, timeout=30)
+    pid = grandchild(tmp_path / "contained")
+    try:
+        assert time.monotonic() - started < 10
+        assert (result.returncode, result.stdout.strip()) == (0, b"child")
+        assert gone(pid, within=1.0)
+    finally:
+        reap(pid)
+
+    # A holder the stop does not reach: the read refuses its part rather than answering with it.
+    if os.name == "nt":
+        monkeypatch.setattr(process, "_stop_job", lambda *_args: None)
+    else:
+        monkeypatch.setattr(process.Descendants, "kill", lambda self: False)
+        command = [PYTHON, "-c", EXITS.format(session=", start_new_session=True"), str(tmp_path / "escaped")]
+    command[-1] = str(tmp_path / "escaped")
+    with pytest.raises(process.ReadCutShort, match="cut short") as raised:
+        process.run_read(command, cwd=tmp_path, timeout=30)
+    pid = grandchild(tmp_path / "escaped")
+    try:
+        assert raised.value.output.strip() == b"child" and isinstance(raised.value, OSError)
+        if os.name == "nt":
+            # Closing the job as the read returns still stops what the read started.
+            assert gone(pid, within=1.0)
+    finally:
+        reap(pid)
+    monkeypatch.undo()
+
+    # Uncontained, the grandchild survives with the pipe, and the read still refuses.
+    monkeypatch.setattr(process, "_CONTAIN", False)
+    command[-1] = str(tmp_path / "uncontained")
+    with pytest.raises(process.ReadCutShort):
+        process.run_read(command, cwd=tmp_path, timeout=30)
+    reap(grandchild(tmp_path / "uncontained"))

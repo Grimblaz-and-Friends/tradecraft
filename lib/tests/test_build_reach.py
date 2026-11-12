@@ -1032,3 +1032,16 @@ def test_978_a_read_past_its_own_bound_says_so(repo):
     assert "time ran out" in report["superset_error"]
     text = json.dumps(report).lower()
     assert "fetch" not in text and "restore" not in text
+
+
+def test_978_blob_batch_ignores_an_inherited_git_dir(repo, tmp_path, monkeypatch):
+    commit(repo, {"a.bin": b"\0a\n", "b.md": "a\n"})
+    binary, text = (git(repo, "rev-parse", f"HEAD:{name}").stdout.strip() for name in ("a.bin", "b.md"))
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q")
+    # A hook or wrapper can export GIT_DIR; the batch must still read the measured repository.
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    adapter = reach.Git(repo)
+    adapter.classify([binary, text])
+    assert (adapter._known(binary), adapter._known(text)) == (True, False)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 import base64
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import fnmatch
@@ -3746,7 +3747,7 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
                    state.raw_output if state is not None else None}
     if "preflight" not in payload and preflight.current() is not None:
         # Where this run's time before the launch (or this report) went (#978).
-        payload = {**payload, "preflight": preflight.snapshot("report")}
+        payload = {**payload, "preflight": _reported_split()}
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
 
 
@@ -9381,8 +9382,68 @@ def _recipient_run(command, *, timeout, cleanup_deadline):
                                  cleanup_deadline=cleanup_deadline)
 
 
+# The open stage's launch-preparation timer, which the handoff to a launcher stops, and its store.
+_PREPARATION: ContextVar[tuple[ExitStack, Path | None] | None] = ContextVar(
+    "tradecraft_work_preparation", default=None)
+# Where the scope keeps the launch's split once the launcher returns.
+_LAUNCHED_SPLIT = ("work", "launched-split")
+
+
+def _reported_split():
+    """The split a report prints: to the recipient's spawn after a launch, else to this report."""
+    # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    opened = preflight.current()
+    if opened is None:
+        return None
+    return opened.memo.get(_LAUNCHED_SPLIT) or opened.snapshot("report")
+
+
+def _launched_split(command, store, launched_after):
+    """This launch's split to its recipient's spawn, read from the bundle its launcher wrote.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    def argument(name):
+        return command[command.index(name) + 1] if name in command[:-1] else None
+    work_value, stage, output = argument("--work"), argument("--stage"), argument("--output")
+    if not work_value or not stage:
+        return None
+    # A launcher writes its bundle beside the output it was given, else in the default store.
+    where = (Path(output).parent if output else
+             Path(store) if store is not None else records.default_record_root().expanduser().resolve())
+    # Only a bundle launched after this call can be this launch's own.
+    for _order, _run_path, request, run in lifecycle.launch_bundles(where, work_value, {stage}, after=launched_after):
+        split = request.get("preflight")
+        if not isinstance(split, dict) or split.get("until") != "request-record":
+            continue
+        attempts = run.get("attempts")
+        for attempt in attempts if isinstance(attempts, list) else []:
+            if isinstance(attempt, dict) and attempt.get("pre_spawn_seconds") is not None:
+                return preflight.combine(split, attempt["pre_spawn_seconds"], attempt.get("pre_spawn_parts"))
+        # No recipient was spawned: the split ends at the request record.
+        return split
+    return None
+
+
+def _note_launched_split(command, store, launched_after):
+    opened = preflight.current()
+    if opened is None:
+        return
+    try:
+        split = _launched_split(command, store, launched_after)
+    except (AttributeError, OSError, TypeError, ValueError):
+        split = None  # An old or unreadable bundle leaves the report's own split.
+    if split is None:
+        opened.memo.pop(_LAUNCHED_SPLIT, None)
+    else:
+        opened.memo[_LAUNCHED_SPLIT] = split
+
+
 def _invoke_recipient(command, deadline):
     deadline.remaining()
+    preparation, store = _PREPARATION.get() or (None, None)
+    if preparation is not None:
+        preparation.close()  # The handoff ends the entrance's launch preparation.
     if "--invocation-started-monotonic" not in command:
         command.extend(("--invocation-started-monotonic", str(deadline.started)))
     # Let the child spend its recording reserve, then stop a stuck launcher
@@ -9393,6 +9454,7 @@ def _invoke_recipient(command, deadline):
         handoff = Path(temporary) / "preflight.json"
         if "--preflight-input" not in command and preflight.write_handoff(handoff):
             command.extend(("--preflight-input", str(handoff)))
+        launched_after = datetime.now(timezone.utc).isoformat()
         try:
             return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
                                   cleanup_deadline=deadline.end - deadline.reserve / 8).returncode
@@ -9401,6 +9463,15 @@ def _invoke_recipient(command, deadline):
         finally:
             # The launcher wrote its bundle; the run's store index reads what changed.
             preflight.refresh()
+            _note_launched_split(command, store, launched_after)
+
+
+def _seat_returned(decision, command, deadline):
+    code = _invoke_recipient(command, deadline)
+    if preflight.current() is not None:
+        # A seat's stage prints no report of its own after the return; this line carries its split.
+        _emit_report({"stage": decision.stage, "recipient_returned": True}, flush=True)
+    return code
 
 
 def _release_holder_close(state):
@@ -9435,6 +9506,18 @@ def _release_holder_close(state):
 
 
 def execute_stage(state, decision, *args, **kwargs):
+    # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    # From the decision to the handoff the entrance's time is launch preparation.
+    with ExitStack() as preparation:
+        preparation.enter_context(preflight.part("launch_preparation"))
+        token = _PREPARATION.set((preparation, getattr(state, "record_root", None)))
+        try:
+            return _prepared_stage(state, decision, *args, **kwargs)
+        finally:
+            _PREPARATION.reset(token)
+
+
+def _prepared_stage(state, decision, *args, **kwargs):
     if decision.stage == "artifact":
         with artifact_tree.isolated_git_environment():
             try:
@@ -9884,7 +9967,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             **dispatch_seat.fallback_plan("claude", own_vendor, "execute"),
             "comparison_vendor_source": own_vendor_source}
         setting_resolution.print_plan(launch_plan, label="work")
-        return _invoke_recipient(command, deadline)
+        return _seat_returned(decision, command, deadline)
     if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
         decision = _resolved_use_holder_decision(state, decision, root, instalment)
     if not decision.dispatch:
@@ -10155,7 +10238,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         **dispatch_seat.fallback_plan("claude", own_vendor, "read"),
                         "comparison_vendor_source": own_vendor_source}
                     setting_resolution.print_plan(launch_plan, label="work")
-                    return _invoke_recipient(command, deadline)
+                    return _seat_returned(decision, command, deadline)
             else:
                 if branch is not None:
                     branch = _attached_branch(dispatch_root)
@@ -10753,10 +10836,10 @@ def _run(
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     # One scope per run, opened at the call, holds its clock, timing split, read memo and store indexes.
     with preflight.scope():
-        utf8_stdio()
         try:
             return run(parser().parse_args(argv))
         except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
@@ -10769,7 +10852,7 @@ def main(argv: list[str] | None = None) -> int:
                               "reach": getattr(exc, "reach", None)},
                              raw=getattr(exc, "raw_output", None))
             print(f"work: {exc}", file=sys.stderr)
-            split = preflight.snapshot("report")
+            split = _reported_split()
             if split is not None:
                 print("work: preflight " + json.dumps(split, ensure_ascii=True, sort_keys=True), file=sys.stderr)
             return 1

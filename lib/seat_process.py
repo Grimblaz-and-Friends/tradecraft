@@ -30,6 +30,21 @@ class ContainmentRefused(OSError):
     """Windows would not hold a read in a parent-held job; nothing was run."""
 
 
+class ReadCutShort(OSError):
+    """A read's process exited, but something still held its pipe when the drain ended.
+
+    What was captured is only part of the output, so the read fails rather than
+    answering with it. The tree has already been stopped when this is raised.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+
+    def __init__(self, command, output, stderr, cleanup_proven):
+        super().__init__(f"the read's output was cut short: a process it started kept its pipe "
+                         f"open past the read's end: {command!r}")
+        self.cmd, self.output, self.stderr, self.cleanup_proven = command, output, stderr, cleanup_proven
+
+
 _JOB_API = None
 
 
@@ -439,7 +454,9 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 if drain_deadline is not None and time.monotonic() >= drain_deadline:
                     break
                 name, chunk = events.get_nowait()
-                if chunk is not None:
+                if chunk is None:
+                    ended.add(name)
+                else:
                     captured[name].extend(chunk)
                     if on_output:
                         notify(on_output, name, chunk)
@@ -480,6 +497,8 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
             raise error
         result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         result.cleanup_proven = cleanup_proven
+        # A pipe still open at the drain's end means this is only part of the output.
+        result.output_complete = len(ended) == 2
         return result
 
 
@@ -595,12 +614,14 @@ def _job_settled(api, job, end, held):
 def _collect(command, process, input, timeout, end, cleanup_deadline, stop, settle):
     """Capture a started read until it exits or reaches `end`, then stop what it left behind."""
     captured = {"stdout": bytearray(), "stderr": bytearray()}
+    finished = set()
 
     def drain(name):
         stream = getattr(process, name)
         try:
             while chunk := os.read(stream.fileno(), 65536):
                 captured[name].extend(chunk)
+            finished.add(name)
         except (OSError, ValueError):
             pass
         finally:
@@ -656,8 +677,17 @@ def _collect(command, process, input, timeout, end, cleanup_deadline, stop, sett
         error = subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
         error.cleanup_proven = cleanup_proven
         raise error
+    if finished != set(captured):
+        raise ReadCutShort(command, stdout, stderr, cleanup_proven)
     result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     result.cleanup_proven = cleanup_proven
+    return result
+
+
+def _whole(command, result):
+    """The read route's result, refused when a pipe was still open as its drain ended."""
+    if not getattr(result, "output_complete", True):
+        raise ReadCutShort(command, result.stdout, result.stderr, result.cleanup_proven)
     return result
 
 
@@ -674,7 +704,9 @@ def run_read(command, *, input=b"", cwd, timeout, env=None, cleanup_deadline=Non
 
     On Windows the caller holds a kill-on-close job the read joins before it
     runs; if Windows refuses that job, the read takes the worker route and the
-    run's read-route tally says so. A read never runs uncontained.
+    run's read-route tally says so. A read never runs uncontained. A read whose
+    pipe is still held when its drain ends raises `ReadCutShort` rather than
+    returning part of its output as the whole.
 
     Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     """
@@ -689,16 +721,17 @@ def run_read(command, *, input=b"", cwd, timeout, env=None, cleanup_deadline=Non
     if os.name != "nt":
         # A process group and the subreaper already contain a POSIX read in this process.
         preflight.note_read(True)
-        return run_process(command, input=input, cwd=cwd, timeout=max(0.0, end - started),
-                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline)
+        return _whole(command, run_process(command, input=input, cwd=cwd, timeout=max(0.0, end - started),
+                                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline))
     process = subprocess.Popen(command, creationflags=_CREATE_SUSPENDED, **pipes)
     try:
         api, job = _contain_suspended(process)
     except ContainmentRefused as refused:
         _abandon_suspended(process)
         preflight.note_read(False, str(refused))
-        return run_process(command, input=input, cwd=cwd, timeout=max(0.0, end - time.monotonic()),
-                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline)
+        return _whole(command, run_process(command, input=input, cwd=cwd,
+                                           timeout=max(0.0, end - time.monotonic()),
+                                           on_tick=_no_tick, env=env, cleanup_deadline=cleanup_deadline))
     except BaseException:
         _abandon_suspended(process)
         raise
@@ -732,7 +765,7 @@ class _Stream:
 
 
 @contextmanager
-def stream_read(command, *, cwd, timeout, cleanup_deadline=None):
+def stream_read(command, *, cwd, timeout, env=None, cleanup_deadline=None):
     """Yield a contained read's pipes for a caller that must read it piece by piece.
 
     The same containment as `run_read`. Where Windows refuses the job this
@@ -746,7 +779,7 @@ def stream_read(command, *, cwd, timeout, cleanup_deadline=None):
     started = time.monotonic()
     end = _read_end(timeout, cleanup_deadline, started)
     pipes = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                 cwd=cwd, bufsize=0)
+                 cwd=cwd, env=env, bufsize=0)
     api = job = descendants = None
     if not _CONTAIN:
         process = subprocess.Popen(command, **pipes)

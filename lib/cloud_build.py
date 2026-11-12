@@ -26,6 +26,7 @@ import urllib.request
 import dispatch_record as records
 from dispatch_lifecycle import CLAUDE_DISALLOWED_TOOLS
 import launch_bound
+import preflight
 import run_lifecycle as lifecycle
 import seat_process
 
@@ -845,12 +846,22 @@ def _previous_usage(attempts: list[tuple[dict, dict]], dispatch_id: str) -> tupl
     return latest, deltas
 
 
-def run(args, deadline, *, entry: dict | None, route_source: str, effective_prompt: bytes,
-        prompt: bytes, context: bytes, artifact_brief: bytes, metadata: dict, composition: dict,
-        settings_sources: dict, validate, transport: Transport | None = None,
-        record_root: Path | None = None, plugin: Path | None = None,
-        install_path: Path | None = None, preset_failure: str | None = None) -> int:
-    """Fire (or follow up) one cloud attempt and record it like a local bundle."""
+def run(args, deadline, **launch) -> int:
+    """Fire (or follow up) one cloud attempt and record it like a local bundle.
+
+    A cloud build is a launched stage, so its request record carries the split from
+    the call as a local launch's does; the launcher's scope is joined when open.
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    with preflight.scope(), preflight.part("launch_preparation"):
+        return _launch(args, deadline, **launch)
+
+
+def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_prompt: bytes,
+            prompt: bytes, context: bytes, artifact_brief: bytes, metadata: dict, composition: dict,
+            settings_sources: dict, validate, transport: Transport | None = None,
+            record_root: Path | None = None, plugin: Path | None = None,
+            install_path: Path | None = None, preset_failure: str | None = None) -> int:
     import uuid
     from dispatch_lifecycle import GrowingRun
     import launch_bound
@@ -949,7 +960,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     raise CloudError(f"cloud follow-up needs a cse_ session id: {args.resume!r}")
                 env = followup_env()
                 claude = claude_command(args)
-                login_check(transport, env, claude)
+                with preflight.part("vendor"):
+                    login_check(transport, env, claude)
                 start, loaded = loaded_commit(session_attempts(record_root, args.resume), args.resume)
                 try:
                     installed = installed_practice(plugin, install_path or install_record_path(),
@@ -1085,6 +1097,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         run_record["launch_unresolved"] = True  # recovery refuses another writer until it is resolved
     published = None
     with _reserved(reservation, streams):
+        _stamp_preflight(request)
         _rewrite(streams[request_path], records.json_bytes(request))
         streams[input_path].write(prompt)
         if context_path:
@@ -1178,10 +1191,20 @@ def _rewrite(stream, data: bytes) -> None:
     os.fsync(stream.fileno())
 
 
+def _stamp_preflight(request: dict) -> None:
+    """The launch is the request record's first write, so the split ends there and later writes keep it.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    if "preflight" not in request:
+        request["preflight"] = preflight.snapshot("request-record")
+
+
 def _persist_in_flight(streams, request: dict, request_path: Path, run_path: Path) -> None:
     """Keep a discoverable, unresolved launch before the fire, so an interrupted launcher leaves a
     record that refuses a second fire rather than nothing at all."""
     request["cloud"]["fire_state"] = "in-flight"
+    _stamp_preflight(request)
     _rewrite(streams[request_path], records.json_bytes(request))
     _rewrite(streams[run_path], records.json_bytes({
         "schema_version": records.SCHEMA_VERSION, "dispatch_id": request["dispatch_id"],
