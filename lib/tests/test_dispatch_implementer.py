@@ -2238,6 +2238,8 @@ def test_894_ac17_a_codex_launch_records_that_no_command_check_ran(job, monkeypa
     assert bound["command_check"]["carrier"] == "none" and bound["command_check"]["status"] == "not-run"
     assert "codex-cli test" in bound["command_check"]["reason"]
     assert bound["push_credential"] == "removed"
+    # The Codex parent goes unchecked, but the hook its Claude child would carry is proved.
+    assert bound["command_check"]["self_test"] == "passed"
     assert captured["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
     assert captured["TRADECRAFT_CHILD_SETTINGS"] and captured["GIT_TERMINAL_PROMPT"] == "0"
 
@@ -2248,12 +2250,25 @@ GRANT = {"marker": 9001, "brief": 7001, "row": 4, "stage": "build", "write": "pu
 
 def _granted_turn(args, dispatch_grants):
     args.vendor, args.work = "codex", "o/r#894"
+    args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"  # a grant rides only a resumed turn
     args.lineage_branch = "tradecraft/894-ab"
     stated = implementer.github_allowance.allowance_for(
         "build", repository="o/r", branch="tradecraft/894-ab", pull_request=None, grants=dispatch_grants)
     args.dispatch.write_bytes(b"Build the change.\n\n" + implementer.github_allowance.sentence(stated).encode())
     args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
     args.lifecycle_input.write_bytes(json.dumps({"github_write_grants": [GRANT]}).encode())
+
+
+def test_a_granted_turn_that_resumes_no_session_is_refused_before_launch(job):
+    # An explicit restart turns the entrance's resumed decision fresh after its grant check.
+    args, _ = job
+    _granted_turn(args, [GRANT])
+    args.resume = None
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    with pytest.raises(implementer.ImplementerError, match="rides only a resumed turn"):
+        implementer.run_implementer(args)
+    assert not (args.root / "seen-codex.json").exists()
+    assert not implementer.records.sidecar(args.output, ".request.json").exists()
 
 
 def test_a_granted_turn_is_told_one_allowance_naming_its_grant(job):
@@ -2271,7 +2286,7 @@ def test_a_granted_turn_is_told_one_allowance_naming_its_grant(job):
 def test_a_granted_turn_is_refused_before_a_cloud_launch(job, monkeypatch):
     args, _ = job
     _granted_turn(args, [GRANT])
-    args.vendor = "claude"
+    args.vendor, args.resume = "claude", None  # the cloud route takes only a fresh turn
     _cloud_record(Path.home(), "o/r")
 
     def forbidden(*_a, **_k):

@@ -577,6 +577,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 settings_sources={"vendor": args.vendor_source, "model": settings.model_source,
                                   "effort": settings.effort_source},
                 validate=validate_artifact_return, preset_failure=refusal)
+    if metadata.get("github_write_grants") and not args.resume:
+        # A grant answers a request the step itself returned, so only its resumed turn may carry
+        # one. The entrance checks this before an explicit restart can turn its decision fresh,
+        # so the launcher, which knows the final continuity, checks it again.
+        raise ImplementerError("a write grant rides only a resumed turn of its step, and this launch "
+                               "resumes no session; resume the step or launch it without the grant")
     request_path = records.sidecar(output, ".request.json")
     record_path = records.sidecar(output, ".run.json")
     input_path = records.sidecar(output, ".dispatch.bin")
@@ -647,9 +653,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                                           "session": args.resume or args.session_id})
                         args.launch_settings_path = intent["settings_path"]
                     else:
-                        codex_bound = github_allowance.prepare_codex(
-                            allowance, dict(os.environ if child_env is None else child_env),
-                            runtime_version, temporary=temporary, root=root)
+                        try:
+                            codex_bound = github_allowance.prepare_codex(
+                                allowance, dict(os.environ if child_env is None else child_env),
+                                runtime_version, temporary=temporary, root=root)
+                        except github_allowance.BoundError as exc:
+                            raise policy.PreparationError(str(exc)) from exc
                         child_env = codex_bound["env"]
                         intent = policy.codex_prepare(executable, root, deadline, env=child_env)
                         intent["github_write_bound"] = {"record": codex_bound["record"],
@@ -672,15 +681,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     preparation_error = "implementer preparation failed: " + str(exc)
                     intent["status"] = "failed"
                     intent["reason"] = preparation_error
-                if preparation_error is None and intent.get("github_write_bound"):
-                    # Refused like a failed preparation, so the run records it unlaunched and no
-                    # session is left to resume.
-                    try:
-                        github_allowance.needs_notice(allowance, prompt)
-                    except github_allowance.BoundError as exc:
-                        preparation_error = str(exc)
-                        intent["status"] = "failed"
-                        intent["reason"] = preparation_error
+            github_notice = b""
+            if preparation_error is None and intent.get("github_write_bound"):
+                # Refused like a failed preparation, so the run records it unlaunched and no
+                # session is left to resume.
+                try:
+                    if github_allowance.needs_notice(allowance, prompt):
+                        github_notice = github_allowance.notice(allowance)
+                except github_allowance.BoundError as exc:
+                    preparation_error = str(exc)
+                    intent["status"] = "failed"
+                    intent["reason"] = preparation_error
             command = (
                 build_command(args, executable, last_message)
                 if executable is not None else None
@@ -733,12 +744,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             request["recipient_allocation_seconds"] = allocation
             request["budget_override_reason"] = budget_reason
             github_bound = intent.get("github_write_bound") if command is not None and not preparation_error else None
-            try:
-                github_notice = (github_allowance.notice(allowance)
-                                 if github_bound is not None and github_allowance.needs_notice(allowance, prompt)
-                                 else b"")
-            except github_allowance.BoundError as exc:
-                raise ImplementerError(str(exc)) from exc
+            if github_bound is None:
+                github_notice = b""
             if args.vendor == "claude" and command is not None and not preparation_error:
                 # The notice is part of the effective input; its digest covers it.
                 notice = claude_launch_notice(allocation)

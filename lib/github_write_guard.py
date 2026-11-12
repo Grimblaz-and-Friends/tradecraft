@@ -37,7 +37,7 @@ REQUEST_ROUTE = ("return this write to the holder as a request in a **Write requ
                  "of your final message: the write, why the work needs it, and what it would leave behind")
 CHILD_VARIABLE = "TRADECRAFT_CHILD_SETTINGS"
 # A shell gives 126 to a command it found but could not run, so a refused command reads as one
-# that never ran, apart from any exit code of the command's own. The self-test expects it too.
+# that never ran, apart from any exit code of the command's own.
 PREFIX_REFUSED_EXIT = 126
 CHILD_START = f'claude --setting-sources user --strict-mcp-config --settings "${CHILD_VARIABLE}"'
 # Each changes where or what a git push writes, so a push carrying one is refused rather than
@@ -76,6 +76,15 @@ PASS_THROUGH_VALUES = {"nice": {"-n", "--adjustment"},
                        "xargs": {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-L", "-n",
                                  "--max-args", "-P", "--max-procs", "-s", "--max-chars",
                                  "--process-slot-var", "-J", "-R", "-S"}}
+# Each never runs a later word as a command, so a judged program's name among its arguments
+# is text it reads, prints or passes to a script, not a command it starts.
+INERT_PROGRAMS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "ls", "dir", "head",
+                  "tail", "wc", "which", "where", "type", "less", "more", "diff", "sort", "uniq",
+                  "cut", "tr", "test", "[", "true", "false", "sed", "awk", "jq", "pwd", "mkdir",
+                  "touch", "cp", "mv", "rm", "tee", "dirname", "basename", "realpath", "stat",
+                  "file", "python", "python3", "py", "pytest", "node", "get-content", "gc",
+                  "select-string", "sls", "write-output", "write-host", "get-childitem", "gci",
+                  "test-path", "set-content", "add-content", "out-file"}
 REDIRECTS = {">", ">>", "<", ">&", "&>", "<&", ">|", "&>>", "<>", "<<<"}
 SEPARATORS = {";", "&", "&&", "||", "|", "|&", "(", ")", ";;", ";&"}
 GH_READS = {
@@ -533,6 +542,14 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
         return judge_claude(words[1:], ctx, cleared)
     if name == "codex":
         return judge_codex(words[1:], ctx)
+    if name not in INERT_PROGRAMS:
+        # Any other program may run a later word as a command, as setsid, sudo or watch do, so
+        # a judged program standing as its own word after it is judged as the command it starts.
+        for index in range(1, len(words)):
+            if program(words[index]) in JUDGED_PROGRAMS | PASS_THROUGH | {"env"}:
+                found = judge_simple(words[index:], ctx)
+                if found:
+                    return found
     return []
 
 
@@ -650,11 +667,14 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
                     always.append("--force")
                 elif letter == "d":
                     always.append("--delete")
+            # A value-taking short option must end its cluster, so only a cluster ending in
+            # -o (--push-option) takes the next word as its value.
             if word[-1] == "o" and words:
                 words.pop(0)
         else:
             positional.append(word)
-    destination = repo_option or (positional[0] if positional else None)
+    # As git does: a repository named on the command line wins over --repo.
+    destination = positional[0] if positional else repo_option
     refspecs = positional[1:] if positional else []
     if destination is None:
         current = _run_git(cwd, "symbolic-ref", "--short", "-q", "HEAD")

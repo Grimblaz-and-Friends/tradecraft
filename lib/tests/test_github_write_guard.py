@@ -108,6 +108,52 @@ def test_a_harmless_command_behind_a_global_option_passes(tree, command):
     assert decision(command, tree, "branch") == "allow"
 
 
+@pytest.mark.parametrize("command", [
+    "git push --repo=./x origin HEAD:refs/heads/main",
+    "git push --repo ./x origin HEAD:refs/heads/main",
+    "git push origin HEAD:refs/heads/main --repo=./x",
+])
+def test_a_named_repository_wins_over_repo_as_in_git(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+def test_repo_names_the_destination_when_no_repository_is_given(tree):
+    (tree.parent / "local.git").mkdir()
+    assert decision(f"git push --repo={(tree.parent / 'local.git').as_posix()}", tree, "branch") == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    "setsid gh pr merge 1",
+    "sudo gh pr merge 1",
+    "ionice -c3 gh pr merge 1",
+    "flock /tmp/lock gh pr merge 1",
+    "chronic gh pr merge 1",
+    "unbuffer gh pr merge 1",
+    "caffeinate gh pr merge 1",
+    "watch -n1 gh pr merge 1",
+    "parallel gh pr merge ::: 1",
+    "busybox env gh pr merge 1",
+    "setsid git push origin HEAD:refs/heads/main",
+    "foo-unknown-wrapper gh pr merge 1",
+    "setsid bash -c 'gh pr merge 1'",
+])
+def test_a_write_behind_any_wrapper_is_judged(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    'grep -n "git push" file',
+    "grep -rn gh lib",
+    "echo gh pr merge 1",
+    "python -m pytest -k claude",
+    # Behind a wrapper the command is judged, not refused: the step's own push still passes.
+    "setsid git push origin HEAD:refs/heads/tradecraft/894-ab",
+    "foo-unknown-wrapper git status",
+])
+def test_a_command_that_only_names_a_judged_program_passes(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+
+
 def test_a_push_behind_exec_path_with_a_value_is_judged(tree):
     assert decision("git --exec-path=/x push origin main", tree, "branch") == "deny"
     assert decision("git --exec-path=/x push origin HEAD:refs/heads/tradecraft/894-ab", tree,

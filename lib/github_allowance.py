@@ -405,6 +405,9 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
     child[CONNECTORS] = "false"
     temporary = Path(temporary)
     child_settings = temporary / "child-settings.json"
+    for path in (sys.executable, GUARD, child_settings):
+        if '"' in str(path):
+            raise BoundError(f"GitHub write check path contains a double quote: {path}")
     log = temporary / "github-write.log.jsonl"
     child_path = temporary / "github-write-child.json"
     child_allowance = {"kind": "none", "repository": allowance.get("repository"), "branch": None,
@@ -416,6 +419,13 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
     # the plugin list, is what holds that child's GitHub writes.
     _write_json(child_settings, {"disableAllHooks": False,
                                  "hooks": {"PreToolUse": [hook_entry(child_path)]}})
+    try:
+        # The parent's commands go unchecked, but a Claude child's hook is the same entry a
+        # Claude launch installs, so it is proved the same way before the launch starts.
+        result = self_test(temporary / "github-write-self-test", root, child_settings,
+                           carrier="pretooluse-hook")
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BoundError(f"GitHub write check self-test could not run: {exc}") from exc
     log.write_bytes(b"")
     child[CHILD_VARIABLE] = str(child_settings)
     keep = permits_push(allowance)
@@ -423,7 +433,7 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
         child = without_push_credential(child)
     record = bound_record(allowance, carrier="none", status="not-run",
                           reason=f"the installed Codex ({version or 'version unknown'}) offers no "
-                                 "per-launch rule source", self_test=None,
+                                 "per-launch rule source", self_test=result,
                           push_credential="kept" if keep else "removed",
                           child_settings=str(child_settings))
     return {"env": child, "record": record, "log": str(log)}
