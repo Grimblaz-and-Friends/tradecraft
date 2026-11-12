@@ -9111,7 +9111,7 @@ def _invoke_recipient(command, deadline):
         command.extend(("--invocation-started-monotonic", str(deadline.started)))
     # Let the child spend its recording reserve, then stop a stuck launcher
     # with time still left for the entrance's own containment and return.
-    wait_end = deadline.end - deadline.reserve / 4
+    wait_end = deadline.wait_end
     try:
         return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
                               cleanup_deadline=deadline.end - deadline.reserve / 8).returncode

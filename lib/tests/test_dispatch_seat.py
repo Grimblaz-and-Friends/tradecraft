@@ -1930,3 +1930,21 @@ def test_the_use_consumers_stdout_log_reaches_finish(job, tmp_path, monkeypatch)
     assert seat.run_dispatch(args) == 0
     assert seen == [(seat.sidecar(args.output, ".claude.stdout.log"), True)]
     assert record(args)["launch_comparison"]["run_record"]["status"] == "read"
+
+
+# --- The comparison's allowance ----------------------------------------------
+
+@pytest.mark.parametrize("step", ["crediting", "store", "stream"])
+def test_984_a_use_consumers_slow_comparison_still_records_its_note(job, tmp_path, monkeypatch, step):
+    from allowance_fixture import Slow, check_expired
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args.stage, args.requires, args.classification = "use", "execute", "cold"
+    args.timeout_seconds = 600  # The refs reads go through the process-tree worker.
+    slow = Slow(monkeypatch, tmp_path, seconds=3.0, branch=step == "stream")
+    getattr(slow, "slow_" + step)()
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    assert logged["outcome"] == "success"
+    assert logged["result"]["published_output"] == str(args.output) and args.output.read_bytes()
+    check_expired(slow, logged, step)

@@ -415,3 +415,25 @@ def test_before_findings_says_which_time_could_not_be_read(tmp_path):
     assert held(fixture) is not None
     assert "findings were recorded could not be read" in entry["uncounted"][0]["detail"]
     assert entry["uncounted"][0]["reason"] == "before-findings"
+
+
+def test_984_a_comparison_that_ran_out_of_time_holds_until_its_items_are_accounted(tmp_path, monkeypatch):
+    from test_launch_bound import golden
+    clock = [1000.0]
+    monkeypatch.setattr(launch_bound.time, "monotonic", lambda: clock[0])
+    read = launch_bound._recorded_run
+
+    def slow(path, own):
+        clock[0] += 20
+        return read(path, own)
+
+    monkeypatch.setattr(launch_bound, "_recorded_run", slow)
+    comparison = launch_bound.compare(**golden(tmp_path / "g"), end=clock[0] + 10)
+    monkeypatch.undo()
+    uncompared = [f["id"] for f in comparison["findings"] if f["change"] == "uncompared"]
+    assert len(uncompared) >= 2 and comparison["status"] == "findings"
+    refusal = held(fixture_with(tmp_path, comparison=comparison))
+    assert refusal is not None and all(identifier in refusal.detail for identifier in uncompared)
+    entries = [{"id": f["id"], "party": "none-found", "basis": "inspected the item; nothing of this run's"}
+               for f in comparison["findings"]]
+    assert held(fixture_with(tmp_path / "r", account(*entries), comparison=comparison)) is None
