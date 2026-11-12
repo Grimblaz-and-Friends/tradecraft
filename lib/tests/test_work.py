@@ -10611,7 +10611,8 @@ def test_raw_output_head_movement_during_inventory_is_unverifiable():
             value = deepcopy(super().get(endpoint, paginate=paginate))
             if endpoint == f"{base}/pulls/9":
                 self.reads += 1
-                if self.reads > 1:
+                # The candidate search and the live read come first; the head moves during the inventory.
+                if self.reads > 2:
                     value["head"]["sha"] = "b" * 40
             return value
 

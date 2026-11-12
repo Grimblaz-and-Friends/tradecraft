@@ -269,7 +269,13 @@ def _gh_serve(transport, save):
         del arguments[index:index + 2]
     endpoint = arguments[0]
     try:
-        if method == "GET":
+        if endpoint == "graphql" and "--input" in arguments:
+            payload = json.loads(sys.stdin.buffer.read())
+            # The closing-reference read is a query, not an effect (#978).
+            value = (transport.closing_pull_requests(payload["query"], payload["variables"])
+                     if "closedByPullRequestsReferences" in payload["query"]
+                     else transport.graphql(payload["query"], payload["variables"]))
+        elif method == "GET":
             value = transport.get(endpoint, paginate="--paginate" in arguments)
             if "--slurp" in arguments:
                 value = [value]
