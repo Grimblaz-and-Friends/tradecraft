@@ -559,15 +559,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 raise ImplementerError(
                     "a write grant cannot ride a cloud launch: its routine allows no write beyond the "
                     "change and report branches; run the granted turn locally or return it to the owner")
-            # A cloud run is told its route's allowance once, as a local launch is told its own,
-            # and a dispatch stating another is refused before anything fires.
-            try:
-                cloud_notice = github_allowance.cloud_notice(args.stage, prompt)
-            except github_allowance.BoundError as exc:
-                raise ImplementerError(str(exc)) from exc
-            if cloud_notice:
-                effective_prompt = effective_prompt + b"\n\n" + cloud_notice
             entry, route_source, refusal = route
+            # A cloud run is told its route's allowance once, as a local launch is told its own,
+            # and a dispatch stating another is refused before anything fires. A route that is
+            # itself refused, such as a broken switch, is reported as that, not as an allowance.
+            if refusal is None:
+                try:
+                    cloud_notice = github_allowance.cloud_notice(args.stage, prompt)
+                except github_allowance.BoundError as exc:
+                    raise ImplementerError(str(exc)) from exc
+                if cloud_notice:
+                    effective_prompt = effective_prompt + b"\n\n" + cloud_notice
             return cloud_build.run(
                 args, deadline, entry=entry, route_source=route_source,
                 effective_prompt=effective_prompt, prompt=prompt, context=context,

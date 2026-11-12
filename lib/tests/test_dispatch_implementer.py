@@ -2325,6 +2325,17 @@ def test_a_cloud_launch_refuses_a_dispatch_stating_another_allowance(job, monkey
     assert sent == {}
 
 
+def test_a_broken_cloud_switch_is_reported_before_the_allowance(job, monkeypatch):
+    # With the switch broken the entrance composes the local sentence; the launch reports the
+    # switch, the real fault, rather than refusing that sentence as a wrong allowance.
+    local = implementer.github_allowance.sentence(implementer.github_allowance.allowance_for(
+        "build", repository="Owner/product", branch="b", pull_request=None))
+    args, sent = _cloud_launch(job, monkeypatch, b"Build the change.\n\n" + local.encode())
+    (Path.home() / ".tradecraft" / "cloud-builds.json").write_text("{")
+    assert implementer.run_implementer(args) == 0
+    assert sent["entry"] is None and "malformed" in sent["preset_failure"]
+
+
 # --- Every author and builder comparison reads its own record ---------------
 
 @pytest.mark.parametrize("stage", ["artifact", "build"])
