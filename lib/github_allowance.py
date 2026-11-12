@@ -388,7 +388,7 @@ def prepare(temporary, allowance: dict, *, carrier: str, root, env: dict[str, st
 
 
 def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
-                  temporary=None, root=None) -> dict[str, object]:
+                  temporary, root) -> dict[str, object]:
     """The Codex block: environment removal, child settings, and a record that no check ran.
 
     The installed Codex loads execpolicy rules only from user or project ``.rules``
@@ -403,23 +403,21 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
     child = {key: value for key, value in env.items()
              if value != "" or os.name != "nt" or key.startswith("GIT_CONFIG_VALUE_")}
     child[CONNECTORS] = "false"
-    child_settings = None
-    if temporary is not None:
-        temporary = Path(temporary)
-        child_settings = temporary / "child-settings.json"
-        log = temporary / "github-write.log.jsonl"
-        child_path = temporary / "github-write-child.json"
-        child_allowance = {"kind": "none", "repository": allowance.get("repository"), "branch": None,
-                           "pull_request": None, "grants": []}
-        _write_json(child_path, _config(child_allowance, scope="child", root=root, log=log,
-                                        child_settings=child_settings))
-        # No plugin exclusions: a Codex launch runs no Claude plugin discovery to take them
-        # from, so its Claude child keeps the owner's user plugins; the command check, not
-        # the plugin list, is what holds that child's GitHub writes.
-        _write_json(child_settings, {"disableAllHooks": False,
-                                     "hooks": {"PreToolUse": [hook_entry(child_path)]}})
-        log.write_bytes(b"")
-        child[CHILD_VARIABLE] = str(child_settings)
+    temporary = Path(temporary)
+    child_settings = temporary / "child-settings.json"
+    log = temporary / "github-write.log.jsonl"
+    child_path = temporary / "github-write-child.json"
+    child_allowance = {"kind": "none", "repository": allowance.get("repository"), "branch": None,
+                       "pull_request": None, "grants": []}
+    _write_json(child_path, _config(child_allowance, scope="child", root=root, log=log,
+                                    child_settings=child_settings))
+    # No plugin exclusions: a Codex launch runs no Claude plugin discovery to take them
+    # from, so its Claude child keeps the owner's user plugins; the command check, not
+    # the plugin list, is what holds that child's GitHub writes.
+    _write_json(child_settings, {"disableAllHooks": False,
+                                 "hooks": {"PreToolUse": [hook_entry(child_path)]}})
+    log.write_bytes(b"")
+    child[CHILD_VARIABLE] = str(child_settings)
     keep = permits_push(allowance)
     if not keep:
         child = without_push_credential(child)
@@ -427,9 +425,8 @@ def prepare_codex(allowance: dict, env: dict[str, str], version: str | None, *,
                           reason=f"the installed Codex ({version or 'version unknown'}) offers no "
                                  "per-launch rule source", self_test=None,
                           push_credential="kept" if keep else "removed",
-                          child_settings=str(child_settings) if child_settings else None)
-    return {"env": child, "record": record,
-            "log": str(Path(temporary) / "github-write.log.jsonl") if temporary is not None else None}
+                          child_settings=str(child_settings))
+    return {"env": child, "record": record, "log": str(log)}
 
 
 def bound_record(allowance: dict, *, carrier: str, status: str, reason, self_test,

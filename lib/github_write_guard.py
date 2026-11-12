@@ -944,13 +944,18 @@ def judge_gh_api(positional: list[str], values: dict[str, list[str]], ctx: Conte
     return [Finding(write, f"`{write}`")]
 
 
-def _graphql_document(fields: dict[str, str]) -> str | None:
+def _graphql_document(fields: dict[str, str], cwd: str | None) -> str | None:
     query = fields.get("query")
     if query is None:
         return None
     if query.startswith("@"):
+        # gh reads the file from the command's own directory, after any cd, not the hook's;
+        # with no directory known, a relative file cannot be read as gh would read it.
+        path = _resolve_dir(cwd, query[1:])
+        if path is None:
+            return None
         try:
-            return Path(query[1:]).read_text(encoding="utf-8")
+            return Path(path).read_text(encoding="utf-8")
         except OSError:
             return None
     return query
@@ -1002,7 +1007,7 @@ def _mutation_fields(document: str) -> list[tuple[str, str]] | None:
 
 def judge_graphql(fields: dict[str, str], ctx: Context) -> list[Finding]:
     allowance = ctx.config["allowance"]
-    document = _graphql_document(fields)
+    document = _graphql_document(fields, ctx.cwd)
     if document is None:
         return [Finding("gh api graphql", "a GraphQL request whose document could not be read")]
     if not re.search(r"\bmutation\b", document):

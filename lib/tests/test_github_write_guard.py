@@ -158,6 +158,19 @@ def test_reads_stay_open(tree, command, kind):
     assert decision(command, tree, kind) == "allow"
 
 
+def test_a_graphql_document_file_is_read_from_the_commands_directory(tree, monkeypatch):
+    # Two files of one name: the hook's own directory holds a read, a subdirectory a mutation.
+    (tree / "q.graphql").write_text("query{viewer{login}}", encoding="utf-8")
+    (tree / "sub").mkdir()
+    (tree / "sub" / "q.graphql").write_text(
+        'mutation{mergePullRequest(input:{pullRequestId:"P"}){clientMutationId}}', encoding="utf-8")
+    monkeypatch.chdir(tree)
+    assert decision("gh api graphql -F query=@q.graphql", tree, "branch") == "allow"
+    assert decision("gh api graphql -F query=@sub/q.graphql", tree, "branch") == "deny"
+    # gh reads the file after the cd, so the mutation it would send is the one judged.
+    assert decision("cd sub && gh api graphql -F query=@q.graphql", tree, "branch") == "deny"
+
+
 @pytest.mark.parametrize("command", [
     "gh pr comment 12 --body x",
     "gh api repos/o/r/pulls/12/comments/99/replies -f body=x",

@@ -10442,6 +10442,8 @@ def _run(
         return 0
     if args.command == "tree":
         return _tree_command(args, root, github)
+    # A grant allows a write only to a resumed turn of its own stage, and the use consumer is a
+    # fresh session every time, so no grant can reach it.
     if getattr(args, "grant", None) and (args.command not in ("run", "allowance")
                                          or args.stage not in GITHUB_BOUND_STAGES):
         raise WorkError("--grant requires run or allowance of an implementer stage")
