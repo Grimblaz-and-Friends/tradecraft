@@ -31,7 +31,7 @@ def atomic_record(path, value):
         retry_end = time.monotonic() + 1.0
         deadline = current_deadline()
         if deadline is not None:
-            retry_end = min(retry_end, deadline.end - deadline.reserve / 4)
+            retry_end = min(retry_end, deadline.wait_end)
         while True:
             try:
                 os.replace(staged, path)

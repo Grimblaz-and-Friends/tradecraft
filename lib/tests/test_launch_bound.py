@@ -211,3 +211,406 @@ def test_absent_items_are_recorded_without_findings(machine):
     result = comparison(machine).finish(60)
     entry = next(c for c in result["coverage"] if c["item"] == "claude-md")
     assert entry["status"] == "absent" and result["status"] == "clean"
+
+
+# --- One overlap list and one allowance ---------------------------------------
+
+BEFORE_AT, AFTER_AT = "2026-11-11T10:00:00+00:00", "2026-11-11T11:00:00+00:00"
+OTHER, STALE = "b" * 32, "c" * 32
+
+
+def _store_run(store, name, *, dispatch, root, holder=None, launched="2026-11-11T09:00:00+00:00",
+               completed=None):
+    store.mkdir(parents=True, exist_ok=True)
+    (store / f"{name}.md.request.json").write_text(json.dumps(
+        {"dispatch_id": dispatch, "root": str(root), "holder_session_id": holder, "work": "acme/w#1",
+         "launched_at": launched}), encoding="utf-8")
+    (store / f"{name}.md.run.json").write_text(json.dumps(
+        {"completed_at": completed, "elapsed_checkpoint_seconds": 99999}), encoding="utf-8")
+
+
+def golden(tmp_path):
+    """Synthetic before and after states touching every outcome ``compare`` records."""
+    tmp = tmp_path.resolve()
+    main, store = tmp / "main", tmp / "store"
+    own, other, stale = main / "own", main / "other", main / "stale"
+    _store_run(store, "other", dispatch=OTHER, root=other, holder=OTHER_HOLDER)
+    _store_run(store, "stale", dispatch=STALE, root=stale, launched="2026-11-11T07:00:00+00:00",
+               completed="2026-11-11T08:00:00+00:00")
+    f1, f2 = ("file", 1, 1), ("file", 2, 2)
+    row = {"root": str(other), "repository": "acme/w", "issue": 1, "holder_session_id": OTHER_HOLDER}
+
+    def copy(path, branch, head):
+        return {"path": str(path), "head": head, "branch": branch and "refs/heads/" + branch, "flags": []}
+
+    def copies(*values):
+        return {launch_bound.path_key(Path(value["path"])): value for value in values}
+
+    a, b = tmp / "a", tmp / "b"
+    plan = [{"item": "checkout:" + str(main), "path": str(main), "method": "checkout"},
+            {"item": "claude-settings", "path": str(tmp / "settings.json"), "method": "sha256"},
+            {"item": "registry", "path": str(tmp / "registry.json"), "method": "registry"},
+            {"item": "dispatch-records", "path": str(store), "method": "records"},
+            {"item": "refs:a", "path": str(a), "method": launch_bound.REFS_METHOD},
+            {"item": "refs:b", "path": str(b), "method": launch_bound.REFS_METHOD}]
+    before = {
+        plan[0]["item"]: {"status": "compared", "entries": {
+            "keep.txt": f1, "loose.txt": f1, "other/x.txt": f1, "own/y.txt": f1, "stale/z.txt": f1}},
+        "claude-settings": {"status": "compared", "digest": "1"},
+        "registry": {"status": "compared", "digest": "1", "rows": {str(other).casefold(): row}},
+        "dispatch-records": {"status": "compared", "bundles": [], "entries": {str(store / "gone.md"): f1}},
+        "refs:a": {"status": "compared", "default": "trunk", "default_rule": "origin HEAD",
+                   "copies": copies(copy(a, "side", "h1"), copy(own, "feature-own", "h1"),
+                                    copy(other, "trunk", "h1")),
+                   "branches": {"refs/heads/side": "h1", "refs/heads/feature-own": "h1",
+                                "refs/heads/trunk": "h1"}},
+        "refs:b": {"status": "compared", "default": "main", "default_rule": "origin HEAD",
+                   "copies": copies(copy(b, "main", "h1")), "branches": {"refs/heads/main": "h1"}}}
+    after = {
+        plan[0]["item"]: {"status": "compared", "entries": {
+            "keep.txt": f1, "loose.txt": f2, "other/new.txt": f1, "other/x.txt": f2, "own/new": f1,
+            "stale/z.txt": f2}},
+        "claude-settings": {"status": "compared", "digest": "2"},
+        "registry": {"status": "compared", "digest": "2", "rows": {}},
+        "dispatch-records": {"status": "compared", "bundles": [], "entries": {}},
+        "refs:a": {"status": "compared", "default": "trunk", "default_rule": "origin HEAD",
+                   "copies": copies(copy(a, "side", "h1"), copy(own, "feature-own", "h3"),
+                                    copy(other, "trunk", "h2")),
+                   "branches": {"refs/heads/side": "h1", "refs/heads/feature-own": "h3",
+                                "refs/heads/trunk": "h2"}},
+        "refs:b": {"status": "compared", "default": "main", "default_rule": "origin HEAD",
+                   "copies": copies(copy(b, "main", "h2")),
+                   "branches": {"refs/heads/main": "h2", "refs/heads/feature-x": "h4",
+                                "refs/heads/loose": "h5"}}}
+    record = tmp / "run.claude.stdout.log"
+    record.write_bytes(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_1", "name": "Bash",
+         "input": {"command": "git push origin feature-x"}}]}}).encode() + b"\n")
+    return {"plan": plan, "before": before, "after": after, "root": own, "holder_session_id": HOLDER,
+            "store": store, "own_dispatch": OWN, "before_at": BEFORE_AT, "after_at": AFTER_AT,
+            "elapsed_seconds": 1.0, "record": record, "home": tmp}
+
+
+def normalized(result, tmp_path):
+    """The result with run-specific values replaced, findings and listed keyed by content."""
+    for kind in ("findings", "listed"):
+        values = result[kind]
+        assert [value["id"] for value in values] == sorted(value["id"] for value in values)
+        for value in values:
+            assert value["id"] == launch_bound._finding_id(value["item"], value["path"], value["change"])
+    text = json.dumps({k: v for k, v in result.items() if k != "elapsed_seconds"}, sort_keys=True)
+    text = text.replace(json.dumps(str(tmp_path.resolve()))[1:-1], "<tmp>").replace("\\\\", "/")
+    value = json.loads(text)
+    for kind in ("findings", "listed"):
+        for entry in value[kind]:
+            entry.pop("id")
+        value[kind].sort(key=lambda entry: json.dumps(entry, sort_keys=True))
+    return value
+
+
+# What ``compare`` recorded for ``golden`` before its crediting was restructured, kept literal so
+# the restructured ``compare`` is held to the earlier one's result, not to its own.
+GOLDEN = {'after_at': '2026-11-11T11:00:00+00:00',
+          'attributed': [{'change': 'added',
+                          'item': 'checkout:<tmp>/main',
+                          'path': '<tmp>/main/other/new.txt',
+                          'to': {'dispatch_id': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'holder_session_id': None}},
+                         {'change': 'modified',
+                          'item': 'checkout:<tmp>/main',
+                          'path': '<tmp>/main/other/x.txt',
+                          'to': {'dispatch_id': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'holder_session_id': None}},
+                         {'change': 'row-changed',
+                          'item': 'registry',
+                          'path': '<tmp>/main/other',
+                          'to': {'dispatch_id': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                                 'holder_session_id': '89abcdef-0123-4567-89ab-cdef01234567'}},
+                         {'change': 'moved',
+                          'item': 'refs:a',
+                          'path': '<tmp>/main/other',
+                          'to': {'dispatch_id': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'holder_session_id': None}},
+                         {'change': 'moved',
+                          'item': 'refs:a',
+                          'path': 'refs/heads/trunk',
+                          'to': {'dispatch_id': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'holder_session_id': None}}],
+          'before_at': '2026-11-11T10:00:00+00:00',
+          'coverage': [{'item': 'checkout:<tmp>/main', 'reason': None, 'status': 'compared'},
+                       {'item': 'claude-settings', 'reason': None, 'status': 'compared'},
+                       {'item': 'registry', 'reason': None, 'status': 'compared'},
+                       {'item': 'dispatch-records', 'reason': None, 'status': 'compared'},
+                       {'default_branch': 'trunk',
+                        'default_rule': 'origin HEAD',
+                        'item': 'refs:a',
+                        'reason': None,
+                        'status': 'compared'},
+                       {'default_branch': 'main',
+                        'default_rule': 'origin HEAD',
+                        'item': 'refs:b',
+                        'reason': None,
+                        'status': 'compared'}],
+          'findings': [{'branch': 'feature-x',
+                        'change': 'added',
+                        'checked_out_at': None,
+                        'item': 'refs:b',
+                        'kind': 'branch',
+                        'path': 'refs/heads/feature-x',
+                        'reason': "named in the run's record: Bash call toolu_1",
+                        'tip_after': 'h4',
+                        'tip_before': None},
+                       {'change': 'modified',
+                        'item': 'checkout:<tmp>/main',
+                        'path': '<tmp>/main/loose.txt',
+                        'reason': None},
+                       {'change': 'modified',
+                        'item': 'checkout:<tmp>/main',
+                        'path': '<tmp>/main/stale/z.txt',
+                        'reason': None},
+                       {'change': 'modified',
+                        'item': 'claude-settings',
+                        'path': '<tmp>/settings.json',
+                        'reason': None},
+                       {'change': 'removed',
+                        'item': 'dispatch-records',
+                        'path': '<tmp>/store/gone.md',
+                        'reason': None}],
+          'listed': [{'branch': 'loose',
+                      'change': 'added',
+                      'checked_out_at': None,
+                      'item': 'refs:b',
+                      'kind': 'branch',
+                      'path': 'refs/heads/loose',
+                      'reason': "not named in the run's record",
+                      'tip_after': 'h5',
+                      'tip_before': None},
+                     {'branch_after': 'main',
+                      'branch_before': 'main',
+                      'change': 'moved',
+                      'folded_branch': {'branch': 'main',
+                                        'change': 'moved',
+                                        'tip_after': 'h2',
+                                        'tip_before': 'h1'},
+                      'item': 'refs:b',
+                      'kind': 'working-copy',
+                      'path': '<tmp>/b',
+                      'reason': 'default branch',
+                      'tip_after': 'h2',
+                      'tip_before': 'h1'}],
+          'record_lines_skipped': 0,
+          'run_record': {'path': '<tmp>/run.claude.stdout.log', 'reason': None, 'status': 'read'},
+          'schema_version': 1,
+          'status': 'findings'}
+
+
+@pytest.mark.parametrize("end", [None, "distant"])
+def test_984_ac4_in_time_the_comparison_records_what_it_recorded_before(tmp_path, end):
+    kwargs = golden(tmp_path)
+    if end == "distant":
+        import time
+        kwargs.update(end=time.monotonic() + 3600, allowance="3600.0s, the comparison's own limit")
+    assert normalized(launch_bound.compare(**kwargs), tmp_path) == GOLDEN
+
+
+def _paths(tmp_path, count, runs=3):
+    """``count`` changed paths outside the run's root, and ``runs`` unfinished runs in the store."""
+    tmp = tmp_path.resolve()
+    store = tmp / "store"
+    for index in range(runs):
+        _store_run(store, f"r{index}", dispatch=f"{index:032x}", root=tmp / f"elsewhere-{index}")
+    item = "checkout:" + str(tmp / "main")
+    plan = [{"item": item, "path": str(tmp / "main"), "method": "checkout"}]
+    after = {item: {"status": "compared", "entries": {f"d/f{i}.txt": ("file", 1, 1) for i in range(count)}}}
+    return {"plan": plan, "before": {item: {"status": "compared", "entries": {}}}, "after": after,
+            "root": tmp / "main" / "own", "holder_session_id": HOLDER, "store": store,
+            "own_dispatch": OWN, "before_at": BEFORE_AT, "after_at": AFTER_AT, "elapsed_seconds": 0.0}
+
+
+def test_984_ac2_other_runs_processes_are_read_as_often_for_1000_paths_as_for_one(tmp_path, monkeypatch):
+    counts = []
+    liveness = launch_bound.lifecycle.liveness
+    for count in (1, 1000):
+        calls = []
+        monkeypatch.setattr(launch_bound.lifecycle, "liveness", lambda run: calls.append(1) or liveness(run))
+        result = launch_bound.compare(**_paths(tmp_path / str(count), count))
+        assert len(result["findings"]) == count
+        counts.append(len(calls))
+    assert counts[0] == counts[1] > 0
+
+
+def test_984_ac3_two_overlapping_runs_are_each_credited_their_own_changes(tmp_path):
+    tmp = tmp_path.resolve()
+    main, store = tmp / "main", tmp / "store"
+    _store_run(store, "one", dispatch=OTHER, root=main / "one")
+    _store_run(store, "two", dispatch=STALE, root=main / "two")
+    item = "checkout:" + str(main)
+    entries = {"one/a.txt": ("file", 1, 1), "two/b.txt": ("file", 1, 1), "three.txt": ("file", 1, 1)}
+    result = launch_bound.compare(
+        [{"item": item, "path": str(main), "method": "checkout"}],
+        {item: {"status": "compared", "entries": {}}}, {item: {"status": "compared", "entries": entries}},
+        root=main / "own", holder_session_id=HOLDER, store=store, own_dispatch=OWN,
+        before_at=BEFORE_AT, after_at=AFTER_AT, elapsed_seconds=0.0)
+    assert result["attributed"] == [
+        {"item": item, "path": str(main / "one" / "a.txt"), "change": "added",
+         "to": {"dispatch_id": OTHER, "holder_session_id": None}},
+        {"item": item, "path": str(main / "two" / "b.txt"), "change": "added",
+         "to": {"dispatch_id": STALE, "holder_session_id": None}}]
+    assert [(f["path"], f["change"]) for f in result["findings"]] == [(str(main / "three.txt"), "added")]
+
+
+def _clock(monkeypatch, start=1000.0):
+    clock = [start]
+    monkeypatch.setattr(launch_bound.time, "monotonic", lambda: clock[0])
+    return clock
+
+
+def _uncompared(result):
+    return {entry["item"]: entry["reason"] for entry in result["coverage"] if entry["status"] == "uncompared"}
+
+
+def test_984_a_store_read_that_runs_out_marks_what_it_could_not_examine(tmp_path, monkeypatch):
+    clock = _clock(monkeypatch)
+    read = launch_bound._recorded_run
+
+    def slow(path, own):
+        clock[0] += 20
+        return read(path, own)
+
+    monkeypatch.setattr(launch_bound, "_recorded_run", slow)
+    kwargs = golden(tmp_path)
+    result = launch_bound.compare(**kwargs, end=clock[0] + 10, allowance="10.0s, the comparison's own limit")
+    value = normalized(result, tmp_path)
+    ran_out = "comparison allowance ran out (10.0s, the comparison's own limit)"
+    assert _uncompared(result) == {
+        "checkout:" + str(tmp_path.resolve() / "main"): f"{ran_out}: 2 of 6 changes examined",
+        "claude-settings": f"{ran_out}: 0 of 1 changes examined",
+        "registry": f"{ran_out}: 0 of 1 changes examined",
+        "refs:b": f"{ran_out}: 1 of 3 changes examined"}
+    # A finding made in memory stays; nothing unexamined is credited or found as itself.
+    assert result["attributed"] == []
+    assert {(f["item"], f["change"]) for f in value["findings"]} == {
+        ("dispatch-records", "removed"), ("checkout:<tmp>/main", "uncompared"),
+        ("claude-settings", "uncompared"), ("registry", "uncompared"), ("refs:b", "uncompared")}
+    # The default-branch rule still lists, including the move another run would have been credited.
+    assert {(e["item"], e["path"], e["reason"]) for e in value["listed"]} == {
+        ("refs:a", "<tmp>/main/other", "default branch"), ("refs:b", "<tmp>/b", "default branch")}
+    assert result["status"] == "findings"
+    assert result["run_record"] == {"path": str(kwargs["record"]), "status": "not-read", "reason": ran_out}
+
+
+def test_984_a_stream_read_that_runs_out_keeps_the_credits_already_made(tmp_path, monkeypatch):
+    clock = _clock(monkeypatch)
+    read_bytes = Path.read_bytes
+    kwargs = golden(tmp_path)
+
+    def slow(path):
+        if path == kwargs["record"]:
+            clock[0] += 20
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", slow)
+    result = launch_bound.compare(**kwargs, end=clock[0] + 10)
+    expected = normalized(launch_bound.compare(**golden(tmp_path / "again")), tmp_path / "again")
+    value = normalized(result, tmp_path)
+    assert value["attributed"] == expected["attributed"]
+    assert _uncompared(result) == {"refs:b": "comparison allowance ran out (10.0s): 1 of 3 changes examined"}
+    assert [e["path"] for e in value["listed"]] == ["<tmp>/b"]
+    assert [f for f in value["findings"] if f["item"] != "refs:b"] == \
+        [f for f in expected["findings"] if f["item"] != "refs:b"]
+    assert result["run_record"]["status"] == "not-read"
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_984_ac11_the_allowance_is_two_minutes_unless_the_recording_window_is_nearer(
+        machine, monkeypatch, scoped):
+    for index in range(300):
+        bundle(machine, f"r{index}", dispatch=f"{index:032x}", root=machine["holder"] / f"x{index}",
+               closed=None)
+    clock = _clock(monkeypatch)
+    reads = []
+    read_bytes = Path.read_bytes
+
+    def counted(path):
+        if path.name.endswith(".request.json") and machine["store"] in path.parents:
+            clock[0] += 1
+            reads.append(path)
+        return read_bytes(path)
+
+    before = comparison(machine)
+    (machine["registered"] / "tracked.txt").write_bytes(b"changed")
+    monkeypatch.setattr(Path, "read_bytes", counted)
+    if scoped:
+        deadline = launch_bound.lifecycle.Deadline(100, started=clock[0])
+        with launch_bound.lifecycle.deadline_scope(deadline):
+            result = before.finish(60)
+        seconds, bound = deadline.final_write_at - clock[0] + len(reads), "the launch's recording window"
+    else:
+        result = before.finish(60)
+        seconds, bound = launch_bound.COMPARING_SECONDS, "the comparison's own limit"
+    assert seconds <= len(reads) <= seconds + 1
+    reason = _uncompared(result)["checkout:" + str(machine["registered"])]
+    assert reason == f"comparison allowance ran out ({seconds:.1f}s, {bound}): 0 of 1 changes examined"
+
+
+def _two_repositories(tmp_path):
+    """Two repositories, each with a copy at an overlapping run's root and a branch no run made."""
+    tmp = tmp_path.resolve()
+    store, plan, before, after = tmp / "store", [], {}, {}
+    for name, dispatch in (("a", OTHER), ("b", STALE)):
+        other = tmp / f"{name}-other"
+        _store_run(store, name, dispatch=dispatch, root=other)
+        item = "refs:" + name
+        plan.append({"item": item, "path": str(tmp / name), "method": launch_bound.REFS_METHOD})
+        copies = {launch_bound.path_key(other): {"path": str(other), "head": "h1",
+                                                 "branch": f"refs/heads/run-{name}", "flags": []}}
+        state = {"status": "compared", "default": "trunk", "default_rule": "origin HEAD"}
+        before[item] = {**state, "copies": copies, "branches": {f"refs/heads/run-{name}": "h1"}}
+        after[item] = {**state, "copies": {key: {**copy, "head": "h2"} for key, copy in copies.items()},
+                       "branches": {f"refs/heads/run-{name}": "h2", f"refs/heads/loose-{name}": "h3"}}
+    record = tmp / "run.log"
+    record.write_bytes(b"")
+    return {"plan": plan, "before": before, "after": after, "root": tmp / "own", "holder_session_id": HOLDER,
+            "store": store, "own_dispatch": OWN, "before_at": BEFORE_AT, "after_at": AFTER_AT,
+            "elapsed_seconds": 0.0, "record": record}
+
+
+@pytest.mark.parametrize("credited", [True, False])
+def test_984_the_allowance_is_checked_between_repositories_never_inside_one(tmp_path, monkeypatch, credited):
+    clock = _clock(monkeypatch)
+    work_out = launch_bound._refs_changes
+
+    def slow(name, first, second, root, live):
+        result = work_out(name, first, second, root, live)
+        if name == "refs:a" and bool(live) == credited:
+            clock[0] += 20  # The allowance ends once this repository is worked out.
+        return result
+
+    monkeypatch.setattr(launch_bound, "_refs_changes", slow)
+    in_time = launch_bound.compare(**_two_repositories(tmp_path / "in-time"))
+    assert {a["item"] for a in in_time["attributed"]} == {"refs:a", "refs:b"}
+    result = launch_bound.compare(**_two_repositories(tmp_path), end=clock[0] + 10)
+    reasons = {e["item"]: e["reason"] for e in result["coverage"] if e["status"] == "uncompared"}
+    ran_out = "comparison allowance ran out (10.0s)"
+    if credited:
+        # The first repository's credits stay; the second's creditable copy is not credited.
+        assert {(a["item"], a["to"]["dispatch_id"]) for a in result["attributed"]} == {("refs:a", OTHER)}
+        assert reasons == {"refs:a": f"{ran_out}: 2 of 3 changes examined",
+                           "refs:b": f"{ran_out}: 0 of 2 changes examined"}
+    else:
+        # A repository never reached still stays in the record.
+        assert result["attributed"] == []
+        assert reasons == {"refs:a": f"{ran_out}: 0 of 2 changes examined",
+                           "refs:b": f"{ran_out}: none of its working copies and branches were examined"}
+    assert {f["item"] for f in result["findings"] if f["change"] == "uncompared"} == {"refs:a", "refs:b"}
+    assert result["status"] == "findings" and result["run_record"]["status"] == "not-read"
+
+
+def test_984_turning_the_streams_events_into_calls_is_inside_the_allowance(tmp_path, monkeypatch):
+    clock = _clock(monkeypatch)
+    blocks = launch_bound._blocks
+
+    def slow(event):
+        clock[0] += 20  # Only the second pass over the events calls this.
+        return blocks(event)
+
+    monkeypatch.setattr(launch_bound, "_blocks", slow)
+    record = golden(tmp_path)["record"]
+    with pytest.raises(launch_bound._Expired):
+        launch_bound.read_run_record(record, end=clock[0] + 10)

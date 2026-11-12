@@ -530,3 +530,41 @@ def test_a_branch_left_by_a_copy_added_and_removed_is_named_by_its_path(repo):
     git(repo["root"], "worktree", "remove", str(copy))
     result = value.finish(60, record=stream(repo, "git worktree add ../x", "git worktree remove ../x"))
     assert [(entry["kind"], entry["branch"]) for entry in result["findings"]] == [("branch", "x")]
+
+
+def test_984_ac1_one_comparison_reads_the_store_once(repo, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    store = repo["home"] / ".tradecraft" / "dispatches"
+    other = repo["plugin"] / "other-run"  # The launcher plugin's folder is a walked item here.
+    other.mkdir()
+    opened = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    for index in range(4):
+        (store / f"r{index}.md.request.json").write_bytes(json.dumps(
+            {"dispatch_id": f"{index:032x}", "root": str(other if index == 0 else repo["tmp"] / f"x{index}"),
+             "launched_at": opened}).encode())
+        (store / f"r{index}.md.run.json").write_bytes(json.dumps(
+            {"completed_at": None, "elapsed_checkpoint_seconds": 99999 if index == 0 else 0}).encode())
+    value = start(repo)
+    (other / "theirs.txt").write_bytes(b"x")
+    (repo["plugin"] / "loose.txt").write_bytes(b"x")
+    git(repo["main"], "branch", "side-x")
+    walked, reads = [], {}
+    snapshot, read_bytes = launch_bound.snapshot, Path.read_bytes
+
+    def after_walk(plan, **kwargs):
+        result = snapshot(plan, **kwargs)
+        walked.append(kwargs.get("before") is not None)
+        return result
+
+    def counted(path):
+        if walked and walked[-1] and path.name.endswith(".request.json"):
+            reads[path.name] = reads.get(path.name, 0) + 1
+        return read_bytes(path)
+
+    monkeypatch.setattr(launch_bound, "snapshot", after_walk)
+    monkeypatch.setattr(Path, "read_bytes", counted)
+    result = value.finish(60, record=stream(repo, "git branch side-x"))
+    assert reads == {f"r{index}.md.request.json": 1 for index in range(4)}
+    assert [Path(a["path"]).name for a in result["attributed"]] == ["theirs.txt"]
+    assert any(Path(f["path"]).name == "loose.txt" for f in result["findings"])
+    assert any(f.get("branch") == "side-x" for f in result["findings"])
