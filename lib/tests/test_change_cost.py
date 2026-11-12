@@ -1226,3 +1226,244 @@ def test_malformed_holder_dispatch_is_an_unknown_cli_contribution(report_inputs,
     value = result["dated_rate_card_equivalent"][0]["value"]
     assert value["status"] == "unknown" and "no dispatch" in value["reason"]
     assert result["total"]["unknown_dispatches"] == 1 and result["total"]["floor"]
+
+
+# ---- keep-warm line and reload list -----------------------------------------
+
+SESSION = "11111111-2222-4333-8444-555555555555"
+CLAUDE_MODEL = "claude-fixture"
+PING_TOTAL = {"input": 3, "output": 2, "cache_read": 65951, "cache_creation": 19,
+              "cache_write_5m": 0, "cache_write_1h": 19}
+
+
+def claude_rate(model=CLAUDE_MODEL):
+    value = rate(model)
+    value.update(vendor="claude", per_tokens=1_000_000, classes={
+        "input": 4, "cache_read": 0.2, "cache_creation": 8, "output": 20,
+        "cache_write_5m": 5, "cache_write_1h": 8})
+    return value
+
+
+def at(minutes):
+    return (datetime.fromisoformat(WHEN) + timedelta(minutes=minutes)).isoformat()
+
+
+def claude_inputs(report_inputs):
+    write_json(report_inputs["rates_path"], {"schema_version": 1, "rates": [claude_rate()]})
+    return report_inputs
+
+
+def stream(path, write, read):
+    # One call's usage, repeated once per content block as the stream does.
+    event = {"type": "assistant", "message": {"id": "msg_first", "model": CLAUDE_MODEL, "usage": {
+        "input_tokens": 3, "output_tokens": 5, "cache_read_input_tokens": read,
+        "cache_creation_input_tokens": write,
+        "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": write}}}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join((json.dumps(line) + "\n").encode() for line in (
+        {"type": "system", "subtype": "init", "session_id": SESSION}, event, event,
+        {"type": "result", "session_id": SESSION})))
+    return path
+
+
+def claude_bundle(inputs, name, *, continuity, launched, completed, session=SESSION,
+                  first=None, cloud=False, stage="build"):
+    row = usage(vendor="claude", model=CLAUDE_MODEL, dispatch_id=name, stage=stage, tokens={"models": {
+        CLAUDE_MODEL: {"input": 10, "cache_read": 100, "cache_creation": 0, "output": 10}}})
+    row["dispatch"].update(continuity=continuity, launched_at=at(launched), completed_at=at(completed))
+    request_path, run_path, request = write_bundle(inputs, name, rows=[row])
+    request["stage"] = stage
+    request["requested"].update(continuity=continuity, session_id=session if continuity == "resume" else None)
+    attempt = {"usage": row, "vendor": "claude", "observed": {"session_id": session}}
+    if first is not None:
+        attempt["stdout"] = str(stream(inputs["dispatch_root"] / name / "answer.stdout.log", *first))
+    else:
+        attempt["stdout"] = str(inputs["dispatch_root"] / name / "missing.stdout.log")
+    if cloud:
+        request.update(route="cloud", transport="claude-cloud-routine")
+        attempt["source_format"] = "claude-cloud-routine"
+    write_json(request_path, request)
+    write_json(run_path, {"schema_version": 2, "completed_at": WHEN, "attempts": [attempt]})
+    return request_path, run_path
+
+
+def keep_warm_rows(path, *rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join((json.dumps(row) + "\n").encode() for row in rows))
+
+
+def ping(minutes, model=CLAUDE_MODEL, session=SESSION, outcome="read"):
+    return {"schema_version": 1, "kind": "ping", "session": session, "work": "acme/widget#12",
+            "group": "build", "at": at(minutes), "generation": "gen-1", "model": model,
+            "idle_seconds": 3300.4, "usage": {"calls": [dict(PING_TOTAL)], "total": dict(PING_TOTAL)},
+            "outcome": outcome, "reason": ""}
+
+
+def keep_warm_end(minutes, reason="idle limit reached", session=SESSION):
+    return {"schema_version": 1, "kind": "end", "session": session, "work": "acme/widget#12",
+            "group": "build", "at": at(minutes), "generation": "gen-1", "reason": reason, "pings": 2}
+
+
+def keep_warm_file(inputs):
+    return cost.default_keep_warm("acme/widget", 12)
+
+
+def test_three_pings_are_one_priced_line_and_raise_the_total_by_exactly_their_price(report_inputs):
+    inputs = claude_inputs(report_inputs)
+    claude_bundle(inputs, "fresh", continuity="fresh", launched=0, completed=10)
+    without = cost.report(**inputs)
+    fault = {"schema_version": 1, "kind": "fault", "session": SESSION, "work": "acme/widget#12",
+             "group": "build", "at": at(200), "generation": "gen-1", "stage": "spawn",
+             "reason": "runtime not found", "command": "claude", "output": ""}
+    keep_warm_rows(keep_warm_file(inputs), ping(60), ping(115, outcome="wrote"), ping(170),
+                   keep_warm_end(180), fault)
+    with_pings = cost.report(**inputs)
+    line = with_pings["keep_warm"]
+    rates = claude_rate()["classes"]
+    one = sum((Decimal(count) * Decimal(str(rates[name])) for name, count in PING_TOTAL.items()
+               if name != "cache_creation"), Decimal(0)) / Decimal(1_000_000)
+    assert line["pings"] == 3 and line["outcomes"] == {"read": 2, "wrote": 1}
+    assert line["price"]["status"] == "known" and Decimal(line["price"]["amount"]) == 3 * one
+    assert line["tokens"] == {name: 3 * count for name, count in PING_TOTAL.items()}
+    assert line["sessions"] == [{"session": SESSION, "pings": 3, "amount": line["price"]["amount"],
+                                 "last_end_reason": "idle limit reached"}]
+    assert line["faults"] == [fault]
+    added = Decimal(with_pings["total"]["known_amount"]) - Decimal(without["total"]["known_amount"])
+    assert added == Decimal(with_pings["total"]["keep_warm_amount"]) == 3 * one
+    assert without["total"]["keep_warm_amount"] == "0" and without["keep_warm"]["pings"] == 0
+    assert with_pings["dispatch_totals"] == without["dispatch_totals"]
+    assert with_pings["dated_rate_card_equivalent"] == without["dated_rate_card_equivalent"]
+    assert with_pings["raw_usage"] == without["raw_usage"]
+
+
+def test_keep_warm_path_defaults_to_the_changes_record_and_the_cli_overrides_it(report_inputs, tmp_path):
+    inputs = claude_inputs(report_inputs)
+    keep_warm_rows(keep_warm_file(inputs), ping(60))
+    other = tmp_path / "elsewhere" / "keep-warm.jsonl"
+    keep_warm_rows(other, ping(60), ping(70))
+    completed = report_cli(inputs)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["keep_warm"]["pings"] == 1
+    completed = subprocess.run(
+        [sys.executable, str(LIB / "change_cost.py"), *report_arguments(inputs), "--keep-warm", str(other)],
+        stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", timeout=60)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["keep_warm"]["pings"] == 2
+    assert cost.default_keep_warm("acme/widget", 12) == cost.change_root("acme/widget", 12) / "keep-warm.jsonl"
+    import keep_warm
+    # The writer and the reader share one definition.
+    assert keep_warm.record_path("acme/widget", 12) == cost.default_keep_warm("acme/widget", 12)
+
+
+def test_pings_leave_the_runtime_budget_account_unchanged(report_inputs):
+    inputs = claude_inputs(report_inputs)
+    request_path, run_path = claude_bundle(inputs, "builder", continuity="fresh", launched=0, completed=10)
+    request = json.loads(request_path.read_bytes())
+    request.update(root="fixture-tree", lineage_branch="change", budget_lineage="first",
+                   recipient_allocation_seconds=7200)
+    write_json(request_path, request)
+    run = json.loads(run_path.read_bytes())
+    run.update(dispatch_id="builder", elapsed_checkpoint_seconds=600)
+    run["attempts"][0].update(launched=True, elapsed_seconds=600)
+    write_json(run_path, run)
+    without = cost.report(**inputs)["runtime_lineages"]
+    keep_warm_rows(keep_warm_file(inputs), ping(60), ping(115), ping(170))
+    assert without and cost.report(**inputs)["runtime_lineages"] == without
+
+
+def test_reload_list_holds_resumed_turns_that_rewrote_their_conversation(report_inputs):
+    inputs = claude_inputs(report_inputs)
+    claude_bundle(inputs, "a-fresh", continuity="fresh", launched=0, completed=10)
+    claude_bundle(inputs, "b-reloaded", continuity="resume", launched=300, completed=310, first=(66038, 0))
+    claude_bundle(inputs, "c-warm", continuity="resume", launched=400, completed=410, first=(19, 65951))
+    claude_bundle(inputs, "d-unreadable", continuity="resume", launched=500, completed=510)
+    claude_bundle(inputs, "e-cloud", continuity="resume", launched=600, completed=610, first=(66038, 0),
+                  cloud=True)
+    claude_bundle(inputs, "f-new", continuity="fresh", launched=700, completed=710,
+                  session="99999999-2222-4333-8444-555555555555", first=(66038, 0))
+    keep_warm_rows(keep_warm_file(inputs), ping(60), ping(115), keep_warm_end(170), ping(350))
+    result = cost.report(**inputs)
+    assert result["reloads"] == [{
+        "dispatch_id": "b-reloaded", "attempt_index": 0, "session": SESSION, "stage": "build",
+        "idle_seconds": 290 * 60.0, "previous_dispatch_id": "a-fresh",
+        "first_call": {"input": 3, "cache_read": 0, "cache_creation": 66038},
+        "pings_in_gap": 2, "last_end_reason": "idle limit reached"}]
+    assert [row["dispatch_id"] for row in result["reloads_unreadable"]] == ["d-unreadable"]
+    assert "cannot read stdout log" in result["reloads_unreadable"][0]["reason"]
+    assert result["reloads_scope"]["cloud_attempts_excluded"] == 1
+
+
+def test_resumed_dispatch_shares_ignore_pings_between_turns(report_inputs):
+    inputs = claude_inputs(report_inputs)
+    claude_bundle(inputs, "a-fresh", continuity="fresh", launched=0, completed=10)
+    claude_bundle(inputs, "b-resume", continuity="resume", launched=300, completed=310, first=(66038, 0))
+    claude_bundle(inputs, "c-resume", continuity="resume", launched=600, completed=610, first=(19, 65951))
+    without = cost.report(**inputs)
+    keep_warm_rows(keep_warm_file(inputs), ping(60), ping(115), ping(360), ping(415))
+    with_pings = cost.report(**inputs)
+    assert with_pings["dated_rate_card_equivalent"] == without["dated_rate_card_equivalent"]
+    assert with_pings["dispatch_totals"] == without["dispatch_totals"]
+    assert with_pings["keep_warm"]["tokens"]["cache_read"] == 4 * 65951
+    priced = json.dumps([with_pings["dated_rate_card_equivalent"], with_pings["dispatch_totals"],
+                         with_pings["raw_usage"]])
+    assert str(65951) not in priced and str(4 * 65951) not in priced
+    assert [row["pings_in_gap"] for row in with_pings["reloads"]] == [2]
+
+
+def test_ping_without_a_dated_rate_is_unknown_and_a_floor_not_zero(report_inputs):
+    inputs = claude_inputs(report_inputs)
+    claude_bundle(inputs, "fresh", continuity="fresh", launched=0, completed=10)
+    without = cost.report(**inputs)
+    keep_warm_rows(keep_warm_file(inputs), ping(60, model="claude-unpriced"))
+    result = cost.report(**inputs)
+    price = result["keep_warm"]["price"]
+    assert price["status"] == "unknown" and "no dated rate for claude claude-unpriced" in price["reason"]
+    assert result["keep_warm"]["sessions"][0]["amount"] is None
+    assert result["total"]["keep_warm_amount"] is None
+    assert result["total"]["known_amount"] == without["total"]["known_amount"]
+    assert result["total"]["floor"] and not without["total"]["floor"]
+    assert any("keep-warm" in reason for reason in result["total"]["floor_reasons"])
+
+
+def test_unreadable_keep_warm_record_is_unknown_without_failing_the_report(report_inputs):
+    inputs = claude_inputs(report_inputs)
+    keep_warm_file(inputs).parent.mkdir(parents=True, exist_ok=True)
+    keep_warm_file(inputs).write_bytes(b"{not json\n")
+    result = cost.report(**inputs)
+    assert result["keep_warm"]["price"]["status"] == "unknown"
+    assert "unreadable" in result["keep_warm"]["price"]["reason"] and result["total"]["floor"]
+
+
+def test_a_ping_that_reached_no_model_is_a_known_zero_and_an_incomplete_one_is_unknown(report_inputs):
+    inputs = claude_inputs(report_inputs)
+    nothing = ping(60, outcome="failed")
+    nothing["usage"] = {"calls": [], "total": {name: 0 for name in PING_TOTAL}, "complete": True}
+    keep_warm_rows(keep_warm_file(inputs), ping(30), nothing)
+    known = cost.report(**inputs)
+    assert known["keep_warm"]["price"]["status"] == "known" and not known["total"]["floor"]
+    incomplete = ping(90, outcome="failed")
+    incomplete["usage"]["complete"] = False
+    keep_warm_rows(keep_warm_file(inputs), incomplete)
+    unknown = cost.report(**inputs)
+    assert unknown["keep_warm"]["price"]["status"] == "unknown"
+    assert "incomplete usage" in unknown["keep_warm"]["price"]["reason"]
+
+
+def test_the_reload_lists_first_call_takes_the_last_event_of_its_message():
+    import tempfile
+    events = [{"type": "assistant", "message": {"id": "m1", "usage": {
+                  "input_tokens": 3, "output_tokens": 1, "cache_read_input_tokens": 0,
+                  "cache_creation_input_tokens": 0}}},
+              {"type": "assistant", "message": {"id": "m1", "usage": {
+                  "input_tokens": 3, "output_tokens": 9, "cache_read_input_tokens": 0,
+                  "cache_creation_input_tokens": 40,
+                  "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 40}}}},
+              {"type": "assistant", "message": {"id": "m2", "usage": {
+                  "input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 99,
+                  "cache_creation_input_tokens": 0}}}]
+    with tempfile.TemporaryDirectory() as folder:
+        log = Path(folder) / "out.log"
+        log.write_text("\n".join(json.dumps(event) for event in events))
+        first, problem = cost._first_call(str(log))
+    assert problem is None and first == {"input": 3, "cache_read": 0, "cache_creation": 40}
+

@@ -249,6 +249,11 @@ def _population(usage):
     return counts, extras
 
 
+def call_classes(usage):
+    """One model call's native ``usage`` as token classes and extra counters."""
+    return _population(usage)
+
+
 def _money_name(name):
     return any(word in name.lower() for word in ("amount", "cost", "currency", "usd", "price"))
 

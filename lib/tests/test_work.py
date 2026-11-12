@@ -12821,3 +12821,102 @@ def test_938_a_missing_or_malformed_reply_block_names_the_step_with_its_fault(tm
     fixture, _path, _request = _cloud_disposition(tmp_path, monkeypatch, replies)
     decision = work.decide(fixture, RULES)
     assert decision.stage == "cloud-replies" and "can't be read" in decision.detail
+
+
+def _keep_warm_floor_launch(tmp_path, monkeypatch, plant, *, raise_launch=False):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    root = repository(tmp_path, "implementation")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, stage="build", session=SESSION)
+    waiting = home / ".tradecraft" / "keep-warm" / "5f0c2c1e-8a3b-4d6e-9f10-2b3c4d5e6f70"
+    if plant:
+        waiting.mkdir(parents=True)
+        (waiting / "spec.json").write_text(json.dumps(
+            {"work": f"{fixture.repo}#{fixture.issue_number}", "group": "build", "generation": "g"}))
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    launches, started = [], []
+
+    def capture(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            launches.append((command, (waiting / "spec.json").exists()))
+            if raise_launch:
+                raise subprocess.TimeoutExpired(command, 1)
+            return subprocess.CompletedProcess(command, 0)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+    monkeypatch.setattr(work, "_recipient_run", capture)
+    monkeypatch.setattr(work.keep_warm, "start_pending", lambda token, *a, **k: started.append(token))
+    monkeypatch.setattr(work.keep_warm, "discard_pending", lambda token: started.append("discard:" + token))
+    if raise_launch:
+        with pytest.raises(work.WorkError):
+            work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"), root, None,
+                               "holder", floor_command="python fixture-check.py")
+        return launches, started
+    assert work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"), root, None,
+                              "holder", floor_command="python fixture-check.py") == 0
+    return launches, started
+
+
+def test_983_a_stage_called_while_kept_warm_launches_as_without(tmp_path, monkeypatch):
+    """AC16: the stage call touches no keep-warm file; only the launcher's start stops it."""
+    with_state, started = _keep_warm_floor_launch(tmp_path / "with", monkeypatch, True)
+    without, _ = _keep_warm_floor_launch(tmp_path / "without", monkeypatch, False)
+    (command, spec_present), = with_state
+    assert spec_present
+    assert command[command.index("--keep-warm-starter") + 1] == "entrance"
+    assert started == [command[command.index("--keep-warm-token") + 1]]
+    flags = [[value for value in launch[0] if value.startswith("--")] for launch in (with_state[0], without[0])]
+    assert flags[0] == flags[1]
+
+
+def test_983_release_drops_the_changes_waiting_sessions(tmp_path, monkeypatch):
+    """AC11: a released change's sleeping keep-warm runners end at their next step."""
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    work.registry_path().write_text(json.dumps({"schema_version": 1, "worktrees": [
+        {"repository": "example/product", "issue": 12, "root": str(holder), "active": True}]}))
+    waiting = {}
+    for name, value in (("ours", "example/product#12"), ("other", "example/product#13")):
+        waiting[name] = home / ".tradecraft" / "keep-warm" / name
+        waiting[name].mkdir(parents=True)
+        (waiting[name] / "spec.json").write_text(json.dumps({"work": value, "group": "build"}))
+    work.release_registration("example/product", 12, holder, None)
+    assert not (waiting["ours"] / "spec.json").exists()
+    assert (waiting["other"] / "spec.json").exists()
+
+
+@pytest.mark.parametrize("texts", [(AFFIRMED,), (AFFIRMED, ARTIFACT)])
+def test_983_ac17_a_recorded_keep_warm_fault_changes_no_decision(tmp_path, monkeypatch, texts):
+    """AC6 and AC17: the entrance's decision JSON is the same with keep-warm state and a fault row as without."""
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    def reported():
+        fixture = state(*texts)
+        fixture.record_root = tmp_path / "dispatches"
+        dispatch_bundle(fixture.record_root, stage="build", session=SESSION)
+        return json.dumps(work._reported_decision(fixture, work.decide(fixture, RULES)).as_dict(),
+                          sort_keys=True), fixture
+    without, fixture = reported()
+    work.keep_warm.fault(f"{fixture.repo}#{fixture.issue_number}", "spawn", "forced keep-warm fault")
+    waiting = home / ".tradecraft" / "keep-warm" / "5f0c2c1e-8a3b-4d6e-9f10-2b3c4d5e6f70"
+    waiting.mkdir(parents=True)
+    (waiting / "spec.json").write_text(json.dumps(
+        {"work": f"{fixture.repo}#{fixture.issue_number}", "group": "build", "generation": "g"}))
+    assert work.keep_warm.record_path(fixture.repo, fixture.issue_number).read_text().count('"fault"') == 1
+    assert reported()[0] == without
+
+
+def test_983_a_launch_that_raises_discards_its_pending_keep_warm(tmp_path, monkeypatch):
+    """A launch the entrance could not see finish starts no keep-warm runner, and its pending start is cleared."""
+    launches, started = _keep_warm_floor_launch(tmp_path, monkeypatch, False, raise_launch=True)
+    (command, _present), = launches
+    assert started == ["discard:" + command[command.index("--keep-warm-token") + 1]]
+
