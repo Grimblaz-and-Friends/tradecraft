@@ -1273,7 +1273,8 @@ _GUIDANCE = (
     "(or save new_file there when it is given); the next report prices these uses. If the page prices "
     "the model by prompt length, add to entry \"prompt_basis\": \"a request's input, cache-read and "
     "cache-write tokens, each request priced on its own\" and \"prompt_tiers\": [{\"above_prompt_tokens\": "
-    "100000, \"classes\": {...the same class names, at the prices for prompts over that many tokens...}}], "
+    "\"FILL: the prompt length in tokens above which the page charges the higher prices, as a whole number\", "
+    "\"classes\": {...the same class names, at the prices for prompts over that many tokens...}}], "
     "keeping entry's own classes as the prices at or below it. Then send the filled entry to the practice "
     "repository named by the installed plugin's homepage, so that the shipped card carries it."
 )

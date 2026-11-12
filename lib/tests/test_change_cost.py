@@ -1587,6 +1587,9 @@ def test_guidance_names_each_vendor_page_entry_and_file(report_inputs):
         assert set(cost._RATE_FIELDS) <= set(entry["entry"])
         assert entry["uses"] == [{"dispatch_id": entry["vendor"] + "-run", "attempt_index": 0}]
         assert "prompt_tiers" in entry["instructions"] and "above_prompt_tokens" in entry["instructions"]
+        # A tier's threshold is the page's own, so the example leaves it to be filled, never one model's.
+        assert '"above_prompt_tokens": "FILL: the prompt length' in entry["instructions"]
+        assert "100000" not in entry["instructions"]
     assert claude["entry"]["effective_from"] == "2026-11-05T00:00:00Z"
     assert codex["entry"]["effective_from"] == "2026-11-06T00:00:00Z"
 
@@ -1754,3 +1757,19 @@ def test_a_runtime_charge_is_never_added_to_a_card_figure_in_another_currency():
     value = cost._price(runtime_attempt({"claude-opus-5-5": "8.04004", "claude-unrated-9": "1"}), [euro])
     assert value["status"] == "unknown"
     assert "a runtime list charge in USD cannot be added to a EUR card figure" in value["reasons"]
+
+
+def test_a_pasted_tier_whose_threshold_is_still_a_placeholder_is_named_and_unused(tmp_path):
+    # The guidance leaves a tier's threshold to be filled from the page, so a paste that skips it
+    # must be set aside by name rather than priced at a guessed threshold.
+    entry = cost._entry_template("claude", "claude-tiered-9", datetime.fromisoformat("2026-11-05T00:00:00+00:00"))
+    entry = fill(entry, 1)
+    entry["prompt_tiers"] = [{"above_prompt_tokens": "FILL: the prompt length in tokens above which the page "
+                                                      "charges the higher prices, as a whole number",
+                              "classes": dict(entry["classes"])}]
+    path = tmp_path / ".tradecraft" / "rates.json"
+    write_json(path, {"schema_version": 1, "rates": [entry]})
+    rows, status = cost.repository_rates(path)
+    assert rows == []
+    assert status["rejected"] == [{"model": "claude-tiered-9", "reason": "prompt_tiers[0].above_prompt_tokens "
+                                   "still holds a FILL placeholder; replace it from the pricing page"}]
