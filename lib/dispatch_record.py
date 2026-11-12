@@ -26,7 +26,7 @@ import uuid
 
 from winio import utf8_stdio
 from dispatch_lifecycle import GrowingRun, claude_terminal
-from seat_process import run_process
+from seat_process import run_read
 import run_lifecycle as lifecycle
 import cold_draft
 
@@ -95,9 +95,9 @@ def require_output_outside_root(output: Path, root: Path | None) -> None:
 def runtime_version(executable: list[str]) -> str | None:
     started = time.monotonic()
     try:
-        result = run_process([*executable, "--version"], input=b"", cwd=Path.cwd(),
-                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None,
-                             cleanup_deadline=lifecycle.cleanup_deadline())
+        result = run_read([*executable, "--version"], cwd=Path.cwd(),
+                          timeout=lifecycle.probe_timeout(),
+                          cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
     finally:
@@ -115,9 +115,9 @@ def runtime_version(executable: list[str]) -> str | None:
 def _git_probe(root: Path, arguments: tuple[str, ...], encoding: str) -> str | None:
     started = time.monotonic()
     try:
-        result = run_process(["git", "-C", str(root), *arguments], input=b"", cwd=Path.cwd(),
-                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None,
-                             cleanup_deadline=lifecycle.cleanup_deadline())
+        result = run_read(["git", "-C", str(root), *arguments], cwd=Path.cwd(),
+                          timeout=lifecycle.probe_timeout(),
+                          cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
     finally:

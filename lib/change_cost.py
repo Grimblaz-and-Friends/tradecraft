@@ -183,13 +183,44 @@ def _contexts(dispatch_root: Path, repo: str, issue: int, holder_path: Path,
               skipped: list[dict[str, str]], *,
               foreign_requests: list[dict] | None = None) -> list[_Attempt]:
     bundles: dict[str, tuple[list[_Attempt], bool, dict]] = {}
-    paths = set(dispatch_root.rglob("*.run.json")) if dispatch_root.is_dir() else set()
-    if dispatch_root.is_dir():
-        paths.update(path.with_name(path.name[:-len(".request.json")] + ".run.json")
-                     for path in dispatch_root.rglob("*.request.json"))
+    # Inside an entrance run the store is read once for every reader; outside one, directly.
+    index = lifecycle.store_index(dispatch_root)
+    if index is None:
+        paths = set(dispatch_root.rglob("*.run.json")) if dispatch_root.is_dir() else set()
+        if dispatch_root.is_dir():
+            paths.update(path.with_name(path.name[:-len(".request.json")] + ".run.json")
+                         for path in dispatch_root.rglob("*.request.json"))
+        read_request = read_run = _dispatch_json
+    else:
+        def target(value: object) -> bool:
+            # Only a foreign request nobody collects is left uncopied.
+            if foreign_requests is not None or not isinstance(value, dict):
+                return True
+            change = _change(str(value.get("work") or ""))
+            return change["repository"] == repo and change["issue"] == issue
+        listing = index.requests_listing()
+        selected = {path: (raw, value) for path, raw, value in index.requests(where=target)}
+        paths = set(index.runs_listing())
+        paths.update(path.with_name(path.name[:-len(".request.json")] + ".run.json") for path in listing)
+        listed = set(listing)
+
+        def indexed(path: Path, description: str, found: tuple | None = None) -> tuple[object, str | None]:
+            raw, value = found or index.run(path)
+            failure = raw if isinstance(raw, OSError) else value if isinstance(value, Exception) else None
+            if failure is not None:
+                return None, f"cannot read {description}: {path}: {failure}"
+            return value, None
+
+        def read_request(path: Path, description: str) -> tuple[object, str | None]:
+            if path in listed and path not in selected:
+                return {"work": None, "foreign": True}, None  # Never attributed to this change.
+            return indexed(path, description, selected.get(path))
+
+        def read_run(path: Path, description: str) -> tuple[object, str | None]:
+            return indexed(path, description)
     for path in sorted(paths):
         request_path = path.with_name(path.name[:-len(".run.json")] + ".request.json")
-        request, request_failure = _dispatch_json(request_path, "dispatch request")
+        request, request_failure = read_request(request_path, "dispatch request")
         if request_failure is None and not isinstance(request, dict):
             request_failure = f"dispatch request is not a JSON object: {request_path}"
         if request_failure is None:
@@ -203,7 +234,7 @@ def _contexts(dispatch_root: Path, repo: str, issue: int, holder_path: Path,
                 continue
         else:
             request = {}
-        value, failure = _dispatch_json(path, "dispatch completion")
+        value, failure = read_run(path, "dispatch completion")
         malformed = None
         if failure is None:
             if not isinstance(value, dict) or value.get("schema_version") != 2:

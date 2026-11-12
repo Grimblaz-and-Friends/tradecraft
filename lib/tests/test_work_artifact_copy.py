@@ -27,10 +27,14 @@ class ArtifactTransport:
                      "created_at": "2026-09-19T00:00:00Z",
                      "html_url": "https://github.example/issue#issuecomment-751",
                      "user": {"login": PRODUCER}}]
-        if "/pulls?" in endpoint:
+        if "/timeline?" in endpoint:
             return []
         return {"number": 12, "state": "open", "body": "", "labels": [],
                 "user": {"login": PRODUCER}}
+
+    def closing_pull_requests(self, query, variables):
+        return {"data": {"repository": {"issue": {"closedByPullRequestsReferences": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}}
 
 
 @pytest.fixture
@@ -196,13 +200,13 @@ def test_public_retained_git_timeout_is_unresolved_and_resumable(entrance, monke
     _, bundle, request, _ = bundles(store)[-1]
     root, copy = Path(request["root"]), request["artifact_copy"]
     before = snapshot(root)
-    original = trees.run_process
+    original = trees.run_read
     def timeout(command, **kwargs):
         if str(root) in command and any(probe in command for probe in ("fsck", "cat-file")):
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         return original(command, **kwargs)
     with monkeypatch.context() as m:
-        m.setattr(trees, "run_process", timeout)
+        m.setattr(trees, "run_read", timeout)
         state = repair_state(holder, store)
         decision = work.Decision("artifact", True, "resume", "artifact-marker-absent", "resume draft")
         report = work._reported_decision(state, decision)
@@ -224,12 +228,12 @@ def test_public_retained_git_timeout_is_unresolved_and_resumable(entrance, monke
 
 def test_public_clone_timeout_returns_holder_owned_copy_and_bundle_refusal(entrance, monkeypatch, capsys):
     _holder, store, commands, setup = entrance
-    original = trees.run_process
+    original = trees.run_read
     def timeout(command, **kwargs):
         if "clone" in command:
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         return original(command, **kwargs)
-    monkeypatch.setattr(trees, "run_process", timeout)
+    monkeypatch.setattr(trees, "run_read", timeout)
     args, _, _ = setup("codex")
     assert work.run(args, transport=ArtifactTransport()) == 0
     assert not commands and not bundles(store)

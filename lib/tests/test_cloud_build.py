@@ -1144,3 +1144,36 @@ def test_the_entrance_and_the_launcher_read_one_routing_decision(tmp_path, monke
 def test_a_repair_change_branch_reason_names_its_stage():
     assert cloud.change_branch_check(TIP, TIP, [], "identical", repair=True, stage="floor")["reason"] \
         == "a floor turn can rightly make no commit"
+
+
+def test_978_cloud_request_record_carries_the_split(machine):
+    import time
+    import preflight
+    seen = []
+
+    class Watched(Fake):
+        def fire(self, routine, token, text):
+            # The record as it stood on disk at the fire is its first write.
+            [path] = list(machine["records"].rglob("*.request.json"))
+            seen.append(json.loads(path.read_text()))
+            return super().fire(routine, token, text)
+
+    # The entrance's time before the launcher reaches the cloud route arrives through its handoff.
+    seed = {"schema_version": 1, "started_monotonic": time.monotonic() - 5.0,
+            "parts": {"github": 2.0}, "read_route": {"contained": 3, "fallback": 0, "fallback_reasons": []}}
+    with preflight.scope(seed=seed):
+        code, request, _run, _output = launch(machine, Watched())
+    assert code == 0
+    [first] = seen
+    split = first["preflight"]
+    assert split["until"] == "request-record" and first["cloud"]["fire_state"] == "in-flight"
+    assert set(split["parts"]) == {"github_seconds", "removals_seconds", "markers_seconds",
+                                   "launch_preparation_seconds", "vendor_seconds", "unattributed_seconds"}
+    assert abs(sum(split["parts"].values()) - split["total_seconds"]) <= 1
+    assert split["total_seconds"] >= 5.0 and split["parts"]["github_seconds"] >= 2.0
+    assert split["read_route"]["contained"] == 3
+    assert request["preflight"] == split  # later writes keep the launch's split
+    # A refusal before any fire records its split in the record's only write.
+    _code, refused, _run, _output = launch(machine, Fake(), preset="refused before the fire")
+    assert refused["preflight"]["until"] == "request-record"
+    assert abs(sum(refused["preflight"]["parts"].values()) - refused["preflight"]["total_seconds"]) <= 1

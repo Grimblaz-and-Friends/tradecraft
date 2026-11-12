@@ -114,7 +114,7 @@ def test_expired_real_discovery_probe_publishes_nothing_and_preserves_stopped_bu
     monkeypatch.setattr(implementer.records, "runtime_version", lambda *_a: "fixture")
     # Both discovery functions and Deadline.probe/remaining run for real. The
     # process stand-in is reached only by the first, still-useful plugin probe.
-    monkeypatch.setattr(implementer.policy, "run_process", lambda command, **_k:
+    monkeypatch.setattr(implementer.policy, "run_read", lambda command, **_k:
                         subprocess.CompletedProcess(command, 0, b'{"installed":[]}', b""))
     monkeypatch.setattr(implementer.native_codex, "run_process", lambda *_a, **_k:
                         pytest.fail("config process launched after its window expired"))
@@ -128,7 +128,7 @@ def test_expired_real_discovery_probe_publishes_nothing_and_preserves_stopped_bu
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
 def test_probe_stopped_by_deadline_in_real_process_publishes_nothing(stopped_build, monkeypatch, tmp_path, vendor):
     # A real discovery child outlives the remaining window, so the genuine
-    # run_process stops it with TimeoutExpired at deadline.probe(). That is a
+    # run_read stops it with TimeoutExpired at deadline.probe(). That is a
     # missing launch window, not a recorded preparation failure.
     import dispatch_implementer as implementer
     fixture, root, request, run, save = stopped_build
