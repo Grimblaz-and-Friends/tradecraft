@@ -9492,7 +9492,7 @@ def _launched_split(command, store, launched_after):
         split = request.get("preflight")
         if not isinstance(split, dict) or split.get("until") != "request-record":
             continue
-        _note_cap_outcome(_bundle_outcome(run), bundle=run_path)
+        _note_cap_outcome(cap_declaration.bundle_outcome(run), bundle=run_path)
         attempts = run.get("attempts")
         for attempt in attempts if isinstance(attempts, list) else []:
             # Only an attempt that spawned, or whose spawn is unresolved, names the spawn line.
@@ -9502,18 +9502,6 @@ def _launched_split(command, store, launched_after):
         # No recipient was spawned: the split ends at the request record.
         return split
     return None
-
-
-def _bundle_outcome(run) -> str:
-    """What a bundle proves of its launch, since a bundle is written before any attempt spawns."""
-    attempts = run.get("attempts") if isinstance(run, dict) else None
-    launched = [attempt.get("launched") for attempt in attempts or [] if isinstance(attempt, dict)]
-    if True in launched:
-        return "launched"
-    # An attempt whose spawn is unknown, or a run stopped before it recorded any, may have started one.
-    if None in launched or not launched and not (isinstance(run, dict) and run.get("completed_at")):
-        return "unresolved"
-    return "unlaunched"
 
 
 def _note_launched_split(command, store, launched_after):
@@ -10825,7 +10813,7 @@ def declared_caps(work: str, store: Path | None) -> list[dict]:
             if isinstance(cap, dict) and cap.get("source") == "declared" and same(run_path) not in seen:
                 rows.append({"record": str(run_path), "stage": request.get("stage"),
                              "called_at": request.get("launched_at"), "preflight_cap": cap,
-                             "outcome": _bundle_outcome(_run_record), "bundle": str(run_path),
+                             "outcome": cap_declaration.bundle_outcome(_run_record), "bundle": str(run_path),
                              "reason_code": None, "error": None})
     return rows
 

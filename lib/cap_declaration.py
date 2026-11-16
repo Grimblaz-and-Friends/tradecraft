@@ -69,6 +69,18 @@ def read(home: Path, work: str) -> list[dict]:
     return rows
 
 
+def bundle_outcome(run) -> str:
+    """What a bundle proves of its launch, since a bundle is written before any attempt spawns."""
+    attempts = run.get("attempts") if isinstance(run, dict) else None
+    launched = [attempt.get("launched") for attempt in attempts or [] if isinstance(attempt, dict)]
+    if True in launched:
+        return "launched"
+    # An attempt whose spawn is unknown, or a run stopped before it recorded any, may have started one.
+    if None in launched or not launched and not (isinstance(run, dict) and run.get("completed_at")):
+        return "unresolved"
+    return "unlaunched"
+
+
 def launcher_run(args, deadline, body, label):
     """Run a launcher's body. Called directly, it records a declared cap and then prints its window first;
     started by the entrance it does neither, because the entrance's record and line cover the run."""
@@ -94,7 +106,12 @@ def launcher_run(args, deadline, body, label):
         raise
     output = getattr(args, "output", None)
     if getattr(args, "request_recorded", False) and output:
-        outcome(path, {"outcome": "launched", "bundle": str(records.sidecar(output, ".run.json"))})
+        bundle = records.sidecar(output, ".run.json")
+        try:
+            run = json.loads(bundle.read_bytes())
+        except (OSError, ValueError):
+            run = None  # An unreadable run record proves no launch, so the launch reads unresolved.
+        outcome(path, {"outcome": bundle_outcome(run), "bundle": str(bundle)})
     else:
         outcome(path, {"outcome": "held" if code == 0 else "refused"})
     return code

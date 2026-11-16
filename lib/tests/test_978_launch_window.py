@@ -141,3 +141,24 @@ def test_978_two_works_sharing_a_folder_name_keep_their_own_declared_caps(tmp_pa
     cap_declaration.write(tmp_path, "my/org-repo#12", "proof", deadline, window)
     assert [row["stage"] for row in cap_declaration.read(tmp_path, "my-org/repo#12")] == ["build"]
     assert [row["stage"] for row in cap_declaration.read(tmp_path, "my/org-repo#12")] == ["proof"]
+
+
+@pytest.mark.parametrize("launched, outcome", [(True, "launched"), (False, "unlaunched"), (None, "unresolved")])
+def test_978_a_launcher_called_directly_records_what_its_run_proves(tmp_path, monkeypatch, capsys, launched, outcome):
+    import argparse
+    monkeypatch.setattr(cap_declaration, "records_home", lambda: tmp_path / "home")
+    output = tmp_path / "bundle" / "result.md"
+    args = argparse.Namespace(print_window=True, work="example/product#12", stage="build", output=output)
+    deadline = lifecycle.stage_deadline("build", 600, cap=1800, cap_reason="large repository")
+
+    def body():
+        # The bundle is written before any attempt spawns, so it alone proves no launch.
+        output.parent.mkdir(parents=True)
+        run = {"attempts": [{"vendor": "claude", "launched": launched}], "completed_at": "2026-11-16T12:00:00Z"}
+        cap_declaration.records.sidecar(output, ".run.json").write_text(json.dumps(run), encoding="utf-8")
+        args.request_recorded = True
+        return 0 if launched else 1
+    cap_declaration.launcher_run(args, deadline, body, "implementer")
+    [row] = cap_declaration.read(tmp_path / "home", "example/product#12")
+    assert row["outcome"] == outcome
+    assert row["bundle"] == str(cap_declaration.records.sidecar(output, ".run.json"))
