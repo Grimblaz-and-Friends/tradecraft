@@ -7013,7 +7013,8 @@ def _cold_stage_prompt(state: WorkState, root: Path) -> bytes:
 
 
 # Git commands here that change a repository, working copy or remote; their callers read only the exit status.
-GIT_WRITES = (("worktree", "add"), ("push",), ("fetch",), ("merge",), ("add",))
+GIT_WRITES = (("worktree", "add"), ("worktree", "remove"), ("branch", "-D"), ("push",), ("fetch",), ("merge",),
+              ("add",))
 
 
 def _git_writes(command: list[str]) -> bool:
@@ -9560,7 +9561,8 @@ def _invoke_recipient(command, deadline):
             preflight.refresh()
             _note_launched_split(command, store, launched_after)
             if _refused_at_cap(notice):
-                _note_cap_outcome("refused-at-cap")
+                _CAP_OUTCOME.set(_kept_outcome("the launcher refused at the entrance's cap",
+                                               {"outcome": "refused-at-cap"}))
 
 
 def _seat_returned(decision, command, deadline):
@@ -10770,17 +10772,12 @@ def run(
                 else:
                     code = _run(args, transport=transport, executor=executor)
         except lifecycle.PreflightCapExceeded as exc:
-            # A bundle noted before the refusal keeps its outcome, so its record names it once.
-            noted = _CAP_OUTCOME.get()
-            cap_declaration.outcome(declaration, {**noted, "error": str(exc)} if noted
-                                    else {"outcome": "refused-at-cap"})
+            cap_declaration.outcome(declaration, _kept_outcome(str(exc), {"outcome": "refused-at-cap"}))
             if getattr(exc, "stage", None) is None:
                 exc.stage = args.stage
             raise
         except BaseException as exc:
-            # A launch noted before the error keeps its outcome and bundle, so its record names it once.
-            noted = _CAP_OUTCOME.get() or {"outcome": "failed"}
-            cap_declaration.outcome(declaration, {**noted, "error": str(exc)})
+            cap_declaration.outcome(declaration, _kept_outcome(str(exc), {"outcome": "failed", "error": str(exc)}))
             raise
         else:
             cap_declaration.outcome(declaration, _ran_outcome(args.stage, deadline, code))
@@ -10796,6 +10793,13 @@ _CAP_OUTCOME: ContextVar[dict | None] = ContextVar("tradecraft_cap_outcome", def
 def _note_cap_outcome(outcome: str, **detail) -> None:
     """A run that learns its outcome before returning names it, as a launch names its bundle."""
     _CAP_OUTCOME.set({"outcome": outcome, **detail})
+
+
+def _kept_outcome(error: str, unnoted: dict) -> dict:
+    """A refusal or error after an outcome was noted keeps that outcome and its bundle, adding the error,
+    so the report lists the run once; with nothing noted it records `unnoted`."""
+    noted = _CAP_OUTCOME.get()
+    return {**noted, "error": error} if noted else unnoted
 
 
 def _ran_outcome(stage, deadline, code):

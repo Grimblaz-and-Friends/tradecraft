@@ -1143,6 +1143,34 @@ def test_978_a_worktree_add_that_outlasts_the_cap_leaves_no_orphan(tmp_path, mon
     assert not list((holder / ".claude" / "worktrees").glob("issue-12-*"))
 
 
+def test_978_a_worktree_add_far_past_the_cap_is_still_removed(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tw.repository(tmp_path, "holder")
+    probe = work._run_probe
+
+    def slow_add(command, **kwargs):
+        result = probe(command, **kwargs)
+        if command[3:5] == ["worktree", "add"]:
+            time.sleep(10)  # The add ends further past the cap than half the reserve.
+        return result
+    monkeypatch.setattr(work, "_run_probe", slow_add)
+    # A 20-second limit has a 10-second reserve, so an allowance counted from the cap is spent by then.
+    deadline = run_lifecycle.stage_deadline("build", 20, started=time.monotonic() - 897)
+    with run_lifecycle.deadline_scope(deadline), pytest.raises(run_lifecycle.PreflightCapExceeded):
+        work.create_implementation_root(holder, "example/product", 12, None, "holder-session")
+    assert deadline.cap_left() < -deadline.reserve / 2
+    assert "after the cap failed" not in capsys.readouterr().err
+    listed = subprocess.run(["git", "-C", str(holder), "worktree", "list", "--porcelain"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert listed.count("worktree ") == 1
+    branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert branches.strip() == ""
+    assert not list((holder / ".claude" / "worktrees").glob("issue-12-*"))
+
+
 @pytest.mark.parametrize("when", ["before the add", "a failed add"])
 def test_978_a_refusal_removes_nothing_the_add_did_not_make(tmp_path, monkeypatch, when):
     home = tmp_path / "home"

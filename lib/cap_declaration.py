@@ -97,21 +97,28 @@ def launcher_run(args, deadline, body, label):
         # The seat launcher reports a refusal at the cap as its own error, raised from the refusal.
         cause = exc if isinstance(exc, lifecycle.PreflightCapExceeded) else exc.__cause__
         at_cap = isinstance(cause, lifecycle.PreflightCapExceeded)
-        outcome(path, {"outcome": "refused-at-cap"} if at_cap else {"outcome": "failed", "error": str(exc)})
+        # A bundle written before the refusal or error keeps its outcome, so the report lists the run once.
+        launch = _bundle_result(args)
+        outcome(path, {**launch, "error": str(exc)} if launch else
+                {"outcome": "refused-at-cap"} if at_cap else {"outcome": "failed", "error": str(exc)})
         if at_cap:
             try:
                 lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline, refused_at_cap=True)
             except OSError:
                 pass  # The entrance then records a plain refusal; the launcher's own line names the cap.
         raise
-    output = getattr(args, "output", None)
-    if getattr(args, "request_recorded", False) and output:
-        bundle = records.sidecar(output, ".run.json")
-        try:
-            run = json.loads(bundle.read_bytes())
-        except (OSError, ValueError):
-            run = None  # An unreadable run record proves no launch, so the launch reads unresolved.
-        outcome(path, {"outcome": bundle_outcome(run), "bundle": str(bundle)})
-    else:
-        outcome(path, {"outcome": "held" if code == 0 else "refused"})
+    outcome(path, _bundle_result(args) or {"outcome": "held" if code == 0 else "refused"})
     return code
+
+
+def _bundle_result(args) -> dict | None:
+    """What the launcher's own bundle proves of its launch, or None when it wrote no request record."""
+    output = getattr(args, "output", None)
+    if not (getattr(args, "request_recorded", False) and output):
+        return None
+    bundle = records.sidecar(output, ".run.json")
+    try:
+        run = json.loads(bundle.read_bytes())
+    except (OSError, ValueError):
+        run = None  # An unreadable run record proves no launch, so the launch reads unresolved.
+    return {"outcome": bundle_outcome(run), "bundle": str(bundle)}

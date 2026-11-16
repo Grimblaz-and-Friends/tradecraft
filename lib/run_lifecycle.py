@@ -181,6 +181,14 @@ class Deadline:
             raise PreflightCapExceeded(cap_refusal(self), self)
         return max(0.0, min(default, self.latest_end - self.reserve - now))
 
+    def cleanup_write_timeout(self, default):
+        """A refusal's own cleanup write before the window: it comes after the cap by definition, so it is
+        bounded as a write in flight is, by the printed return less the reserve."""
+        left = self.latest_end - self.reserve - time.monotonic()
+        if left <= 0:
+            raise RunTimeout("caller limit leaves no time for the refusal's cleanup", self)
+        return min(default, left)
+
     def latest_return_seconds(self):
         return (self.cap or 0.0) + self.allotted + self.reserve
 
@@ -342,7 +350,8 @@ def cleanup_scope():
 
 
 def write_timeout(default):
-    """A write's bound in the open run: a refusal's own cleanup has the cleanup allowance.
+    """A write's bound in the open run: a refusal's own cleanup before the window keeps a write's bound,
+    since the cleanup allowance ends with the cap; in the window it has the cleanup allowance.
 
     Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
     """
@@ -350,6 +359,8 @@ def write_timeout(default):
     if deadline is None:
         return default
     if _CLEANUP.get():
+        if deadline.cap is not None and not deadline.in_window:
+            return deadline.cleanup_write_timeout(default)
         return deadline.probe(default, cleanup=True)
     return deadline.write_timeout(default)
 

@@ -405,10 +405,10 @@ def test_978_an_unproved_copy_write_after_the_cap_reports_its_cleanup(monkeypatc
     assert raised.value.cleanup_proven is False
 
 
-def _bundle_launched(store, launched, *, name="result.md"):
+def _bundle_launched(store, launched, *, name="result.md", launched_at="2026-11-16T12:00:00+00:00"):
     """A declared-cap build bundle in `store`, its one attempt's `launched` set as given."""
     import test_work as tw
-    tw.dispatch_bundle(store, name=name, launched=True, launched_at="2026-11-16T12:00:00+00:00")
+    tw.dispatch_bundle(store, name=name, launched=True, launched_at=launched_at)
     request_path = store / "build" / f"{name}.request.json"
     request = json.loads(request_path.read_text(encoding="utf-8"))
     request["preflight"] = {"until": "request-record", "total_seconds": 1.0, "parts": {}}
@@ -519,3 +519,108 @@ def test_978_a_refusal_at_the_cap_with_nothing_noted_is_refused_at_the_cap(tmp_p
     assert code == 1
     [row] = work.declared_caps("owner/repo#7", None)
     assert row["outcome"] == "refused-at-cap" and row["bundle"] is None
+
+
+DECLARED = ["--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository"]
+
+
+def _entrance_launch(tmp_path, monkeypatch, ending):
+    """A declared-cap `run build` whose launcher writes its bundle, spawns nothing, and the run then ends
+    as `ending` names. Returns the exit code, the bundle's run record and the store."""
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setattr(work, "_records_home", lambda _state: tmp_path / "home")
+    root = tmp_path / "root"
+    root.mkdir()
+    store = tmp_path / "store"
+    run_path = store / "build" / "result.md.run.json"
+    command = [sys.executable, "dispatch_implementer.py", "--work", "example/product#12", "--stage", "build",
+               "--output", str(store / "build" / "result.md")]
+
+    def launcher(command, *, timeout, cleanup_deadline, on_tick=None):
+        # Stamped after the entrance's handoff, so the entrance reads it as this launch's bundle.
+        _bundle_launched(store, False, launched_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat())
+        if ending == "launcher-timed-out":
+            raise subprocess.TimeoutExpired(command, timeout)
+        if ending == "launcher-refused-at-cap":
+            notice = Path(command[command.index("--launch-notice") + 1])
+            notice.write_text(json.dumps({"schema_version": 1, "window_opened_monotonic": None,
+                                          "refused_at_cap": True}), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 1)
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(work, "_recipient_run", launcher)
+
+    def entrance(*_args, **_kwargs):
+        code = work._invoke_recipient(list(command), lifecycle.current_deadline())
+        if ending == "cap-after-launch":
+            spent = lifecycle.Deadline(60, started=time.monotonic() - 1000, cap=900)
+            raise lifecycle.PreflightCapExceeded(lifecycle.cap_refusal(spent), spent)
+        if ending == "error-after-launch":
+            raise work.WorkError("the entrance's report could not be read")
+        return code
+    monkeypatch.setattr(work, "_run", entrance)
+    code = work.main(["run", "build", "--repo", "example/product", "--issue", "12", "--root", str(root),
+                      *DECLARED])
+    return code, run_path, store
+
+
+def _launcher_called_directly(tmp_path, monkeypatch, ending):
+    """A launcher called directly with a declared cap, which writes its request record and then ends as
+    `ending` names. Returns the bundle's run record and the store."""
+    import argparse
+    import cap_declaration
+    home = tmp_path / "home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    monkeypatch.setattr(cap_declaration, "records_home", lambda: home)
+    store = tmp_path / "store"
+    args = argparse.Namespace(print_window=True, work="example/product#12", stage="build",
+                              output=store / "build" / "result.md")
+    deadline = lifecycle.stage_deadline("build", 600, cap=1800, cap_reason="large repository")
+
+    def body():
+        run_path = _bundle_launched(store, False)
+        args.request_recorded = True
+        if ending == "launcher-refused-at-cap":
+            spent = lifecycle.Deadline(60, started=time.monotonic() - 1000, cap=900)
+            raise lifecycle.PreflightCapExceeded(lifecycle.cap_refusal(spent), spent)
+        raise RuntimeError("the launcher's recording failed")
+    with pytest.raises(BaseException):
+        cap_declaration.launcher_run(args, deadline, body, "implementer")
+    return store / "build" / "result.md.run.json", store
+
+
+def test_978_a_launchers_refusal_after_its_bundle_keeps_the_bundle(tmp_path, capsys, monkeypatch):
+    code, run_path, store = _entrance_launch(tmp_path, monkeypatch, "launcher-refused-at-cap")
+    capsys.readouterr()
+    assert code == 1
+    [row] = work.declared_caps("example/product#12", store)
+    # The entrance's record keeps what the bundle proves and names the refusal beside it.
+    assert row["outcome"] == "unlaunched" and os.path.normcase(row["bundle"]) == os.path.normcase(str(run_path))
+    assert "refused at the entrance's cap" in row["error"]
+
+
+@pytest.mark.parametrize("ending", ["launcher-refused-at-cap", "launcher-failed"])
+def test_978_a_launcher_called_directly_keeps_its_bundle_through_a_refusal_or_error(tmp_path, capsys,
+                                                                                   monkeypatch, ending):
+    import cap_declaration
+    run_path, _store = _launcher_called_directly(tmp_path, monkeypatch, ending)
+    capsys.readouterr()
+    [row] = cap_declaration.read(tmp_path / "home", "example/product#12")
+    assert row["outcome"] == "unlaunched" and row["bundle"] == str(run_path) and row["error"]
+
+
+@pytest.mark.parametrize("route, ending", [
+    ("entrance", "launcher-refused-at-cap"), ("entrance", "launcher-timed-out"),
+    ("entrance", "cap-after-launch"), ("entrance", "error-after-launch"),
+    ("launcher", "launcher-refused-at-cap"), ("launcher", "launcher-failed")])
+def test_978_every_ending_after_a_bundle_leaves_one_declared_cap_row(tmp_path, capsys, monkeypatch, route, ending):
+    if route == "entrance":
+        code, run_path, store = _entrance_launch(tmp_path, monkeypatch, ending)
+        assert code == 1
+    else:
+        run_path, store = _launcher_called_directly(tmp_path, monkeypatch, ending)
+    capsys.readouterr()
+    rows = work.declared_caps("example/product#12", store)
+    # The declaration and the request record name one bundle, so the release report lists the run once.
+    assert len(rows) == 1, rows
+    assert os.path.normcase(rows[0]["bundle"]) == os.path.normcase(str(run_path))
+    assert rows[0]["outcome"] == "unlaunched" and rows[0]["error"]
