@@ -210,3 +210,23 @@ def test_978_late_fallback_after_an_unspawned_primary_still_spawns_by_the_cap(jo
     assert "window_opened_late_seconds" not in logged
     assert opened and opened[0] <= cap_end
     assert not any("cap" in str(attempt.get("reason", "")) for attempt in logged["attempts"])
+
+
+def test_978_a_fallback_refused_after_a_late_primary_keeps_the_primarys_record(job, monkeypatch):
+    args, _ = job
+    args.timeout_seconds = 60
+    monkeypatch.setattr(seat, "_steps_before_spawn", lambda *_a: 1)
+    allowance = allowance_of(args)
+    reserve = min(60, max(10, args.timeout_seconds / 10))
+    # The primary returns unavailable more than one reserve after the cap's end.
+    configure(job, {"claude": {"message": "Not logged in", "sleep": 3 + reserve + 6}})
+    args.invocation_started_monotonic = started_back(lifecycle.PREFLIGHT_CAP_SECONDS - allowance - 3)
+    seat.run_dispatch(args)
+    logged = record(args)
+    first, second = logged["attempts"]
+    assert first["launched"] and first["outcome"] == "unavailable"
+    assert not second["launched"] and "cap ended before this fallback could start" in second["reason"]
+    # The primary's launch is recorded whole: its record completed, its revision read after it.
+    assert logged.get("completed_at")
+    assert logged.get("revision_after") is not None
+    assert time.monotonic() < latest_return(args)

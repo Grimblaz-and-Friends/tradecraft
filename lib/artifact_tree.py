@@ -55,7 +55,12 @@ def _remaining():
 
 
 def _write_bound():
-    """A copy write's bound: never begun after the cap, and not cut at its end."""
+    """A copy write's bound: never begun after the cap, and not cut at its end.
+
+    A copy write in flight runs past the cap's end, because a half-made copy is worse than a refusal a
+    little late; it is cut only where it would outlast the run's printed return.
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
     if lifecycle.current_deadline() is None:
         return _remaining()
     try:

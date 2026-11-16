@@ -9418,13 +9418,14 @@ def _window_follower(notice, deadline):
     seen = [None]
 
     def tick():
+        # The notice is compared by its content: two writes within the clock's resolution keep one time.
         try:
-            stamp = notice.stat().st_mtime_ns
+            content = notice.read_bytes()
         except OSError:
-            stamp = None
-        if stamp is None or stamp == seen[0]:
+            content = None
+        if content is None or content == seen[0]:
             return None  # The wait keeps its bound until the launcher's window changes.
-        seen[0] = stamp
+        seen[0] = content
         opened = lifecycle.read_launch_notice(notice)
         if opened is None:
             deadline.withdraw_window()
@@ -9501,7 +9502,7 @@ def _invoke_recipient(command, deadline):
         preparation.close()  # The handoff ends the entrance's launch preparation.
     # The launcher counts the same cap from the same call.
     if deadline.cap_declared and "--preflight-cap-seconds" not in command:
-        command.extend(("--preflight-cap-seconds", f"{deadline.cap:g}",
+        command.extend(("--preflight-cap-seconds", repr(deadline.cap),
                         "--preflight-cap-reason", deadline.cap_reason))
     if "--invocation-started-monotonic" not in command:
         command.extend(("--invocation-started-monotonic", str(deadline.started)))
@@ -10766,23 +10767,28 @@ def _ran_outcome(stage, deadline, code):
     if noted is not None:
         return noted
     if stage in lifecycle.STAGE_WORK_STAGES and deadline.in_window:
-        return {"outcome": "completed"}
+        # The stage reached its own work; whether that work succeeded is its exit status.
+        return {"outcome": "completed"} if code == 0 else {"outcome": "failed", "error": f"exit status {code}"}
     return {"outcome": "held" if code == 0 else "refused"}
 
 
 def declared_caps(work: str, store: Path | None) -> list[dict]:
     """Every declared cap for the work, from its declaration files and its request records."""
     rows = cap_declaration.read(_records_home(None), work)
-    seen = {row["bundle"] for row in rows if row.get("bundle")}
+
+    def same(path):
+        # One bundle may be spelled differently by the declaration and by the store's own listing.
+        return os.path.normcase(str(Path(path).resolve()))
+    seen = {same(row["bundle"]) for row in rows if row.get("bundle")}
     if store is not None and Path(store).is_dir():
         stages = set(lifecycle.REPAIR_STAGES) | {"artifact", "build", "cold-seat", "use", "cold-reader"}
         for _order, run_path, request, _run_record in lifecycle.launch_bundles(store, work, stages):
             cap = request.get("preflight_cap")
             # A launch the entrance made is already listed by its declaration file, through its bundle.
-            if isinstance(cap, dict) and cap.get("source") == "declared" and run_path not in seen:
-                rows.append({"record": run_path, "stage": request.get("stage"),
+            if isinstance(cap, dict) and cap.get("source") == "declared" and same(run_path) not in seen:
+                rows.append({"record": str(run_path), "stage": request.get("stage"),
                              "called_at": request.get("launched_at"), "preflight_cap": cap,
-                             "outcome": "launched", "bundle": run_path, "reason_code": None, "error": None})
+                             "outcome": "launched", "bundle": str(run_path), "reason_code": None, "error": None})
     return rows
 
 

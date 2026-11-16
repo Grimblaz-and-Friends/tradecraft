@@ -1110,3 +1110,8 @@ def test_978_declared_cap_through_the_entrance_to_a_real_launcher(tmp_path, monk
         ("build", "launched"), ("build", "refused-at-cap"), ("floor", "held"),
         ("proof", "completed"), ("proof", "refused-at-cap")]
     assert all(row["preflight_cap"]["reason"] == "large repository" for row in rows)
+    # Read with the store that holds the launch's own bundle, spelled another way, the launch is still one row.
+    both = work.declared_caps(f"{REPO}#12", fixture.record_root / "launch-1" / "..")
+    assert sorted((row["stage"], row["outcome"]) for row in both) == sorted(
+        (row["stage"], row["outcome"]) for row in rows)
+    assert all(isinstance(row[key], (str, type(None))) for row in both for key in ("record", "bundle"))

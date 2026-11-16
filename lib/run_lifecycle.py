@@ -26,6 +26,8 @@ PREFLIGHT_CAP_SECONDS = 900.0
 SPAWN_MARGIN_SECONDS = 5.0
 MINIMUM_CLEANUP_RESERVE_SECONDS = 10.0
 ELAPSED_CHECKPOINT_INTERVAL_SECONDS = 0.25
+# A probe's own bound when its caller names none, such as a vendor program's version read.
+PROBE_DEFAULT_SECONDS = 20.0
 ELAPSED_CHECKPOINT_MARGIN_SECONDS = 10.0
 REPAIR_STAGES = frozenset({"floor", "review-disposition"})
 # Stages that launch nobody: their limit covers their own work after the entrance's decision.
@@ -182,7 +184,7 @@ class Deadline:
         return {"seconds": self.cap, "source": "declared" if self.cap_declared else "default",
                 "reason": self.cap_reason}
 
-    def probe(self, default=20, *, cleanup=False):
+    def probe(self, default=PROBE_DEFAULT_SECONDS, *, cleanup=False):
         remaining = self.remaining(cleanup=cleanup)
         if cleanup:
             # Cleanup probes share only half the reserve. Closing streams and
@@ -351,7 +353,7 @@ def after_write():
         deadline.require_cap()
 
 
-def probe_timeout(default=20, *, cleanup=None):
+def probe_timeout(default=PROBE_DEFAULT_SECONDS, *, cleanup=None):
     deadline = current_deadline()
     phase = _CLEANUP.get() if cleanup is None else cleanup
     return deadline.probe(default, cleanup=phase) if deadline else default

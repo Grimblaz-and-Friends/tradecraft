@@ -515,7 +515,9 @@ def spawned_nothing(attempt, deadline, args) -> None:
 
 def _steps_before_spawn(args, vendor, comparison):
     """The bounded steps an attempt still takes after the request write: its version read and before-snapshot."""
-    return 20 + (COMPARISON_SECONDS if comparison is not None and compared_launch(args, vendor) else 0)
+    # The version read takes the probe's own bound, since it names none of its own.
+    return lifecycle.PROBE_DEFAULT_SECONDS + (
+        COMPARISON_SECONDS if comparison is not None and compared_launch(args, vendor) else 0)
 
 
 def run_dispatch(args, *, now=None) -> int:
@@ -749,8 +751,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                 reset = read_holds(hold_file).get(vendor)
                 current = now if now is not None else datetime.now(timezone.utc)
                 message = ""
-                # A fallback's turn is before its own window; it may spawn only by the cap's end.
-                deadline.withdraw_window()
+                # A fallback may spawn only by the cap's end. One refused here leaves the primary's window
+                # open, so the primary's launch is still recorded whole.
                 if spawned_before and deadline.cap_left() <= (
                         _steps_before_spawn(args, vendor, comparison) + lifecycle.SPAWN_MARGIN_SECONDS):
                     outcome, reason = "unavailable", "the entrance's cap ended before this fallback could start"
@@ -766,6 +768,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                 elif reset and reset > current:
                     outcome, reason = "unavailable", f"owner hold until {reset.isoformat()}"
                 else:
+                    # This attempt's steps come before its own window, so the cap runs again until its spawn.
+                    deadline.withdraw_window()
                     try:
                         executable = resolve_command(vendor, getattr(args, vendor))
                     except CliNotFound as exc:

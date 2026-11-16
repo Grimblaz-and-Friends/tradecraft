@@ -1112,7 +1112,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
         "environment": {"status": "cloud", "route": "cloud", "instructions_applied": INSTRUCTIONS_APPLIED},
         "cloud": {"session_id": cloud.get("session_id"), "report_branch": branch},
     }
-    if deadline_opened(deadline):
+    if deadline.in_window:
         # The window opens at the send, after the split's end, so nothing comes between them.
         attempt["pre_spawn_seconds"] = 0.0
         attempt["pre_spawn_parts"] = preflight.render("spawn", 0.0, {}, {})["parts"]
@@ -1221,10 +1221,6 @@ def _rewrite(stream, data: bytes) -> None:
     stream.write(data)
     stream.flush()
     os.fsync(stream.fileno())
-
-
-def deadline_opened(deadline) -> bool:
-    return bool(getattr(deadline, "in_window", getattr(deadline, "opened", False)))
 
 
 def _stamp_preflight(request: dict) -> None:

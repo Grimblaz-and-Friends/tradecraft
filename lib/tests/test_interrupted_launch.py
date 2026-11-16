@@ -392,7 +392,7 @@ def _late_start_measures(output, saved, kind, elapsed, caller_limit, reserve):
         allowance = (120 if compared else 0) + lifecycle.SPAWN_MARGIN_SECONDS
     else:
         # Two uncompared attempts: each a version read, then the margin.
-        allowance = 2 * 20 + lifecycle.SPAWN_MARGIN_SECONDS
+        allowance = 2 * lifecycle.PROBE_DEFAULT_SECONDS + lifecycle.SPAWN_MARGIN_SECONDS
     attempt = saved["attempts"][0]
     # The recipient is stopped at its start plus its whole limit, and stopping and recording fit the reserve.
     assert abs(attempt["elapsed_seconds"] - caller_limit) <= 1.5, attempt["elapsed_seconds"]

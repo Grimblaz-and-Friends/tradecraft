@@ -348,3 +348,42 @@ def test_978_slow_copy_refuses_at_the_cap(tmp_path, monkeypatch):
     with lifecycle.deadline_scope(declared):
         trees.git(tmp_path, "rev-parse", "HEAD")
         trees.git(tmp_path, "checkout", "--detach", "HEAD", writes=True)
+
+
+def test_978_a_fractional_cap_reaches_the_launcher_unrounded(monkeypatch):
+    import dispatch_implementer as implementer
+    commands = []
+    monkeypatch.setattr(work, "_recipient_run",
+                        lambda command, **_k: commands.append(list(command)) or subprocess.CompletedProcess(command, 0))
+    cap = 1800.123456789
+    deadline = lifecycle.stage_deadline("build", 7200, cap=cap, cap_reason="large repository")
+    assert work._invoke_recipient(["python", "dispatch_implementer.py"], deadline) == 0
+    [command] = commands
+    args = implementer.parser().parse_args([
+        "--dispatch", "d", "--root", "r", "--work", "o/r#1", "--stage", "build", "--settings-source", "s",
+        "--settings-scope", "s", *command[2:]])
+    assert args.preflight_cap_seconds == cap
+    launcher = lifecycle.stage_deadline("build", 7200, started=args.invocation_started_monotonic,
+                                        cap=args.preflight_cap_seconds, cap_reason=args.preflight_cap_reason)
+    printed = lifecycle.window_line(deadline)
+    launcher.called_epoch = deadline.called_epoch  # The handoff carries the call's wall-clock time.
+    assert lifecycle.window_line(launcher)["latest_return_at"] == printed["latest_return_at"]
+
+
+def test_978_a_notice_change_that_keeps_its_time_is_still_followed(tmp_path, monkeypatch):
+    clock = at(monkeypatch, 1000)
+    deadline = lifecycle.stage_deadline("build", 6)
+    notice = tmp_path / "launch-notice.json"
+    follow = work._window_follower(notice, deadline)
+    opened = lifecycle.stage_deadline("build", 6, started=1000)
+    opened.open_window(1001)
+    lifecycle.write_launch_notice(notice, opened)
+    stamp = notice.stat().st_mtime_ns
+    assert follow()[0] == 1001 + 6 + deadline.reserve - deadline.reserve / 4
+    # The launcher withdraws and reopens within the filesystem's time resolution: the time is unchanged.
+    clock[0] = 1003
+    opened.withdraw_window()
+    opened.open_window(1003)
+    lifecycle.write_launch_notice(notice, opened)
+    os.utime(notice, ns=(stamp, stamp))
+    assert follow()[0] == 1003 + 6 + deadline.reserve - deadline.reserve / 4

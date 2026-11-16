@@ -203,7 +203,7 @@ def run_inherited_process(command, *, cwd, timeout, cleanup_deadline, on_tick=No
     The entrance needs a bounded wait, not another pipe-capture layer whose
     forwarding callback could block on the holder's output stream.
 
-    `on_tick`, when given, is called every quarter second of the wait and returns
+    `on_tick`, when given, is called every `_INHERITED_TICK_SECONDS` of the wait and returns
     the current `(wait_end, cleanup_end)` on the monotonic clock, or None to keep
     them; the wait ends at the latest `wait_end` and containment is bounded by the
     latest `cleanup_end`.

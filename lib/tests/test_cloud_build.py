@@ -32,6 +32,10 @@ class Deadline:
     def withdraw_window(self):
         self.opened = False
 
+    @property
+    def in_window(self):
+        return self.opened
+
     def remaining(self, **_):
         self.polls -= 1
         if self.polls < 0:
