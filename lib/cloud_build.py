@@ -1039,6 +1039,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                     value = {}
                 if code or not isinstance(value, dict) or value.get("ok") is not True \
                         or value.get("session_id") != args.resume:
+                    deadline.withdraw_window()  # A failed send started nothing.
                     raise CloudError(f"follow-up send failed: exit {code} {raw[:300]!r}")
             else:
                 # Never retried: a second fire cannot be told apart from a second session.
@@ -1112,8 +1113,9 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
         "environment": {"status": "cloud", "route": "cloud", "instructions_applied": INSTRUCTIONS_APPLIED},
         "cloud": {"session_id": cloud.get("session_id"), "report_branch": branch},
     }
-    if deadline.in_window:
-        # The window opens at the send, after the split's end, so nothing comes between them.
+    if deadline.in_window and attempt["launched"] is not False:
+        # On both routes the window opens just before the split's end (the in-flight write for a fire,
+        # the stamp at a follow-up's send), so no time lies between them.
         attempt["pre_spawn_seconds"] = 0.0
         attempt["pre_spawn_parts"] = preflight.render("spawn", 0.0, {}, {})["parts"]
     run_record: dict[str, object] = {

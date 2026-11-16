@@ -1333,3 +1333,24 @@ def test_978_the_sign_in_check_counts_as_the_vendor(machine):
     parts = request["preflight"]["parts"]
     assert parts["vendor_seconds"] >= 2
     assert all(value < 1 for name, value in parts.items() if name != "vendor_seconds")
+
+
+def test_978_a_failed_follow_up_send_names_no_spawn(machine):
+    import run_lifecycle as lifecycle
+    launch(machine, Fake())
+    fake = Fake()
+    cli = fake.cli
+
+    def refused_send(argv, env):
+        if "--cloud" in argv:
+            return 1, b"send refused"
+        return cli(argv, env)
+    fake.cli = refused_send
+    deadline = lifecycle.stage_deadline("floor", 600)
+    launch_on(machine, fake, deadline, stage="floor", resume="cse_ABC123")
+    run = json.loads(sorted(machine["records"].rglob("result.md.run.json"))[-1].read_text())
+    attempt = run["attempts"][0]
+    # The send started nothing, so its attempt names no spawn and the cap runs again.
+    assert attempt["launched"] is False
+    assert "pre_spawn_seconds" not in attempt and "pre_spawn_parts" not in attempt
+    assert not deadline.in_window

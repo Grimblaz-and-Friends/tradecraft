@@ -146,7 +146,11 @@ class Deadline:
         return self.cap_end - time.monotonic()
 
     def require_cap(self, seconds=0):
-        """Refuse when no more than `seconds` of the cap is left: the one place the cap refuses."""
+        """Refuse when no more than `seconds` of the cap is left.
+
+        A step calls it before work that must still reach the spawn by the cap's end, with that work's
+        allowance; `remaining()` and `write_timeout()` also refuse, but only once the cap has ended.
+        """
         if self.cap is None or self.in_window:
             return
         if self.cap_left() <= seconds:
@@ -230,7 +234,11 @@ def stage_deadline(stage, caller_limit, *, started=None, declared=None, cap=None
 
 
 def validate_cap_flags(seconds, reason):
-    """A declared cap needs both flags, a figure above the default and a reason that is not blank."""
+    """A declared cap needs both flags, a figure above the default and a reason that is not blank.
+
+    A cap no larger than the default would only shorten a run; a caller with a fixed stop shortens its
+    limit instead.
+    """
     if seconds is None and reason is None:
         return
     if seconds is None or reason is None:

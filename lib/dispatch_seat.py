@@ -797,7 +797,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             try:
                                 record["actual_vendor"] = vendor
                                 if comparison is not None and compared_launch(args, vendor):
-                                    # The before-snapshot comes out of the recipient's window.
+                                    # The before-snapshot is taken before the recipient starts, so it comes out of
+                                    # the cap, clipped to leave the spawn inside it, not out of the recipient's window.
                                     try:
                                         seconds = deadline.probe(COMPARISON_SECONDS)
                                         seconds = max(0.0, min(seconds, deadline.cap_left()

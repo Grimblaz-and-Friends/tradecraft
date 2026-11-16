@@ -10784,7 +10784,9 @@ def declared_caps(work: str, store: Path | None) -> list[dict]:
         stages = set(lifecycle.REPAIR_STAGES) | {"artifact", "build", "cold-seat", "use", "cold-reader"}
         for _order, run_path, request, _run_record in lifecycle.launch_bundles(store, work, stages):
             cap = request.get("preflight_cap")
-            # A launch the entrance made is already listed by its declaration file, through its bundle.
+            # A launch the entrance made is already listed by its declaration file, through its bundle. A
+            # launcher called directly writes its file under its own records home, which need not be this
+            # one, so its request record is where this report finds it.
             if isinstance(cap, dict) and cap.get("source") == "declared" and same(run_path) not in seen:
                 rows.append({"record": str(run_path), "stage": request.get("stage"),
                              "called_at": request.get("launched_at"), "preflight_cap": cap,

@@ -81,6 +81,7 @@ def launcher_run(args, deadline, body, label):
     try:
         code = body()
     except BaseException as exc:
+        # The seat launcher reports a refusal at the cap as its own error, raised from the refusal.
         cause = exc if isinstance(exc, lifecycle.PreflightCapExceeded) else exc.__cause__
         at_cap = isinstance(cause, lifecycle.PreflightCapExceeded)
         outcome(path, {"outcome": "refused-at-cap"} if at_cap else {"outcome": "failed", "error": str(exc)})

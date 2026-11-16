@@ -942,14 +942,14 @@ def test_978_no_launch_stages(tmp_path, monkeypatch, capfd, stage):
     store = work.records.default_record_root().expanduser().resolve()
     before = (_files(fixture.holder_root, store), work.read_registry())
     capfd.readouterr()
-    # (a) The cap is spent: the stage refuses having written nothing.
+    # The cap is spent: the stage refuses having written nothing.
     assert _no_launch_run(fixture, stage, started=time.monotonic() - run_lifecycle.PREFLIGHT_CAP_SECONDS - 1) == 1
     out, err = _searched(capfd)
     assert "the entrance's 900-second cap" in out + err
     assert writes == []
     assert all(kind in {"GET", "GRAPHQL"} for kind, _value in transport.requests)
     assert (_files(fixture.holder_root, store), work.read_registry()) == before
-    # (b) Five minutes of reading and deciding: the stage's own work still gets its whole limit.
+    # Five minutes of reading and deciding: the stage's own work still gets its whole limit.
     seen = {}
     opened = work._open_stage_work_window
 
@@ -1050,7 +1050,7 @@ def test_978_declared_cap_through_the_entrance_to_a_real_launcher(tmp_path, monk
     commands = _real_launch(tmp_path, monkeypatch, fixture)
     declared = ["--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository"]
     capfd.readouterr()
-    # (e) The entrance, past the default cap but inside the declared one, launches.
+    # The entrance, past the default cap but inside the declared one, launches.
     work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
                "--holder-session-id", "holder", *declared], started=time.monotonic() - 901)
     out, err = _searched(capfd)
@@ -1068,7 +1068,7 @@ def test_978_declared_cap_through_the_entrance_to_a_real_launcher(tmp_path, monk
     record = json.loads(Path(window["cap_record"]).read_bytes())
     assert record["outcome"] == "launched"
     assert record["bundle"] == str(request_path.with_name("result.md.run.json"))
-    # (d) The real launcher's own check at its request write refuses when its cap is nearly spent.
+    # The real launcher's own check at its request write refuses when its cap is nearly spent.
     capfd.readouterr()
     work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
                "--holder-session-id", "holder", *declared], started=time.monotonic() - 1797)
@@ -1078,13 +1078,13 @@ def test_978_declared_cap_through_the_entrance_to_a_real_launcher(tmp_path, monk
     assert sorted(row["outcome"] for row in refused) == ["launched", "refused-at-cap"], [
         {key: report.get(key) for key in ("stage", "status", "reason", "detail")}
         for report in map(json.loads, (line for line in out.splitlines() if line.startswith("{")))]
-    # (a) A stage that launches nobody completes its work; (b) one past its declared cap refuses there;
-    # (c) a floor with no command holds by decision.
+    # A stage that launches nobody completes its work, one past its declared cap refuses there,
+    # and a floor with no command holds by decision.
     monkeypatch.setattr(work, "_execute_proof", lambda *_a, **_k: 0)
     for stage, spent in (("proof", 901), ("proof", 1801), ("floor", 0)):
         work.main(["run", stage, "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
                    "--holder-session-id", "holder", *declared], started=time.monotonic() - spent)
-    # (f) A following release report lists every declared cap with its outcome.
+    # A following release report lists every declared cap with its outcome.
     # This change's own fixture holds before the report for want of a reach reading, so the stage runs on
     # the release-report harness's change, reading this test's records home.
     released = tw.state(pr=True)

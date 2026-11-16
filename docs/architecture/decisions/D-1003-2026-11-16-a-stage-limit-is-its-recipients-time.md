@@ -21,7 +21,7 @@ Everything else in D-840 stands: the retained session and continuation after a s
 
 ## A run's two phases
 
-One `Deadline` holds both. Before the recipient starts, its end is the printed latest return (the call plus the cap, the allotted time and the reserve), reads are cut at the cap's end, and `require_cap` is the one place the cap refuses. When the recipient starts, `open_window` sets the end to that start plus the allotted time plus the reserve, so the part of the cap the run did not use is not spent and the work after a recipient stops keeps the one reserve it had before. A window opened after the cap's end, which only a machine suspended between two bounded steps can cause, keeps the printed time and is recorded.
+One `Deadline` holds both. Before the recipient starts, its end is the printed latest return (the call plus the cap, the allotted time and the reserve), reads are cut at the cap's end, and `require_cap` checks before each step that must reach the spawn by the cap's end that enough of the cap is left for it, and a read or write the cap's end cuts refuses the same way. When the recipient starts, `open_window` sets the end to that start plus the allotted time plus the reserve, so the part of the cap the run did not use is not spent and the work after a recipient stops keeps the one reserve it had before. A window opened after the cap's end, which only a machine suspended between two bounded steps can cause, keeps the printed time and is recorded.
 
 ## Calls made inside the rows
 
