@@ -31,6 +31,7 @@ import time
 import uuid
 
 import dispatch_record as records
+import cap_declaration
 import artifact_tree
 import cloud_build
 from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TOOLS,
@@ -410,6 +411,17 @@ def _cloud_route(args: argparse.Namespace) -> tuple[dict | None, str, str | None
     return cloud_build.launch_route(args.stage, args.resume, args.work)
 
 
+def _spawned_nothing(attempt, deadline, args) -> None:
+    """An attempt that started nothing opens no window and names no spawn; the cap runs on.
+
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+    attempt.pop("pre_spawn_seconds", None)
+    attempt.pop("pre_spawn_parts", None)
+    deadline.withdraw_window()
+    lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
+
+
 def run_implementer(args: argparse.Namespace) -> int:
     if args.timeout_seconds is None:
         args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
@@ -422,14 +434,14 @@ def run_implementer(args: argparse.Namespace) -> int:
     deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
                                          started=getattr(args, "invocation_started_monotonic", None),
                                          cap=cap_seconds, cap_reason=cap_reason)
-    if getattr(args, "print_window", False):
-        # A launcher called directly prints its own latest return first; the entrance's covers it otherwise.
-        print("implementer: window " + json.dumps(lifecycle.window_line(deadline), ensure_ascii=True),
-              flush=True)
+    return cap_declaration.launcher_run(args, deadline, lambda: _launch_implementer(args, deadline),
+                                        "implementer")
+
+
+def _launch_implementer(args: argparse.Namespace, deadline) -> int:
     deadline.remaining()  # A launch whose cap has ended reserves no bundle.
-    # This joins the scope `main` opened, and gives a launcher called without
-    # `main` (in process, as the entrance's tests and the cloud route do) its own
-    # scope seeded from the handoff.
+    # This joins the scope `main` opened, and gives a launcher called in process
+    # without `main`, as the entrance's tests call it, its own scope seeded from the handoff.
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     seed = preflight.load_handoff(getattr(args, "preflight_input", None))
     with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline):
@@ -960,6 +972,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     if hasattr(exc, "cleanup_proven"):
                         record["cleanup_proven"] = exc.cleanup_proven
                     attempt["launched"] = getattr(exc, "launched", attempt["launched"])
+                    if attempt["launched"] is False:
+                        _spawned_nothing(attempt, deadline, args)
                     result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
                     reason = f"cannot launch {args.vendor}: {exc}"
                     record["error"] = reason

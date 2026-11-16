@@ -29,6 +29,9 @@ class Deadline:
     def open_window(self, at=None):
         self.opened = True
 
+    def withdraw_window(self):
+        self.opened = False
+
     def remaining(self, **_):
         self.polls -= 1
         if self.polls < 0:

@@ -48,6 +48,20 @@ def _remaining():
     try:
         deadline = lifecycle.current_deadline() or lifecycle.Deadline(lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS)
         return deadline.remaining()
+    except lifecycle.PreflightCapExceeded:
+        raise  # A copy cut by the entrance's cap is that stage's refusal at the cap.
+    except TimeoutError as exc:
+        raise ArtifactTreeError(f"artifact Git deadline failed: {exc}") from exc
+
+
+def _write_bound():
+    """A copy write's bound: never begun after the cap, and not cut at its end."""
+    if lifecycle.current_deadline() is None:
+        return _remaining()
+    try:
+        return lifecycle.write_timeout(float("inf"))
+    except lifecycle.PreflightCapExceeded:
+        raise
     except TimeoutError as exc:
         raise ArtifactTreeError(f"artifact Git deadline failed: {exc}") from exc
 
@@ -84,12 +98,18 @@ def git(root, *args, trust=(), lazy_fetch=False, writes=False):
         env["GIT_NO_LAZY_FETCH"] = "0"
     try:
         # A caller marks a command that changes the copy as a write: it is judged by its exit status.
-        result = run_read(command, cwd=Path.cwd(), env=env, timeout=_remaining(),
+        # A write before the launch is not cut at the cap's end, only where it would outlast the printed return.
+        result = run_read(command, cwd=Path.cwd(), env=env,
+                          timeout=_write_bound() if writes else _remaining(),
                           cleanup_deadline=lifecycle.cleanup_deadline(), writes=writes)
+    except lifecycle.PreflightCapExceeded:
+        raise
     except (OSError, subprocess.SubprocessError) as exc:
         error = ArtifactTreeError(f"artifact Git {args[0] if args else 'probe'} failed at {root}: {exc}")
         error.cleanup_proven = getattr(exc, "cleanup_proven", True)
         raise error from exc
+    if writes:
+        lifecycle.after_write()
     if getattr(result, "cleanup_proven", True) is False:
         error = ArtifactTreeError("artifact Git process cleanup is unproved")
         error.cleanup_proven = False

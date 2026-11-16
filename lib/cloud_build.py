@@ -569,10 +569,12 @@ class Transport:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", "replace")
 
-    # The vendor command keeps its own route: it is the recipient's start, not the entrance's work.
+    # The vendor command keeps its own route, the sign-in check's included: it is the recipient's
+    # start, not the entrance's work. Before the send its bound is what is left of the cap.
     def cli(self, argv: list[str], env: dict) -> tuple[int, bytes]:
         try:
-            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=120)
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
+                                    timeout=lifecycle.probe_timeout(120))
         except FileNotFoundError:
             return 127, b""
         return result.returncode, result.stdout
@@ -580,9 +582,11 @@ class Transport:
     def git(self, root: Path, *arguments: str) -> tuple[int, str]:
         # Every Git command here takes the contained route so a hung one is stopped with what it
         # started; a push, fetch or merge is reported by its exit status even if its output was cut.
+        writes = bool(arguments) and arguments[0] in GIT_WRITES
+        # A push before the send is not cut at the cap's end, only where it would outlast the printed return.
         result = seat_process.run_read(["git", "-C", str(root), *arguments], input=b"", cwd=Path.cwd(),
-                                       timeout=300, cleanup_deadline=lifecycle.cleanup_deadline(),
-                                       writes=bool(arguments) and arguments[0] in GIT_WRITES)
+                                       timeout=lifecycle.write_timeout(300) if writes else 300,
+                                       cleanup_deadline=lifecycle.cleanup_deadline(), writes=writes)
         return result.returncode, (result.stdout or result.stderr).decode("utf-8", "replace").strip()
 
     def sleep(self, seconds: float) -> None:
@@ -1025,6 +1029,8 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
             deadline.require_cap()
             deadline.open_window()
             if follow_up:
+                # A follow-up's request record is first written after the send, so its split ends here.
+                _stamp_preflight(request)
                 code, raw = transport.cli([*claude, "-p", text, "--cloud", args.resume,
                                            "--output-format", "json"], env)
                 try:
@@ -1060,6 +1066,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                     raise CloudError(f"fire answered HTTP {status}: {body[:300]}")
                 if status != 200:
                     cloud["fire_state"] = "refused"
+                    deadline.withdraw_window()  # A client error started nothing.
                     raise CloudError(f"fire failed: HTTP {status} {body[:300]}")
                 cloud["session_id"] = session
                 cloud["session_url"] = value.get("claude_code_session_url")
@@ -1078,7 +1085,15 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
         except CloudRefusal as exc:
             failure, refused = str(exc), True
         except lifecycle.PreflightCapExceeded:
-            raise  # A refusal at the cap leaves no bundle, so the reservation unwinds unready.
+            # A refusal at the cap leaves no bundle, so the reservation unwinds unready, and the
+            # report branch this launch made goes with it.
+            if cloud.get("dispatch_commit"):
+                with lifecycle.cleanup_scope():
+                    try:
+                        delete_report_branch(transport, request)
+                    except (CloudError, OSError, subprocess.SubprocessError) as exc:
+                        print(f"implementer: report branch {branch} not deleted: {exc}", file=sys.stderr)
+            raise
         except (CloudError, OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
             failure = str(exc) if isinstance(exc, CloudError) else f"{type(exc).__name__}: {exc}"
     except BaseException:
@@ -1097,6 +1112,10 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
         "environment": {"status": "cloud", "route": "cloud", "instructions_applied": INSTRUCTIONS_APPLIED},
         "cloud": {"session_id": cloud.get("session_id"), "report_branch": branch},
     }
+    if deadline_opened(deadline):
+        # The window opens at the send, after the split's end, so nothing comes between them.
+        attempt["pre_spawn_seconds"] = 0.0
+        attempt["pre_spawn_parts"] = preflight.render("spawn", 0.0, {}, {})["parts"]
     run_record: dict[str, object] = {
         "schema_version": records.SCHEMA_VERSION, "dispatch_id": dispatch_id,
         "request": str(request_path), "actual_vendor": "claude", "attempts": [attempt],
@@ -1202,6 +1221,10 @@ def _rewrite(stream, data: bytes) -> None:
     stream.write(data)
     stream.flush()
     os.fsync(stream.fileno())
+
+
+def deadline_opened(deadline) -> bool:
+    return bool(getattr(deadline, "in_window", getattr(deadline, "opened", False)))
 
 
 def _stamp_preflight(request: dict) -> None:

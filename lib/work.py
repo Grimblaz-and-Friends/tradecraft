@@ -51,6 +51,7 @@ import cold_draft
 import cold_reader
 from connected_review import is_review_job
 import dispatch_record as records
+import cap_declaration
 from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
 import launch_bound
@@ -6999,12 +7000,17 @@ def _git(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
         key: value for key, value in os.environ.items()
         if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
     }
+    writes = _git_writes(command)
     # A write that exited 0 stands even when a held pipe cut its output short; a read's output must be whole.
-    return _run_probe(
-        ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120), env=environment,
-        writes=_git_writes(command),
+    # A write before the launch is not cut at the cap's end, only where it would outlast the printed return.
+    result = _run_probe(
+        ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=environment, writes=writes,
+        timeout=lifecycle.write_timeout(120) if writes else lifecycle.probe_timeout(120),
     )
+    if writes:
+        lifecycle.after_write()
+    return result
 
 
 def _git_failure(result: subprocess.CompletedProcess[bytes]) -> str:
@@ -9451,10 +9457,11 @@ def _launched_split(command, store, launched_after):
     where = (Path(output).parent if output else
              Path(store) if store is not None else records.default_record_root().expanduser().resolve())
     # Only a bundle launched after this call can be this launch's own.
-    for _order, _run_path, request, run in lifecycle.launch_bundles(where, work_value, {stage}, after=launched_after):
+    for _order, run_path, request, run in lifecycle.launch_bundles(where, work_value, {stage}, after=launched_after):
         split = request.get("preflight")
         if not isinstance(split, dict) or split.get("until") != "request-record":
             continue
+        _note_cap_outcome("launched", bundle=run_path)
         attempts = run.get("attempts")
         for attempt in attempts if isinstance(attempts, list) else []:
             # Only an attempt that spawned, or whose spawn is unresolved, names the spawn line.
@@ -9478,8 +9485,6 @@ def _note_launched_split(command, store, launched_after):
         opened.memo.pop(_LAUNCHED_SPLIT, None)
     else:
         opened.memo[_LAUNCHED_SPLIT] = split
-        if split.get("until") == "spawn":
-            _note_cap_outcome("launched")
 
 
 def _invoke_recipient(command, deadline):
@@ -10711,7 +10716,8 @@ def run(
         # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
         # The stage's first output names the latest time it can return, before any read.
         window = lifecycle.window_line(deadline)
-        declaration = _write_cap_declaration(args, deadline, window) if deadline.cap_declared else None
+        declaration = (cap_declaration.write(_records_home(None), f"{args.repo}#{args.issue}", args.stage,
+                                             deadline, window) if deadline.cap_declared else None)
         window["cap_record"] = str(declaration) if declaration else None
         print("work: window " + json.dumps(window, ensure_ascii=True), flush=True)
         outcome_token = _CAP_OUTCOME.set(None)
@@ -10723,13 +10729,13 @@ def run(
                 else:
                     code = _run(args, transport=transport, executor=executor)
         except lifecycle.PreflightCapExceeded:
-            _cap_outcome(declaration, {"outcome": "refused-at-cap"})
+            cap_declaration.outcome(declaration, {"outcome": "refused-at-cap"})
             raise
         except BaseException as exc:
-            _cap_outcome(declaration, {"outcome": "failed", "error": str(exc)})
+            cap_declaration.outcome(declaration, {"outcome": "failed", "error": str(exc)})
             raise
         else:
-            _cap_outcome(declaration, _ran_outcome(args.stage, deadline, code))
+            cap_declaration.outcome(declaration, _ran_outcome(args.stage, deadline, code))
         finally:
             _CAP_OUTCOME.reset(outcome_token)
         return code
@@ -10737,22 +10743,6 @@ def run(
 
 
 _CAP_OUTCOME: ContextVar[dict | None] = ContextVar("tradecraft_cap_outcome", default=None)
-
-
-def _write_cap_declaration(args, deadline, window) -> Path:
-    """Record a declared cap before the run's first read, whatever the run does next."""
-    folder = _records_home(None) / "preflight-caps" / f"{args.repo.replace('/', '-')}-{args.issue}"
-    folder.mkdir(parents=True, exist_ok=True)
-    stamp = re.sub(r"[^0-9TZ]", "", window["called_at"])
-    path = folder / f"{stamp}-{args.stage}-{os.getpid()}.json"
-    record = {"schema_version": 1, "work": f"{args.repo}#{args.issue}", "stage": args.stage,
-              "called_at": window["called_at"], "preflight_cap": deadline.cap_record(),
-              "limit_seconds": deadline.limit, "latest_return_at": window["latest_return_at"],
-              "producer_version": records.producer_version(), "outcome": None}
-    # Exclusive creation, so two runs called in the same instant never overwrite one another.
-    with path.open("xb") as stream:
-        stream.write(records.json_bytes(record))
-    return path
 
 
 def _note_cap_outcome(outcome: str, **detail) -> None:
@@ -10769,42 +10759,19 @@ def _ran_outcome(stage, deadline, code):
     return {"outcome": "held" if code == 0 else "refused"}
 
 
-def _cap_outcome(path, outcome: dict) -> None:
-    if path is None:
-        return
-    try:
-        record = json.loads(Path(path).read_bytes())
-        record.update(outcome)
-        sibling = Path(path).with_name(Path(path).name + ".tmp")
-        sibling.write_bytes(records.json_bytes(record))
-        os.replace(sibling, path)
-    except (OSError, ValueError):
-        pass  # The declaration still records the figure and the reason, with its outcome unset.
-
-
 def declared_caps(work: str, store: Path | None) -> list[dict]:
     """Every declared cap for the work, from its declaration files and its request records."""
-    repo, _, issue = work.partition("#")
-    folder = _records_home(None) / "preflight-caps" / f"{repo.replace('/', '-')}-{issue}"
-    rows, seen = [], set()
-    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
-        try:
-            record = json.loads(path.read_bytes())
-        except (OSError, ValueError):
-            continue
-        if isinstance(record, dict):
-            rows.append({"record": str(path), **{key: record.get(key) for key in (
-                "stage", "called_at", "preflight_cap", "outcome", "bundle", "error")}})
-            seen.add((record.get("stage"), record.get("called_at")))
+    rows = cap_declaration.read(_records_home(None), work)
+    seen = {row["bundle"] for row in rows if row.get("bundle")}
     if store is not None and Path(store).is_dir():
         stages = set(lifecycle.REPAIR_STAGES) | {"artifact", "build", "cold-seat", "use", "cold-reader"}
         for _order, run_path, request, _run_record in lifecycle.launch_bundles(store, work, stages):
             cap = request.get("preflight_cap")
-            if isinstance(cap, dict) and cap.get("source") == "declared":
-                if (request.get("stage"), request.get("called_at")) not in seen:
-                    rows.append({"record": run_path, "stage": request.get("stage"),
-                                 "called_at": request.get("called_at"), "preflight_cap": cap,
-                                 "outcome": "launched", "bundle": run_path, "error": None})
+            # A launch the entrance made is already listed by its declaration file, through its bundle.
+            if isinstance(cap, dict) and cap.get("source") == "declared" and run_path not in seen:
+                rows.append({"record": run_path, "stage": request.get("stage"),
+                             "called_at": request.get("launched_at"), "preflight_cap": cap,
+                             "outcome": "launched", "bundle": run_path, "reason_code": None, "error": None})
     return rows
 
 
@@ -11017,7 +10984,7 @@ def _run(
 def main(argv: list[str] | None = None, *, started: float | None = None) -> int:
     utf8_stdio()
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
-    # One scope per run, opened at the call, holds its clock, timing split, read memo and store indexes.
+    # One scope per run, so each read and each store record is taken once and the split covers the whole run.
     with preflight.scope(started=started, clock_start="process" if started is not None else None):
         try:
             return run(parser().parse_args(argv))

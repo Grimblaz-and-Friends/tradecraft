@@ -31,6 +31,7 @@ import tomllib
 import uuid
 
 import dispatch_record as records
+import cap_declaration
 import cold_draft
 from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claude_launch_notice,
                                 claude_stream_check, claude_terminal, stream_check_reason,
@@ -504,6 +505,14 @@ def resolve_settings(args):
                          **fallback_plan(args.vendor, args.own_vendor, args.requires)}}
 
 
+def spawned_nothing(attempt, deadline, args) -> None:
+    """An attempt that started nothing opens no window and names no spawn; the cap runs on."""
+    attempt.pop("pre_spawn_seconds", None)
+    attempt.pop("pre_spawn_parts", None)
+    deadline.withdraw_window()
+    lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
+
+
 def _steps_before_spawn(args, vendor, comparison):
     """The bounded steps an attempt still takes after the request write: its version read and before-snapshot."""
     return 20 + (COMPARISON_SECONDS if comparison is not None and compared_launch(args, vendor) else 0)
@@ -519,16 +528,16 @@ def run_dispatch(args, *, now=None) -> int:
                                              declared=True, cap=cap_seconds, cap_reason=cap_reason)
     except ValueError as exc:
         raise DispatchError(str(exc)) from exc
-    if getattr(args, "print_window", False):
-        # A launcher called directly prints its own latest return first; the entrance's covers it otherwise.
-        print("seat: window " + json.dumps(lifecycle.window_line(deadline), ensure_ascii=True), flush=True)
+    return cap_declaration.launcher_run(args, deadline, lambda: _launch_dispatch(args, deadline, now), "seat")
+
+
+def _launch_dispatch(args, deadline, now) -> int:
     try:
         deadline.remaining()  # A launch whose cap has ended reserves no bundle.
     except TimeoutError as exc:
         raise DispatchError(str(exc)) from exc
-    # This joins the scope `main` opened, and gives a launcher called without
-    # `main` (in process, as the entrance's tests and the cloud route do) its own
-    # scope seeded from the handoff.
+    # This joins the scope `main` opened, and gives a launcher called in process
+    # without `main`, as the entrance's tests call it, its own scope seeded from the handoff.
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     seed = preflight.load_handoff(getattr(args, "preflight_input", None))
     with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline):
@@ -830,10 +839,13 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             except FileNotFoundError as exc:
                                 result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
                                 outcome, reason = "unavailable", f"{vendor} executable disappeared before launch"
+                                spawned_nothing(attempt, deadline, args)
                             except OSError as exc:
                                 if hasattr(exc, "cleanup_proven"):
                                     record["cleanup_proven"] = exc.cleanup_proven
                                 attempt["launched"] = getattr(exc, "launched", attempt["launched"])
+                                if attempt["launched"] is False:
+                                    spawned_nothing(attempt, deadline, args)
                                 reason = (
                                     f"Cannot launch {vendor}: {exc}. From native Codex on Windows, "
                                     "use approval-managed host execution for the user's CLI/login. "
@@ -851,9 +863,11 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 attempt["launched"] = True
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
-                            # A later attempt is measured from here, because the
-                            # recipient's run that just ended is not the launcher's work.
-                            mark = scope.mark()
+                            # A later attempt is measured from here, because the recipient's run that
+                            # just ended is not the launcher's work; after an attempt that started
+                            # nothing, the next one's interval keeps this one's preparation.
+                            if attempt["launched"]:
+                                mark = scope.mark()
                             elapsed = time.monotonic() - started
                             if record.get("interruption_cause") == "ceiling":
                                 reason = lifecycle.ceiling_reason(vendor, caller_limit=args.timeout_seconds,

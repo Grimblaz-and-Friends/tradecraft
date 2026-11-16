@@ -1,4 +1,7 @@
-"""The entrance finds pull requests from the issue and says when time ran out."""
+"""The entrance finds pull requests from the issue and says when time ran out.
+
+Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+"""
 import json
 from pathlib import Path
 import re

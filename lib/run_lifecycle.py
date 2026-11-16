@@ -320,6 +320,26 @@ def cleanup_scope():
         _CLEANUP.reset(token)
 
 
+def write_timeout(default):
+    """A write's bound in the open run: a refusal's own cleanup has the cleanup allowance.
+
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+    deadline = current_deadline()
+    if deadline is None:
+        return default
+    if _CLEANUP.get():
+        return deadline.probe(default, cleanup=True)
+    return deadline.write_timeout(default)
+
+
+def after_write():
+    """The cap is checked again after each write made before the recipient starts."""
+    deadline = current_deadline()
+    if deadline is not None and not _CLEANUP.get():
+        deadline.require_cap()
+
+
 def probe_timeout(default=20, *, cleanup=None):
     deadline = current_deadline()
     phase = _CLEANUP.get() if cleanup is None else cleanup
@@ -573,10 +593,10 @@ class _StoreRecords:
     def __init__(self, root):
         self.root = Path(root)
         self._lock = threading.RLock()
-        self._requests = None  # relative paths in rglob order; None until listed
+        self._requests = None  # Listed on first use, so a run that never asks lists nothing.
         self._runs = None
         self._stale = False
-        self._records = {}  # relative path -> (signature, raw, value)
+        self._records = {}  # Each record is parsed once and kept until its signature changes.
 
     def mark_stale(self):
         with self._lock:
