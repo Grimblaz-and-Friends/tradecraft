@@ -6513,9 +6513,14 @@ def _discard_unregistered_worktree(holder: Path, target: Path, branch: str) -> N
     with lifecycle.cleanup_scope():
         for command in (["worktree", "remove", "--force", str(target)], ["branch", "-D", branch]):
             try:
-                _git(command, holder)
+                result = _git(command, holder)
             except (OSError, subprocess.SubprocessError) as exc:
                 print(f"work: {' '.join(command[:2])} after the cap failed: {exc}", file=sys.stderr)
+                continue
+            # A removal that exits nonzero leaves the worktree or branch behind, so it is said aloud.
+            if result.returncode:
+                print(f"work: {' '.join(command[:2])} after the cap failed: {_git_failure(result)}",
+                      file=sys.stderr)
 
 
 def publish_implementation_branch(root: Path, branch: str) -> str:
@@ -10770,7 +10775,9 @@ def run(
                 exc.stage = args.stage
             raise
         except BaseException as exc:
-            cap_declaration.outcome(declaration, {"outcome": "failed", "error": str(exc)})
+            # A launch noted before the error keeps its outcome and bundle, so its record names it once.
+            noted = _CAP_OUTCOME.get() or {"outcome": "failed"}
+            cap_declaration.outcome(declaration, {**noted, "error": str(exc)})
             raise
         else:
             cap_declaration.outcome(declaration, _ran_outcome(args.stage, deadline, code))

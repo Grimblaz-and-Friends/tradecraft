@@ -445,3 +445,36 @@ def test_978_the_entrance_notes_what_its_launchers_bundle_proves(tmp_path, launc
     finally:
         work._CAP_OUTCOME.reset(token)
     assert noted["outcome"] == outcome and os.path.normcase(str(noted["bundle"])) == os.path.normcase(str(run_path))
+
+
+def test_978_an_error_after_a_launch_keeps_the_noted_outcome_and_bundle(tmp_path, capsys, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    root = tmp_path / "root"
+    root.mkdir()
+    bundle = str(tmp_path / "store" / "build" / "result.md.run.json")
+
+    def launched_then_failed(*_args, **_kwargs):
+        # The launcher's bundle was read before the entrance's wait ran out.
+        work._note_cap_outcome("launched", bundle=bundle)
+        raise work.WorkError("launcher exceeded its bounded recording allowance")
+    monkeypatch.setattr(work, "_run", launched_then_failed)
+    code = work.main(["run", "build", "--repo", "owner/repo", "--issue", "7", "--root", str(root),
+                      "--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository"])
+    capsys.readouterr()
+    assert code == 1
+    [row] = work.declared_caps("owner/repo#7", None)
+    # The record still names the launch and its bundle, so the report lists it once, with the error.
+    assert row["outcome"] == "launched" and row["bundle"] == bundle
+    assert "bounded recording allowance" in row["error"]
+
+
+def test_978_a_failed_cleanup_after_the_cap_is_reported(tmp_path, capsys):
+    import test_work as tw
+    holder = tw.repository(tmp_path, "holder")
+    # Neither the worktree nor the branch exists, so each removal exits nonzero.
+    work._discard_unregistered_worktree(holder, holder / ".claude" / "worktrees" / "issue-7-gone",
+                                        "tradecraft/7-gone")
+    err = capsys.readouterr().err
+    assert "work: worktree remove after the cap failed:" in err
+    assert "work: branch -D after the cap failed:" in err
