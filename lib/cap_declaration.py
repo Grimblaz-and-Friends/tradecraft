@@ -82,8 +82,13 @@ def launcher_run(args, deadline, body, label):
         code = body()
     except BaseException as exc:
         cause = exc if isinstance(exc, lifecycle.PreflightCapExceeded) else exc.__cause__
-        outcome(path, {"outcome": "refused-at-cap"} if isinstance(cause, lifecycle.PreflightCapExceeded)
-                else {"outcome": "failed", "error": str(exc)})
+        at_cap = isinstance(cause, lifecycle.PreflightCapExceeded)
+        outcome(path, {"outcome": "refused-at-cap"} if at_cap else {"outcome": "failed", "error": str(exc)})
+        if at_cap:
+            try:
+                lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline, refused_at_cap=True)
+            except OSError:
+                pass  # The entrance then records a plain refusal; the launcher's own line names the cap.
         raise
     output = getattr(args, "output", None)
     if getattr(args, "request_recorded", False) and output:

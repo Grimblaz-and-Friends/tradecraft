@@ -239,14 +239,17 @@ def validate_cap_flags(seconds, reason):
         raise ValueError("--preflight-cap-reason must not be blank")
 
 
-def write_launch_notice(path, deadline):
-    """Tell the entrance when its launcher's recipient started, so its wait follows that window."""
+def write_launch_notice(path, deadline, *, refused_at_cap=False):
+    """Tell the entrance when its launcher's recipient started, so its wait follows that window,
+    and that the launcher refused at the cap, so the entrance's record names that outcome."""
     if path is None:
         return
     path = Path(path)
     sibling = path.with_name(path.name + ".tmp")
-    sibling.write_text(json.dumps({"schema_version": 1,
-                                   "window_opened_monotonic": deadline.window_opened}), encoding="utf-8")
+    notice = {"schema_version": 1, "window_opened_monotonic": deadline.window_opened}
+    if refused_at_cap:
+        notice["refused_at_cap"] = True
+    sibling.write_text(json.dumps(notice), encoding="utf-8")
     os.replace(sibling, path)
 
 

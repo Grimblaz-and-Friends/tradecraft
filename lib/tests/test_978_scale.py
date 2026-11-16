@@ -854,3 +854,259 @@ def test_978_declared_caps_for_held_and_launching_stages_reach_the_release_repor
     assert sorted((row["stage"], row["outcome"]) for row in rows) == [
         ("build", "refused-at-cap"), ("floor", "held")]
     assert all(row["preflight_cap"]["reason"] == "large repository" for row in rows)
+
+
+@pytest.mark.parametrize("limit", [1, 7200])
+def test_978_write_in_flight_at_the_cap_through_run_build(tmp_path, monkeypatch, capfd, limit):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    writes, deadlines = [], []
+    probe = work._run_probe
+
+    def fake_writes(command, **kwargs):
+        if command[3:5] == ["worktree", "add"]:
+            deadline = run_lifecycle.current_deadline()
+            deadlines.append(deadline)
+            began = time.monotonic()
+            writes.append(("worktree", began, kwargs["timeout"]))
+            # The worktree's creation is still running four seconds after the cap's end.
+            time.sleep(max(0.0, min(deadline.cap_end + 4 - began, kwargs["timeout"])))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if work._git_writes(command[3:]):
+            writes.append((command[3], time.monotonic(), kwargs["timeout"]))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        return probe(command, **kwargs)
+    monkeypatch.setattr(work, "_run_probe", fake_writes)
+
+    def stage_root(state, decision, root, instalment, holder):
+        work._git(["worktree", "add", str(tmp_path / "implementation")], fixture.holder_root)
+        work._git(["push", "origin", "HEAD"], fixture.holder_root)  # The write queued after it.
+        return tmp_path / "implementation", "tradecraft/12-x", False
+    monkeypatch.setattr(work, "_dispatch_root", stage_root)
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("a launcher was started"))
+    capfd.readouterr()
+    called = time.monotonic()
+    code = work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+                      "--holder-session-id", "holder", "--timeout-seconds", str(limit)],
+                     started=called - run_lifecycle.PREFLIGHT_CAP_SECONDS + 20)
+    returned = time.monotonic()
+    out, err = _searched(capfd)
+    assert code == 1 and "the entrance's 900-second cap" in out + err, (out, err)
+    [deadline] = deadlines
+    [(kind, began, bound)] = writes  # The queued write was never begun after the cap.
+    assert kind == "worktree" and began < deadline.cap_end
+    if limit == 1:
+        # Cut where it would outlast the printed return less the reserve: the cap's end plus the limit.
+        assert began + bound == pytest.approx(deadline.cap_end + 1, abs=0.5)
+    else:
+        # At a default limit the write runs to its end, four seconds past the cap, then the run refuses.
+        assert bound == 120 and returned >= deadline.cap_end + 4 - 0.2
+    assert returned < deadline.latest_end
+
+
+NO_LAUNCH_STAGES = ["catch-up", "proof", "ready-reviewers", "release-report"]
+
+
+def _noting(remaining, order, home):
+    """Each bound a read asks for is a read about to start: note what the records home held then."""
+    def noted(self, **kwargs):
+        order.append(sorted(str(path) for path in home.rglob("*.json")))
+        return remaining(self, **kwargs)
+    return noted
+STAGE_WORK = {"catch-up": "_execute_catch_up", "proof": "_execute_proof",
+              "ready-reviewers": "_execute_ready_reviewers"}
+
+
+def _files(*roots):
+    return sorted((str(path), path.stat().st_mtime_ns) for root in roots if Path(root).is_dir()
+                  for path in Path(root).rglob("*") if path.is_file())
+
+
+def _no_launch_run(fixture, stage, *extra, started):
+    return work.main(["run", stage, "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+                      "--holder-session-id", "holder", *extra], started=started)
+
+
+@pytest.mark.parametrize("stage", NO_LAUNCH_STAGES)
+def test_978_no_launch_stages(tmp_path, monkeypatch, capfd, stage):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    writes = []
+    git = work._git
+
+    def watched(command, root):
+        if work._git_writes(command) or command[:1] in (["commit"], ["checkout"], ["reset"], ["update-ref"],
+                                                       ["merge"], ["worktree"]):
+            writes.append(command)
+        return git(command, root)
+    monkeypatch.setattr(work, "_git", watched)
+    transport = work.GitHubREST()
+    store = work.records.default_record_root().expanduser().resolve()
+    before = (_files(fixture.holder_root, store), work.read_registry())
+    capfd.readouterr()
+    # (a) The cap is spent: the stage refuses having written nothing.
+    assert _no_launch_run(fixture, stage, started=time.monotonic() - run_lifecycle.PREFLIGHT_CAP_SECONDS - 1) == 1
+    out, err = _searched(capfd)
+    assert "the entrance's 900-second cap" in out + err
+    assert writes == []
+    assert all(kind in {"GET", "GRAPHQL"} for kind, _value in transport.requests)
+    assert (_files(fixture.holder_root, store), work.read_registry()) == before
+    # (b) Five minutes of reading and deciding: the stage's own work still gets its whole limit.
+    seen = {}
+    opened = work._open_stage_work_window
+
+    def window():
+        opened()
+        deadline = run_lifecycle.current_deadline()
+        seen.update(opened=deadline.window_opened, end=deadline.end, allotted=deadline.allotted,
+                    reserve=deadline.reserve, started=deadline.started)
+        raise work.WorkError("the test stops the stage's own work here")
+    monkeypatch.setattr(work, "_open_stage_work_window", window)
+    _no_launch_run(fixture, stage, started=time.monotonic() - 300)
+    assert seen, _searched(capfd)
+    assert seen["opened"] - seen["started"] >= 300
+    assert seen["end"] - seen["opened"] == pytest.approx(seen["allotted"] + seen["reserve"])
+
+
+@pytest.mark.parametrize("stage", NO_LAUNCH_STAGES)
+@pytest.mark.parametrize("spent, outcome", [(901, "completed"), (1801, "refused-at-cap")])
+def test_978_declared_cap_record_for_each_stage_that_launches_nobody(tmp_path, monkeypatch, capfd, stage,
+                                                                     spent, outcome):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    home = tmp_path / "records-home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    order = []
+    get = Recorder.get
+
+    def first_read(self, endpoint, **kwargs):
+        order.append(sorted(str(path) for path in home.rglob("*.json")))
+        return get(self, endpoint, **kwargs)
+    monkeypatch.setattr(Recorder, "get", first_read)
+    probe = work._run_probe
+
+    def first_probe(command, **kwargs):
+        order.append(sorted(str(path) for path in home.rglob("*.json")))
+        return probe(command, **kwargs)
+    monkeypatch.setattr(work, "_run_probe", first_probe)
+    # A spent cap may refuse before any read starts; the declaration still exists.
+    monkeypatch.setattr(work.lifecycle.Deadline, "remaining", _noting(work.lifecycle.Deadline.remaining, order, home))
+    if stage in STAGE_WORK:
+        monkeypatch.setattr(work, STAGE_WORK[stage], lambda *_a, **_k: 0)
+    _no_launch_run(fixture, stage, "--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository",
+                   started=time.monotonic() - spent)
+    [declared] = list((home / "preflight-caps").rglob("*.json"))
+    record = json.loads(declared.read_bytes())
+    assert record["stage"] == stage and record["called_at"]
+    assert record["preflight_cap"] == {"seconds": 1800, "source": "declared", "reason": "large repository"}
+    assert record["outcome"] == outcome, _searched(capfd)
+    # Written before the run's first read.
+    assert order and order[0] == [str(declared)]
+
+
+def _real_launch(tmp_path, monkeypatch, fixture):
+    """The entrance's launch goes to the real implementer launcher, with a Codex stand-in, in this fixture's store."""
+    home = tmp_path / "launch-home"
+    home.mkdir()
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    scenario = tmp_path / "scenario.json"
+    # The stand-in answers as the session the fixture's builder turns recorded, as a resumed builder does.
+    from version_fixture import BUILDER_SESSION
+    scenario.write_bytes(json.dumps({"codex": {"native_session": BUILDER_SESSION}}).encode())
+    # The build resumes the fixture's own builder, in the root its turns recorded.
+    recorded = [json.loads(path.read_bytes()) for path in fixture.record_root.rglob("*.request.json")]
+    root = Path(next(request["root"] for request in recorded if request.get("root")))
+    branch = next((request["lineage_branch"] for request in recorded if request.get("lineage_branch")), None)
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, branch, False))
+    monkeypatch.setattr(work, "_attached_branch", lambda _root: branch)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a, **_k: [])
+    setting = home / ".tradecraft" / "implementer-vendor"
+    setting.parent.mkdir(parents=True)
+    setting.write_bytes(b"codex")
+    original = work._recipient_run
+    commands = []
+
+    def launch(command, **kwargs):
+        commands.append(command)
+        if Path(command[1]).name != "dispatch_implementer.py":
+            return original(command, **kwargs)
+        output = fixture.record_root / f"launch-{len(commands)}" / "result.md"
+        actual = [sys.executable, str(LIB / "tests" / "fixtures" / "window_launcher.py"), str(scenario),
+                  *command[2:], "--output", str(output)]
+        return original(actual, **kwargs)
+    monkeypatch.setattr(work, "_recipient_run", launch)
+    return commands
+
+
+def _bundles(fixture):
+    """The bundles this test's launches wrote, beside the fixture's own builder turns."""
+    return sorted(fixture.record_root.glob("launch-*/result.md.request.json"))
+
+
+def test_978_declared_cap_through_the_entrance_to_a_real_launcher(tmp_path, monkeypatch, capfd):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    home = tmp_path / "records-home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    commands = _real_launch(tmp_path, monkeypatch, fixture)
+    declared = ["--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository"]
+    capfd.readouterr()
+    # (e) The entrance, past the default cap but inside the declared one, launches.
+    work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+               "--holder-session-id", "holder", *declared], started=time.monotonic() - 901)
+    out, err = _searched(capfd)
+    window = json.loads(out.splitlines()[0].removeprefix("work: window "))
+    assert _bundles(fixture), (commands, [{key: report.get(key) for key in ("stage", "status", "reason", "detail")}
+                                          for report in map(json.loads, (line for line in out.splitlines()
+                                                                         if line.startswith("{")))],
+                               err[-1500:])
+    [request_path] = _bundles(fixture)
+    request = json.loads(request_path.read_bytes())
+    # The entrance passed its declared cap to the launcher, whose record carries it and the same return time.
+    assert "--preflight-cap-seconds" in commands[0]
+    assert request["preflight_cap"] == {"seconds": 1800, "source": "declared", "reason": "large repository"}
+    assert request["latest_return_at"] == window["latest_return_at"]
+    record = json.loads(Path(window["cap_record"]).read_bytes())
+    assert record["outcome"] == "launched"
+    assert record["bundle"] == str(request_path.with_name("result.md.run.json"))
+    # (d) The real launcher's own check at its request write refuses when its cap is nearly spent.
+    capfd.readouterr()
+    work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+               "--holder-session-id", "holder", *declared], started=time.monotonic() - 1797)
+    out, err = _searched(capfd)
+    assert len(_bundles(fixture)) == 1, (out, err)
+    refused = [json.loads(path.read_bytes()) for path in (home / "preflight-caps").rglob("*.json")]
+    assert sorted(row["outcome"] for row in refused) == ["launched", "refused-at-cap"], [
+        {key: report.get(key) for key in ("stage", "status", "reason", "detail")}
+        for report in map(json.loads, (line for line in out.splitlines() if line.startswith("{")))]
+    # (a) A stage that launches nobody completes its work; (b) one past its declared cap refuses there;
+    # (c) a floor with no command holds by decision.
+    monkeypatch.setattr(work, "_execute_proof", lambda *_a, **_k: 0)
+    for stage, spent in (("proof", 901), ("proof", 1801), ("floor", 0)):
+        work.main(["run", stage, "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+                   "--holder-session-id", "holder", *declared], started=time.monotonic() - spent)
+    # (f) A following release report lists every declared cap with its outcome.
+    # This change's own fixture holds before the report for want of a reach reading, so the stage runs on
+    # the release-report harness's change, reading this test's records home.
+    released = tw.state(pr=True)
+    released.pr["mergeable_state"] = "clean"
+    released.record_root = tmp_path / "release-store"
+    released.record_root.mkdir()
+    monkeypatch.setattr(work.records, "default_record_root", lambda: released.record_root)
+
+    class ReleaseTransport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint == f"{BASE}/pulls/7":
+                return released.pr
+            return tw.FakeTransport({}).get(endpoint, paginate=paginate)
+    capfd.readouterr()
+    assert work.execute_stage(released, work.Decision("release-report", False, None, "holder-named-stage"),
+                              tmp_path, None, transport=ReleaseTransport()) == 0
+    out, err = _searched(capfd)
+    reports = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+    assert "declared_caps" in reports[-1], [{key: report.get(key) for key in ("stage", "status", "reason")}
+                                           for report in reports]
+    rows = reports[-1]["declared_caps"]
+    assert sorted((row["stage"], row["outcome"]) for row in rows) == [
+        ("build", "launched"), ("build", "refused-at-cap"), ("floor", "held"),
+        ("proof", "completed"), ("proof", "refused-at-cap")]
+    assert all(row["preflight_cap"]["reason"] == "large repository" for row in rows)

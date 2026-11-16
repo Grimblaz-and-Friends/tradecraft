@@ -9405,6 +9405,13 @@ def _recipient_run(command, *, timeout, cleanup_deadline, on_tick=None):
                                  cleanup_deadline=cleanup_deadline, on_tick=on_tick)
 
 
+def _refused_at_cap(notice):
+    try:
+        return json.loads(Path(notice).read_text(encoding="utf-8")).get("refused_at_cap") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _window_follower(notice, deadline):
     """Follow the launcher's window through its notice, so the wait ends by its recipient's end."""
     # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
@@ -9520,6 +9527,8 @@ def _invoke_recipient(command, deadline):
             # The launcher wrote its bundle; the run's store index reads what changed.
             preflight.refresh()
             _note_launched_split(command, store, launched_after)
+            if _refused_at_cap(notice):
+                _note_cap_outcome("refused-at-cap")
 
 
 def _seat_returned(decision, command, deadline):
