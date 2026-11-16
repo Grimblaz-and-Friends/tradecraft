@@ -478,3 +478,44 @@ def test_978_a_failed_cleanup_after_the_cap_is_reported(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "work: worktree remove after the cap failed:" in err
     assert "work: branch -D after the cap failed:" in err
+
+
+def test_978_a_refusal_at_the_cap_after_a_bundle_keeps_the_noted_outcome_and_bundle(tmp_path, capsys, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    root = tmp_path / "root"
+    root.mkdir()
+    bundle = str(tmp_path / "store" / "build" / "result.md.run.json")
+
+    def unlaunched_then_cap(*_args, **_kwargs):
+        # The launcher wrote its bundle and no attempt spawned; a later read then met the cap's end.
+        work._note_cap_outcome("unlaunched", bundle=bundle)
+        spent = lifecycle.Deadline(60, started=time.monotonic() - 1000, cap=900)
+        raise lifecycle.PreflightCapExceeded(lifecycle.cap_refusal(spent), spent)
+    monkeypatch.setattr(work, "_run", unlaunched_then_cap)
+    code = work.main(["run", "build", "--repo", "owner/repo", "--issue", "7", "--root", str(root),
+                      "--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository"])
+    capsys.readouterr()
+    assert code == 1
+    [row] = work.declared_caps("owner/repo#7", None)
+    # The record still names the bundle, so the report lists the run once, with the refusal.
+    assert row["outcome"] == "unlaunched" and row["bundle"] == bundle
+    assert "preflight cap" in row["error"]
+
+
+def test_978_a_refusal_at_the_cap_with_nothing_noted_is_refused_at_the_cap(tmp_path, capsys, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    root = tmp_path / "root"
+    root.mkdir()
+
+    def cap(*_args, **_kwargs):
+        spent = lifecycle.Deadline(60, started=time.monotonic() - 1000, cap=900)
+        raise lifecycle.PreflightCapExceeded(lifecycle.cap_refusal(spent), spent)
+    monkeypatch.setattr(work, "_run", cap)
+    code = work.main(["run", "build", "--repo", "owner/repo", "--issue", "7", "--root", str(root),
+                      "--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository"])
+    capsys.readouterr()
+    assert code == 1
+    [row] = work.declared_caps("owner/repo#7", None)
+    assert row["outcome"] == "refused-at-cap" and row["bundle"] is None

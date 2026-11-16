@@ -7035,7 +7035,7 @@ def _git_unchecked(command: list[str], root: Path) -> subprocess.CompletedProces
     }
     writes = _git_writes(command)
     # A write that exited 0 stands even when a held pipe cut its output short; a read's output must be whole.
-    # A write before the launch is not cut at the cap's end, only where it would outlast the printed return.
+    # A write before the launch is not cut at the cap's end, only at the printed return less the reserve.
     result = _run_probe(
         ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, env=environment, writes=writes,
@@ -10770,7 +10770,10 @@ def run(
                 else:
                     code = _run(args, transport=transport, executor=executor)
         except lifecycle.PreflightCapExceeded as exc:
-            cap_declaration.outcome(declaration, {"outcome": "refused-at-cap"})
+            # A bundle noted before the refusal keeps its outcome, so its record names it once.
+            noted = _CAP_OUTCOME.get()
+            cap_declaration.outcome(declaration, {**noted, "error": str(exc)} if noted
+                                    else {"outcome": "refused-at-cap"})
             if getattr(exc, "stage", None) is None:
                 exc.stage = args.stage
             raise
