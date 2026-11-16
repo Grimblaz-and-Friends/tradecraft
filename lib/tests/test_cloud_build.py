@@ -1229,3 +1229,103 @@ def test_978_the_sign_in_check_is_bounded_by_what_is_left_of_the_cap(monkeypatch
     with lifecycle.deadline_scope(deadline):
         cloud.Transport().cli(["claude", "auth", "status", "--json"], {})
     assert 0 < seen[0] <= 3
+
+
+def launch_on(machine, transport, deadline, *, stage="build", resume=None, timeout_seconds=600):
+    """`launch` with a run's real deadline and scope, so the window and the split are the launcher's own."""
+    import preflight
+    import run_lifecycle as lifecycle
+    output = machine["records"] / f"{stage}-{len(list(machine['tmp'].glob('**/*.request.json')))}" / "result.md"
+    args = argparse.Namespace(
+        root=machine["root"], output=output, work=f"{REPO}#77", stage=stage, resume=resume,
+        settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
+        retry_of=None, holder_session_id=None, lineage_branch="tradecraft/77-x",
+        lineage_pull_request=None, timeout_seconds=timeout_seconds, artifact_brief_source="brief",
+        artifact_brief=None)
+    with preflight.scope(started=deadline.started), lifecycle.deadline_scope(deadline):
+        code = cloud.run(args, deadline, entry=machine["entry"], route_source="test",
+                         effective_prompt=b"the task\n", prompt=b"the task\n", context=b"", artifact_brief=b"",
+                         metadata={}, composition={"origin": "holder"},
+                         settings_sources={"vendor": "v", "model": "m", "effort": "e"},
+                         validate=lambda expected, returned: {"status": "pass"}, transport=transport,
+                         record_root=machine["records"], plugin=machine["plugin"],
+                         install_path=machine["install"], preset_failure=None)
+    return code, output
+
+
+def bundle_of(output):
+    return (json.loads((output.parent / "result.md.request.json").read_text()),
+            json.loads((output.parent / "result.md.run.json").read_text()))
+
+
+@pytest.mark.parametrize("route", ["fresh", "follow-up"])
+def test_978_cloud_routes_get_the_whole_limit(machine, monkeypatch, route):
+    import run_lifecycle as lifecycle
+    if route == "follow-up":
+        launch(machine, Fake())
+    fake = Fake()
+    events = []
+    fire, cli = fake.fire, fake.cli
+    fake.fire = lambda *a: events.append("send") or fire(*a)
+    fake.cli = lambda argv, env: (events.append("send") if "--cloud" in argv else None) or cli(argv, env)
+    # Ten minutes were spent before the launcher ran.
+    deadline = lifecycle.stage_deadline("build", 600, started=lifecycle.time.monotonic() - 600)
+    waits = []
+    original = deadline.remaining
+
+    def remaining(**kwargs):
+        value = original(**kwargs)
+        if deadline.in_window:
+            waits.append(value)
+        return value
+    monkeypatch.setattr(deadline, "remaining", remaining)
+    opened = deadline.open_window
+    monkeypatch.setattr(deadline, "open_window", lambda at=None: events.append("window") or opened(at))
+    launch_on(machine, fake, deadline, stage="build" if route == "fresh" else "floor",
+              resume=None if route == "fresh" else "cse_ABC123")
+    # The recipient starts at the send, so the window opens first; its first wait is the whole limit.
+    assert events[:2] == ["window", "send"]
+    assert waits and waits[0] >= 599
+    if route == "follow-up":
+        output = sorted(machine["records"].rglob("result.md.request.json"))[-1]
+        request = json.loads(output.read_text())
+        run = json.loads(output.with_name("result.md.run.json").read_text())
+        assert request["preflight"]["until"] == "request-record"
+        assert run["attempts"][0]["pre_spawn_seconds"] == 0.0
+
+
+def test_978_a_slow_report_branch_write_reaching_the_cap_leaves_no_bundle(machine):
+    import run_lifecycle as lifecycle
+    fake = Fake()
+    github = fake.github
+
+    def slow(method, path, body=None):
+        if method == "POST" and path.endswith("/git/commits"):
+            lifecycle.time.sleep(3)  # The report branch's dispatch commit outlives what is left of the cap.
+        return github(method, path, body)
+    fake.github = slow
+    deadline = lifecycle.stage_deadline("build", 600, started=lifecycle.time.monotonic() - 898)
+    with pytest.raises(lifecycle.PreflightCapExceeded):
+        launch_on(machine, fake, deadline)
+    assert fake.fired == []
+    assert any("tradecraft-report-77-build" in path for path in fake.deleted)
+    assert not list(machine["records"].rglob("*.request.json"))
+
+
+def test_978_the_sign_in_check_counts_as_the_vendor(machine):
+    import run_lifecycle as lifecycle
+    launch(machine, Fake())
+    fake = Fake()
+    cli = fake.cli
+
+    def slow_sign_in(argv, env):
+        if argv[1:3] == ["auth", "status"]:
+            lifecycle.time.sleep(2)
+        return cli(argv, env)
+    fake.cli = slow_sign_in
+    deadline = lifecycle.stage_deadline("floor", 600)
+    _code, output = launch_on(machine, fake, deadline, stage="floor", resume="cse_ABC123")
+    request = json.loads(sorted(machine["records"].rglob("result.md.request.json"))[-1].read_text())
+    parts = request["preflight"]["parts"]
+    assert parts["vendor_seconds"] >= 2
+    assert all(value < 1 for name, value in parts.items() if name != "vendor_seconds")

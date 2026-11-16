@@ -20,8 +20,6 @@ from fixtures.frozen_tree import FrozenTree, frozen_tree
 LIB = Path(__file__).resolve().parents[1]
 # The time from the call to the recipient's spawn in these fixtures, well under this on any machine.
 SPAWN_SLACK_SECONDS = 15
-# The cap left at a late launch's call: a compared seat's two attempts need 165 seconds after its write.
-LATE_START_CAP_LEFT_SECONDS = 190
 
 
 def exit_clock():
@@ -385,6 +383,24 @@ def test_frozen_parent_cannot_exit_after_its_child_is_terminated(tmp_path, monke
         process.communicate(timeout=5)
 
 
+def _late_start_measures(output, saved, kind, elapsed, caller_limit, reserve):
+    """Where a launch's request write and its recipient's stop fell, from its own records."""
+    request = json.loads(Path(str(output) + ".request.json").read_bytes())
+    to_write = request["preflight"]["total_seconds"]
+    if kind == "implementer":
+        compared = bool(((request.get("write_bound") or {}).get("comparison") or {}).get("coverage"))
+        allowance = (120 if compared else 0) + lifecycle.SPAWN_MARGIN_SECONDS
+    else:
+        # Two uncompared attempts: each a version read, then the margin.
+        allowance = 2 * 20 + lifecycle.SPAWN_MARGIN_SECONDS
+    attempt = saved["attempts"][0]
+    # The recipient is stopped at its start plus its whole limit, and stopping and recording fit the reserve.
+    assert abs(attempt["elapsed_seconds"] - caller_limit) <= 1.5, attempt["elapsed_seconds"]
+    stop_to_exit = elapsed - (to_write + attempt["pre_spawn_seconds"]) - attempt["elapsed_seconds"]
+    assert stop_to_exit <= reserve, stop_to_exit
+    return {"to_write": to_write, "allowance": allowance, "stop_to_exit": stop_to_exit}
+
+
 def git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], check=True,
                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -394,10 +410,17 @@ def git(root, *args):
 @pytest.mark.parametrize("kind", ["implementer", "seat"])
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
 @pytest.mark.parametrize("termination", ["hard-kill", "ceiling", "ceiling-slow-final-probe", "ceiling-late-start"])
-def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatch, record_property, kind, vendor, termination):
-    late = termination == "ceiling-late-start"
-    if late and (kind, vendor) not in {("implementer", "claude"), ("seat", "codex")}:
+def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatch, record_property, kind, vendor,
+                                                            termination, _calibrate=False):
+    late = termination == "ceiling-late-start" and not _calibrate
+    if termination == "ceiling-late-start" and (kind, vendor) not in {("implementer", "claude"), ("seat", "codex")}:
         pytest.skip("the late start runs once per launcher, on its compared route")
+    calibration = None
+    if late:
+        # The same launch started now measures the time from the call to its request write.
+        (tmp_path / "calibration").mkdir()
+        calibration = test_hard_killed_real_launcher_keeps_session_and_output(
+            tmp_path / "calibration", monkeypatch, lambda *_a: None, kind, vendor, termination, _calibrate=True)
     root = tmp_path / "tree"
     root.mkdir()
     git(root, "init")
@@ -456,8 +479,8 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     measured_exit = exit_clock()
     launched_at = started = time.monotonic()
     if late:
-        # The entrance has used its cap up to a little more than this launch needs at its request write.
-        started -= lifecycle.PREFLIGHT_CAP_SECONDS - LATE_START_CAP_LEFT_SECONDS
+        # The entrance has used its cap up to three seconds more than this launch needs at its write.
+        started -= lifecycle.PREFLIGHT_CAP_SECONDS - calibration["allowance"] - 3 - calibration["to_write"]
     command.extend(["--invocation-started-monotonic", str(started)])
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
@@ -539,6 +562,16 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
         assert all(lifecycle.liveness({"launcher_process": identity}) == "stopped" for identity in identities), [
             (identity, lifecycle.liveness({"launcher_process": identity})) for identity in identities]
         assert lifecycle.liveness(saved) == "stopped"
+        if termination == "ceiling-late-start":
+            measured = _late_start_measures(output, saved, kind, elapsed, caller_limit, reserve)
+            record_property("seconds_before_the_printed_return", bound - elapsed)
+            if _calibrate:
+                return measured
+            # The write landed within the five seconds before the last moment the cap admits.
+            cap_left = started + lifecycle.PREFLIGHT_CAP_SECONDS - (launched_at + measured["to_write"])
+            assert measured["allowance"] < cap_left <= measured["allowance"] + 5, (cap_left, measured)
+            # Stopping and recording take the same time however much of its cap the entrance used.
+            assert abs(measured["stop_to_exit"] - calibration["stop_to_exit"]) < 1, (measured, calibration)
         if kind == "implementer":
             # The stopped launch's comparison holds the change until the holder
             # accounts for it (#906); a hard kill leaves none (`unrecorded`).

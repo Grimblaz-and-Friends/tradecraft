@@ -22,6 +22,19 @@ def started_back(seconds):
     return time.monotonic() - seconds
 
 
+def latest_return(args):
+    """The printed latest return on this clock: the call, the cap, the whole limit and the reserve."""
+    started = getattr(args, "invocation_started_monotonic", None)
+    reserve = min(60, max(10, args.timeout_seconds / 10))
+    return started + lifecycle.PREFLIGHT_CAP_SECONDS + args.timeout_seconds + reserve
+
+
+def allowance_of(args):
+    """The cap a two-vendor seat needs at its request write: each attempt's steps and the margin."""
+    return sum(seat._steps_before_spawn(args, vendor, None) for vendor in (args.vendor, args.own_vendor)) + (
+        lifecycle.SPAWN_MARGIN_SECONDS)
+
+
 @pytest.mark.parametrize("vendor, own", [("claude", "codex"), ("codex", "claude")])
 def test_978_seat_notice_states_the_limit(job, vendor, own):
     args, _ = job
@@ -60,7 +73,9 @@ def test_978_unlaunched_attempt(job, monkeypatch):
             raise FileNotFoundError("the claude executable disappeared")
         return real(command, **kwargs)
     monkeypatch.setattr(seat, "run_process", gone)
+    args.invocation_started_monotonic = time.monotonic()
     seat.run_dispatch(args)
+    assert time.monotonic() < latest_return(args)
     first, second = record(args)["attempts"]
     # Nothing started, so the first attempt names no spawn and the window was withdrawn before the next.
     assert first["vendor"] == "claude" and first["launched"] is False
@@ -74,11 +89,11 @@ def test_978_unlaunched_attempt(job, monkeypatch):
 def test_978_a_fallback_after_a_spawned_primary_gets_the_whole_limit(job, monkeypatch):
     args, scenario = job
     args.timeout_seconds = 600
-    configure(job, {"claude": {"message": "Not logged in", "sleep": 1}})
-    monkeypatch.setattr(seat, "_steps_before_spawn", lambda *_a: 1)
-    # Thirty seconds of the cap are left, more than the fallback's steps when the primary returns.
-    args.invocation_started_monotonic = started_back(lifecycle.PREFLIGHT_CAP_SECONDS - 30)
+    configure(job, {"claude": {"message": "Not logged in", "sleep": 3}})
+    # The cap ends about a minute after the primary returns, so the fallback's steps fit.
+    args.invocation_started_monotonic = started_back(lifecycle.PREFLIGHT_CAP_SECONDS - allowance_of(args) - 65)
     seat.run_dispatch(args)
+    assert time.monotonic() < latest_return(args)
     first, second = record(args)["attempts"]
     assert first["launched"] and first["outcome"] == "unavailable"
     assert second["vendor"] == "codex" and second["launched"]
@@ -88,11 +103,12 @@ def test_978_a_fallback_after_a_spawned_primary_gets_the_whole_limit(job, monkey
 def test_978_a_fallback_whose_turn_comes_after_the_cap_is_not_started(job, monkeypatch):
     args, scenario = job
     args.timeout_seconds = 600
-    configure(job, {"claude": {"message": "Not logged in", "sleep": 4}})
-    monkeypatch.setattr(seat, "_steps_before_spawn", lambda *_a: 1)
-    # The cap ends while the primary runs.
-    args.invocation_started_monotonic = started_back(lifecycle.PREFLIGHT_CAP_SECONDS - 9)
+    allowance = allowance_of(args)
+    # The cap admits the request write and then ends while the primary runs.
+    configure(job, {"claude": {"message": "Not logged in", "sleep": allowance + 5}})
+    args.invocation_started_monotonic = started_back(lifecycle.PREFLIGHT_CAP_SECONDS - allowance - 3)
     seat.run_dispatch(args)
+    assert time.monotonic() < latest_return(args)
     first, second = record(args)["attempts"]
     assert first["launched"]
     assert second["vendor"] == "codex" and not second["launched"]
@@ -126,3 +142,40 @@ def test_978_late_fallback_leaves_no_bundle(job, monkeypatch):
         seat.run_dispatch(args)
     assert not output.parent.exists() or not any(output.parent.iterdir())
     assert not list(args.root.glob("seen-*.json"))
+
+
+def _entrance_line(args, launched_after):
+    import work
+    command = ["--work", args.work, "--stage", args.stage, "--output", str(args.output)]
+    return work._launched_split(command, None, launched_after)
+
+
+@pytest.mark.parametrize("fallback", [True, False])
+def test_978_the_entrance_line_names_the_spawned_attempt(job, monkeypatch, fallback):
+    import preflight
+    from datetime import datetime, timezone
+    args, _ = job
+    if not fallback:
+        args.own_vendor = "claude"
+    real = seat.run_process
+
+    def gone(command, **kwargs):
+        if "claude" in command:
+            raise FileNotFoundError("the claude executable disappeared")
+        return real(command, **kwargs)
+    monkeypatch.setattr(seat, "run_process", gone)
+    launched_after = datetime.now(timezone.utc).isoformat()
+    with preflight.scope():
+        seat.run_dispatch(args)
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    attempts = record(args)["attempts"]
+    line = _entrance_line(args, launched_after)
+    if fallback:
+        spawned = attempts[1]
+        assert line["until"] == "spawn"
+        assert line == preflight.combine(request["preflight"], spawned["pre_spawn_seconds"],
+                                         spawned["pre_spawn_parts"])
+    else:
+        # Nothing spawned: the line ends at the request record, never at a spawn.
+        assert [attempt["launched"] for attempt in attempts] == [False]
+        assert line["until"] == "request-record"
