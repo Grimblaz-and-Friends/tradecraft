@@ -803,6 +803,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                         seconds = 0
                                     comparison.take_before(seconds)
                                 deadline.open_window()
+                                if deadline.window_opened_late_seconds is not None:
+                                    record["window_opened_late_seconds"] = deadline.window_opened_late_seconds
                                 lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
                                 allocation = deadline.remaining()
                                 attempt["allocation_seconds"] = allocation

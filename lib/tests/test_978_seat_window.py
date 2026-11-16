@@ -179,3 +179,34 @@ def test_978_the_entrance_line_names_the_spawned_attempt(job, monkeypatch, fallb
         # Nothing spawned: the line ends at the request record, never at a spawn.
         assert [attempt["launched"] for attempt in attempts] == [False]
         assert line["until"] == "request-record"
+
+
+def test_978_late_fallback_after_an_unspawned_primary_still_spawns_by_the_cap(job, monkeypatch):
+    args, _ = job
+    allowance = allowance_of(args)
+    version = seat.records.runtime_version
+    real = seat.run_process
+    opened = []
+
+    def slow_version(command, *rest, **kwargs):
+        if "claude" in command:
+            time.sleep(15)  # The primary's version read is slow, and then its executable is gone.
+        return version(command, *rest, **kwargs)
+
+    def gone(command, **kwargs):
+        if "claude" in command:
+            raise FileNotFoundError("the claude executable removed itself")
+        opened.append(lifecycle.current_deadline().window_opened)
+        return real(command, **kwargs)
+    monkeypatch.setattr(seat.records, "runtime_version", slow_version)
+    monkeypatch.setattr(seat, "run_process", gone)
+    # Three seconds more of the cap are left at the request write than both attempts' steps need.
+    args.invocation_started_monotonic = started_back(lifecycle.PREFLIGHT_CAP_SECONDS - allowance - 3)
+    cap_end = args.invocation_started_monotonic + lifecycle.PREFLIGHT_CAP_SECONDS
+    seat.run_dispatch(args)
+    logged = record(args)
+    first, second = logged["attempts"]
+    assert first["launched"] is False and second["launched"]
+    assert "window_opened_late_seconds" not in logged
+    assert opened and opened[0] <= cap_end
+    assert not any("cap" in str(attempt.get("reason", "")) for attempt in logged["attempts"])

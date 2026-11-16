@@ -941,6 +941,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                             args.handover_state, args.session_id or args.resume, "running"
                         )
                     deadline.open_window()
+                    if deadline.window_opened_late_seconds is not None:
+                        record["window_opened_late_seconds"] = deadline.window_opened_late_seconds
                     lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation

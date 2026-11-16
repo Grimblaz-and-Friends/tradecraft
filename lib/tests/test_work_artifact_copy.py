@@ -1030,3 +1030,36 @@ def test_cloud_author_is_revised_in_its_own_session_through_the_entrance(entranc
     assert argv[3:5] == ["--cloud", "cse_ABC123"] and f"checkout: commit {current}" in argv[2]
     assert revised_run["outcome"] == "success"
     assert_cloud_task(fake.dispatch.decode("utf-8"))
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_978_slow_copy_refuses_at_the_cap(entrance, monkeypatch, capsys, declared):
+    import preflight
+    import time
+    holder, store, commands, setup = entrance
+    args, _capture, _dispatch = setup("codex")
+    if declared:
+        args.preflight_cap_seconds, args.preflight_cap_reason = 1800.0, "large repository"
+        monkeypatch.setattr(work, "_records_home", lambda _state: holder.parent / "records-home")
+    git = trees.git
+    delayed = []
+
+    def slow_copy(root, *arguments, **kwargs):
+        if not delayed and "clone" in arguments:
+            delayed.append(True)
+            time.sleep(4)  # The copy's creation takes four seconds in the entrance's own process.
+        return git(root, *arguments, **kwargs)
+    monkeypatch.setattr(trees, "git", slow_copy)
+    # Three seconds of the default cap are left when the entrance is called.
+    with preflight.scope(started=time.monotonic() - lifecycle.PREFLIGHT_CAP_SECONDS + 3):
+        if not declared:
+            with pytest.raises(lifecycle.PreflightCapExceeded, match="the entrance's 900-second cap"):
+                work.run(args, transport=ArtifactTransport())
+            assert delayed and commands == []  # The slow copy reached the cap; no launcher was started.
+            return
+        work.run(args, transport=ArtifactTransport())
+    # With a larger cap declared, the same copy launches, and the cap reaches the launcher's record.
+    assert delayed and len(commands) == 1
+    assert "--preflight-cap-seconds" in commands[0] and "--preflight-cap-reason" in commands[0]
+    [(_order, _path, request, _run)] = bundles(store)
+    assert request["preflight_cap"] == {"seconds": 1800, "source": "declared", "reason": "large repository"}
