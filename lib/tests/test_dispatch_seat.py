@@ -1355,8 +1355,10 @@ def test_timeout_stops_a_started_descendant(job, monkeypatch, record_property):
 def test_caller_limit_with_no_launch_window_starts_no_seat(job, monkeypatch, limit):
     args, _ = job
     args.timeout_seconds = limit
+    # The limit is the recipient's whole time; a launch is refused only once the entrance's cap is spent.
+    args.invocation_started_monotonic = seat.time.monotonic() - 901
     monkeypatch.setattr(seat, "run_process", lambda *_a, **_k: pytest.fail("launched without a useful window"))
-    with pytest.raises(seat.DispatchError, match="no useful launch window"):
+    with pytest.raises(seat.DispatchError, match="900-second cap"):
         seat.run_dispatch(args)
     assert not args.output.exists()
     assert not list(args.root.glob("seen-*.json"))
@@ -1835,7 +1837,7 @@ def test_906_ac10_only_a_claude_use_consumer_given_a_shell_is_compared(
         "switch", "registry", "dispatch-records", "own-request"}
 
 
-def test_906_a_slow_before_snapshot_comes_out_of_the_use_consumers_window(job, tmp_path, monkeypatch):
+def test_906_a_slow_before_snapshot_comes_out_of_the_cap_not_the_use_consumers_window(job, tmp_path, monkeypatch):
     args, _ = job
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     args.stage, args.requires, args.classification = "use", "execute", "cold"
@@ -1850,7 +1852,8 @@ def test_906_a_slow_before_snapshot_comes_out_of_the_use_consumers_window(job, t
     request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
     logged = record(args)
     claude = [attempt for attempt in logged["attempts"] if attempt["vendor"] == "claude"][0]
-    assert claude["allocation_seconds"] <= request["recipient_allocation_seconds"] - 1.5
+    # The before-snapshot is taken before the recipient starts, so the consumer keeps its whole limit.
+    assert claude["allocation_seconds"] >= request["recipient_allocation_seconds"] - 1
     # The after-snapshot still had its cleanup window.
     comparison = logged["launch_comparison"]
     assert comparison["status"] == "clean", json.dumps(

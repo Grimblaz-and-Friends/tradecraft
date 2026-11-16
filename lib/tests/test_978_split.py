@@ -194,7 +194,7 @@ def test_978_refusal_split(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(work, "_run", refuse)
     assert work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(root)]) == 1
     captured = capsys.readouterr()
-    reported = json.loads(captured.out)
+    reported = json.loads([line for line in captured.out.splitlines() if line.startswith("{")][-1])
     assert reported["status"] == "refused" and reported["reason"] == "fixture refusal"
     assert_sums(reported["preflight"])
     printed = split_lines(captured.err)
@@ -206,7 +206,8 @@ def test_978_refusal_split(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(work, "_run", plain)
     assert work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(root)]) == 1
     captured = capsys.readouterr()
-    assert captured.out == ""
+    # Only the stage's first line, its latest return time, precedes a refusal without a report.
+    assert [line.split(" ", 2)[1] for line in captured.out.splitlines()] == ["window"]
     printed = split_lines(captured.err)
     assert len(printed) == 1
     assert_sums(printed[0])

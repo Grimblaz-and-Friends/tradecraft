@@ -999,6 +999,7 @@ def _three_turns(repo):
 def test_978_time_running_out_mid_measure_says_so(repo):
     base, second, rows = _three_turns(repo)
     deadline = lifecycle.stage_deadline("proof", 3600, declared=True)
+    deadline.open_window()  # The proof stage's own work, where its limit is counted.
     calls = []
 
     def run(args, path):
@@ -1053,7 +1054,8 @@ def test_978_a_read_names_its_own_bound_until_the_run_limit_is_spent():
     assert reach.limit_reached(stopped) == "this read's own 120-second bound"
     with lifecycle.deadline_scope(lifecycle.stage_deadline("proof", 3600, declared=True)):
         assert reach.limit_reached(stopped) == "this read's own 120-second bound"
-    spent = lifecycle.stage_deadline("proof", 60, started=time.monotonic() - 61, declared=True)
+    spent = lifecycle.stage_deadline("proof", 60, declared=True)
+    spent.open_window(time.monotonic() - 61)
     with lifecycle.deadline_scope(spent):
-        assert reach.limit_reached(stopped) == "the 60-second limit (declared by --timeout-seconds)"
+        assert reach.limit_reached(stopped).startswith("the 60-second limit (declared by --timeout-seconds)")
         assert reach._timed_out(stopped).limit == reach.limit_reached(stopped)

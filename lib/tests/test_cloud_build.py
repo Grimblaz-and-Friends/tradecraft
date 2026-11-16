@@ -19,8 +19,15 @@ TOKEN = "sk-ant-PLANTED-token-value-0123456789"
 
 
 class Deadline:
-    def __init__(self, polls=5):
-        self.polls = polls
+    def __init__(self, polls=5, allotted=600.0):
+        self.polls, self.allotted = polls, allotted
+        self.opened = False
+
+    def require_cap(self, seconds=0):
+        pass
+
+    def open_window(self, at=None):
+        self.opened = True
 
     def remaining(self, **_):
         self.polls -= 1
@@ -177,7 +184,7 @@ def launch(machine, transport, *, stage="build", resume=None, brief=b"", copy=No
         retry_of=None, holder_session_id=None, lineage_branch=None if stage == "artifact" else "tradecraft/77-x",
         lineage_pull_request=None, timeout_seconds=timeout_seconds, artifact_brief_source="brief",
         artifact_brief=None)
-    code = cloud.run(args, Deadline(polls), entry=machine["entry"] if entry else None, route_source="test",
+    code = cloud.run(args, Deadline(polls, args.timeout_seconds), entry=machine["entry"] if entry else None, route_source="test",
                      effective_prompt=b"the task\n", prompt=b"the task\n", context=b"",
                      artifact_brief=brief, metadata={"artifact_copy": copy} if copy else {},
                      composition={"origin": "holder"}, settings_sources={"vendor": "v", "model": "m", "effort": "e"},
