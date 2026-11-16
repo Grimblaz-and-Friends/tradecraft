@@ -113,12 +113,14 @@ def git(root, *args, trust=(), lazy_fetch=False, writes=False):
         error = ArtifactTreeError(f"artifact Git {args[0] if args else 'probe'} failed at {root}: {exc}")
         error.cleanup_proven = getattr(exc, "cleanup_proven", True)
         raise error from exc
-    if writes:
-        lifecycle.after_write()
+    # An unproved cleanup is reported before the cap, so no caller disposes of a copy that a write's
+    # descendants may still be changing.
     if getattr(result, "cleanup_proven", True) is False:
         error = ArtifactTreeError("artifact Git process cleanup is unproved")
         error.cleanup_proven = False
         raise error
+    if writes:
+        lifecycle.after_write()
     if result.returncode:
         raise GitCommandError(result.stderr.decode("utf-8", "backslashreplace").strip(), result.returncode)
     return result.stdout.decode("utf-8").strip()

@@ -23,6 +23,8 @@ def refusal_split(stderr):
     raise AssertionError(f"no refusal line in: {stderr!r}")
 
 
+@pytest.mark.skipif(os.name != "nt" and not sys.platform.startswith("linux"),
+                    reason="the creation time is read only on Windows and Linux")
 def test_978_clock_starts_at_the_call(tmp_path):
     site = tmp_path / "site"
     site.mkdir()

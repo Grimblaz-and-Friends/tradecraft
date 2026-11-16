@@ -206,7 +206,7 @@ Before anything is built or launched:
 
 **Why.**
 
-- Counting the limit from the call took the entrance's own time out of the recipient's, unseen. Counting the recipient's time from its start gives it what was declared, and a separate cap turns a slow entrance into a refusal with its split rather than a short build.
+- A limit counted from the call would take the entrance's own time out of the recipient's, unseen. Counting the recipient's time from its start gives it what was declared, and a separate cap turns a slow entrance into a refusal with its split rather than a short build.
 - The printed return time is fixed at the call, so the run still ends itself before its caller can know it ran over: the caller plans from that line, and the run returns, its record written, before it.
 - A write in flight is not cut at the cap's end, because a half-made worktree, copy or push is worse than a refusal a little late; none begins after the cap, and each is bounded by the printed return so the run still ends in time.
 - Every recipient a stage starts, a fallback included, gets its whole limit, so the only recipients given less are the closed list of exceptions: a build held to its remaining budget and a repair held to its ceiling.

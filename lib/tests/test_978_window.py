@@ -387,3 +387,61 @@ def test_978_a_notice_change_that_keeps_its_time_is_still_followed(tmp_path, mon
     lifecycle.write_launch_notice(notice, opened)
     os.utime(notice, ns=(stamp, stamp))
     assert follow()[0] == 1003 + 6 + deadline.reserve - deadline.reserve / 4
+
+
+def test_978_an_unproved_copy_write_after_the_cap_reports_its_cleanup(monkeypatch):
+    import artifact_tree as trees
+
+    def write_outlasting_the_cap(command, **kwargs):
+        time.sleep(1.5)  # The write runs past the cap's end and its cleanup is not proved.
+        result = subprocess.CompletedProcess(command, 0, b"", b"")
+        result.cleanup_proven = False
+        return result
+    monkeypatch.setattr(trees, "run_read", write_outlasting_the_cap)
+    deadline = lifecycle.stage_deadline("artifact", 600, started=time.monotonic() - 899)
+    with lifecycle.deadline_scope(deadline), pytest.raises(trees.ArtifactTreeError) as raised:
+        trees.git(Path("."), "checkout", "main", writes=True)
+    # The caller learns the copy may still be changing, not only that the cap ended.
+    assert raised.value.cleanup_proven is False
+
+
+def _bundle_launched(store, launched, *, name="result.md"):
+    """A declared-cap build bundle in `store`, its one attempt's `launched` set as given."""
+    import test_work as tw
+    tw.dispatch_bundle(store, name=name, launched=True, launched_at="2026-11-16T12:00:00+00:00")
+    request_path = store / "build" / f"{name}.request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["preflight"] = {"until": "request-record", "total_seconds": 1.0, "parts": {}}
+    request["preflight_cap"] = {"seconds": 1800.0, "source": "declared", "reason": "large repository"}
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    run_path = store / "build" / f"{name}.run.json"
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    for attempt in run["attempts"]:
+        attempt["launched"] = launched
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+    return run_path
+
+
+@pytest.mark.parametrize("launched, outcome", [(True, "launched"), (False, "unlaunched"), (None, "unresolved")])
+def test_978_a_request_records_declared_cap_names_what_its_run_proves(tmp_path, monkeypatch, launched, outcome):
+    monkeypatch.setattr(work, "_records_home", lambda _state: tmp_path / "home")
+    store = tmp_path / "store"
+    _bundle_launched(store, launched)
+    rows = work.declared_caps("example/product#12", store)
+    # A bundle is written before any attempt spawns, so it alone proves no launch.
+    assert [row["outcome"] for row in rows] == [outcome]
+
+
+@pytest.mark.parametrize("launched, outcome", [(True, "launched"), (False, "unlaunched"), (None, "unresolved")])
+def test_978_the_entrance_notes_what_its_launchers_bundle_proves(tmp_path, launched, outcome):
+    store = tmp_path / "store"
+    run_path = _bundle_launched(store, launched)
+    command = ["python", "dispatch_implementer.py", "--work", "example/product#12", "--stage", "build",
+               "--output", str(store / "build" / "result.md")]
+    token = work._CAP_OUTCOME.set(None)
+    try:
+        work._launched_split(command, None, "2026-11-16T11:00:00+00:00")
+        noted = work._CAP_OUTCOME.get()
+    finally:
+        work._CAP_OUTCOME.reset(token)
+    assert noted["outcome"] == outcome and os.path.normcase(str(noted["bundle"])) == os.path.normcase(str(run_path))

@@ -6478,10 +6478,12 @@ def create_implementation_root(holder_root: Path, repo: str, issue: int,
     target = holder / ".claude" / "worktrees" / f"issue-{issue}-{suffix}"
     _ensure_implementation_parent_ignored(holder)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # The cap is checked after the add here, so a refusal removes only a worktree and branch this add made.
+    added = _git_unchecked(["worktree", "add", "-b", branch, str(target), "HEAD"], holder)
+    if added.returncode:
+        raise WorkError(f"cannot create implementation worktree: {_git_failure(added)}")
     try:
-        added = _git(["worktree", "add", "-b", branch, str(target), "HEAD"], holder)
-        if added.returncode:
-            raise WorkError(f"cannot create implementation worktree: {_git_failure(added)}")
+        lifecycle.after_write()
         implementation_root, attached_branch = _validate_implementation_row({
             "root": str(target), "holder_root": str(holder), "branch": branch,
         }, holder)
@@ -7011,6 +7013,14 @@ def _git_writes(command: list[str]) -> bool:
 
 
 def _git(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
+    result = _git_unchecked(command, root)
+    if _git_writes(command):
+        lifecycle.after_write()
+    return result
+
+
+def _git_unchecked(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
+    """A Git command without the cap's check after a write, for a caller that checks it itself."""
     environment = {
         key: value for key, value in os.environ.items()
         if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
@@ -7023,8 +7033,6 @@ def _git(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
         stderr=subprocess.PIPE, env=environment, writes=writes,
         timeout=lifecycle.write_timeout(120) if writes else lifecycle.probe_timeout(120),
     )
-    if writes:
-        lifecycle.after_write()
     return result
 
 
@@ -9484,7 +9492,7 @@ def _launched_split(command, store, launched_after):
         split = request.get("preflight")
         if not isinstance(split, dict) or split.get("until") != "request-record":
             continue
-        _note_cap_outcome("launched", bundle=run_path)
+        _note_cap_outcome(_bundle_outcome(run), bundle=run_path)
         attempts = run.get("attempts")
         for attempt in attempts if isinstance(attempts, list) else []:
             # Only an attempt that spawned, or whose spawn is unresolved, names the spawn line.
@@ -9494,6 +9502,18 @@ def _launched_split(command, store, launched_after):
         # No recipient was spawned: the split ends at the request record.
         return split
     return None
+
+
+def _bundle_outcome(run) -> str:
+    """What a bundle proves of its launch, since a bundle is written before any attempt spawns."""
+    attempts = run.get("attempts") if isinstance(run, dict) else None
+    launched = [attempt.get("launched") for attempt in attempts or [] if isinstance(attempt, dict)]
+    if True in launched:
+        return "launched"
+    # An attempt whose spawn is unknown, or a run stopped before it recorded any, may have started one.
+    if None in launched or not launched and not (isinstance(run, dict) and run.get("completed_at")):
+        return "unresolved"
+    return "unlaunched"
 
 
 def _note_launched_split(command, store, launched_after):
@@ -10805,7 +10825,8 @@ def declared_caps(work: str, store: Path | None) -> list[dict]:
             if isinstance(cap, dict) and cap.get("source") == "declared" and same(run_path) not in seen:
                 rows.append({"record": str(run_path), "stage": request.get("stage"),
                              "called_at": request.get("launched_at"), "preflight_cap": cap,
-                             "outcome": "launched", "bundle": str(run_path), "reason_code": None, "error": None})
+                             "outcome": _bundle_outcome(_run_record), "bundle": str(run_path),
+                             "reason_code": None, "error": None})
     return rows
 
 

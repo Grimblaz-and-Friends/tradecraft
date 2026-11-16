@@ -1141,3 +1141,33 @@ def test_978_a_worktree_add_that_outlasts_the_cap_leaves_no_orphan(tmp_path, mon
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
     assert branches.strip() == ""
     assert not list((holder / ".claude" / "worktrees").glob("issue-12-*"))
+
+
+@pytest.mark.parametrize("when", ["before the add", "a failed add"])
+def test_978_a_refusal_removes_nothing_the_add_did_not_make(tmp_path, monkeypatch, when):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tw.repository(tmp_path, "holder")
+    # Another run's branch already carries the name this run would choose.
+    monkeypatch.setattr(work.secrets, "token_hex", lambda _n: "0123456789ab")
+    tw.git(holder, "branch", "tradecraft/12-0123456789ab")
+    probe = work._run_probe
+
+    def slow_add(command, **kwargs):
+        result = probe(command, **kwargs)
+        if command[3:5] == ["worktree", "add"]:
+            time.sleep(3)  # The add fails on the existing branch, and the cap ends meanwhile.
+        return result
+    monkeypatch.setattr(work, "_run_probe", slow_add)
+    if when == "before the add":
+        prepare = work._ensure_implementation_parent_ignored
+        # The cap ends after the holder's reads and before the add begins.
+        monkeypatch.setattr(work, "_ensure_implementation_parent_ignored",
+                            lambda root: (prepare(root), time.sleep(3))[0])
+    deadline = run_lifecycle.stage_deadline("build", 600, started=time.monotonic() - 898)
+    with run_lifecycle.deadline_scope(deadline), pytest.raises((run_lifecycle.PreflightCapExceeded, work.WorkError)):
+        work.create_implementation_root(holder, "example/product", 12, None, "holder-session")
+    branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert "tradecraft/12-0123456789ab" in branches

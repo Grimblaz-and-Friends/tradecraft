@@ -571,8 +571,9 @@ class Transport:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", "replace")
 
-    # The vendor command keeps its own route, the sign-in check's included: it is the recipient's
-    # start, not the entrance's work. Before the send its bound is what is left of the cap.
+    # The vendor command keeps its own route, the sign-in check's included, because the send is the
+    # recipient's start. A call before the send, the sign-in check among them, is the entrance's work,
+    # so its bound is what is left of the cap.
     def cli(self, argv: list[str], env: dict) -> tuple[int, bytes]:
         try:
             result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
@@ -984,6 +985,8 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                                 "follow_up": follow_up}
     request["cloud"] = cloud
     failure, refused, token, env = None, False, None, None
+    # A follow-up's split ends at its send, so nothing lies between them; a fire's ends at its in-flight write.
+    pre_spawn = (0.0, preflight.render("spawn", 0.0, {}, {})["parts"])
     copy = metadata.get("artifact_copy") or {}
     # The bundle's files are reserved before anything fires, so a run never starts with nowhere to
     # be recorded; the request, with the session the fire returns, is written as soon as it returns.
@@ -1060,9 +1063,9 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
             # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
             # The cloud recipient starts at the send, the last act this launcher controls.
             deadline.require_cap()
-            deadline.open_window()
-            _window_notice(args, deadline)
             if follow_up:
+                deadline.open_window()
+                _window_notice(args, deadline)
                 # A follow-up's request record is first written after the send, so its split ends here.
                 _stamp_preflight(request)
                 code, raw = transport.cli([*claude, "-p", text, "--cloud", args.resume,
@@ -1079,6 +1082,16 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
             else:
                 # Never retried: a second fire cannot be told apart from a second session.
                 _persist_in_flight(streams, request, request_path, run_path)
+                scope = preflight.current()
+                mark = scope.mark() if scope is not None else None
+                # The in-flight write is the entrance's time, so the cap is checked again after it; a refusal
+                # here unwinds the unready record, while a launcher stopped first leaves it on disk.
+                deadline.require_cap()
+                streams.mark_ready()
+                deadline.open_window()
+                _window_notice(args, deadline)
+                if mark is not None:
+                    pre_spawn = scope.since(mark)
                 try:
                     status, body = transport.fire(entry["routine_id"], token, text)
                 except Exception as exc:
@@ -1147,10 +1160,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
         "cloud": {"session_id": cloud.get("session_id"), "report_branch": branch},
     }
     if deadline.in_window and attempt["launched"] is not False:
-        # On both routes the window opens just before the split's end (the in-flight write for a fire,
-        # the stamp at a follow-up's send), so no time lies between them.
-        attempt["pre_spawn_seconds"] = 0.0
-        attempt["pre_spawn_parts"] = preflight.render("spawn", 0.0, {}, {})["parts"]
+        attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = pre_spawn
     run_record: dict[str, object] = {
         "schema_version": records.SCHEMA_VERSION, "dispatch_id": dispatch_id,
         "request": str(request_path), "actual_vendor": "claude", "attempts": [attempt],
@@ -1279,7 +1289,6 @@ def _persist_in_flight(streams, request: dict, request_path: Path, run_path: Pat
         "request": str(request_path), "actual_vendor": "claude", "attempts": [], "route": "cloud",
         "lifecycle": "running", "launched_at": request["launched_at"],
         "launcher_process": lifecycle.process_identity(), "launch_unresolved": True}))
-    streams.mark_ready()
 
 
 def _relink_handover(path: Path, session: str) -> None:

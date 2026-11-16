@@ -1454,3 +1454,37 @@ def test_978_a_cloud_launch_called_directly_records_its_declared_cap(machine, mo
     [row] = cap_declaration.read(machine["tmp"] / "home" / ".tradecraft", f"{REPO}#77")
     assert row["outcome"] == "launched"
     assert row["bundle"] == str(output.with_name("result.md.run.json"))
+
+
+def test_978_a_fire_opens_its_window_after_the_in_flight_write(machine, monkeypatch):
+    import run_lifecycle as lifecycle
+    events = []
+    persist = cloud._persist_in_flight
+    monkeypatch.setattr(cloud, "_persist_in_flight", lambda *a: (persist(*a), events.append("persisted")))
+    fake = Fake()
+    fire = fake.fire
+    fake.fire = lambda *a: events.append("fire") or fire(*a)
+    deadline = lifecycle.stage_deadline("build", 600)
+    opened = deadline.open_window
+    monkeypatch.setattr(deadline, "open_window", lambda at=None: events.append("window") or opened(at))
+    launch_on(machine, fake, deadline)
+    # The in-flight write is the entrance's time; the recipient's window opens at the fire.
+    assert events == ["persisted", "window", "fire"]
+
+
+def test_978_an_in_flight_write_reaching_the_cap_fires_nothing_and_leaves_no_bundle(machine, monkeypatch):
+    import run_lifecycle as lifecycle
+    persist = cloud._persist_in_flight
+
+    def slow(*arguments):
+        persist(*arguments)
+        lifecycle.time.sleep(3)  # The in-flight write outlasts what is left of the cap.
+    monkeypatch.setattr(cloud, "_persist_in_flight", slow)
+    fake = Fake()
+    deadline = lifecycle.stage_deadline("build", 600, started=lifecycle.time.monotonic() - 898)
+    with pytest.raises(lifecycle.PreflightCapExceeded):
+        launch_on(machine, fake, deadline)
+    assert fake.fired == []
+    assert any("tradecraft-report-77-build" in path for path in fake.deleted)
+    assert not list(machine["records"].rglob("*.request.json"))
+    assert not list(machine["records"].rglob("*.run.json"))
