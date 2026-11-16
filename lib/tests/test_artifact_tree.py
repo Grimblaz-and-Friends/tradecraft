@@ -348,7 +348,7 @@ def test_git_failures_are_structured_and_take_stage_remaining_time(tmp_path, mon
     with lifecycle.deadline_scope(lifecycle.Deadline(900)):
         with pytest.raises(trees.ArtifactTreeError, match="Git.*(failed|deadline)"):
             trees.git(tmp_path, "checkout", "--detach", "HEAD")
-    assert 800 < calls[0]["timeout"] <= 840
+    assert 840 < calls[0]["timeout"] <= 900  # The recipient's whole limit, with the reserve after it.
 
 
 def test_retained_author_can_prune_original_commit_without_losing_its_git_state(tmp_path):
@@ -519,7 +519,7 @@ def test_git_copy_operations_obey_caller_deadline_and_clear_config_binding(tmp_p
     monkeypatch.setattr(trees, "run_read", captured)
     with lifecycle.deadline_scope(lifecycle.Deadline(30)):
         assert trees.git(tmp_path, "clone", "source", "copy") == "done"
-    assert 0 < calls[0][1]["timeout"] <= 20
+    assert 0 < calls[0][1]["timeout"] <= 30  # The whole limit; the reserve follows it.
     assert not any(trees._binding(key) for key in calls[0][1]["env"])
 
 

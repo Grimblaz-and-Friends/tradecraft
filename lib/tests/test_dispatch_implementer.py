@@ -2255,12 +2255,12 @@ def test_984_after_a_ceiling_stop_a_slow_store_read_still_records_before_the_wai
     raw = json.dumps({"type": "system", "subtype": "init", "session_id": FIXTURE_SESSION}).encode() + b"\n"
 
     def stopped(command, **kwargs):
+        # The recipient ran nearly its whole window: a little more than the reserve is left, and
+        # the walk is quick, so the comparing runs until the final write must begin.
+        implementer.lifecycle.current_deadline().open_window(time.monotonic() - 148)
         raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=raw, stderr=b"")
 
     monkeypatch.setattr(implementer, "run_process", stopped)
-    # A little more than the reserve left: enough to launch, and the walk is quick, so the
-    # comparing runs until the final write must begin.
-    args.invocation_started_monotonic = time.monotonic() - 132
     assert implementer.run_implementer(args) == 1
     logged = record(args)
     assert slow.deadline is not None, logged.get("launch_comparison")
