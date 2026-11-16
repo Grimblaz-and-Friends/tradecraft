@@ -86,6 +86,9 @@ class Scope:
         else:
             self.started = now if started is None else float(started)
             self.clock_start = clock_start if started is not None and clock_start in CLOCK_STARTS else "entry"
+        # The call's wall-clock time, read once, so every record of this run names the same return time.
+        called = seed.get("called_epoch")
+        self.called_epoch = float(called) if isinstance(called, (int, float)) and math.isfinite(called) else None
         self.parts = {name: 0.0 for name in PARTS}
         for name, value in (seed.get("parts") or {}).items():
             if name in self.parts and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
@@ -162,6 +165,7 @@ class Scope:
 
     def handoff(self):
         return {"schema_version": 1, "started_monotonic": self.started, "clock_start": self.clock_start,
+                "called_epoch": self.called_epoch,
                 "parts": self.current_parts(), "read_route": self.read_route()}
 
     def index(self, root, factory):

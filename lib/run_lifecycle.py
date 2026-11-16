@@ -264,7 +264,15 @@ def read_launch_notice(path):
 
 def window_line(deadline):
     """The latest return time a named stage prints first, computed from its own deadline."""
-    called = time.time() - (time.monotonic() - deadline.started)
+    # The wall clock is read once per run, so the line and every record name the same return time.
+    called = getattr(deadline, "called_epoch", None)
+    if called is None:
+        opened = preflight.current()
+        same_run = opened is not None and opened.called_epoch is not None and opened.started == deadline.started
+        called = opened.called_epoch if same_run else time.time() - (time.monotonic() - deadline.started)
+        deadline.called_epoch = called
+        if opened is not None and opened.started == deadline.started and opened.called_epoch is None:
+            opened.called_epoch = called
     stage = getattr(deadline, "stage", None)
     note = None
     if deadline.ceiling is not None and deadline.limit > deadline.ceiling:
