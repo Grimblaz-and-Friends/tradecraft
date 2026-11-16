@@ -62,7 +62,8 @@ def read(home: Path, work: str) -> list[dict]:
             record = json.loads(path.read_bytes())
         except (OSError, ValueError):
             continue
-        if isinstance(record, dict):
+        # Two works can flatten to one folder name, so a record is read only for its own work.
+        if isinstance(record, dict) and record.get("work") == work:
             rows.append({"record": str(path), **{key: record.get(key) for key in (
                 "stage", "called_at", "preflight_cap", "outcome", "bundle", "reason_code", "error")}})
     return rows

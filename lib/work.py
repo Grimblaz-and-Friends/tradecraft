@@ -6478,15 +6478,19 @@ def create_implementation_root(holder_root: Path, repo: str, issue: int,
     target = holder / ".claude" / "worktrees" / f"issue-{issue}-{suffix}"
     _ensure_implementation_parent_ignored(holder)
     target.parent.mkdir(parents=True, exist_ok=True)
-    added = _git(["worktree", "add", "-b", branch, str(target), "HEAD"], holder)
-    if added.returncode:
-        raise WorkError(f"cannot create implementation worktree: {_git_failure(added)}")
-    implementation_root, attached_branch = _validate_implementation_row({
-        "root": str(target), "holder_root": str(holder), "branch": branch,
-    }, holder)
-    created_revision = _git_text(
-        ["rev-parse", "HEAD"], implementation_root, "inspect implementation HEAD"
-    )
+    try:
+        added = _git(["worktree", "add", "-b", branch, str(target), "HEAD"], holder)
+        if added.returncode:
+            raise WorkError(f"cannot create implementation worktree: {_git_failure(added)}")
+        implementation_root, attached_branch = _validate_implementation_row({
+            "root": str(target), "holder_root": str(holder), "branch": branch,
+        }, holder)
+        created_revision = _git_text(
+            ["rev-parse", "HEAD"], implementation_root, "inspect implementation HEAD"
+        )
+    except lifecycle.PreflightCapExceeded:
+        _discard_unregistered_worktree(holder, target, branch)
+        raise
     if created_revision != revision:
         raise WorkError(
             "created implementation worktree does not begin at the holder revision"
@@ -6496,6 +6500,17 @@ def create_implementation_root(holder_root: Path, repo: str, issue: int,
         holder_root=holder, branch=attached_branch,
     )
     return implementation_root, attached_branch
+
+
+def _discard_unregistered_worktree(holder: Path, target: Path, branch: str) -> None:
+    """A worktree whose add outlasted the cap goes with the refusal: registering it would begin new
+    work after the cap, and left unregistered it would be an orphan the next run never reuses."""
+    with lifecycle.cleanup_scope():
+        for command in (["worktree", "remove", "--force", str(target)], ["branch", "-D", branch]):
+            try:
+                _git(command, holder)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"work: {' '.join(command[:2])} after the cap failed: {exc}", file=sys.stderr)
 
 
 def publish_implementation_branch(root: Path, branch: str) -> str:

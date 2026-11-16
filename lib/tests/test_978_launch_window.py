@@ -131,3 +131,13 @@ def test_978_an_implementer_that_spawned_nothing_names_no_spawn(job, monkeypatch
     attempt = record(args)["attempts"][0]
     assert attempt["launched"] is False
     assert "pre_spawn_seconds" not in attempt and "pre_spawn_parts" not in attempt
+
+
+def test_978_two_works_sharing_a_folder_name_keep_their_own_declared_caps(tmp_path):
+    deadline = lifecycle.stage_deadline("build", 600, cap=1800, cap_reason="large repository")
+    window = lifecycle.window_line(deadline)
+    # Both works flatten to the folder `my-org-repo-12`.
+    cap_declaration.write(tmp_path, "my-org/repo#12", "build", deadline, window)
+    cap_declaration.write(tmp_path, "my/org-repo#12", "proof", deadline, window)
+    assert [row["stage"] for row in cap_declaration.read(tmp_path, "my-org/repo#12")] == ["build"]
+    assert [row["stage"] for row in cap_declaration.read(tmp_path, "my/org-repo#12")] == ["proof"]

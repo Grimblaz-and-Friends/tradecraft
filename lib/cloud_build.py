@@ -543,8 +543,10 @@ class Transport:
             data = json.dumps(body).encode("utf-8")
         # Not passed as a write even when it changes GitHub: each `gh api` response is parsed, so it
         # must be whole or refused, unlike a Git write whose caller reads only its exit status.
+        # Before the send a read is the entrance's work, so it is cut at the cap's end.
         result = seat_process.run_read(command, input=data if data is not None else b"", cwd=Path.cwd(),
-                                       timeout=120, cleanup_deadline=lifecycle.cleanup_deadline())
+                                       timeout=lifecycle.probe_timeout(120) if _before_send() else 120,
+                                       cleanup_deadline=lifecycle.cleanup_deadline())
         raw = result.stdout.replace(b"\r\n", b"\n")
         head, _, payload = raw.partition(b"\n\n")
         match = re.match(rb"HTTP/[0-9.]+ ([0-9]{3})", head)
@@ -583,9 +585,10 @@ class Transport:
         # Every Git command here takes the contained route so a hung one is stopped with what it
         # started; a push, fetch or merge is reported by its exit status even if its output was cut.
         writes = bool(arguments) and arguments[0] in GIT_WRITES
-        # A push before the send is not cut at the cap's end, only where it would outlast the printed return.
+        # A push before the send is not cut at the cap's end, only where it would outlast the printed
+        # return; after it, a fetch or merge records the session's result and so reaches into the reserve.
         result = seat_process.run_read(["git", "-C", str(root), *arguments], input=b"", cwd=Path.cwd(),
-                                       timeout=lifecycle.write_timeout(300) if writes else 300,
+                                       timeout=lifecycle.write_timeout(300) if writes and _before_send() else 300,
                                        cleanup_deadline=lifecycle.cleanup_deadline(), writes=writes)
         return result.returncode, (result.stdout or result.stderr).decode("utf-8", "replace").strip()
 
@@ -868,6 +871,34 @@ def run(args, deadline, **launch) -> int:
         return _launch(args, deadline, **launch)
 
 
+def _before_send() -> bool:
+    """Whether the run's recipient has yet to start, so its steps are the entrance's capped work."""
+    deadline = lifecycle.current_deadline()
+    return deadline is not None and getattr(deadline, "cap", None) is not None and not deadline.in_window
+
+
+def _cut_at_cap(deadline, exc) -> bool:
+    return (isinstance(exc, (subprocess.TimeoutExpired, TimeoutError))
+            and getattr(deadline, "cap", None) is not None and not deadline.in_window
+            and deadline.cap_left() <= 0)
+
+
+def _undo_at_cap(transport, request, cloud, branch) -> None:
+    """A refusal at the cap leaves no bundle, so the reservation unwinds unready, and the report
+    branch this launch made goes with it."""
+    if cloud.get("dispatch_commit"):
+        with lifecycle.cleanup_scope():
+            try:
+                delete_report_branch(transport, request)
+            except (CloudError, OSError, subprocess.SubprocessError) as exc:
+                print(f"implementer: report branch {branch} not deleted: {exc}", file=sys.stderr)
+
+
+def _window_notice(args, deadline) -> None:
+    # The entrance's wait follows the window only through this notice, as for a local launch.
+    lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
+
+
 def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_prompt: bytes,
             prompt: bytes, context: bytes, artifact_brief: bytes, metadata: dict, composition: dict,
             settings_sources: dict, validate, transport: Transport | None = None,
@@ -921,6 +952,8 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
         "instructions_applied": INSTRUCTIONS_APPLIED,
         "caller_limit_seconds": args.timeout_seconds,
         "budget_override_reason": metadata.get("budget_override_reason"),
+        "preflight_cap": deadline.cap_record(),
+        "latest_return_at": lifecycle.window_line(deadline)["latest_return_at"],
     })
     request.update({key: metadata[key] for key in (
         "instalment", "recovery_restart_reason", "recovery_restart_bundle", "budget_lineage",
@@ -1028,6 +1061,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
             # The cloud recipient starts at the send, the last act this launcher controls.
             deadline.require_cap()
             deadline.open_window()
+            _window_notice(args, deadline)
             if follow_up:
                 # A follow-up's request record is first written after the send, so its split ends here.
                 _stamp_preflight(request)
@@ -1040,6 +1074,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                 if code or not isinstance(value, dict) or value.get("ok") is not True \
                         or value.get("session_id") != args.resume:
                     deadline.withdraw_window()  # A failed send started nothing.
+                    _window_notice(args, deadline)
                     raise CloudError(f"follow-up send failed: exit {code} {raw[:300]!r}")
             else:
                 # Never retried: a second fire cannot be told apart from a second session.
@@ -1068,6 +1103,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                 if status != 200:
                     cloud["fire_state"] = "refused"
                     deadline.withdraw_window()  # A client error started nothing.
+                    _window_notice(args, deadline)
                     raise CloudError(f"fire failed: HTTP {status} {body[:300]}")
                 cloud["session_id"] = session
                 cloud["session_url"] = value.get("claude_code_session_url")
@@ -1086,16 +1122,13 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
         except CloudRefusal as exc:
             failure, refused = str(exc), True
         except lifecycle.PreflightCapExceeded:
-            # A refusal at the cap leaves no bundle, so the reservation unwinds unready, and the
-            # report branch this launch made goes with it.
-            if cloud.get("dispatch_commit"):
-                with lifecycle.cleanup_scope():
-                    try:
-                        delete_report_branch(transport, request)
-                    except (CloudError, OSError, subprocess.SubprocessError) as exc:
-                        print(f"implementer: report branch {branch} not deleted: {exc}", file=sys.stderr)
+            _undo_at_cap(transport, request, cloud, branch)
             raise
         except (CloudError, OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
+            if _cut_at_cap(deadline, exc):
+                # A step before the send cut at the cap's end is a refusal at the cap, not a failed launch.
+                _undo_at_cap(transport, request, cloud, branch)
+                raise lifecycle.PreflightCapExceeded(lifecycle.cap_refusal(deadline), deadline) from exc
             failure = str(exc) if isinstance(exc, CloudError) else f"{type(exc).__name__}: {exc}"
     except BaseException:
         if not reservation.__exit__(*sys.exc_info()):
@@ -1142,6 +1175,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
             if path:
                 streams[path].flush()
         streams.mark_ready()
+        args.request_recorded = True  # A launcher called directly names this bundle as its launch.
         run_record["launched_at"] = request["launched_at"]
         print(f"implementer: dispatch {dispatch_id} -> {output} (cloud route)")
         growing = GrowingRun(run_path, run_record, streams)

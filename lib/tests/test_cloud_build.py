@@ -22,6 +22,14 @@ class Deadline:
     def __init__(self, polls=5, allotted=600.0):
         self.polls, self.allotted = polls, allotted
         self.opened = False
+        self.limit, self.ceiling, self.reserve, self.stage = allotted, None, 60.0, None
+        self.called_epoch = 1.0e9
+
+    def cap_record(self):
+        return {"seconds": 900.0, "source": "default", "reason": None}
+
+    def latest_return_seconds(self):
+        return 900.0 + self.allotted + self.reserve
 
     def require_cap(self, seconds=0):
         pass
@@ -1235,7 +1243,8 @@ def test_978_the_sign_in_check_is_bounded_by_what_is_left_of_the_cap(monkeypatch
     assert 0 < seen[0] <= 3
 
 
-def launch_on(machine, transport, deadline, *, stage="build", resume=None, timeout_seconds=600):
+def launch_on(machine, transport, deadline, *, stage="build", resume=None, timeout_seconds=600, notice=None,
+              wrap=None):
     """`launch` with a run's real deadline and scope, so the window and the split are the launcher's own."""
     import preflight
     import run_lifecycle as lifecycle
@@ -1245,15 +1254,16 @@ def launch_on(machine, transport, deadline, *, stage="build", resume=None, timeo
         settings_source="s", settings_scope="scope", model="claude-opus-5-5", effort="high",
         retry_of=None, holder_session_id=None, lineage_branch="tradecraft/77-x",
         lineage_pull_request=None, timeout_seconds=timeout_seconds, artifact_brief_source="brief",
-        artifact_brief=None)
+        artifact_brief=None, launch_notice=notice)
+    wrap = wrap or (lambda _args, body: body())
     with preflight.scope(started=deadline.started), lifecycle.deadline_scope(deadline):
-        code = cloud.run(args, deadline, entry=machine["entry"], route_source="test",
+        code = wrap(args, lambda: cloud.run(args, deadline, entry=machine["entry"], route_source="test",
                          effective_prompt=b"the task\n", prompt=b"the task\n", context=b"", artifact_brief=b"",
                          metadata={}, composition={"origin": "holder"},
                          settings_sources={"vendor": "v", "model": "m", "effort": "e"},
                          validate=lambda expected, returned: {"status": "pass"}, transport=transport,
                          record_root=machine["records"], plugin=machine["plugin"],
-                         install_path=machine["install"], preset_failure=None)
+                         install_path=machine["install"], preset_failure=None))
     return code, output
 
 
@@ -1354,3 +1364,93 @@ def test_978_a_failed_follow_up_send_names_no_spawn(machine):
     assert attempt["launched"] is False
     assert "pre_spawn_seconds" not in attempt and "pre_spawn_parts" not in attempt
     assert not deadline.in_window
+
+
+def test_978_a_cloud_fetch_after_the_send_keeps_the_reserve(monkeypatch):
+    import run_lifecycle as lifecycle
+    seen = []
+
+    def run_read(command, **kwargs):
+        seen.append(kwargs)
+        return cloud.subprocess.CompletedProcess(command, 0, b"", b"")
+    monkeypatch.setattr(cloud.seat_process, "run_read", run_read)
+    deadline = lifecycle.stage_deadline("build", 600)
+    # The session ran to its limit: only the reserve is left for recording its result.
+    deadline.open_window(lifecycle.time.monotonic() - 601)
+    with lifecycle.deadline_scope(deadline):
+        assert cloud.Transport().git(Path("."), "fetch", "origin", "branch")[0] == 0
+    assert seen[0]["timeout"] == 300 and seen[0]["cleanup_deadline"] == deadline.cleanup_end
+
+
+def test_978_a_github_read_before_the_send_is_bounded_by_the_cap(monkeypatch):
+    import run_lifecycle as lifecycle
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def run_read(command, **kwargs):
+        seen.append(kwargs["timeout"])
+        raise Stop
+    monkeypatch.setattr(cloud.seat_process, "run_read", run_read)
+    deadline = lifecycle.stage_deadline("build", 600, started=lifecycle.time.monotonic() - 897)
+    with lifecycle.deadline_scope(deadline), pytest.raises(Stop):
+        cloud.Transport().github("GET", "repos/x/y")
+    assert 0 < seen[0] <= 3
+
+
+def test_978_a_read_cut_at_the_cap_refuses_at_the_cap_with_no_bundle(machine):
+    import run_lifecycle as lifecycle
+    import subprocess
+    fake = Fake()
+    github = fake.github
+
+    def cut(method, path, body=None):
+        if method == "GET" and "/git/ref/heads/" in path:
+            lifecycle.time.sleep(3)  # The branch's tip read is cut at the cap's end.
+            raise subprocess.TimeoutExpired(["gh"], 3)
+        return github(method, path, body)
+    fake.github = cut
+    deadline = lifecycle.stage_deadline("build", 600, started=lifecycle.time.monotonic() - 898)
+    with pytest.raises(lifecycle.PreflightCapExceeded):
+        launch_on(machine, fake, deadline)
+    assert fake.fired == []
+    assert not list(machine["records"].rglob("*.request.json"))
+
+
+@pytest.mark.parametrize("route", ["fresh", "refused follow-up"])
+def test_978_the_cloud_route_writes_its_launch_notice(machine, route):
+    import run_lifecycle as lifecycle
+    notice = machine["tmp"] / "launch-notice.json"
+    fake = Fake()
+    if route != "fresh":
+        launch(machine, Fake())
+        cli = fake.cli
+        fake.cli = lambda argv, env: (1, b"send refused") if "--cloud" in argv else cli(argv, env)
+    deadline = lifecycle.stage_deadline("build", 600)
+    launch_on(machine, fake, deadline, stage="build" if route == "fresh" else "floor",
+              resume=None if route == "fresh" else "cse_ABC123", notice=notice)
+    # The entrance follows the window the send opened, and the cap again when a send started nothing.
+    opened = lifecycle.read_launch_notice(notice)
+    if route == "fresh":
+        assert opened == deadline.window_opened is not None
+    else:
+        assert opened is None
+
+
+def test_978_a_cloud_launch_called_directly_records_its_declared_cap(machine, monkeypatch):
+    import cap_declaration
+    import run_lifecycle as lifecycle
+    monkeypatch.setattr(cap_declaration, "records_home", lambda: machine["tmp"] / "home" / ".tradecraft")
+    deadline = lifecycle.stage_deadline("build", 600, cap=1800, cap_reason="large repository")
+
+    def directly(args, body):
+        args.print_window = True
+        return cap_declaration.launcher_run(args, deadline, body, "implementer")
+    _code, output = launch_on(machine, Fake(), deadline, wrap=directly)
+    request = json.loads(output.with_name("result.md.request.json").read_text())
+    assert request["preflight_cap"] == {"seconds": 1800.0, "source": "declared", "reason": "large repository"}
+    assert request["latest_return_at"]
+    [row] = cap_declaration.read(machine["tmp"] / "home" / ".tradecraft", f"{REPO}#77")
+    assert row["outcome"] == "launched"
+    assert row["bundle"] == str(output.with_name("result.md.run.json"))

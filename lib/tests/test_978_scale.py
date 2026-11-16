@@ -1115,3 +1115,29 @@ def test_978_declared_cap_through_the_entrance_to_a_real_launcher(tmp_path, monk
     assert sorted((row["stage"], row["outcome"]) for row in both) == sorted(
         (row["stage"], row["outcome"]) for row in rows)
     assert all(isinstance(row[key], (str, type(None))) for row in both for key in ("record", "bundle"))
+
+
+def test_978_a_worktree_add_that_outlasts_the_cap_leaves_no_orphan(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tw.repository(tmp_path, "holder")
+    probe = work._run_probe
+
+    def slow_add(command, **kwargs):
+        result = probe(command, **kwargs)
+        if command[3:5] == ["worktree", "add"]:
+            time.sleep(3)  # The add runs to its end, past the cap's.
+        return result
+    monkeypatch.setattr(work, "_run_probe", slow_add)
+    deadline = run_lifecycle.stage_deadline("build", 600, started=time.monotonic() - 898)
+    with run_lifecycle.deadline_scope(deadline), pytest.raises(run_lifecycle.PreflightCapExceeded):
+        work.create_implementation_root(holder, "example/product", 12, None, "holder-session")
+    # The refusal leaves neither a worktree nor a branch the registry does not name.
+    listed = subprocess.run(["git", "-C", str(holder), "worktree", "list", "--porcelain"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert listed.count("worktree ") == 1
+    branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert branches.strip() == ""
+    assert not list((holder / ".claude" / "worktrees").glob("issue-12-*"))

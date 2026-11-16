@@ -230,3 +230,22 @@ def test_978_a_fallback_refused_after_a_late_primary_keeps_the_primarys_record(j
     assert logged.get("completed_at")
     assert logged.get("revision_after") is not None
     assert time.monotonic() < latest_return(args)
+
+
+def test_978_a_fallbacks_turn_tells_the_entrance_the_window_is_withdrawn(job, monkeypatch, tmp_path):
+    args, _ = job
+    args.launch_notice = tmp_path / "launch-notice.json"
+    configure(job, {"claude": {"message": "Not logged in"}})
+    version = seat.records.runtime_version
+    seen_at_fallback = []
+
+    def version_read(command, *rest, **kwargs):
+        if "codex" in str(command):
+            seen_at_fallback.append(lifecycle.read_launch_notice(args.launch_notice))
+        return version(command, *rest, **kwargs)
+    monkeypatch.setattr(seat.records, "runtime_version", version_read)
+    seat.run_dispatch(args)
+    first, second = record(args)["attempts"]
+    assert first["launched"] and first["outcome"] == "unavailable" and second["launched"]
+    # The fallback's own steps run on the cap, so the entrance must not hold it to the primary's window.
+    assert seen_at_fallback == [None]

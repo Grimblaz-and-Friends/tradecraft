@@ -768,8 +768,11 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                 elif reset and reset > current:
                     outcome, reason = "unavailable", f"owner hold until {reset.isoformat()}"
                 else:
-                    # This attempt's steps come before its own window, so the cap runs again until its spawn.
-                    deadline.withdraw_window()
+                    # This attempt's steps come before its own window, so the cap runs again until its spawn,
+                    # and the entrance's wait follows it back to the cap, not the earlier attempt's window.
+                    if deadline.in_window:
+                        deadline.withdraw_window()
+                        lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
                     try:
                         executable = resolve_command(vendor, getattr(args, vendor))
                     except CliNotFound as exc:
