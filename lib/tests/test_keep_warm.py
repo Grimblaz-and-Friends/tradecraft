@@ -971,3 +971,56 @@ def test_a_launch_that_starts_its_process_ends_the_waiting_keep_warm(claude, tmp
     assert implementer.run_implementer(args) == 0
     assert not (waiting / "spec.json").exists()
 
+
+def test_launch_env_names_are_the_launchers_own_variables(monkeypatch):
+    """A variable the launcher adds to its child must reach this set, or every keep-warm faults."""
+    import artifact_tree
+    import dispatch_lifecycle
+    import implementer_policy
+    import launch_bound
+    for name in ("GIT_LFS_SKIP_SMUDGE", "GIT_NO_LAZY_FETCH"):
+        monkeypatch.delenv(name, raising=False)
+    launcher = {implementer_policy.FUNCTION_HOOKS, implementer_policy.ADDITIONAL_CLAUDE_MD,
+                launch_bound.MEMORY_SWITCH}
+    launcher |= set(dispatch_lifecycle.claude_launch_env({}, 10))
+    launcher |= {name for name, value in artifact_tree.environment().items() if os.environ.get(name) != value}
+    assert set(keep_warm.LAUNCH_ENV_NAMES) == launcher
+
+
+def test_the_recipients_time_counts_the_wait_for_a_ping_in_flight(claude, monkeypatch):
+    """The allocation is read after the stop's wait, so the recipient never outruns the deadline."""
+    args, home, spawned = claude
+    seen = {}
+    real = implementer._stop_waiting
+
+    def slow(args_, deadline, metadata):
+        real(args_, deadline, metadata)
+        time.sleep(1.5)
+        seen["left"] = deadline.remaining()
+    monkeypatch.setattr(implementer, "_stop_waiting", slow)
+    assert implementer.run_implementer(args) == 0
+    run = json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
+    assert run["attempts"][0]["allocation_seconds"] <= seen["left"]
+
+
+def test_a_fault_building_the_turns_facts_never_changes_the_launch(claude, monkeypatch):
+    args, home, spawned = claude
+    monkeypatch.setattr(implementer, "_shim_record",
+                        lambda _shim: (_ for _ in ()).throw(KeyError("forced: missing fact")))
+    assert implementer.run_implementer(args) == 0
+    run = json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
+    assert run["outcome"] == "success" and spawned == []
+    assert "forced: missing fact" in rows(home, "fault")[-1]["reason"]
+
+
+def test_a_ping_sent_by_hand_counts_in_the_runners_end_row(home, tmp_path):
+    (home / ".tradecraft" / "keep-warm.json").write_bytes(b'{"cap_hours": 2}')
+    directory = keep_warm.after_turn(turn(home, tmp_path))
+    clock = Clock()
+    run, pings = runner(directory, clock)
+    by_hand, hand_pings = runner(directory, clock)
+    sent = []
+    clock.hooks.append(lambda c: c.now >= T0 + 600 and not sent and sent.append(by_hand.ping_now()))
+    assert run.run() == "cap"
+    assert sent[0]["sent"] and len(hand_pings) == 1 and len(pings) == 1
+    assert rows(home, "end")[-1]["pings"] == 2

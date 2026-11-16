@@ -12861,7 +12861,7 @@ def _keep_warm_floor_launch(tmp_path, monkeypatch, plant, *, raise_launch=False)
 
 
 def test_983_a_stage_called_while_kept_warm_launches_as_without(tmp_path, monkeypatch):
-    """AC16: the stage call touches no keep-warm file; only the launcher's start stops it."""
+    """AC16: the stage call touches no keep-warm file; the launch stops it just before its process starts."""
     with_state, started = _keep_warm_floor_launch(tmp_path / "with", monkeypatch, True)
     without, _ = _keep_warm_floor_launch(tmp_path / "without", monkeypatch, False)
     (command, spec_present), = with_state

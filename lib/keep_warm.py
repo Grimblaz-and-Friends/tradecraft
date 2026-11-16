@@ -90,6 +90,9 @@ GH_SECONDS = 30
 UNREADABLE_RETRY_SECONDS = 60
 # A starter that never produced a runner process is gone after this long.
 START_GRACE_SECONDS = 300
+# An ended session's state stays this long so `status` and a later launch can
+# still read how it ended; any runner may then remove it, since nothing else
+# outlives a launch to do so.
 CLEANUP_DAYS = 7
 # Names the generation release stopped, so its runner records a release, not a launch.
 RELEASED = "released"
@@ -354,6 +357,10 @@ def last_call_sent_at(transcript: Path) -> float | None:
     sending it, so that entry's time bounds the send from below.
     """
     try:
+        # Only the tail: the last call and the entry it answered sit at the end of
+        # a transcript that can run to hundreds of megabytes. A tail that misses
+        # the answered entry dates the send from the reply, a later time, so the
+        # first ping can come late and miss the cache: one recorded wasted read.
         with transcript.open("rb") as stream:
             stream.seek(0, os.SEEK_END)
             stream.seek(max(0, stream.tell() - 4 * 1024 * 1024))
@@ -635,8 +642,9 @@ def stop_for_launch(work: str, stage: str, resume: str | None, *, wait_seconds: 
                     instalment: str | None = None):
     """Drop the work's waiting sessions in this stage group; hold a resumed session's ping lock.
 
-    It runs at the launcher's start, before any route or vendor split, so a
-    replacing launch of any kind ends the old keep-warm.
+    The launcher calls it just before the launch starts its process, or hands
+    itself to the cloud route, so a replacing launch of any kind ends the old
+    keep-warm and a launch that starts nothing leaves it.
     """
     group = STAGE_GROUPS.get(stage)
     try:
@@ -930,7 +938,17 @@ class Runner:
         append_row(self.spec["work"], kind, {"session": self.spec["session"], "group": self.spec["group"],
                                              "generation": self.generation, **fields}, at=self.clock())
 
+    def _refresh(self, state: dict) -> None:
+        """Take in a ping another process (`ping-now`) sent for this generation."""
+        current = self._state()
+        if current.get("generation") != self.generation:
+            return
+        state["pings"] = max(state.get("pings", 0), current.get("pings", 0))
+        if (_moment(current.get("last_call_at")) or 0) > (_moment(state.get("last_call_at")) or 0):
+            state["last_call_at"] = current["last_call_at"]
+
     def _end(self, state: dict, reason: str) -> str:
+        self._refresh(state)
         self._row("end", reason=reason, pings=state.get("pings", 0))
         state["ended"] = {"reason": reason, "at": _now()}
         self._save(state)
@@ -1036,6 +1054,7 @@ class Runner:
             changed = self._spec_changed()
             if changed:
                 return self._end(state, changed)
+            self._refresh(state)
             cap = self._cap()
             if cap <= 0:
                 return self._end(state, "setting-off")

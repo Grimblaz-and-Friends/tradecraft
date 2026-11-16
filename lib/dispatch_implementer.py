@@ -966,10 +966,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         _handover_phase(
                             args.handover_state, args.session_id or args.resume, "running"
                         )
+                    # Just before the spawn, so a launch that starts nothing leaves keep-warm as it was;
+                    # before the allocation, so a wait for a ping in flight comes out of the recipient's time.
+                    _stop_waiting(args, deadline, metadata)
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation
-                    # Just before the spawn, so a launch that starts nothing leaves keep-warm as it was.
-                    _stop_waiting(args, deadline, metadata)
                     attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = scope.since(mark)
                     args.preparation_timer.close()
                     process_started = True
@@ -1221,25 +1222,32 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             else:
                 print(f"implementer: {attempt['reason']}", file=sys.stderr)
             if args.vendor == "claude":
-                # The run record is final; nothing here changes this launch's result.
-                pending = keep_warm.after_turn({
-                    "vendor": args.vendor, "cloud": False, "launched": attempt["launched"],
-                    "session": args.resume or args.session_id,
-                    "observed_session": attempt["observed"].get("session_id"),
-                    "outcome": record["outcome"], "cleanup_proven": record.get("cleanup_proven"),
-                    "launch_unresolved": record.get("launch_unresolved"),
-                    "session_identity_error": record.get("session_identity_error"),
-                    "stage": args.stage, "work": args.work, "root": str(root),
-                    "instalment": metadata.get("instalment"),
-                    "fallback_root": copy.get("holder_root") if copy else None,
-                    "plugin_root": str(Path(__file__).resolve().parent.parent),
-                    "command": command, "settings_bytes": prepared_settings,
-                    "env_start": args.keep_warm_env, "env_child": child_env,
-                    "shim": _shim_record(shim), "lineage_pull_request": args.lineage_pull_request,
-                    "dispatch_id": dispatch_id, "completed_at": record["completed_at"],
-                    "stdout_path": str(stdout_path), "projects": str(projects), "model": args.model,
-                    "starter": args.keep_warm_starter, "start_token": args.keep_warm_token,
-                })
+                # The run record is final; nothing here changes this launch's result,
+                # so even building the turn's facts is a keep-warm fault if it fails.
+                try:
+                    turn = {
+                        "vendor": args.vendor, "cloud": False, "launched": attempt["launched"],
+                        "session": args.resume or args.session_id,
+                        "observed_session": attempt["observed"].get("session_id"),
+                        "outcome": record["outcome"], "cleanup_proven": record.get("cleanup_proven"),
+                        "launch_unresolved": record.get("launch_unresolved"),
+                        "session_identity_error": record.get("session_identity_error"),
+                        "stage": args.stage, "work": args.work, "root": str(root),
+                        "instalment": metadata.get("instalment"),
+                        "fallback_root": copy.get("holder_root") if copy else None,
+                        "plugin_root": str(Path(__file__).resolve().parent.parent),
+                        "command": command, "settings_bytes": prepared_settings,
+                        "env_start": args.keep_warm_env, "env_child": child_env,
+                        "shim": _shim_record(shim), "lineage_pull_request": args.lineage_pull_request,
+                        "dispatch_id": dispatch_id, "completed_at": record["completed_at"],
+                        "stdout_path": str(stdout_path), "projects": str(projects), "model": args.model,
+                        "starter": args.keep_warm_starter, "start_token": args.keep_warm_token,
+                    }
+                except Exception as exc:
+                    keep_warm.fault(args.work, "start", f"{type(exc).__name__}: {exc}",
+                                    session=args.resume or args.session_id)
+                    turn = None
+                pending = keep_warm.after_turn(turn) if turn is not None else None
                 if pending is not None and args.keep_warm_starter != "entrance":
                     args.keep_warm_pending = pending
             return return_code

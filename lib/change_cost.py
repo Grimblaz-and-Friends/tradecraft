@@ -1537,7 +1537,7 @@ def parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--plan-terms", type=Path, default=default_plan_terms())
     report_parser.add_argument("--gauges", type=Path)
     report_parser.add_argument("--holder-usage", type=Path)
-    report_parser.add_argument("--keep-warm", type=Path, help="keep-warm record; defaults beside the holder usage")
+    report_parser.add_argument("--keep-warm", type=Path, help="keep-warm record; defaults to the change's own record, ~/.tradecraft/changes/<repo>/<issue>/keep-warm.jsonl")
     close = commands.add_parser("holder-close", help="attach the holder's own usage at change close")
     close.add_argument("--repo", required=True)
     close.add_argument("--issue", required=True, type=int)
