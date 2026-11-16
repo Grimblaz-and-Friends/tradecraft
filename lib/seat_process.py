@@ -24,6 +24,10 @@ import preflight
 _CONTAIN = True
 _READ_DRAIN_SECONDS = 0.25
 _CREATE_SUSPENDED = 0x00000004
+# The only access a held member's handle needs: waiting for that process to exit.
+_SYNCHRONIZE = 0x00100000
+# How often a ticking launch wait asks whether its window has moved.
+_INHERITED_TICK_SECONDS = 0.25
 
 
 class ContainmentRefused(OSError):
@@ -193,11 +197,18 @@ def _buffered_process(command, *, input, cwd, timeout, env=None):
         return result
 
 
-def run_inherited_process(command, *, cwd, timeout, cleanup_deadline):
+def run_inherited_process(command, *, cwd, timeout, cleanup_deadline, on_tick=None):
     """Bound an owned tree while inheriting all three caller streams.
 
     The entrance needs a bounded wait, not another pipe-capture layer whose
     forwarding callback could block on the holder's output stream.
+
+    `on_tick`, when given, is called every quarter second of the wait and returns
+    the current `(wait_end, cleanup_end)` on the monotonic clock, or None to keep
+    them; the wait ends at the latest `wait_end` and containment is bounded by the
+    latest `cleanup_end`.
+
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
     """
     end = time.monotonic() + timeout
     with tempfile.TemporaryDirectory(prefix="tradecraft-launch-") as temporary:
@@ -217,7 +228,21 @@ def run_inherited_process(command, *, cwd, timeout, cleanup_deadline):
                     pass
                 descendants.kill()
         try:
-            child.wait(timeout=max(0, end - time.monotonic()))
+            if on_tick is None:
+                child.wait(timeout=max(0, end - time.monotonic()))
+            else:
+                # The window can move while the child runs, so the wait is re-read each tick.
+                while True:
+                    try:
+                        child.wait(timeout=max(0, min(_INHERITED_TICK_SECONDS, end - time.monotonic())))
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    moved = on_tick()
+                    if moved is not None:
+                        end, cleanup_deadline = moved
+                    if time.monotonic() >= end:
+                        raise subprocess.TimeoutExpired(child.args, timeout)
         finally:
             stop()
             if descendants is not None:
@@ -588,7 +613,7 @@ def _hold_members(api, job, held):
                                          ctypes.sizeof(members), None)
     for pid in members.ids[:min(members.listed, HELD_MEMBERS)]:
         if pid and pid not in held:
-            handle = api.kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            handle = api.kernel.OpenProcess(_SYNCHRONIZE, False, pid)
             if handle:
                 held[pid] = handle
 

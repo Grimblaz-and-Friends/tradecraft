@@ -935,7 +935,7 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                                      "source": args.artifact_brief_source or str(args.artifact_brief.resolve()),
                                      "sha256": hashlib.sha256(artifact_brief).hexdigest()}
     # The build budget counts a cloud attempt by its allocation and measured time, as a local one.
-    allocation = metadata.get("recipient_allocation_seconds") or args.timeout_seconds
+    allocation = metadata.get("recipient_allocation_seconds") or deadline.allotted
     request["recipient_allocation_seconds"] = allocation
     request["runtime_version"] = None
     request["runtime_version_unavailable_reason"] = "the runtime runs in the cloud session"
@@ -1020,6 +1020,10 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
             if len(text) > FIRE_TEXT_LIMIT:
                 raise CloudRefusal(f"fire text is {len(text)} characters, over the fire's {FIRE_TEXT_LIMIT}; "
                                    "only the header is fired, and the task travels on the report branch")
+            # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+            # The cloud recipient starts at the send, the last act this launcher controls.
+            deadline.require_cap()
+            deadline.open_window()
             if follow_up:
                 code, raw = transport.cli([*claude, "-p", text, "--cloud", args.resume,
                                            "--output-format", "json"], env)
@@ -1073,6 +1077,8 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                             cloud["handover_relink_error"] = f"{type(exc).__name__}: {exc}"
         except CloudRefusal as exc:
             failure, refused = str(exc), True
+        except lifecycle.PreflightCapExceeded:
+            raise  # A refusal at the cap leaves no bundle, so the reservation unwinds unready.
         except (CloudError, OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
             failure = str(exc) if isinstance(exc, CloudError) else f"{type(exc).__name__}: {exc}"
     except BaseException:

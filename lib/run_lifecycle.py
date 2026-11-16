@@ -20,10 +20,16 @@ import seat_process
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
 TOTAL_BUILD_BUDGET_SECONDS = 14400.0
+# The entrance's and its launcher's own time from the call until the recipient starts.
+PREFLIGHT_CAP_SECONDS = 900.0
+# In-process work between a launcher's bounded steps, which starts no process and waits on nothing.
+SPAWN_MARGIN_SECONDS = 5.0
 MINIMUM_CLEANUP_RESERVE_SECONDS = 10.0
 ELAPSED_CHECKPOINT_INTERVAL_SECONDS = 0.25
 ELAPSED_CHECKPOINT_MARGIN_SECONDS = 10.0
 REPAIR_STAGES = frozenset({"floor", "review-disposition"})
+# Stages that launch nobody: their limit covers their own work after the entrance's decision.
+STAGE_WORK_STAGES = frozenset({"catch-up", "proof", "ready-reviewers", "release-report"})
 _DEADLINE = ContextVar("tradecraft_caller_deadline", default=None)
 _CLEANUP = ContextVar("tradecraft_recording_phase", default=False)
 
@@ -39,37 +45,142 @@ class RunTimeout(TimeoutError):
         self.limit = limit_phrase(deadline)
 
 
+class PreflightCapExceeded(RunTimeout):
+    """The entrance's cap ended before the recipient started; nothing is launched.
+
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+
+
+def cap_phrase(deadline):
+    source = "declared by --preflight-cap-seconds" if deadline.cap_declared else "the default"
+    return f"the entrance's {deadline.cap:g}-second cap before the recipient starts ({source})"
+
+
 def limit_phrase(deadline=None):
     """Name the limit that ends this run, the one place a limit is named."""
     deadline = deadline if deadline is not None else current_deadline()
     if deadline is None:
         return "no run limit is set"
+    if not deadline.in_window:
+        return cap_phrase(deadline)
     stage = getattr(deadline, "stage", None)
-    if stage in REPAIR_STAGES and deadline.end < deadline.started + deadline.limit:
-        return f"the {stage} stage's {DEFAULT_STAGE_TIMEOUT_SECONDS:g}-second ceiling"
+    if stage in REPAIR_STAGES and deadline.allotted < deadline.limit:
+        return f"the {stage} stage's {DEFAULT_STAGE_TIMEOUT_SECONDS:g}-second ceiling, counted from the launch"
+    kind = getattr(deadline, "window_kind", None)
+    counted = (", counted from the recipient's start" if kind == "recipient" else
+               ", counted from the start of the stage's own work" if kind == "stage-work" else "")
     declared = getattr(deadline, "declared", None)
     source = ("declared by --timeout-seconds" if declared else
               "the stage's default" if declared is False else "the caller's limit")
-    return f"the {deadline.limit:g}-second limit ({source})"
+    return f"the {deadline.allotted:g}-second limit ({source}){counted}"
+
+
+def cap_refusal(deadline):
+    """The reason a run refused at its cap gives, naming what to run next."""
+    source = "declared" if deadline.cap_declared else "the default"
+    return (f"preflight cap: the entrance's {deadline.cap:g}-second cap ({source}) ended before the "
+            "recipient started; nothing was launched and no bundle was written. When the cause is "
+            "known, run again with --preflight-cap-seconds N --preflight-cap-reason TEXT.")
 
 
 class Deadline:
-    def __init__(self, limit, *, started=None):
+    """A run's time in two phases: the entrance's capped work, then the recipient's window.
+
+    Before the window the run's end is the latest return it prints; once the recipient starts at S,
+    the end is S plus the allotted time plus the reserve, so an unused part of the cap is not spent.
+    A deadline with no cap opens its window at its start.
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+
+    def __init__(self, limit, *, started=None, cap=None, cap_declared=False, cap_reason=None,
+                 ceiling=None):
         if not math.isfinite(limit) or limit <= 0:
             raise ValueError("caller limit must be finite and positive")
         self.limit = float(limit)
         self.started = time.monotonic() if started is None else started
         if not math.isfinite(self.started) or self.started > time.monotonic():
             raise ValueError("invocation start must be a finite past monotonic time")
-        self.reserve = min(60.0, max(MINIMUM_CLEANUP_RESERVE_SECONDS, self.limit / 10))
-        self.end = self.started + self.limit
+        if cap is not None and (not math.isfinite(cap) or cap <= 0):
+            raise ValueError("preflight cap must be finite and positive")
+        self.ceiling = None if ceiling is None else float(ceiling)
+        self.allotted = min(self.limit, self.ceiling) if self.ceiling is not None else self.limit
+        self.reserve = min(60.0, max(MINIMUM_CLEANUP_RESERVE_SECONDS, self.allotted / 10))
+        self.cap = None if cap is None else float(cap)
+        self.cap_declared, self.cap_reason = bool(cap_declared), cap_reason
+        self.cap_end = self.started + (self.cap or 0.0)
+        self.latest_end = self.cap_end + self.allotted + self.reserve
+        self.window_opened = None
+        self.window_opened_late_seconds = None
         self.probe_seconds = 0.0
+        self.end = self.latest_end
+        if self.cap is None:
+            self.open_window(self.started)
+
+    @property
+    def in_window(self):
+        return self.window_opened is not None
+
+    def open_window(self, at=None):
+        """The recipient starts now (or at `at`): its whole allotted time and the reserve follow."""
+        at = time.monotonic() if at is None else at
+        self.window_opened = at
+        late = at - self.cap_end
+        if self.cap is not None and late > 0:
+            # Only a machine suspended between two bounded steps lands here; the printed time holds.
+            self.window_opened_late_seconds = round(late, 3)
+            self.end = self.latest_end
+        else:
+            self.end = at + self.allotted + self.reserve
+        return self.end
+
+    def withdraw_window(self):
+        """An attempt spawned nothing, or a fallback's turn comes: the cap runs again."""
+        if self.cap is not None:
+            self.window_opened = None
+            self.end = self.latest_end
+
+    def cap_left(self):
+        return self.cap_end - time.monotonic()
+
+    def require_cap(self, seconds=0):
+        """Refuse when no more than `seconds` of the cap is left: the one place the cap refuses."""
+        if self.cap is None or self.in_window:
+            return
+        if self.cap_left() <= seconds:
+            raise PreflightCapExceeded(cap_refusal(self), self)
 
     def remaining(self, *, cleanup=False):
+        if not self.in_window:
+            # Before the recipient starts, reads are cut at the cap's end.
+            remaining = self.cap_left() + (self.reserve if cleanup else 0)
+            if remaining <= 0:
+                raise PreflightCapExceeded(cap_refusal(self), self)
+            return remaining
         remaining = self.end - time.monotonic() - (0 if cleanup else self.reserve)
         if remaining <= 0:
             raise RunTimeout("caller limit leaves no useful launch window", self)
         return remaining
+
+    def write_timeout(self, default):
+        """A write's bound: never begun after the cap, never past the printed return less the reserve.
+
+        A write in flight is not cut at the cap's end, because a half-made worktree or push is worse
+        than a refusal a little late.
+        """
+        if self.in_window:
+            return self.probe(default)
+        now = time.monotonic()
+        if now >= self.cap_end:
+            raise PreflightCapExceeded(cap_refusal(self), self)
+        return max(0.0, min(default, self.latest_end - self.reserve - now))
+
+    def latest_return_seconds(self):
+        return (self.cap or 0.0) + self.allotted + self.reserve
+
+    def cap_record(self):
+        return {"seconds": self.cap, "source": "declared" if self.cap_declared else "default",
+                "reason": self.cap_reason}
 
     def probe(self, default=20, *, cleanup=False):
         remaining = self.remaining(cleanup=cleanup)
@@ -106,12 +217,75 @@ class Deadline:
         return self.wait_end - self.reserve / 8
 
 
-def stage_deadline(stage, caller_limit, *, started=None, declared=None):
-    deadline = Deadline(caller_limit, started=started)
+def stage_deadline(stage, caller_limit, *, started=None, declared=None, cap=None, cap_reason=None):
+    deadline = Deadline(caller_limit, started=started,
+                        cap=PREFLIGHT_CAP_SECONDS if cap is None else cap,
+                        cap_declared=cap is not None, cap_reason=cap_reason,
+                        ceiling=DEFAULT_STAGE_TIMEOUT_SECONDS if stage in REPAIR_STAGES else None)
     deadline.stage, deadline.declared = stage, declared
-    if stage in REPAIR_STAGES:
-        deadline.end = min(deadline.end, deadline.started + DEFAULT_STAGE_TIMEOUT_SECONDS)
+    deadline.window_kind = "stage-work" if stage in STAGE_WORK_STAGES else "recipient"
     return deadline
+
+
+def validate_cap_flags(seconds, reason):
+    """A declared cap needs both flags, a figure above the default and a reason that is not blank."""
+    if seconds is None and reason is None:
+        return
+    if seconds is None or reason is None:
+        raise ValueError("--preflight-cap-seconds and --preflight-cap-reason are declared together")
+    if not math.isfinite(seconds) or seconds <= PREFLIGHT_CAP_SECONDS:
+        raise ValueError(f"--preflight-cap-seconds must be finite and larger than {PREFLIGHT_CAP_SECONDS:g}")
+    if not reason.strip():
+        raise ValueError("--preflight-cap-reason must not be blank")
+
+
+def write_launch_notice(path, deadline):
+    """Tell the entrance when its launcher's recipient started, so its wait follows that window."""
+    if path is None:
+        return
+    path = Path(path)
+    sibling = path.with_name(path.name + ".tmp")
+    sibling.write_text(json.dumps({"schema_version": 1,
+                                   "window_opened_monotonic": deadline.window_opened}), encoding="utf-8")
+    os.replace(sibling, path)
+
+
+def read_launch_notice(path):
+    """The window a launcher reported: a monotonic start, None when withdrawn, or ... when unread."""
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ...
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        return ...
+    opened = value.get("window_opened_monotonic")
+    return opened if isinstance(opened, (int, float)) and math.isfinite(opened) else None
+
+
+def window_line(deadline):
+    """The latest return time a named stage prints first, computed from its own deadline."""
+    called = time.time() - (time.monotonic() - deadline.started)
+    stage = getattr(deadline, "stage", None)
+    note = None
+    if deadline.ceiling is not None and deadline.limit > deadline.ceiling:
+        note = (f"the {stage} stage's ceiling is {deadline.ceiling:g} seconds, counted from the launch; "
+                f"its recipient gets {deadline.allotted:g} seconds, not the declared {deadline.limit:g}")
+    seconds = deadline.latest_return_seconds()
+    return {
+        "schema_version": 1, "stage": stage, "limit_seconds": deadline.limit,
+        "limit_source": "declared" if getattr(deadline, "declared", None) else "default",
+        "allotted_seconds": deadline.allotted, "stage_ceiling_seconds": deadline.ceiling,
+        "ceiling_note": note,
+        "counted_from": ("stage-work-start" if getattr(deadline, "window_kind", None) == "stage-work"
+                         else "recipient-start"),
+        "preflight_cap": deadline.cap_record(), "reserve_seconds": deadline.reserve,
+        "called_at": _iso(called), "latest_return_at": _iso(called + seconds),
+        "latest_return_seconds": seconds,
+    }
+
+
+def _iso(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def current_deadline():
