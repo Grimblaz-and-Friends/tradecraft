@@ -6490,23 +6490,26 @@ def create_implementation_root(holder_root: Path, repo: str, issue: int,
         created_revision = _git_text(
             ["rev-parse", "HEAD"], implementation_root, "inspect implementation HEAD"
         )
+        if created_revision != revision:
+            raise WorkError(
+                "created implementation worktree does not begin at the holder revision"
+            )
+        # The registration reads the worktree before its one write, so a refusal raised here comes
+        # before the row exists; once the row is written the worktree stays, named by it.
+        register_worktree(
+            implementation_root, repo, issue, instalment, holder_session_id,
+            holder_root=holder, branch=attached_branch,
+        )
     except lifecycle.PreflightCapExceeded:
         _discard_unregistered_worktree(holder, target, branch)
         raise
-    if created_revision != revision:
-        raise WorkError(
-            "created implementation worktree does not begin at the holder revision"
-        )
-    register_worktree(
-        implementation_root, repo, issue, instalment, holder_session_id,
-        holder_root=holder, branch=attached_branch,
-    )
     return implementation_root, attached_branch
 
 
 def _discard_unregistered_worktree(holder: Path, target: Path, branch: str) -> None:
-    """A worktree whose add outlasted the cap goes with the refusal: registering it would begin new
-    work after the cap, and left unregistered it would be an orphan the next run never reuses."""
+    """A worktree refused at the cap before its registry row was written goes with the refusal:
+    registering it would begin new work after the cap, and left unregistered it would be an orphan
+    the next run never reuses."""
     with lifecycle.cleanup_scope():
         for command in (["worktree", "remove", "--force", str(target)], ["branch", "-D", branch]):
             try:

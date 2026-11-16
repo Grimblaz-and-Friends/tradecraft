@@ -1171,3 +1171,27 @@ def test_978_a_refusal_removes_nothing_the_add_did_not_make(tmp_path, monkeypatc
     branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
     assert "tradecraft/12-0123456789ab" in branches
+
+
+def test_978_a_refusal_during_registration_leaves_no_unregistered_worktree(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tw.repository(tmp_path, "holder")
+    snapshot = work._git_snapshot
+
+    def slow_snapshot(path):
+        time.sleep(3)  # The cap ends while the registration reads the new worktree.
+        return snapshot(path)
+    monkeypatch.setattr(work, "_git_snapshot", slow_snapshot)
+    deadline = run_lifecycle.stage_deadline("build", 600, started=time.monotonic() - 898)
+    with run_lifecycle.deadline_scope(deadline), pytest.raises(run_lifecycle.PreflightCapExceeded):
+        work.create_implementation_root(holder, "example/product", 12, None, "holder-session")
+    # The registry was never written, so nothing the add made is left behind.
+    listed = subprocess.run(["git", "-C", str(holder), "worktree", "list", "--porcelain"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert listed.count("worktree ") == 1
+    branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert branches.strip() == ""
+    assert not [row for row in work.read_registry()["worktrees"] if "issue-12-" in str(row.get("root"))]
