@@ -45,4 +45,4 @@ The holder decided each of these; none changes an affirmed row.
 - The limit running out inside a stage's own work, as in a `run catch-up` merge, behaves as before.
 - Nothing is kept between runs; sessions are not kept warm; the vendor program's own start is shown, not shortened.
 
-The tests are `lib/tests/test_978_window.py`, `lib/tests/test_978_clock.py`, `lib/tests/test_978_wait_tick.py`, `lib/tests/test_978_launch_window.py`, and the changed expectations in the run-lifecycle, launcher, cloud-build and recovery suites.
+The tests are `lib/tests/test_978_window.py`, `lib/tests/test_978_clock.py`, `lib/tests/test_978_wait_tick.py`, `lib/tests/test_978_launch_window.py`, `lib/tests/test_978_seat_window.py`, the `test_978` tests in the scale, split and cloud-build suites, and the changed expectations in the run-lifecycle, launcher, cloud-build and recovery suites.

@@ -258,19 +258,93 @@ def test_978_a_launcher_called_directly_prints_its_window_first(tmp_path):
     assert "seat: window" not in result.stdout
 
 
-def test_978_the_entrance_wait_follows_the_window(tmp_path, monkeypatch):
-    clock = at(monkeypatch, 1000)
+NOTICE_LAUNCHER = """
+import json, os, sys, time
+notice = sys.argv[sys.argv.index("--launch-notice") + 1]
+def write(opened):
+    with open(notice + ".tmp", "w", encoding="utf-8") as stream:
+        json.dump({"schema_version": 1, "window_opened_monotonic": opened}, stream)
+    os.replace(notice + ".tmp", notice)
+for step in sys.argv[1].split(","):
+    if step == "open":
+        write(time.monotonic())
+    elif step == "withdraw":
+        write(None)
+    else:
+        time.sleep(float(step))
+time.sleep(120)
+"""
+
+
+@pytest.mark.parametrize("steps, cap", [("open", 900), ("open,1,withdraw", 3), ("open,1,withdraw,2,open", 900)])
+def test_978_entrance_wait_follows_the_window(tmp_path, monkeypatch, steps, cap):
+    script = tmp_path / "launcher.py"
+    script.write_text(NOTICE_LAUNCHER, encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "PREFLIGHT_CAP_SECONDS", cap)
     deadline = lifecycle.stage_deadline("build", 6)
-    notice = tmp_path / "launch-notice.json"
-    follow = work._window_follower(notice, deadline)
-    assert follow() is None  # No notice yet: the wait keeps its own bound.
-    clock[0] = 1010
-    deadline_copy = lifecycle.stage_deadline("build", 6, started=1000)
-    deadline_copy.open_window(1010)
-    lifecycle.write_launch_notice(notice, deadline_copy)
-    wait_end, _cleanup = follow()
-    assert wait_end == 1010 + 6 + deadline.reserve - deadline.reserve / 4
-    deadline_copy.withdraw_window()
-    os.utime(notice, ns=(1, 1))  # A changed notice is read again.
-    lifecycle.write_launch_notice(notice, deadline_copy)
-    assert follow()[0] == deadline.latest_end - deadline.reserve / 4
+    reserve = deadline.reserve
+    called = time.monotonic()
+    with pytest.raises(work.WorkError, match="bounded recording allowance"):
+        work._invoke_recipient([sys.executable, str(script), steps], deadline)
+    stopped = time.monotonic()
+    if steps.endswith("open"):
+        # Stopped by the last window's start, plus the limit and the reserve, less a quarter of it.
+        expected = deadline.window_opened + 6 + reserve - reserve / 4
+    else:
+        expected = deadline.latest_end - reserve / 4
+    assert expected - 1.5 <= stopped <= expected + 1.5, (stopped - called, expected - called)
+
+
+def test_978_write_in_flight_at_the_cap(monkeypatch):
+    calls = []
+
+    def slow_write(command, **kwargs):
+        calls.append((time.monotonic(), kwargs["timeout"]))
+        time.sleep(min(4, kwargs["timeout"]))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+    monkeypatch.setattr(work, "run_read", slow_write)
+    for limit, runs in ((1, 3), (7200, 4)):
+        calls.clear()
+        # Two seconds of the cap are left when the worktree is made.
+        deadline = lifecycle.stage_deadline("build", limit, started=time.monotonic() - 898)
+        with lifecycle.deadline_scope(deadline):
+            with pytest.raises(lifecycle.PreflightCapExceeded):
+                work._git(["worktree", "add", "fixture"], Path.cwd())
+            ended = time.monotonic()
+            # A queued second write is never begun after the cap.
+            with pytest.raises(lifecycle.PreflightCapExceeded):
+                work._git(["push", "origin", "HEAD"], Path.cwd())
+        [(begun, bound)] = calls
+        if limit == 1:
+            # Cut where it would outlast the printed return less the reserve: the cap's end plus the limit.
+            assert bound == pytest.approx(deadline.cap_end + 1 - begun, abs=0.2)
+            assert ended <= deadline.cap_end + 1 + 0.5
+            assert ended < deadline.latest_end
+        else:
+            # At a default limit the write runs its whole time, past the cap's end, then the run refuses.
+            assert bound == 120
+            assert ended - begun >= runs - 0.2
+
+
+def test_978_slow_copy_refuses_at_the_cap(tmp_path, monkeypatch):
+    import artifact_tree as trees
+    calls = []
+
+    def slow(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        time.sleep(min(4, kwargs["timeout"]))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+    monkeypatch.setattr(trees, "run_read", slow)
+    # Three seconds of the cap are left when the copy is made; its first step takes four.
+    deadline = lifecycle.stage_deadline("artifact", 3600, started=time.monotonic() - 897)
+    with lifecycle.deadline_scope(deadline):
+        trees.git(tmp_path, "rev-parse", "HEAD")
+        # The copy's next step meets the spent cap as the stage's refusal at the cap, not as a failed copy.
+        with pytest.raises(lifecycle.PreflightCapExceeded, match="900-second cap"):
+            trees.git(tmp_path, "checkout", "--detach", "HEAD", writes=True)
+    assert len(calls) == 1 and calls[0] <= 3
+    declared = lifecycle.stage_deadline("artifact", 3600, started=time.monotonic() - 897,
+                                        cap=1800, cap_reason="large repository")
+    with lifecycle.deadline_scope(declared):
+        trees.git(tmp_path, "rev-parse", "HEAD")
+        trees.git(tmp_path, "checkout", "--detach", "HEAD", writes=True)

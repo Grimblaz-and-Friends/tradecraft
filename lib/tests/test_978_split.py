@@ -243,3 +243,29 @@ def test_978_split_attributes_delay(tmp_path, monkeypatch, capsys, delayed):
             assert grown >= D - 0.05, (name, baseline, split)
         else:
             assert grown < D / 2, (name, delayed, baseline, split)
+
+
+@pytest.mark.parametrize("stage, limit, allotted", [("build", 7200, 7200), ("floor", 10800, 3600)])
+def test_978_slow_entrance_allots_the_limit_through_the_entrance(tmp_path, monkeypatch, stage, limit, allotted):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    root = tmp_path / "implementation"
+    root.mkdir()
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    seen = {}
+
+    def recipient(command, **_kwargs):
+        seen["metadata"] = json.loads(Path(command[command.index("--lifecycle-input") + 1]).read_bytes())
+        seen["prompt"] = Path(command[command.index("--context") + 1]).read_bytes()
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(work, "_recipient_run", recipient)
+    # Ten minutes were spent before the entrance composed the launch.
+    with preflight.scope(started=time.monotonic() - 600) as opened:
+        deadline = work.lifecycle.stage_deadline(stage, limit, started=opened.started, declared=True)
+        with work.lifecycle.deadline_scope(deadline):
+            work.execute_stage(fixture, work.Decision(stage, True, "fresh", "holder-named-stage"),
+                               tmp_path, None, "holder", timeout_seconds=limit,
+                               floor_command="python fixture-check.py")
+    assert seen["metadata"]["recipient_allocation_seconds"] == allotted
+    assert f"Available recipient time is at most {allotted:g} seconds".encode() in seen["prompt"]

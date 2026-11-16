@@ -10728,8 +10728,10 @@ def run(
                         code = _run(args, transport=transport, executor=executor)
                 else:
                     code = _run(args, transport=transport, executor=executor)
-        except lifecycle.PreflightCapExceeded:
+        except lifecycle.PreflightCapExceeded as exc:
             cap_declaration.outcome(declaration, {"outcome": "refused-at-cap"})
+            if getattr(exc, "stage", None) is None:
+                exc.stage = args.stage
             raise
         except BaseException as exc:
             cap_declaration.outcome(declaration, {"outcome": "failed", "error": str(exc)})
@@ -10989,8 +10991,10 @@ def main(argv: list[str] | None = None, *, started: float | None = None) -> int:
         try:
             return run(parser().parse_args(argv))
         except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
+            # A refusal at the cap is always reported, so the holder reads its reason with the stage's report.
             if (getattr(exc, "raw_output", None) is not None or getattr(exc, "reach", None) is not None
-                    or getattr(exc, "version_obligation", None) is not None):
+                    or getattr(exc, "version_obligation", None) is not None
+                    or isinstance(exc, lifecycle.PreflightCapExceeded)):
                 _emit_report({"status": "refused", "reason": str(exc),
                               "stage": getattr(exc, "stage", None), "head": getattr(exc, "head", None),
                               "version_obligation": getattr(exc, "version_obligation", None),

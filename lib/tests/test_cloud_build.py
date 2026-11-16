@@ -1187,3 +1187,45 @@ def test_978_cloud_request_record_carries_the_split(machine):
     _code, refused, _run, _output = launch(machine, Fake(), preset="refused before the fire")
     assert refused["preflight"]["until"] == "request-record"
     assert abs(sum(refused["preflight"]["parts"].values()) - refused["preflight"]["total_seconds"]) <= 1
+
+
+def test_978_cloud_window_opens_before_the_fire(machine, monkeypatch):
+    events = []
+    monkeypatch.setattr(Deadline, "open_window", lambda self, at=None: events.append("window") or
+                        setattr(self, "opened", True))
+    fake = Fake()
+    fire = fake.fire
+    fake.fire = lambda *a: events.append("fire") or fire(*a)
+    _code, request, run, _output = launch(machine, fake)
+    # The recipient starts at the send, so the window opens first and nothing comes between them.
+    assert events == ["window", "fire"]
+    assert request["preflight"]["until"] == "request-record"
+    assert run["attempts"][0]["pre_spawn_seconds"] == 0.0
+    assert set(run["attempts"][0]["pre_spawn_parts"]) >= {"github_seconds", "unattributed_seconds"}
+
+
+def test_978_a_cap_refusal_at_the_send_leaves_no_bundle_and_deletes_its_report_branch(machine, monkeypatch):
+    import run_lifecycle as lifecycle
+    spent = lifecycle.stage_deadline("build", 600, started=lifecycle.time.monotonic() - 901)
+
+    def refuse(self, seconds=0):
+        raise lifecycle.PreflightCapExceeded(lifecycle.cap_refusal(spent), spent)
+    monkeypatch.setattr(Deadline, "require_cap", refuse)
+    fake = Fake()
+    with pytest.raises(lifecycle.PreflightCapExceeded):
+        launch(machine, fake)
+    assert fake.fired == []
+    assert any("tradecraft-report-77-build" in path for path in fake.deleted)
+    assert not list(machine["records"].rglob("*.request.json"))
+
+
+def test_978_the_sign_in_check_is_bounded_by_what_is_left_of_the_cap(monkeypatch):
+    import run_lifecycle as lifecycle
+    import subprocess
+    seen = []
+    monkeypatch.setattr(cloud.subprocess, "run", lambda *a, **k: seen.append(k["timeout"]) or
+                        subprocess.CompletedProcess(a[0], 0, b"{}", b""))
+    deadline = lifecycle.stage_deadline("build", 600, started=lifecycle.time.monotonic() - 897)
+    with lifecycle.deadline_scope(deadline):
+        cloud.Transport().cli(["claude", "auth", "status", "--json"], {})
+    assert 0 < seen[0] <= 3

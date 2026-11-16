@@ -20,6 +20,8 @@ from fixtures.frozen_tree import FrozenTree, frozen_tree
 LIB = Path(__file__).resolve().parents[1]
 # The time from the call to the recipient's spawn in these fixtures, well under this on any machine.
 SPAWN_SLACK_SECONDS = 15
+# The cap left at a late launch's call: a compared seat's two attempts need 165 seconds after its write.
+LATE_START_CAP_LEFT_SECONDS = 190
 
 
 def exit_clock():
@@ -391,8 +393,11 @@ def git(root, *args):
 
 @pytest.mark.parametrize("kind", ["implementer", "seat"])
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
-@pytest.mark.parametrize("termination", ["hard-kill", "ceiling", "ceiling-slow-final-probe"])
+@pytest.mark.parametrize("termination", ["hard-kill", "ceiling", "ceiling-slow-final-probe", "ceiling-late-start"])
 def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatch, record_property, kind, vendor, termination):
+    late = termination == "ceiling-late-start"
+    if late and (kind, vendor) not in {("implementer", "claude"), ("seat", "codex")}:
+        pytest.skip("the late start runs once per launcher, on its compared route")
     root = tmp_path / "tree"
     root.mkdir()
     git(root, "init")
@@ -429,6 +434,8 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     production_ceiling = (termination, kind, vendor) in {
         ("ceiling", "implementer", "claude"),
         ("ceiling-slow-final-probe", "seat", "codex"),
+        ("ceiling-late-start", "implementer", "claude"),
+        ("ceiling-late-start", "seat", "codex"),
     }
     caller_limit = 60
     command = [sys._base_executable, str(LIB / "tests/fixtures/interrupted_launcher.py"), kind, vendor, str(store),
@@ -447,7 +454,10 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
         command.extend(["--classification", "cold", "--requires", "read", "--draft-comment", "20",
                         "--own-vendor", "claude" if vendor == "codex" else "codex"])
     measured_exit = exit_clock()
-    started = time.monotonic()
+    launched_at = started = time.monotonic()
+    if late:
+        # The entrance has used its cap up to a little more than this launch needs at its request write.
+        started -= lifecycle.PREFLIGHT_CAP_SECONDS - LATE_START_CAP_LEFT_SECONDS
     command.extend(["--invocation-started-monotonic", str(started)])
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
@@ -478,11 +488,18 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             (store / "ceiling-ready").write_bytes(b"ready")
         # The recipient's limit counts from its start, a few seconds after the call, and the
         # reserve for stopping and recording follows it.
-        bound = caller_limit + min(60, max(10, caller_limit / 10)) + SPAWN_SLACK_SECONDS
+        reserve = min(60, max(10, caller_limit / 10))
+        bound = caller_limit + reserve + SPAWN_SLACK_SECONDS
+        if late:
+            # The caller's own limit is the printed latest return: the call, the cap, the limit and the reserve.
+            bound = started + lifecycle.PREFLIGHT_CAP_SECONDS + caller_limit + reserve - launched_at
         stdout, stderr = process.communicate(timeout=bound if ceiling else 5)
+        if late:
+            window = json.loads(stdout.decode("utf-8").splitlines()[0].split(" window ", 1)[1])
+            assert window["latest_return_seconds"] == lifecycle.PREFLIGHT_CAP_SECONDS + caller_limit + reserve
         if ceiling:
-            elapsed = measured_exit(process, started)
-            record_property("observer_elapsed_seconds", time.monotonic() - started)
+            elapsed = measured_exit(process, launched_at)
+            record_property("observer_elapsed_seconds", time.monotonic() - launched_at)
             record_property("launcher_elapsed_seconds", elapsed)
             record_property("caller_limit_seconds", caller_limit)
             record_property("production_reserve", production_ceiling)
