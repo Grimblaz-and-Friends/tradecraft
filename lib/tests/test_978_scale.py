@@ -626,7 +626,7 @@ def _assert_time_named(out, err, phrase_parts):
     return turns
 
 
-def a19_change(tmp_path, monkeypatch):
+def three_turn_proof_change(tmp_path, monkeypatch):
     fixture = made_up_change(tmp_path, monkeypatch)
     for number in range(3):
         add_turn(fixture, {f"single/turn-{number}.txt": f"{number}\n".encode()})
@@ -643,8 +643,9 @@ def a19_change(tmp_path, monkeypatch):
     return fixture
 
 
-def test_978_timeout_says_time_ran_out(tmp_path, monkeypatch, capfd):
-    fixture = a19_change(tmp_path, monkeypatch)
+def test_978_cap_cut_count(tmp_path, monkeypatch, capfd):
+    # The removals count is the entrance's reading before the launch, so the cap is its bound.
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
     measured = {"turns": 0}
     measure = build_reach.measure
 
@@ -657,22 +658,26 @@ def test_978_timeout_says_time_ran_out(tmp_path, monkeypatch, capfd):
 
     def slow(command, root):
         if measured["turns"] >= 1:
-            # The first turn is measured; this read outlives the stage's deadline.
+            # The first turn is measured; this read outlives the entrance's cap.
             deadline = run_lifecycle.current_deadline()
-            while deadline is not None and time.monotonic() <= deadline.end:
+            while deadline is not None and time.monotonic() <= deadline.cap_end:
                 time.sleep(0.2)
         return git(command, root)
     monkeypatch.setattr(work, "_git", slow)
     capfd.readouterr()
+    # The entrance has already spent all but 20 seconds of its cap when the count begins.
     work.main(["run", "proof", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
-               "--timeout-seconds", "20"])
+               "--timeout-seconds", "20"], started=time.monotonic() - run_lifecycle.PREFLIGHT_CAP_SECONDS + 20)
     out, err = _searched(capfd)
-    turns = _assert_time_named(out, err, [r"\b20-second\b", r"--timeout-seconds|default"])
+    turns = _assert_time_named(out, err, [r"the entrance's 900-second cap"])
     assert measured["turns"] >= 1 and len(turns) >= 3, turns
+    for stream in (out, err):
+        assert "raise the limit" not in stream.lower(), stream
+    assert "--preflight-cap-seconds" in out + err
 
 
 def test_978_timeout_says_time_ran_out_without_a_run_deadline(tmp_path, monkeypatch, capfd):
-    fixture = a19_change(tmp_path, monkeypatch)
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
     git = work._git
     outlived = {"command": None, "times": 0}
 

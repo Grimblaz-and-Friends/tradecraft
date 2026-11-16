@@ -263,7 +263,7 @@ def test_978_the_entrance_wait_follows_the_window(tmp_path, monkeypatch):
     deadline = lifecycle.stage_deadline("build", 6)
     notice = tmp_path / "launch-notice.json"
     follow = work._window_follower(notice, deadline)
-    assert follow()[0] == deadline.latest_end - deadline.reserve / 4
+    assert follow() is None  # No notice yet: the wait keeps its own bound.
     clock[0] = 1010
     deadline_copy = lifecycle.stage_deadline("build", 6, started=1000)
     deadline_copy.open_window(1010)

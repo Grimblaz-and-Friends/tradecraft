@@ -9409,13 +9409,14 @@ def _window_follower(notice, deadline):
             stamp = notice.stat().st_mtime_ns
         except OSError:
             stamp = None
-        if stamp is not None and stamp != seen[0]:
-            seen[0] = stamp
-            opened = lifecycle.read_launch_notice(notice)
-            if opened is None:
-                deadline.withdraw_window()
-            elif opened is not ...:
-                deadline.open_window(opened)
+        if stamp is None or stamp == seen[0]:
+            return None  # The wait keeps its bound until the launcher's window changes.
+        seen[0] = stamp
+        opened = lifecycle.read_launch_notice(notice)
+        if opened is None:
+            deadline.withdraw_window()
+        elif opened is not ...:
+            deadline.open_window(opened)
         return deadline.wait_end, deadline.end - deadline.reserve / 8
     return tick
 

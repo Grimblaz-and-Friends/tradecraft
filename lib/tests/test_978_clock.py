@@ -46,10 +46,28 @@ def test_978_clock_starts_at_the_call(tmp_path):
 @pytest.mark.skipif(os.name != "nt" and not sys.platform.startswith("linux"),
                     reason="the creation time is read only on Windows and Linux")
 def test_978_process_started_is_this_process_on_the_monotonic_clock():
+    # A fresh process: the test runner's own may be older than the age a creation time is trusted to.
+    probe = ("import sys, time; sys.path.insert(0, sys.argv[1]); import preflight; "
+             "started = preflight.process_started(); now = time.monotonic(); "
+             "print(repr(None if started is None else now - started))")
+    result = subprocess.run([sys.executable, "-c", probe, str(LIB)], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            timeout=60)
+    assert result.returncode == 0, result.stderr
+    age = eval(result.stdout.strip())  # noqa: S307 - the probe prints a float's repr or None.
+    assert isinstance(age, float)
+    assert 0 <= age < 60
+
+
+@pytest.mark.parametrize("age", [preflight.PROCESS_AGE_LIMIT_SECONDS + 1, -1.0, float("nan")])
+def test_978_an_untrusted_creation_time_falls_back_to_entry(monkeypatch, age):
+    # A process older than the limit, or a clock that disagrees, is measured from its scope's opening.
+    monkeypatch.setattr(preflight, "_windows_process_age", lambda: age)
+    monkeypatch.setattr(preflight, "_linux_process_age", lambda: age)
     started = preflight.process_started()
-    now = time.monotonic()
-    assert isinstance(started, float)
-    assert now - preflight.PROCESS_AGE_LIMIT_SECONDS < started <= now
+    assert started is None
+    with preflight.scope(started=started, clock_start="process" if started is not None else None) as opened:
+        assert opened.snapshot("report")["clock_start"] == "entry"
 
 
 def test_978_a_scope_without_a_creation_time_starts_at_entry():
