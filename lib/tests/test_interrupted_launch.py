@@ -623,3 +623,71 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             with frozen_tree(process.pid) as frozen:
                 kill_tree(frozen)
         process.communicate(timeout=5)
+
+
+
+# The entrance's own launch route, taken once: a test that patches it twice must not wrap its own wrapper.
+_ENTRANCE_RECIPIENT_RUN = work._recipient_run
+
+
+def _entrance_build(tmp_path, monkeypatch, name, spent):
+    """`run build --timeout-seconds 6` through the entrance to the real launcher and a hanging Claude."""
+    import preflight
+    base = tmp_path / name
+    base.mkdir()
+    holder = base / "tree"
+    holder.mkdir()
+    git(holder, "init")
+    git(holder, "-c", "user.name=fixture", "-c", "user.email=fixture@example.test",
+        "commit", "--allow-empty", "-m", "Fixture")
+    root, branch = base / "builder", "change"
+    git(holder, "worktree", "add", "-b", branch, str(root))
+    snapshot_path = base / "snapshot.json"
+    snapshot_path.write_bytes(json.dumps(lifecycle.content_snapshot(root)).encode())
+    store = base / "vendor-state"
+    store.mkdir()
+    # The vendor's knowledge; with it the vendor blocks until the launcher stops it at its ceiling.
+    (store / "nonce").write_bytes(b"entrance-run")
+    output = base / "bundle" / "return"
+    fixture = state(MECHANICAL)
+    fixture.record_root, fixture.holder_root = output.parent, holder
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, branch, False))
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a, **_k: [])
+    setting = Path.home() / ".tradecraft" / "implementer-vendor"
+    setting.parent.mkdir(parents=True, exist_ok=True)
+    setting.write_bytes(b"claude")
+
+    def launch(command, **kwargs):
+        assert Path(command[1]).name == "dispatch_implementer.py", command[:2]
+        actual = [sys._base_executable, str(LIB / "tests/fixtures/interrupted_launcher.py"), "implementer",
+                  "claude", str(store), *command[2:], "--output", str(output), "--snapshot-fixture", str(snapshot_path)]
+        return _ENTRANCE_RECIPIENT_RUN(actual, **kwargs)
+    monkeypatch.setattr(work, "_recipient_run", launch)
+    # The run's scope and deadline, built from one start as `work.run` builds them.
+    with preflight.scope(started=time.monotonic() - spent) as opened:
+        deadline = lifecycle.stage_deadline("build", 6, started=opened.started, declared=True)
+        with lifecycle.deadline_scope(deadline):
+            work.execute_stage(fixture, work.Decision("build", True, "fresh", "holder-named-stage"), holder, None,
+                               "holder-session", timeout_seconds=6)
+    returned = time.monotonic()
+    request = json.loads(Path(str(output) + ".request.json").read_bytes())
+    run = json.loads(Path(str(output) + ".run.json").read_bytes())
+    return returned, deadline.latest_end, request, run
+
+
+def test_978_entrance_returns_with_its_record_before_the_printed_time(tmp_path, monkeypatch, record_property):
+    # The same launch started now measures the time from the call to the request write.
+    _returned, _latest, request, _run = _entrance_build(tmp_path, monkeypatch, "start-now", 0)
+    to_write = request["preflight"]["total_seconds"]
+    compared = bool(((request.get("write_bound") or {}).get("comparison") or {}).get("coverage"))
+    allowance = (120 if compared else 0) + lifecycle.SPAWN_MARGIN_SECONDS
+    # The entrance then uses its cap up to three seconds more than the launch needs at its request write.
+    returned, latest, request, run = _entrance_build(
+        tmp_path, monkeypatch, "late", lifecycle.PREFLIGHT_CAP_SECONDS - allowance - 3 - to_write)
+    cap_left = lifecycle.PREFLIGHT_CAP_SECONDS - request["preflight"]["total_seconds"]
+    record_property("seconds_before_the_printed_return", latest - returned)
+    # The write landed within the five seconds before the last moment the cap admits.
+    assert allowance < cap_left <= allowance + 5, (cap_left, allowance, to_write)
+    # The entrance returned before the time it printed, with the launch's record complete.
+    assert returned < latest
+    assert run.get("completed_at") and run["outcome"] == "interrupted" and run["interruption_cause"] == "ceiling"
