@@ -984,7 +984,15 @@ def test_launch_env_names_are_the_launchers_own_variables(monkeypatch):
                 launch_bound.MEMORY_SWITCH}
     launcher |= set(dispatch_lifecycle.claude_launch_env({}, 10))
     launcher |= {name for name, value in artifact_tree.environment().items() if os.environ.get(name) != value}
+    # The GitHub write bound's connector switch and child settings.
+    import github_allowance
+    launcher |= {github_allowance.CONNECTORS, github_allowance.CHILD_VARIABLE}
     assert set(keep_warm.LAUNCH_ENV_NAMES) == launcher
+    # Every variable its credential removal sets or removes is one keep-warm leaves out.
+    start = {"GIT_ASKPASS": "a", "SSH_ASKPASS": "a", "SSH_AUTH_SOCK": "a"}
+    removed = github_allowance.without_push_credential(start)
+    changed = {name for name in set(start) | set(removed) if start.get(name) != removed.get(name)}
+    assert changed == set(keep_warm.COMMAND_ONLY_ENV_NAMES)
 
 
 def test_the_recipients_time_counts_the_wait_for_a_ping_in_flight(claude, monkeypatch):
