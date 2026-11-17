@@ -726,6 +726,9 @@ def test_a_harmless_command_env_runs_passes(tree, command):
     # --replace takes its value only joined by "=", so the word after it is the program.
     "echo 1 | xargs --replace gh pr merge",
     "echo 1 | xargs --unlisted 5 gh pr merge",
+    # xargs adds piped words the check never sees, so no writer behind it is judged on its own words.
+    "printf ':refs/heads/main' | xargs git push origin",
+    "echo 1 | xargs --max-args 1 git status",
 ])
 def test_a_write_xargs_runs_is_judged(tree, command):
     assert decision(command, tree, "branch") == "deny"
@@ -733,8 +736,86 @@ def test_a_write_xargs_runs_is_judged(tree, command):
 
 @pytest.mark.parametrize("command", ["nice -n 10 git status", "timeout -k 5 10 git status",
                                      "nice -n 10 python -c pass",
-                                     "echo 1 | xargs --max-args 1 git status"])
+                                     "echo 1 | xargs --max-args 1 grep -n x"])
 def test_a_harmless_command_behind_a_pass_through_program_passes(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    f"env -i bash -c '{CHILD} -p hi'",
+    "env --ignore-environment sh -c 'echo hi'",
+    "env - nohup bash -c x",
+    f"env -i setsid {CHILD} -p hi",
+    f"env -i npx @anthropic-ai/claude-code -p hi",
+    "env -i -S 'bash -c x'",
+])
+def test_env_i_before_a_shell_or_a_looked_through_program_is_refused(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", ["env FOO=1 bash -c 'git status'", "env -i git status",
+                                     "env -i grep -n x f", "env -u FOO bash -c 'echo hi'"])
+def test_env_without_i_or_before_a_reader_passes(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    "pwsh -enc ZQBjAGgAbwA=",
+    "powershell -EncodedCommand ZQBjAGgAbwA=",
+    "pwsh -Comm 'gh pr merge 1'",
+    "pwsh -Command:'gh pr merge 1'",
+    "powershell git push origin HEAD:refs/heads/main",
+    "pwsh -NoProfile -cwa 'gh pr merge 1'",
+])
+def test_a_powershell_command_in_an_unread_form_is_refused(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", ["pwsh -NoProfile -Command 'git status'",
+                                     "powershell -NoProfile -ExecutionPolicy Bypass -File x.ps1",
+                                     "pwsh script.ps1", "pwsh -c 'Get-ChildItem'"])
+def test_a_powershell_command_in_a_read_form_is_judged(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+    assert decision("pwsh -Command 'gh pr merge 1'", tree, "branch") == "deny"
+
+
+def test_a_subcommand_git_does_not_build_in_is_refused_under_a_redirection(tree, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q")
+    git(other, "config", "alias.p", "push origin HEAD:refs/heads/main")
+    for command in (f"git --git-dir={other.as_posix()}/.git p", f"GIT_DIR={other.as_posix()}/.git git p",
+                    f"GIT_CONFIG_GLOBAL={other.as_posix()}/.git/config git p", "git --exec-path=/x p"):
+        assert decision(command, tree, "branch") == "deny", command
+    # A read under a redirection still passes, and -C is followed, so its alias is read there.
+    assert decision(f"git --git-dir={other.as_posix()}/.git log -1", tree, "branch") == "allow"
+    assert decision(f"git -C {tree.as_posix()} status", tree, "branch") == "allow"
+    assert decision(f"git -C {other.as_posix()} p", tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "curl -sXPOST https://api.github.com/repos/o/r/issues/5/comments",
+    "curl -sd@body.json https://api.github.com/repos/o/r/issues/5/comments",
+    "curl --unknown-option https://api.github.com/repos/o/r",
+    "curl -X DELETE https://api.github.com/repos/o/r/git/refs/heads/main",
+    "Invoke-RestMethod -Meth Post https://api.github.com/repos/o/r/issues",
+    "Invoke-RestMethod -Method:Post https://api.github.com/repos/o/r/issues",
+    "irm -B x https://api.github.com/repos/o/r/issues",
+    "iwr -Method Patch -Uri https://api.github.com/repos/o/r",
+])
+def test_an_api_request_the_check_cannot_read_as_a_get_is_refused(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "curl -sSL https://api.github.com/repos/o/r",
+    "curl -s -H 'Accept: application/json' https://api.github.com/repos/o/r",
+    "curl -X GET -o out.json https://api.github.com/repos/o/r",
+    "Invoke-RestMethod -Uri https://api.github.com/repos/o/r -Headers $h",
+    "Invoke-RestMethod -Method Get https://api.github.com/repos/o/r",
+    "curl -X POST https://example.com/x",
+])
+def test_a_plain_get_or_another_host_passes(tree, command):
     assert decision(command, tree, "branch") == "allow"
 
 

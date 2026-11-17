@@ -148,6 +148,7 @@ class Context:
     cwd: str | None
     config: dict
     assigned: dict[str, str | None] = field(default_factory=dict)
+    # An `env -i` ran ahead of this text, so what it starts runs without the bound's variables.
     cleared: bool = False
     depth: int = 0
     docs: list[str] = field(default_factory=list)
@@ -493,10 +494,39 @@ def _shell_script(arguments: list[str]) -> str | None:
 
 
 def _inner(ctx: Context, text: str) -> list[Finding]:
-    inner = Context(ctx.cwd, ctx.config, ctx.assigned, ctx.cleared, ctx.depth + 1)
-    found = judge_text(text, inner)
-    ctx.cleared = ctx.cleared or inner.cleared
-    return found
+    return judge_text(text, Context(ctx.cwd, ctx.config, ctx.assigned, ctx.cleared, ctx.depth + 1))
+
+
+# PowerShell's parameters as the check reads them, spelled out in full or by their documented
+# aliases. PowerShell also takes any unambiguous prefix, a colon-joined value and, in Windows
+# PowerShell, a command given as plain words; the check cannot read those, so it refuses them.
+POWERSHELL_COMMAND = {"-c", "-command", "/c", "/command"}
+POWERSHELL_FILE = {"-f", "-file", "/f", "/file"}
+POWERSHELL_FLAGS = {"-noprofile", "-nop", "-nologo", "-noninteractive", "-noni", "-noexit", "-sta",
+                    "-mta", "-login", "-l", "-help", "-?", "-h", "-version", "-v"}
+POWERSHELL_VALUES = {"-executionpolicy", "-ep", "-ex", "-windowstyle", "-w", "-workingdirectory",
+                     "-wd", "-outputformat", "-of", "-o", "-inputformat", "-if", "-configurationname",
+                     "-config", "-settingsfile"}
+
+
+def _judge_powershell(name: str, words: list[str], ctx: Context) -> list[Finding]:
+    rest = words[1:]
+    while rest:
+        word = rest.pop(0)
+        lowered = word.lower()
+        if lowered in POWERSHELL_COMMAND:
+            return _inner(ctx, " ".join(rest))
+        if lowered in POWERSHELL_FILE or (name == "pwsh" and not word.startswith(("-", "/"))):
+            # A script file stays out of reach, as with bash script.sh; pwsh reads a bare word so.
+            return []
+        if lowered in POWERSHELL_FLAGS:
+            continue
+        if lowered in POWERSHELL_VALUES and rest:
+            rest.pop(0)
+            continue
+        return [Finding(f"{name} {word}", f"{name} with {word}, a form whose command the check cannot "
+                        "read (an encoded, abbreviated or positional command)")]
+    return []
 
 
 def _split_string(words: list[str]) -> str | None:
@@ -515,6 +545,10 @@ def _split_string(words: list[str]) -> str | None:
     return None
 
 
+# Programs that start no session of their own, or whose start is judged as cleared, so an
+# `env -i` ahead of them clears nothing the bound needs.
+CLEARED_PROGRAMS = INERT_PROGRAMS | {"git", "gh", "curl", "wget", "invoke-restmethod", "irm",
+                                     "invoke-webrequest", "iwr", "claude", "codex"}
 # The pass-through fallback's test: after env or a pass-through program, a word outside this
 # set stands where a program was expected, so the command is refused on its signature.
 JUDGED_PROGRAMS = {"git", "gh", "claude", "codex", "cmd", "eval", "invoke-expression", "iex",
@@ -526,6 +560,7 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
     words = list(words)
     local_cleared = False
     passed_through = False
+    appended = False
     while words:
         match = ASSIGNMENT.match(words[0])
         if match and not words[0].startswith("-"):
@@ -576,6 +611,7 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
         if name in PASS_THROUGH:
             words.pop(0)
             passed_through = True
+            appended = appended or name == "xargs"
             while words and words[0].startswith("-"):
                 flag = words.pop(0)
                 if flag in PASS_THROUGH_VALUES.get(name, ()) and words:
@@ -588,6 +624,17 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
         return []
     first = words[0]
     name = program(first)
+    cleared = ctx.cleared or local_cleared
+    if appended and name not in INERT_PROGRAMS:
+        # xargs adds words read from its input to the command, and the check sees none of them:
+        # `printf ':refs/heads/main' | xargs git push origin` deletes a branch it never names.
+        return [Finding(f"{first} behind xargs", f"{first} behind xargs, which runs it with words "
+                        "the check cannot see")]
+    if cleared and name not in CLEARED_PROGRAMS and not name.startswith("git-"):
+        # Without the bound's variables, a shell or any program the check looks through can start
+        # a session that carries no check; a Claude or Codex start is judged as cleared itself.
+        return [Finding(f"env -i {first}", f"{first} under env -i, which clears the variables that "
+                        "carry the command check into a session it may start")]
     if passed_through and name not in JUDGED_PROGRAMS and name not in INERT_PROGRAMS:
         # A pass-through option nobody listed leaves its value where the program should be,
         # so a write after it is refused on its signature rather than passed unjudged.
@@ -597,7 +644,6 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
             return found
     if first.startswith("$") and not first.lower().startswith("$env:"):
         return _tripwire(" ".join(words), "a variable in program position")
-    cleared = ctx.cleared or local_cleared
     if name in ("export", "declare", "typeset", "local", "readonly"):
         for word in words[1:]:
             match = ASSIGNMENT.match(word)
@@ -657,13 +703,7 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
             found.extend(_tripwire(ctx.piped, "a shell reading commands piped into it"))
         return found
     if name in POWERSHELLS:
-        for index, word in enumerate(words[1:], 1):
-            if word.lower() in ("-c", "-command", "/c", "/command"):
-                return _inner(ctx, " ".join(words[index + 1:]))
-            if word.lower() in ("-encodedcommand", "-ec", "-e"):
-                return [Finding("encoded PowerShell command",
-                                "an encoded PowerShell command cannot be judged")]
-        return []
+        return _judge_powershell(name, words, ctx)
     if name == "cmd":
         for index, word in enumerate(words[1:], 1):
             if word.lower() in ("/c", "/k"):
@@ -754,6 +794,7 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
     cwd = ctx.cwd
     words = list(arguments)
     redirecting: list[str] = []
+    exec_moved: list[str] = []
     while words and words[0].startswith("-"):
         flag = words.pop(0)
         stem = flag.split("=", 1)[0]
@@ -770,6 +811,9 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
             # Bare --exec-path takes no value: like these others, git prints and stops there.
             return []
         elif stem in GIT_VALUE_OPTIONS or stem == "--exec-path":
+            if stem == "--exec-path":
+                # It moves where git finds a command it does not build in.
+                exec_moved.append(stem)
             if "=" not in flag and words:
                 words.pop(0)
         elif flag not in GIT_FLAG_OPTIONS:
@@ -784,6 +828,13 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
     if not words:
         return []
     subcommand = words[0]
+    redirected = redirecting + exec_moved + [name for name in ctx.assigned if name in REDIRECTING_GIT_VARIABLES
+                                or name.startswith(REDIRECTING_GIT_PREFIX) or name == "GIT_EXEC_PATH"]
+    if redirected and subcommand not in GIT_BUILTINS:
+        # The alias lookup reads the tree's own configuration, not the redirected one, so a
+        # subcommand that may be an alias there cannot be read; a -C directory is followed instead.
+        return [Finding(f"git {subcommand}", f"`git {subcommand}` under {', '.join(sorted(set(redirected)))}, "
+                        "which may run an alias from a configuration the check does not read")]
     config_keys = [word for word in words[1:] if not word.startswith("-")]
     if subcommand == "config" and any(PUSH_SHAPING_KEY.match(word.lower()) for word in words[1:]) and not (
             {"--get", "--get-all", "--get-regexp", "-l", "--list"} & set(words[1:])
@@ -808,8 +859,8 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
             return [Finding(f"git {subcommand}", f"`git {subcommand}`, which may be an alias "
                             "whose configuration could not be read")]
         if found == "alias":
-            # An alias may name another alias, which is followed here by hand; no alias a step
-            # defines chains five deep, so the limit bounds the recursion, a loop included.
+            # An alias may name another alias, which is followed here by hand; the limit, well
+            # past any chain a step defines, bounds the recursion, a loop included.
             if value.startswith("!") or expansions >= 5 or redirecting:
                 return [Finding(f"git {subcommand}", f"the git alias {subcommand}, which runs a "
                                 "shell command, nests too deeply, or runs under a redirecting option")]
@@ -1333,31 +1384,88 @@ def thread_owner(thread: str) -> tuple[str, int] | None:
 def judge_http(name: str, arguments: list[str]) -> list[Finding]:
     if not any(re.search(r"(?:api|uploads)\.github\.com", word, re.I) for word in arguments):
         return []
-    lowered = [word.lower() for word in arguments]
     write = f"{name} to the GitHub API"
     if name in ("curl",):
-        for index, word in enumerate(arguments):
-            if word in ("-X", "--request") and index + 1 < len(arguments) \
-                    and arguments[index + 1].upper() not in ("GET", "HEAD"):
-                return [Finding(write, f"{write} with method {arguments[index + 1]}")]
-            if re.match(r"^-X(?!GET$|HEAD$).+", word) or word.startswith("--request=") and \
-                    word.split("=", 1)[1].upper() not in ("GET", "HEAD"):
-                return [Finding(write, f"{write} with a non-GET method")]
-            if word in ("-d", "-F", "-T", "--json", "--form", "--upload-file") or \
-                    word.startswith(("--data", "-d", "--form", "--json")):
-                return [Finding(write, f"{write} with a request body")]
-        return []
+        problem = _curl_unread(arguments)
+        return [Finding(write, f"{write} with {problem}")] if problem else []
     if name == "wget":
         if any(word.startswith(("--method", "--post-", "--body-")) and
                not re.match(r"--method=(?:GET|HEAD)$", word, re.I) for word in arguments):
             return [Finding(write, f"{write} with a non-GET method or body")]
         return []
-    for index, word in enumerate(lowered):
-        if word == "-method" and index + 1 < len(lowered) and lowered[index + 1] not in ("get", "head"):
-            return [Finding(write, f"{write} with method {arguments[index + 1]}")]
-        if word in ("-body", "-infile"):
-            return [Finding(write, f"{write} with a request body")]
-    return []
+    problem = _web_cmdlet_unread(arguments)
+    return [Finding(write, f"{write} with {problem}")] if problem else []
+
+
+# curl's options that send nothing and change no method, as single letters and long names, and
+# those of them that take a value. Any other option may send a body or a method, so a request
+# carrying one is read as a write.
+CURL_READ_LETTERS = set("sSLfiIvkgq#")
+CURL_READ_VALUE_LETTERS = set("HoAwmeurbcxzE")
+CURL_READ_LONG = {"--silent", "--show-error", "--location", "--fail", "--include", "--head",
+                  "--verbose", "--insecure", "--compressed", "--globoff", "--fail-with-body",
+                  "--no-progress-meter", "--location-trusted"}
+CURL_READ_LONG_VALUES = {"--header", "--output", "--user-agent", "--write-out", "--max-time",
+                         "--user", "--retry", "--connect-timeout", "--referer", "--url", "--range",
+                         "--cookie", "--cookie-jar", "--proxy", "--oauth2-bearer", "--cacert",
+                         "--retry-delay", "--retry-max-time", "--max-redirs"}
+
+
+def _curl_unread(arguments: list[str]) -> str | None:
+    """Why a curl request cannot be read as a GET with no body, or None when it can."""
+    words = list(arguments)
+    while words:
+        word = words.pop(0)
+        if word == "--":
+            return None
+        if word.startswith("--"):
+            stem, _, joined = word.partition("=")
+            if stem == "--request":
+                method = joined or (words.pop(0) if words else "")
+                if method.upper() not in ("GET", "HEAD"):
+                    return f"method {method}"
+            elif stem in CURL_READ_LONG_VALUES:
+                if not joined and words:
+                    words.pop(0)
+            elif stem not in CURL_READ_LONG:
+                return f"the option {word}"
+        elif word.startswith("-") and len(word) > 1:
+            for index, letter in enumerate(word[1:], 1):
+                if letter == "X" or letter in CURL_READ_VALUE_LETTERS:
+                    value = word[index + 1:] or (words.pop(0) if words else "")
+                    if letter == "X" and value.upper() not in ("GET", "HEAD"):
+                        return f"method {value}"
+                    break
+                if letter not in CURL_READ_LETTERS:
+                    return f"the option -{letter}"
+    return None
+
+
+# Invoke-RestMethod and Invoke-WebRequest parameters that send nothing, spelled out in full.
+# PowerShell also takes an abbreviated or colon-joined parameter; the check reads neither, so a
+# request carrying one is read as a write.
+WEB_CMDLET_READS = {"-uri", "-headers", "-outfile", "-usebasicparsing", "-timeoutsec", "-useragent",
+                    "-maximumredirection", "-passthru", "-skipcertificatecheck", "-authentication",
+                    "-token", "-credential", "-erroraction", "-sessionvariable", "-websession",
+                    "-contenttype", "-method"}
+WEB_CMDLET_SWITCHES = {"-usebasicparsing", "-passthru", "-skipcertificatecheck"}
+
+
+def _web_cmdlet_unread(arguments: list[str]) -> str | None:
+    words = list(arguments)
+    while words:
+        word = words.pop(0)
+        if not word.startswith("-"):
+            continue
+        lowered = word.lower()
+        if lowered not in WEB_CMDLET_READS:
+            return f"the parameter {word}"
+        if lowered in WEB_CMDLET_SWITCHES:
+            continue
+        value = words.pop(0) if words else ""
+        if lowered == "-method" and value.lower() not in ("get", "head"):
+            return f"method {value}"
+    return None
 
 
 def _same_path(left: str, right: str) -> bool:
