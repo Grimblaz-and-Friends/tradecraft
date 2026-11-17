@@ -114,6 +114,55 @@ def test_a_push_under_another_name_is_refused(tree, command):
     assert decision(command, tree, "branch") == "deny"
 
 
+def test_a_refspec_naming_no_destination_is_read_through_the_push_mapping(tree):
+    # git sends `git push origin <own-branch>` to main once remote.origin.push maps it there.
+    git(tree, "config", "remote.origin.push", "refs/heads/tradecraft/894-ab:refs/heads/main")
+    assert decision("git push origin tradecraft/894-ab", tree, "branch") == "deny"
+    # HEAD is not mapped by git, and an explicit destination is judged as itself.
+    assert decision("git push origin HEAD", tree, "branch") == "allow"
+    assert decision("git push origin HEAD:refs/heads/tradecraft/894-ab", tree, "branch") == "allow"
+    assert decision("git push origin HEAD:refs/heads/main", tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "git config remote.origin.push refs/heads/tradecraft/894-ab:refs/heads/main",
+    "git config remote.origin.pushurl https://github.com/other/x.git",
+    "git config --add remote.origin.push x:y; git push origin tradecraft/894-ab",
+    "git config push.default matching",
+    "git config url.https://github.com/other/.insteadOf https://github.com/o/",
+    "git remote set-url --push origin https://github.com/other/x.git",
+    "git remote rename origin old",
+])
+def test_writing_what_a_later_push_reads_is_refused(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "git config --get remote.origin.push",
+    "git config user.name t",
+    "git config --list",
+    "git remote -v",
+    "git remote add fixture ../fixture.git",
+])
+def test_reading_config_or_writing_other_keys_passes(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+
+
+def test_env_chdir_holds_for_envs_own_command_only(tree, tmp_path):
+    # The other tree's origin is the allowed repository; this tree's points elsewhere.
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q", "-b", "tradecraft/894-ab")
+    git(other, "remote", "add", "origin", "https://github.com/o/r.git")
+    git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+    git(tree, "remote", "set-url", "origin", "https://github.com/someone/else.git")
+    command = f"env -C {other.as_posix()} true; git push origin HEAD:refs/heads/tradecraft/894-ab"
+    assert decision(command, tree, "branch") == "deny"
+    # Inside env's own command the directory does hold.
+    inside = f"env -C {other.as_posix()} git push origin HEAD:refs/heads/tradecraft/894-ab"
+    assert decision(inside, tree, "branch") == "allow"
+
+
 def test_a_stored_alias_is_judged_as_what_it_runs(tree):
     git(tree, "config", "alias.p", "push")
     git(tree, "config", "alias.sh", "!git push origin HEAD:refs/heads/tradecraft/894-ab")

@@ -827,8 +827,6 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             request["recipient_allocation_seconds"] = allocation
             request["budget_override_reason"] = budget_reason
             github_bound = intent.get("github_write_bound") if command is not None and not preparation_error else None
-            if github_bound is None:
-                github_notice = b""
             if args.vendor == "claude" and command is not None and not preparation_error:
                 # The notice is part of the effective input; its digest covers it.
                 notice = claude_launch_notice(allocation)

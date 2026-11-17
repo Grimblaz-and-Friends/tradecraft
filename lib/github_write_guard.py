@@ -60,6 +60,11 @@ GIT_ENDING_OPTIONS = {"--exec-path", "--html-path", "--man-path", "--info-path",
 # Each writes refs to a remote outside `git push`; a step's own push goes through git push, so
 # these are refused rather than judged.
 GIT_OTHER_PUSHES = {"send-pack", "http-push"}
+# Configuration a push reads when it runs. Written and pushed in one command line, the push would
+# be judged against the configuration before the write, so writing any of these is refused.
+PUSH_SHAPING_KEY = re.compile(
+    r"^(alias\..+|remote\..+\.(push|pushurl|url|mirror)|remote\.pushdefault|push\.default"
+    r"|branch\..+\.(pushremote|remote)|url\..+\.(insteadof|pushinsteadof))$")
 # git's own commands, which no alias can replace, so a subcommand outside them is looked up as
 # a stored alias before it is judged.
 GIT_BUILTINS = {
@@ -501,9 +506,16 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
                 elif words[0].startswith("--unset="):
                     _record_assignment(ctx, words[0].split("=", 1)[1], None)
                     words.pop(0)
-                elif words[0] in ("-C", "--chdir") and len(words) > 1:
-                    ctx.cwd = _resolve_dir(ctx.cwd, words[1])
-                    del words[:2]
+                elif (words[0] in ("-C", "--chdir") and len(words) > 1) or words[0].startswith("--chdir="):
+                    target = words[0].split("=", 1)[1] if "=" in words[0] else words[1]
+                    del words[:1 if "=" in words[0] else 2]
+                    # The directory holds for env's own command, not for later ones on the line.
+                    saved = ctx.cwd
+                    ctx.cwd = _resolve_dir(ctx.cwd, target)
+                    try:
+                        return judge_simple(["env", *(["-i"] if local_cleared else []), *words], ctx)
+                    finally:
+                        ctx.cwd = saved
                 elif words[0].startswith("-"):
                     words.pop(0)
                 elif ASSIGNMENT.match(words[0]):
@@ -725,13 +737,17 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
     if not words:
         return []
     subcommand = words[0]
-    if subcommand == "config" and any(word.lower().startswith("alias.") for word in words[1:]) and not (
+    if subcommand == "config" and any(PUSH_SHAPING_KEY.match(word.lower()) for word in words[1:]) and not (
             {"--get", "--get-all", "--get-regexp", "-l", "--list"} & set(words[1:])
             or words[1:2] in (["get"], ["list"])):
-        # A stored alias is resolved when it runs, but one stored and run in the same command
-        # is not stored yet when the command is judged.
-        return [Finding("git config alias", "storing a git alias, which can run a push or a shell "
-                        "under another name")]
+        # A stored alias or push mapping is read when the push runs, but one stored and pushed in
+        # the same command line is not stored yet when the line is judged.
+        return [Finding("git config", "storing an alias or a push mapping, which changes what a "
+                        "later push writes or runs")]
+    if subcommand == "remote" and words[1:2] in (["set-url"], ["rename"]):
+        # The same reason: it changes where a later push on the same line writes.
+        return [Finding(f"git remote {words[1]}", "changing a remote, which changes where a later "
+                        "push writes")]
     if subcommand in GIT_OTHER_PUSHES or (subcommand == "subtree" and "push" in words[1:]):
         return [Finding(f"git {subcommand}", f"`git {subcommand}`, which writes refs to a remote; "
                         "a step's own push goes through git push")]
@@ -904,6 +920,7 @@ def _destination_refs(refspecs: list[str], cwd: str | None, remote: str
             return None
         return [("refs/heads/" + push[len(prefix):], None)]
     refs: list[tuple[str, str | None]] = []
+    mapped = _run_git(cwd, "config", "--get-all", f"remote.{remote}.push")
     for spec in refspecs:
         if spec.startswith("+"):
             refs.append(("", f"a forced refspec {spec}"))
@@ -918,6 +935,12 @@ def _destination_refs(refspecs: list[str], cwd: str | None, remote: str
             if not source:
                 refs.append(("", f"a deletion refspec {spec}"))
                 continue
+        elif spec != "HEAD" and mapped:
+            # git sends a named ref with no destination where remote.<name>.push maps it, which
+            # this check does not read, so the push is refused rather than judged as same-named.
+            # HEAD is not mapped: git sends it to the current branch.
+            refs.append(("", f"a refspec {spec} naming no destination, which remote.{remote}.push maps"))
+            continue
         elif spec == "HEAD":
             current = _run_git(cwd, "symbolic-ref", "--short", "-q", "HEAD")
             if not current:
