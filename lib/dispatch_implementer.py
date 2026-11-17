@@ -46,6 +46,7 @@ from codex_pytest import implementer_pytest_overrides
 from seat_process import run_process
 import implementer_environment as environments
 import implementer_policy as policy
+import keep_warm
 import codex_implementer as native_codex
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
@@ -178,6 +179,50 @@ def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path,
             shutil.rmtree(directory, ignore_errors=True)
         return
     raise ImplementerError("cannot write the launch's instruction file: " + "; ".join(errors))
+
+
+def _stop_waiting(args: argparse.Namespace, deadline, metadata: dict) -> None:
+    """End the waiting sessions this launch replaces, just before it starts its process.
+
+    Any route or vendor counts. A launch that ends before starting anything
+    leaves the waiting session the entrance resumes next, so its keep-warm stays.
+    Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+    """
+    held = getattr(args, "keep_warm_held", None)
+    if held is None:
+        return
+    try:
+        # A ping in flight is waited for only within what the launch's own deadline leaves; before the
+        # window opens, only until the spawn can still fall by the cap's end.
+        wait = (max(0.0, deadline.cap_left() - lifecycle.SPAWN_MARGIN_SECONDS)
+                if deadline.cap is not None and not deadline.in_window else deadline.remaining())
+    except TimeoutError:
+        wait = 0.0
+    held.enter_context(keep_warm.stop_for_launch(args.work, args.stage, args.resume, wait_seconds=wait,
+                                                 instalment=metadata.get("instalment")))
+
+
+def _keep_warm_settings(path: Path) -> bytes | str:
+    """The prepared settings a ping reuses, or why they can't be read.
+
+    Only keep-warm needs them, so a failed read is a keep-warm fault at the
+    turn's end and never a failed preparation of the launch.
+    """
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        return f"cannot read the prepared settings {path}: {exc}"
+
+
+def _shim_record(shim: Path | None) -> dict[str, str] | None:
+    # An unreadable instruction file must never change the launch, so keep-warm
+    # goes without it; the ping then misses only that file, not the cached conversation.
+    if shim is None:
+        return None
+    try:
+        return {"directory": str(shim), "text": (shim / "CLAUDE.md").read_bytes().decode("utf-8")}
+    except (OSError, UnicodeError):
+        return None
 
 
 def build_command(args: argparse.Namespace, executable: list[str], last_message: Path) -> list[str]:
@@ -440,19 +485,33 @@ def run_implementer(args: argparse.Namespace) -> int:
 
 def _launch_implementer(args: argparse.Namespace, deadline) -> int:
     deadline.remaining()  # A launch whose cap has ended reserves no bundle.
+    # The launch's environment changes are read against the launcher's own,
+    # taken before an artifact launch sanitizes it.
+    if getattr(args, "keep_warm_env", None) is None:
+        args.keep_warm_env = dict(os.environ)
+    args.keep_warm_pending = None
     # This joins the scope `main` opened, and gives a launcher called in process
     # without `main`, as the entrance's tests call it, its own scope seeded from the handoff.
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     seed = preflight.load_handoff(getattr(args, "preflight_input", None))
-    with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline):
+    with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline), \
+            ExitStack() as held:
         # Everything before the recipient's spawn that no other part claims; the
         # spawn closes it, so the recipient's own time is never counted here.
         preparation.enter_context(preflight.part("launch_preparation"))
         args.preparation_timer = preparation
+        # Holds a resumed session's ping lock until the launch returns.
+        args.keep_warm_held = held
         if args.stage == "artifact":
             with artifact_tree.isolated_git_environment():
-                return _run_implementer(args, deadline)
-        return _run_implementer(args, deadline)
+                code = _run_implementer(args, deadline)
+        else:
+            code = _run_implementer(args, deadline)
+    if args.keep_warm_pending is not None:
+        # Started directly, the launcher is the outermost process: its last act,
+        # after its own cleanup. Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+        keep_warm.start_runner(args.keep_warm_pending, args.keep_warm_env)
+    return code
 
 
 def _run_implementer(args: argparse.Namespace, deadline) -> int:
@@ -587,6 +646,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         route = _cloud_route(args)
         if route is not None:
             entry, route_source, refusal = route
+            if refusal is None:
+                _stop_waiting(args, deadline, metadata)
             return cloud_build.run(
                 args, deadline, entry=entry, route_source=route_source,
                 effective_prompt=effective_prompt, prompt=prompt, context=context,
@@ -647,6 +708,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             child_env = artifact_tree.environment() if args.stage == "artifact" else None
             intent = {"status": "unprepared", "disabled_plugin_ids": [], "allowed_plugins": []}
             preparation_error = None
+            prepared_settings = None
             if executable is not None and unavailable_reason is None:
                 try:
                     if args.vendor == "claude":
@@ -654,6 +716,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                             Path(__file__).resolve().parent.parent, env=child_env,
                             write_guard={"root": root, "session": args.resume or args.session_id})
                         args.launch_settings_path = intent["settings_path"]
+                        prepared_settings = _keep_warm_settings(Path(intent["settings_path"]))
                     else:
                         with preflight.part("vendor"):
                             intent = policy.codex_prepare(executable, root, deadline, env=child_env)
@@ -940,6 +1003,10 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         _handover_phase(
                             args.handover_state, args.session_id or args.resume, "running"
                         )
+                    # Just before the spawn, so a launch that starts nothing leaves keep-warm as it was;
+                    # before the window opens, so a wait for a ping in flight is the launcher's time, not the
+                    # recipient's.
+                    _stop_waiting(args, deadline, metadata)
                     deadline.open_window()
                     if deadline.window_opened_late_seconds is not None:
                         record["window_opened_late_seconds"] = deadline.window_opened_late_seconds
@@ -1198,6 +1265,35 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 print(f"implementer: {args.vendor} ({args.model}, {args.effort}; source {request['requested']['sources']['vendor']}) session {session_note} -> {output}")
             else:
                 print(f"implementer: {attempt['reason']}", file=sys.stderr)
+            if args.vendor == "claude":
+                # The run record is final; nothing here changes this launch's result,
+                # so even building the turn's facts is a keep-warm fault if it fails.
+                try:
+                    turn = {
+                        "vendor": args.vendor, "cloud": False, "launched": attempt["launched"],
+                        "session": args.resume or args.session_id,
+                        "observed_session": attempt["observed"].get("session_id"),
+                        "outcome": record["outcome"], "cleanup_proven": record.get("cleanup_proven"),
+                        "launch_unresolved": record.get("launch_unresolved"),
+                        "session_identity_error": record.get("session_identity_error"),
+                        "stage": args.stage, "work": args.work, "root": str(root),
+                        "instalment": metadata.get("instalment"),
+                        "fallback_root": copy.get("holder_root") if copy else None,
+                        "plugin_root": str(Path(__file__).resolve().parent.parent),
+                        "command": command, "settings_bytes": prepared_settings,
+                        "env_start": args.keep_warm_env, "env_child": child_env,
+                        "shim": _shim_record(shim), "lineage_pull_request": args.lineage_pull_request,
+                        "dispatch_id": dispatch_id, "completed_at": record["completed_at"],
+                        "stdout_path": str(stdout_path), "projects": str(projects), "model": args.model,
+                        "starter": args.keep_warm_starter, "start_token": args.keep_warm_token,
+                    }
+                except Exception as exc:
+                    keep_warm.fault(args.work, "start", f"{type(exc).__name__}: {exc}",
+                                    session=args.resume or args.session_id)
+                    turn = None
+                pending = keep_warm.after_turn(turn) if turn is not None else None
+                if pending is not None and args.keep_warm_starter != "entrance":
+                    args.keep_warm_pending = pending
             return return_code
 
 
@@ -1260,6 +1356,9 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--lifecycle-input", type=Path, help=argparse.SUPPRESS)
     cli.add_argument("--preflight-input", type=Path, help=argparse.SUPPRESS)
     cli.add_argument("--budget-override-reason")
+    cli.add_argument("--keep-warm-starter", choices=("entrance",),
+                     help="leave a waiting session's keep-warm for the entrance to start after its cleanup")
+    cli.add_argument("--keep-warm-token", help="names the pending keep-warm start for the entrance")
     return cli
 
 
