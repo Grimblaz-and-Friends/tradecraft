@@ -2293,7 +2293,9 @@ def test_a_granted_turn_is_told_one_allowance_naming_its_grant(job):
 def test_a_granted_turn_is_refused_before_a_cloud_launch(job, monkeypatch):
     args, _ = job
     _granted_turn(args, [GRANT])
-    args.vendor, args.resume = "claude", None  # the cloud route takes only a fresh turn
+    # A fresh turn reaches the cloud route here; a local session's resume would stay local. A
+    # cse_ cloud session's resume reaches it too, and the grant is refused before either launches.
+    args.vendor, args.resume = "claude", None
     _cloud_record(Path.home(), "o/r")
 
     def forbidden(*_a, **_k):

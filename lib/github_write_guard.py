@@ -808,6 +808,8 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
             return [Finding(f"git {subcommand}", f"`git {subcommand}`, which may be an alias "
                             "whose configuration could not be read")]
         if found == "alias":
+            # An alias may name another alias, which is followed here by hand; no alias a step
+            # defines chains five deep, so the limit bounds the recursion, a loop included.
             if value.startswith("!") or expansions >= 5 or redirecting:
                 return [Finding(f"git {subcommand}", f"the git alias {subcommand}, which runs a "
                                 "shell command, nests too deeply, or runs under a redirecting option")]
