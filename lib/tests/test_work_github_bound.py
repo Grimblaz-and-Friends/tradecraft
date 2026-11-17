@@ -275,7 +275,7 @@ def test_a_bound_refused_before_launch_reads_as_read(monkeypatch):
     refused = github_allowance.bound_record(
         github_allowance.allowance_for("build", repository="o/r", branch="b", pull_request=None),
         carrier="hook", status="not-run", reason="refused before launch: x", self_test=None,
-        push_credential="kept", child_settings=None)
+        push_credential="not-applicable", child_settings=None)
     rows = [(0, "b1", {"dispatch_id": "d7", "stage": "build"}, {"github_write_bound": refused})]
     monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a, **_k: rows)
     monkeypatch.setattr(work.work_recovery, "scoped", lambda _state, found, **_k: found)

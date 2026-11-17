@@ -2325,6 +2325,7 @@ def test_a_dispatch_stating_another_allowance_is_refused_before_launch(job):
     bound = run["github_write_bound"]
     assert bound["command_check"]["status"] == "not-run" and bound["child_settings"] is None
     assert "other than the one this launch holds" in bound["command_check"]["reason"]
+    assert bound["push_credential"] == "not-applicable"
 
 
 def _cloud_launch(job, monkeypatch, dispatch):

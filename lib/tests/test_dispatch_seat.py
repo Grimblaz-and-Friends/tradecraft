@@ -2009,6 +2009,7 @@ def test_a_use_consumer_dispatch_stating_another_allowance_is_an_unlaunched_atte
     bound = logged["github_write_bound"]
     assert bound["command_check"]["status"] == "not-run" and "other than" in bound["command_check"]["reason"]
     assert bound["allowance"]["kind"] == "none" and bound["child_settings"] is None
+    assert bound["push_credential"] == "not-applicable"
     assert attempt["permission_boundary_unavailable_reason"] == "attempt was not launched"
 
 

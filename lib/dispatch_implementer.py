@@ -770,9 +770,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     intent["status"] = "failed"
                     intent["reason"] = preparation_error
                     # The run record says why the armed check never ran, as the use consumer's does;
-                    # no log was read, so it names no child settings to read one from.
+                    # no log was read, so it names no child settings to read one from, and no
+                    # session ran with the prepared environment, so no credential was kept or removed.
                     prepared = intent["github_write_bound"]["record"]
-                    refused_bound = {**prepared, "child_settings": None, "command_check": {
+                    refused_bound = {**prepared, "child_settings": None,
+                                     "push_credential": "not-applicable", "command_check": {
                         **prepared["command_check"], "status": "not-run",
                         "reason": f"refused before launch: {exc}"}}
             command = (

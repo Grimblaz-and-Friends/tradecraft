@@ -790,6 +790,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 except DispatchError as exc:
                                     # Refused before launch: the attempt names why, as a launch
                                     # that could not start does, so its record is not left blank.
+                                    # No session ran, so no credential was kept or removed.
                                     attempt.update(outcome="error", reason=str(exc))
                                     record["github_write_bound"] = github_allowance.bound_record(
                                         use_allowance(args), carrier="shell-prefix", status="not-run",
