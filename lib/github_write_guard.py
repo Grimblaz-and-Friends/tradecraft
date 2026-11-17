@@ -60,8 +60,9 @@ GIT_ENDING_OPTIONS = {"--exec-path", "--html-path", "--man-path", "--info-path",
 # Each writes refs to a remote outside `git push`; a step's own push goes through git push, so
 # these are refused rather than judged.
 GIT_OTHER_PUSHES = {"send-pack", "http-push"}
-# Configuration a push reads when it runs. Written and pushed in one command line, the push would
-# be judged against the configuration before the write, so writing any of these is refused.
+# Configuration a push reads when it runs. Writing one is refused even with no push beside it: it
+# changes what every later push writes, in a later command, step or started session too, none of
+# which this command's judgment sees, and a step's own work never needs to change one.
 PUSH_SHAPING_KEY = re.compile(
     r"^(alias\..+|remote\..+\.(push|pushurl|url|mirror)|remote\.pushdefault|push\.default"
     r"|branch\..+\.(pushremote|remote)|url\..+\.(insteadof|pushinsteadof))$")
@@ -171,10 +172,6 @@ def _scan(text: str, start: int = 0, closer: str | None = None
           ) -> tuple[str, list[str], list[str], int]:
     """Turn unquoted newlines into ';', and lift out substitutions and here-documents.
 
-    Returns the outer text with each ``$( )`` or backtick body replaced by a
-    placeholder word and each here-document operator replaced by a numbered
-    placeholder word; the substitution bodies (each judged as its own command
-    text); the here-document bodies, by number; and where scanning stopped.
     A here-document body is data unless a shell reads it, so a commit message
     that mentions ``git push`` is never mistaken for one.
     """
@@ -229,9 +226,16 @@ def _scan(text: str, start: int = 0, closer: str | None = None
                     raise Unparsed("a here-document with no body")
                 return "".join(out), subs, docs, i
             depth -= 1
+        if char in "<>":
+            _drop_stream_number(out)
         if char in "'\"":
             quote = char
-        elif char == "<" and text[i + 1:i + 2] == "<" and text[i + 2:i + 3] != "<":
+        elif text.startswith("<<<", i):
+            # A here-string's data is its next word only; the lines after it are commands.
+            out.append("<<<")
+            i += 3
+            continue
+        elif char == "<" and text[i + 1:i + 2] == "<":
             j = i + 2
             strip = text[j:j + 1] == "-"
             if strip:
@@ -273,6 +277,18 @@ def _scan(text: str, start: int = 0, closer: str | None = None
     return "".join(out), subs, docs, i
 
 
+def _drop_stream_number(out: list[str]) -> None:
+    """Drop a number joined to the redirection that follows, which names a stream, not an argument.
+
+    Only a number that starts its word is one: ``x 13 > f`` passes 13 to the command.
+    """
+    k = len(out)
+    while k and len(out[k - 1]) == 1 and out[k - 1].isdigit():
+        k -= 1
+    if k < len(out) and (k == 0 or out[k - 1][-1:] in (" ", "\t", ";", "&", "|", "(", ")")):
+        del out[k:]
+
+
 OPERATORS = sorted(SEPARATORS | REDIRECTS, key=len, reverse=True)
 
 
@@ -296,8 +312,6 @@ def _operators(token: str) -> list[str]:
 
 
 def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str], list[str]]:
-    """Simple commands as word lists, their command substitutions, here-document bodies, and
-    for each command the words piped into it from earlier in its pipeline."""
     outer, subs, docs, _end = _scan(text)
     lexer = shlex.shlex(outer, posix=True, punctuation_chars="();<>|&")
     lexer.whitespace_split = True
@@ -333,8 +347,6 @@ def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str], li
                     close(operator)
                     skip = False
                 else:
-                    if current and current[-1].isdigit():
-                        current.pop()
                     skip = True
         else:
             current.append(token)
@@ -393,7 +405,9 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
     try:
         commands, subs, docs, feeds = split_commands(text)
     except Unparsed as exc:
-        return _tripwire(text, str(exc))
+        # A signature scan would pass a write it does not name, such as git send-pack.
+        return [Finding("unparsed command", f"the command could not be parsed ({exc}), so what it "
+                        "runs cannot be judged")]
     outer_docs, ctx.docs = ctx.docs, docs
     findings: list[Finding] = []
     for sub in subs:
@@ -409,17 +423,15 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
 
 
 def _tripwire(text: str, why: str) -> list[Finding]:
-    """Refuse text that cannot be split when it carries a signature of anything the check judges.
+    """Refuse words the check cannot place when they carry a common write or start signature.
 
-    The signatures cover every write and start the check refuses (a git push, any gh
-    command, the GitHub API hosts, a Claude or Codex start), so text carrying none of them
-    holds nothing the check would refuse and passes. An internal error is different: it
-    leaves even a parsed command unjudged, so the entries fail closed on it.
+    These words parse but stand where the check cannot tell what runs. The signatures name the
+    common routes, not every one, so refusing outright would refuse many ordinary commands to
+    catch the rare one that writes.
     """
     if TRIPWIRE.search(text):
-        return [Finding("unparsed command",
-                        f"the command could not be parsed ({why}) and carries an unparsed "
-                        "GitHub-write or session-start signature")]
+        return [Finding("unplaced command",
+                        f"{why}, and the words carry a GitHub-write or session-start signature")]
     return []
 
 
@@ -685,7 +697,6 @@ def _run_git(cwd: str | None, *arguments: str) -> str | None:
 # --- git ------------------------------------------------------------------------
 
 def _stored_alias(cwd: str | None, name: str) -> tuple[str, str | None]:
-    """("none", None), ("alias", value), or ("unreadable", None) for a stored git alias."""
     try:
         result = subprocess.run(["git", *(["-C", cwd] if cwd else []), "config", "--get",
                                  f"alias.{name}"], capture_output=True, timeout=20,
@@ -740,12 +751,11 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
     if subcommand == "config" and any(PUSH_SHAPING_KEY.match(word.lower()) for word in words[1:]) and not (
             {"--get", "--get-all", "--get-regexp", "-l", "--list"} & set(words[1:])
             or words[1:2] in (["get"], ["list"])):
-        # A stored alias or push mapping is read when the push runs, but one stored and pushed in
-        # the same command line is not stored yet when the line is judged.
+        # Refused alone, not only beside a push: see PUSH_SHAPING_KEY.
         return [Finding("git config", "storing an alias or a push mapping, which changes what a "
                         "later push writes or runs")]
     if subcommand == "remote" and words[1:2] in (["set-url"], ["rename"]):
-        # The same reason: it changes where a later push on the same line writes.
+        # Refused alone for PUSH_SHAPING_KEY's reason: it changes where every later push writes.
         return [Finding(f"git remote {words[1]}", "changing a remote, which changes where a later "
                         "push writes")]
     if subcommand in GIT_OTHER_PUSHES or (subcommand == "subtree" and "push" in words[1:]):
@@ -777,7 +787,6 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
 
 
 def _github_repository(url: str) -> str | None:
-    """owner/name of a GitHub URL, lowercased, or None for another host."""
     match = (re.match(r"^(?:https?|ssh|git)://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+?)/?$", url)
              or re.match(r"^(?:[^@/]+@)?([^/:]+):(?!//)(.+?)/?$", url))
     if not match or match.group(1).lower() not in GITHUB_HOSTS:
@@ -979,7 +988,6 @@ def _push_grant_refs(allowance: dict, repository: str) -> list[str]:
 # --- gh ---------------------------------------------------------------------------
 
 def _gh_parts(words: list[str]) -> tuple[list[str], dict[str, list[str]], list[str]]:
-    """Positional words, flag values, and boolean flags of a gh command."""
     positional: list[str] = []
     values: dict[str, list[str]] = {}
     booleans: list[str] = []
@@ -1150,7 +1158,6 @@ def _graphql_document(fields: dict[str, str], cwd: str | None) -> str | None:
 
 
 def _mutation_fields(document: str) -> list[tuple[str, str]] | None:
-    """Each top-level field of each mutation operation, with its argument text."""
     found: list[tuple[str, str]] = []
     for match in re.finditer(r"\bmutation\b[^{]*\{", document):
         depth, i = 1, match.end()

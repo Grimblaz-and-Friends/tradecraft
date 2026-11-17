@@ -268,6 +268,21 @@ def test_ac9_ac20_the_entrance_report_names_refusals_and_grants(tmp_path, monkey
     assert work._github_write_report(fixture)["status"] == "read"
 
 
+def test_a_bound_refused_before_launch_reads_as_read(monkeypatch):
+    import github_allowance
+    # Both launchers record a bound refused before launch as not-run with no child settings: no
+    # log was prepared to read, so its missing refusals hide nothing.
+    refused = github_allowance.bound_record(
+        github_allowance.allowance_for("build", repository="o/r", branch="b", pull_request=None),
+        carrier="hook", status="not-run", reason="refused before launch: x", self_test=None,
+        push_credential="kept", child_settings=None)
+    rows = [(0, "b1", {"dispatch_id": "d7", "stage": "build"}, {"github_write_bound": refused})]
+    monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *_a, **_k: rows)
+    monkeypatch.setattr(work.work_recovery, "scoped", lambda _state, found, **_k: found)
+    report = work._github_write_report(state(pr=True))
+    assert report == {"status": "read", "refusals": [], "grants": []}
+
+
 def test_ac7_the_cloud_routine_still_names_only_its_two_pushes_and_no_posting():
     import cloud_build
     assert "never push any branch other than the change branch and" in cloud_build._ROUTINE_PROMPT

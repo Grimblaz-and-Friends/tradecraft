@@ -114,7 +114,7 @@ def test_a_push_under_another_name_is_refused(tree, command):
     assert decision(command, tree, "branch") == "deny"
 
 
-def test_a_refspec_naming_no_destination_is_read_through_the_push_mapping(tree):
+def test_a_refspec_naming_no_destination_is_refused_when_the_remote_maps_it(tree):
     # git sends `git push origin <own-branch>` to main once remote.origin.push maps it there.
     git(tree, "config", "remote.origin.push", "refs/heads/tradecraft/894-ab:refs/heads/main")
     assert decision("git push origin tradecraft/894-ab", tree, "branch") == "deny"
@@ -405,14 +405,45 @@ def test_connectors_cannot_be_turned_back_on(tree, command):
     assert decision(f"ENABLE_CLAUDEAI_MCP_SERVERS=false {CHILD} -p hi", tree, "branch") == "allow"
 
 
-def test_text_that_cannot_be_parsed_is_refused_only_with_a_signature(tree):
-    assert decision("cat <<EOF\nunterminated gh issue comment 1", tree, "none") == "deny"
-    assert decision("cat <<EOF\nunterminated hello", tree, "none") == "allow"
-    assert decision('echo "unbalanced gh issue comment 1', tree, "none") == "deny"
-    # Every gh command and API host the check judges is a signature, not just the common ones.
-    assert decision('echo "unbalanced gh codespace delete', tree, "none") == "deny"
-    assert decision('echo "unbalanced https://uploads.github.com/x', tree, "none") == "deny"
+@pytest.mark.parametrize("command", [
+    "cat <<EOF\nunterminated gh issue comment 1",
+    "cat <<EOF\nunterminated hello",
+    'echo "unbalanced gh issue comment 1',
+    'echo "unbalanced hello',
+    # Writes no signature names, before a later line the check cannot parse.
+    'git send-pack https://github.com/o/r HEAD:refs/heads/main\necho "unbalanced',
+    'npx @anthropic-ai/claude-code -p hi\necho "unbalanced',
+    'git remote rename origin old\necho "unbalanced',
+])
+def test_text_that_cannot_be_parsed_is_refused_naming_the_cause(tree, command):
+    verdict = guard.decide(command, str(tree), config("branch", tree))
+    assert verdict["decision"] == "deny"
+    assert "could not be parsed (" in verdict["reason"]
     assert decision('grep "git push" notes.txt', tree, "none") == "allow"
+
+
+@pytest.mark.parametrize("command", ["cat <<< EOF\ngh pr merge 1\nEOF", "cat <<<EOF\ngh pr merge 1\nEOF"])
+def test_a_here_string_is_one_word_and_the_lines_after_it_run(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+    assert decision("grep x <<< 'gh pr merge 1'", tree, "branch") == "allow"
+
+
+@pytest.mark.parametrize("command, expected", [
+    # Spaced, the number is the command's argument: another pull request.
+    ("gh pr comment --body x 13 > /dev/null", "deny"),
+    ("gh pr comment --body x 13 2>&1", "deny"),
+    # Joined, it names the stream redirected.
+    ("gh pr comment 12 --body x 2>/dev/null", "allow"),
+    ("gh pr comment 12 --body x 2>&1", "allow"),
+    ("gh pr comment 12 --body x 1> /dev/null", "allow"),
+])
+def test_a_number_before_a_redirection_is_a_stream_only_when_joined(tree, command, expected):
+    assert decision(command, tree, "review-disposition") == expected
+
+
+def test_a_redirected_own_push_passes(tree):
+    command = "git push origin HEAD:refs/heads/tradecraft/894-ab 2>&1"
+    assert decision(command, tree, "branch") == "allow"
 
 
 # The landing script's route: a message passed by -m, whatever it names.
