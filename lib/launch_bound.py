@@ -359,6 +359,8 @@ def coverage_plan(*, root: Path, home: Path, env: dict[str, str], launcher_plugi
         {"item": "switch", "path": str(tradecraft / "implementer-vendor"), "method": "sha256"},
         # The cloud route's machine switch; a local build that edits it is caught.
         {"item": "cloud-switch", "path": str(tradecraft / "cloud-builds.json"), "method": "sha256"},
+        # The keep-warm machine setting; a build that edits it is caught.
+        {"item": "keep-warm-switch", "path": str(tradecraft / "keep-warm.json"), "method": "sha256"},
         {"item": "rulings", "path": str(tradecraft / "model-rulings.json"), "method": "sha256"},
         {"item": "claude-settings", "path": str(config / "settings.json"), "method": "sha256"},
         {"item": "claude-md", "path": str(config / "CLAUDE.md"), "method": "sha256"},

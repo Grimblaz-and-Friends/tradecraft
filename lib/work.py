@@ -72,6 +72,7 @@ import raw_output
 import build_reach
 import change_cost
 import holder_transcript
+import keep_warm
 import preflight
 from winio import utf8_stdio
 from seat_process import run_inherited_process, run_read
@@ -6591,6 +6592,10 @@ def release_registration(repo: str, issue: int, holder_root: Path,
         write_registry(current)
     else:
         selected = matches[-1]
+    # A released change gets no more turns, so its waiting sessions get no more
+    # pings; each runner ends at its next step.
+    # Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+    keep_warm.drop_work(f"{repo}#{issue}", instalment)
     return Path(str(selected["root"])).expanduser().resolve()
 
 
@@ -10356,6 +10361,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                                    selected_vendor, claude_path if selected_vendor == "claude" else codex_path
                                )),
                             "--holder-session-id", holder_identity]
+                # The entrance starts a waiting session's keep-warm itself, after
+                # its own cleanup. Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+                keep_warm_token = uuid.uuid4().hex
+                command.extend(("--keep-warm-starter", "entrance", "--keep-warm-token", keep_warm_token))
                 if handover_retry_of is not None:
                     command.extend(("--retry-of", handover_retry_of))
                 if selected_vendor in {"claude", "codex"}:
@@ -10415,7 +10424,13 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 setting_resolution.print_plan(launch_plan, label="work")
                 if artifact_run:
                     invoked["value"] = True
-                result = _invoke_recipient(command, deadline)
+                try:
+                    result = _invoke_recipient(command, deadline)
+                except BaseException:
+                    # A launch the entrance couldn't see finish starts no keep-warm.
+                    keep_warm.discard_pending(keep_warm_token)
+                    raise
+                keep_warm.start_pending(keep_warm_token)
                 _emit_report({"stage": decision.stage, "implementer_returned": True}, state, flush=True)
                 return result
 
