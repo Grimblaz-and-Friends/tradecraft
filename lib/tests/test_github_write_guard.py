@@ -479,9 +479,9 @@ def test_a_dispatch_stating_its_own_allowance_and_another_is_refused(tree, other
 
 
 def test_a_record_quoting_the_opening_does_not_refuse_the_launch(tree):
-    # As this change's own settled artifact quotes it: the opening and the request route, apart.
+    # A governing record quoting the opening and the request route apart, as a design does.
     allowance = config("branch", tree)["allowance"]
-    record = ('D5: `sentence(allowance)` gives one paragraph per kind, containing:\n'
+    record = ('`sentence(allowance)` gives one paragraph per kind, containing:\n'
               '- "GitHub writes this step may make: ...", with "none" or the exact list.\n'
               '- "If the work needs any other write, do not make it: end your return with a '
               '**Write requests** section naming each write, why the work needs it, and what it '

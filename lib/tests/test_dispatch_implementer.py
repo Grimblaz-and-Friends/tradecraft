@@ -2320,7 +2320,11 @@ def test_a_dispatch_stating_another_allowance_is_refused_before_launch(job):
     assert run["outcome"] == "error" and run.get("completed_at")
     assert [attempt["launched"] for attempt in run["attempts"]] == [False]
     assert "other than the one this launch holds" in run["attempts"][0]["reason"]
-    assert "handover" not in run and "github_write_bound" not in run
+    assert "handover" not in run
+    # The bound's own record says its check never ran, and why, as the use consumer's does.
+    bound = run["github_write_bound"]
+    assert bound["command_check"]["status"] == "not-run" and bound["child_settings"] is None
+    assert "other than the one this launch holds" in bound["command_check"]["reason"]
 
 
 def _cloud_launch(job, monkeypatch, dispatch):

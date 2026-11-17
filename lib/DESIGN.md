@@ -155,7 +155,7 @@ The comparison of a Claude launch (`launch_bound.py`) also reads, before and aft
 - A ping is never a launch: nothing it writes is under the dispatch store or named `*.request.json` or `*.run.json`, so liveness, resume selection and the launch comparison never see it, and the runner, hook and starter run with `-B` so no bytecode lands in a compared plugin tree. The setting is a covered comparison item, as the cloud switch is. A dead runner is recorded `runner-gone` by the next launch for its work or by `status`.
 - The change's cost report carries keep-warm as its own line, each ping priced once on the rate card and read only after every dispatch's share is fixed, because the session's own running total leaves pings out and nothing else would count them. Beside it, the reload list names each resumed local Claude turn whose first call still wrote more than it read, with its idle time, first-call tokens and the pings sent in that gap, because that list is how the owner judges whether keep-warm works and whether its cap is right. Cloud attempts are left out of the list, since their calls are not logged on this machine.
 
-**Decisions in force:** D-993, a waiting local Claude builder or author is kept warm by an outside resume that saves nothing, capped at eight hours and one wasted reload, recorded on the change's cost records and never as a launch.
+**Decisions in force:** D-993, a waiting local Claude builder or author is kept warm by an outside resume that saves nothing, capped at eight hours and one wasted reload, recorded on the change's cost records and never as a launch; D-986, dispatched sessions make only their step's GitHub writes, whose launch variables a ping carries or leaves out as above.
 
 ## Consumer trees
 

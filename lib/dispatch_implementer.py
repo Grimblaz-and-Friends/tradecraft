@@ -758,6 +758,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     intent["status"] = "failed"
                     intent["reason"] = preparation_error
             github_notice = b""
+            refused_bound = None
             if preparation_error is None and intent.get("github_write_bound"):
                 # Refused like a failed preparation, so the run records it unlaunched and no
                 # session is left to resume.
@@ -768,6 +769,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     preparation_error = str(exc)
                     intent["status"] = "failed"
                     intent["reason"] = preparation_error
+                    # The run record says why the armed check never ran, as the use consumer's does;
+                    # no log was read, so it names no child settings to read one from.
+                    prepared = intent["github_write_bound"]["record"]
+                    refused_bound = {**prepared, "child_settings": None, "command_check": {
+                        **prepared["command_check"], "status": "not-run",
+                        "reason": f"refused before launch: {exc}"}}
             command = (
                 build_command(args, executable, last_message)
                 if executable is not None else None
@@ -949,6 +956,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 record["handover"] = request["handover"]
             if github_bound is not None:
                 record["github_write_bound"] = github_bound["record"]
+            elif refused_bound is not None:
+                record["github_write_bound"] = refused_bound
             record["launched_at"] = request["launched_at"]
             growing = records.GrowingRun(record_path, record, streams,
                 expected=args.resume or args.session_id, holder=args.holder_session_id,

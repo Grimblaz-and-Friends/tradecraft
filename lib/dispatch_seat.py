@@ -791,7 +791,6 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                     # Refused before launch: the attempt names why, as a launch
                                     # that could not start does, so its record is not left blank.
                                     attempt.update(outcome="error", reason=str(exc))
-                                    # The write bound's own record says why its check never ran.
                                     record["github_write_bound"] = github_allowance.bound_record(
                                         use_allowance(args), carrier="shell-prefix", status="not-run",
                                         reason=f"refused before launch: {exc}", self_test=None,
