@@ -65,7 +65,8 @@ GIT_OTHER_PUSHES = {"send-pack", "http-push"}
 # which this command's judgment sees, and a step's own work never needs to change one.
 PUSH_SHAPING_KEY = re.compile(
     r"^(alias\..+|remote\..+\.(push|pushurl|url|mirror)|remote\.pushdefault|push\.default"
-    r"|push\.followtags|branch\..+\.(pushremote|remote)|url\..+\.(insteadof|pushinsteadof))$")
+    r"|push\.followtags|push\.recursesubmodules|submodule\.recurse"
+    r"|branch\..+\.(pushremote|remote)|url\..+\.(insteadof|pushinsteadof))$")
 # git's own commands, which no alias can replace, so a subcommand outside them is looked up as
 # a stored alias before it is judged.
 GIT_BUILTINS = {
@@ -99,7 +100,9 @@ PASS_THROUGH_VALUES = {"nice": {"-n", "--adjustment"},
                                  "--max-args", "-P", "--max-procs", "-s", "--max-chars",
                                  "--process-slot-var", "-J", "-R", "-S"}}
 # Each never runs a later word as a command, so a judged program's name among its arguments
-# is text it reads, prints or passes to a script, not a command it starts.
+# is text it reads, prints or passes to a script, not a command it starts. Some (python, node,
+# sed, awk) can run commands from their own program text; the check reads commands, not what a
+# program's own code runs, the limit lib/DESIGN.md#the-github-write-bound records.
 INERT_PROGRAMS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "ls", "dir", "head",
                   "tail", "wc", "which", "where", "type", "less", "more", "diff", "sort", "uniq",
                   "cut", "tr", "test", "[", "true", "false", "sed", "awk", "jq", "pwd", "mkdir",
@@ -546,7 +549,8 @@ def _split_string(words: list[str]) -> str | None:
 
 
 # Programs that start no session of their own, or whose start is judged as cleared, so an
-# `env -i` ahead of them clears nothing the bound needs.
+# `env -i` ahead of them clears nothing the bound needs; a session a reader's own program text
+# starts is the script limit INERT_PROGRAMS states.
 CLEARED_PROGRAMS = INERT_PROGRAMS | {"git", "gh", "curl", "wget", "invoke-restmethod", "irm",
                                      "invoke-webrequest", "iwr", "claude", "codex"}
 # The pass-through fallback's test: after env or a pass-through program, a word outside this
@@ -920,6 +924,9 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
             if stem in ("--force", "--force-with-lease", "--force-if-includes", "--all",
                         "--mirror", "--tags", "--follow-tags", "--delete", "--prune", "--branches"):
                 always.append(stem)
+            elif stem == "--recurse-submodules" and word != "--recurse-submodules=no":
+                # It pushes submodule commits to their own remotes, other repositories.
+                always.append(stem)
             elif stem == "--repo":
                 repo_option = word.split("=", 1)[1] if "=" in word else (words.pop(0) if words else "")
             elif stem in ("--push-option", "--receive-pack", "--exec") and "=" not in word and words:
@@ -974,6 +981,12 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
             cwd, "config", "--type=bool", "--get", "push.followTags") == "true":
         # Stored, it pushes missing tags beside the branch, as --follow-tags does.
         return [Finding(write, "git push with push.followTags set, which also pushes tags")]
+    if not {"--recurse-submodules=no", "--no-recurse-submodules"} & set(arguments) and (
+            _run_git(cwd, "config", "--get", "push.recurseSubmodules") not in (None, "", "no")
+            or _run_git(cwd, "config", "--type=bool", "--get", "submodule.recurse") == "true"):
+        # Stored, either pushes submodule commits to their own remotes, as --recurse-submodules does.
+        return [Finding(write, "git push with push.recurseSubmodules or submodule.recurse set, which "
+                        "also pushes submodule commits to other repositories")]
     target = (allowance.get("repository") or "").lower()
     repositories = []
     for url in urls:

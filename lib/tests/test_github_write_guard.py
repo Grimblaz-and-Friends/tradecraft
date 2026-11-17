@@ -495,6 +495,23 @@ def test_a_stored_follow_tags_refuses_the_own_push(tree):
     assert decision(own + " --no-follow-tags", tree, "branch") == "allow"
 
 
+def test_a_push_that_also_pushes_submodules_is_refused(tree):
+    own = "git push origin HEAD:refs/heads/tradecraft/894-ab"
+    assert decision(own, tree, "branch") == "allow"
+    assert decision(own + " --recurse-submodules=on-demand", tree, "branch") == "deny"
+    assert decision(own + " --recurse-submodules", tree, "branch") == "deny"
+    assert decision(own + " --recurse-submodules=no", tree, "branch") == "allow"
+    assert decision("git config push.recurseSubmodules on-demand", tree, "branch") == "deny"
+    assert decision("git config submodule.recurse true", tree, "branch") == "deny"
+    git(tree, "config", "push.recurseSubmodules", "on-demand")
+    assert decision(own, tree, "branch") == "deny"
+    assert decision(own + " --recurse-submodules=no", tree, "branch") == "allow"
+    git(tree, "config", "--unset", "push.recurseSubmodules")
+    git(tree, "config", "submodule.recurse", "true")
+    assert decision(own, tree, "branch") == "deny"
+    assert decision(own + " --no-recurse-submodules", tree, "branch") == "allow"
+
+
 def test_a_url_rewritten_by_a_stored_rule_is_refused(tree):
     own = "git push https://github.com/o/r.git HEAD:refs/heads/tradecraft/894-ab"
     assert decision(own, tree, "branch") == "allow"
