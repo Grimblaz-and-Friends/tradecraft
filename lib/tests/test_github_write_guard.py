@@ -535,6 +535,21 @@ def test_brackets_in_a_graphql_string_hide_no_mutation(tree, monkeypatch):
     assert decision(f"gh api graphql -f query='{unterminated}'", tree, "review-disposition") == "deny"
 
 
+def test_a_thread_id_quoted_in_a_reply_body_is_not_the_thread_judged(tree, monkeypatch):
+    monkeypatch.setattr(guard, "thread_owner",
+                        lambda thread: ("o/r", 12) if thread == "OWN" else ("o/r", 13))
+    hidden = ('mutation { addPullRequestReviewThreadReply(input: { body: """pullRequestReviewThreadId: '
+              '"OWN" """, pullRequestReviewThreadId: "OTHER" }) { clientMutationId } }')
+    assert decision(f"gh api graphql -f query='{hidden}'", tree, "review-disposition") == "deny"
+    quoted = ('mutation { addPullRequestReviewThreadReply(input: { body: "see threadId: \\\\"OTHER\\\\"", '
+              'pullRequestReviewThreadId: "OWN" }) { clientMutationId } }')
+    assert decision(f"gh api graphql -f query='{quoted}'", tree, "review-disposition") == "allow"
+    # Two thread fields are each checked.
+    both = ('mutation { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: "OWN", '
+            'pullRequestReviewThreadId: "OTHER", body: "x" }) { clientMutationId } }')
+    assert decision(f"gh api graphql -f query='{both}'", tree, "review-disposition") == "deny"
+
+
 # The landing script's route: a message passed by -m, whatever it names.
 PERSIST = "python scripts/persist.py --expect-branch tradecraft/894-ab"
 

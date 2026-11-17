@@ -1279,19 +1279,34 @@ def judge_graphql(fields: dict[str, str], ctx: Context) -> list[Finding]:
     for name, arguments in mutations:
         if name not in REVIEW_MUTATIONS:
             return [Finding(write, f"the GraphQL mutation {name}")]
-        match = re.search(r"\b(?:%s)\s*:\s*(\"([^\"]*)\"|\$(\w+))" % "|".join(THREAD_ARGUMENTS),
-                          arguments)
-        if not match:
+        threads = _thread_values(arguments, fields)
+        if not threads:
             return [Finding(write, f"a {name} whose thread could not be read")]
-        thread = match.group(2) if match.group(2) is not None else fields.get(match.group(3))
-        if not thread:
-            return [Finding(write, f"a {name} whose thread id variable has no value")]
-        owner = thread_owner(thread)
-        expected = (str(allowance.get("repository") or "").lower(), allowance.get("pull_request"))
-        if owner is None or owner != expected:
-            where = f"{owner[0]}#{owner[1]}" if owner else "an unconfirmed pull request"
-            return [Finding(write, f"a {name} on a thread of {where}")]
+        for thread in threads:
+            if not thread:
+                return [Finding(write, f"a {name} whose thread id could not be read")]
+            owner = thread_owner(thread)
+            expected = (str(allowance.get("repository") or "").lower(), allowance.get("pull_request"))
+            if owner is None or owner != expected:
+                where = f"{owner[0]}#{owner[1]}" if owner else "an unconfirmed pull request"
+                return [Finding(write, f"a {name} on a thread of {where}")]
     return []
+
+
+def _thread_values(arguments: str, fields: dict[str, str]) -> list[str | None]:
+    # Field names are found only outside strings and comments, so a reply body quoting
+    # "threadId: ..." never stands in for the thread GitHub acts on; every one found is checked.
+    masked = re.sub(r'"""(?:\\"""|[\s\S])*?"""|"(?:\\.|[^"\\\n])*"|#[^\n]*',
+                    lambda m: (m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1]
+                               if m.group(0).startswith('"') else " " * len(m.group(0))), arguments)
+    values: list[str | None] = []
+    for match in re.finditer(r"\b(?:%s)\s*:\s*" % "|".join(THREAD_ARGUMENTS), masked):
+        value = re.match(r'"((?:\\.|[^"\\\n])*)"(?!")|\$(\w+)', arguments[match.end():])
+        if not value:
+            values.append(None)
+        else:
+            values.append(value.group(1) if value.group(1) is not None else fields.get(value.group(2)))
+    return values
 
 
 def thread_owner(thread: str) -> tuple[str, int] | None:
