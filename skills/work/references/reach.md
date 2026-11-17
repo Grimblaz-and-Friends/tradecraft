@@ -73,3 +73,5 @@ Unread flags or unsettled historical uncertainty prevent recommendations for rea
 Every composed builder stage carries this instruction. Carry it yourself when composing a custom builder dispatch; supplied dispatches remain byte-for-byte:
 
 > Remove or rewrite existing content only where a governing row or criterion requires it; keep the rest, and name in your return any additional removal or rewrite you recommend.
+
+A turn whose uncertainty begins `ReachTimeout: time ran out before this read finished:` or `ReachError: reach evaluation stopped: time ran out:` was not reached before a time limit ended, and names that limit; raise the run's limit and run again rather than fetching, because its objects may be present. When the named limit is `this read's own` bound, the run's limit was not spent and `--timeout-seconds` does not lengthen that bound, so run again when the machine is less loaded, or find why Git reads slowly in that repository. An object the checkout lacks is named as a `commit object … unavailable` or a `blob … missing`.

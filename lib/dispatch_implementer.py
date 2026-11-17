@@ -14,7 +14,7 @@ Every invocation is a separate record. ``--resume`` is explicit; ``--last`` and
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import hashlib
@@ -40,11 +40,13 @@ from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TO
 import github_allowance
 import launch_bound
 import launch_settings
+import preflight
 import run_lifecycle as lifecycle
 from codex_pytest import implementer_pytest_overrides
 from seat_process import run_process
 import implementer_environment as environments
 import implementer_policy as policy
+import keep_warm
 import codex_implementer as native_codex
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
@@ -177,6 +179,48 @@ def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path,
             shutil.rmtree(directory, ignore_errors=True)
         return
     raise ImplementerError("cannot write the launch's instruction file: " + "; ".join(errors))
+
+
+def _stop_waiting(args: argparse.Namespace, deadline, metadata: dict) -> None:
+    """End the waiting sessions this launch replaces, just before it starts its process.
+
+    Any route or vendor counts. A launch that ends before starting anything
+    leaves the waiting session the entrance resumes next, so its keep-warm stays.
+    Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+    """
+    held = getattr(args, "keep_warm_held", None)
+    if held is None:
+        return
+    try:
+        # A ping in flight is waited for only within what the launch's own deadline leaves.
+        wait = deadline.remaining()
+    except TimeoutError:
+        wait = 0.0
+    held.enter_context(keep_warm.stop_for_launch(args.work, args.stage, args.resume, wait_seconds=wait,
+                                                 instalment=metadata.get("instalment")))
+
+
+def _keep_warm_settings(path: Path) -> bytes | str:
+    """The prepared settings a ping reuses, or why they can't be read.
+
+    Only keep-warm needs them, so a failed read is a keep-warm fault at the
+    turn's end and never a failed preparation of the launch.
+    """
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        return f"cannot read the prepared settings {path}: {exc}"
+
+
+def _shim_record(shim: Path | None) -> dict[str, str] | None:
+    # An unreadable instruction file must never change the launch, so keep-warm
+    # goes without it; the ping then misses only that file, not the cached conversation.
+    if shim is None:
+        return None
+    try:
+        return {"directory": str(shim), "text": (shim / "CLAUDE.md").read_bytes().decode("utf-8")}
+    except (OSError, UnicodeError):
+        return None
 
 
 def build_command(args: argparse.Namespace, executable: list[str], last_message: Path) -> list[str]:
@@ -415,11 +459,34 @@ def run_implementer(args: argparse.Namespace) -> int:
         args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
     deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
                                          started=getattr(args, "invocation_started_monotonic", None))
-    with lifecycle.deadline_scope(deadline):
+    # The launch's environment changes are read against the launcher's own,
+    # taken before an artifact launch sanitizes it.
+    if getattr(args, "keep_warm_env", None) is None:
+        args.keep_warm_env = dict(os.environ)
+    args.keep_warm_pending = None
+    # This joins the scope `main` opened, and gives a launcher called without
+    # `main` (in process, as the entrance's tests and the cloud route do) its own
+    # scope seeded from the handoff.
+    # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    seed = preflight.load_handoff(getattr(args, "preflight_input", None))
+    with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline), \
+            ExitStack() as held:
+        # Everything before the recipient's spawn that no other part claims; the
+        # spawn closes it, so the recipient's own time is never counted here.
+        preparation.enter_context(preflight.part("launch_preparation"))
+        args.preparation_timer = preparation
+        # Holds a resumed session's ping lock until the launch returns.
+        args.keep_warm_held = held
         if args.stage == "artifact":
             with artifact_tree.isolated_git_environment():
-                return _run_implementer(args, deadline)
-        return _run_implementer(args, deadline)
+                code = _run_implementer(args, deadline)
+        else:
+            code = _run_implementer(args, deadline)
+    if args.keep_warm_pending is not None:
+        # Started directly, the launcher is the outermost process: its last act,
+        # after its own cleanup. Design: lib/DESIGN.md#keeping-a-waiting-session-warm
+        keep_warm.start_runner(args.keep_warm_pending, args.keep_warm_env)
+    return code
 
 
 def _run_implementer(args: argparse.Namespace, deadline) -> int:
@@ -554,6 +621,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         route = _cloud_route(args)
         if route is not None:
             entry, route_source, refusal = route
+            cloud_notice = b""
             # A route that is itself refused, such as a broken switch, is reported as that, not
             # as a grant or an allowance its holder would otherwise go and change.
             # Design: lib/DESIGN.md#the-github-write-bound
@@ -572,13 +640,15 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     effective_prompt = effective_prompt + b"\n\n" + cloud_notice
                     # As on the local paths, the digest names the bytes the run is given.
                     composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
+                _stop_waiting(args, deadline, metadata)
             return cloud_build.run(
                 args, deadline, entry=entry, route_source=route_source,
                 effective_prompt=effective_prompt, prompt=prompt, context=context,
                 artifact_brief=artifact_brief, metadata=metadata, composition=composition,
                 settings_sources={"vendor": args.vendor_source, "model": settings.model_source,
                                   "effort": settings.effort_source},
-                validate=validate_artifact_return, preset_failure=refusal)
+                validate=validate_artifact_return, preset_failure=refusal,
+                github_write_notice=cloud_notice)
     if metadata.get("github_write_grants") and not args.resume:
         # A grant answers a request the step itself returned, so only its resumed turn may carry
         # one. The entrance checks this before an explicit restart can turn its decision fresh,
@@ -644,7 +714,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 branch=args.lineage_branch, pull_request=args.lineage_pull_request,
                 grants=metadata.get("github_write_grants") or ())
             # Read once, before preparation, so the Codex bound record names the same version.
-            runtime_version = records.runtime_version(executable) if executable is not None else None
+            with preflight.part("vendor"):
+                runtime_version = records.runtime_version(executable) if executable is not None else None
+            prepared_settings = None
             if executable is not None and unavailable_reason is None:
                 try:
                     if args.vendor == "claude":
@@ -654,6 +726,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                             github_bound={"allowance": allowance, "root": root,
                                           "session": args.resume or args.session_id})
                         args.launch_settings_path = intent["settings_path"]
+                        prepared_settings = _keep_warm_settings(Path(intent["settings_path"]))
                     else:
                         try:
                             codex_bound = github_allowance.prepare_codex(
@@ -662,11 +735,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         except github_allowance.BoundError as exc:
                             raise policy.PreparationError(str(exc)) from exc
                         child_env = codex_bound["env"]
-                        intent = policy.codex_prepare(executable, root, deadline, env=child_env)
+                        with preflight.part("vendor"):
+                            intent = policy.codex_prepare(executable, root, deadline, env=child_env)
+                            config = native_codex.read_config(build_command(args, executable, last_message),
+                                                             root, deadline, env=child_env)
                         intent["github_write_bound"] = {"record": codex_bound["record"],
                                                         "log": codex_bound["log"]}
-                        config = native_codex.read_config(build_command(args, executable, last_message),
-                                                         root, deadline, env=child_env)
                         intent["thread_config"] = policy.restriction_config(config, intent)
                         intent["discovery_sources"].append("Codex native config/read for recipient cwd")
                     intent["status"] = "prepared"
@@ -831,7 +905,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 except artifact_tree.ArtifactTreeError as exc:
                     raise ImplementerError(str(exc)) from exc
             request["input"] = str(input_path)
+            # The launch is this write: the split ends here, and each attempt's
+            # pre-spawn interval starts here.
+            scope = preflight.current()
+            request["preflight"] = scope.snapshot("request-record")
             streams[request_path].write(records.json_bytes(request))
+            mark = scope.mark()
             streams[request_path].flush()
             streams[input_path].write(prompt)
             streams[input_path].flush()
@@ -846,6 +925,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             # no bundle that would displace an earlier stopped, resumable run.
             deadline.remaining()
             streams.mark_ready()
+            args.request_recorded = True
             print(f"implementer: dispatch {request['dispatch_id']} -> {output}")
             attempt: dict[str, object] = {
                 "vendor": args.vendor, "launched": False, "exit_code": None,
@@ -955,8 +1035,13 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         _handover_phase(
                             args.handover_state, args.session_id or args.resume, "running"
                         )
+                    # Just before the spawn, so a launch that starts nothing leaves keep-warm as it was;
+                    # before the allocation, so a wait for a ping in flight comes out of the recipient's time.
+                    _stop_waiting(args, deadline, metadata)
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation
+                    attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = scope.since(mark)
+                    args.preparation_timer.close()
                     process_started = True
                     result = run_process(command, input=native.input if native else effective_prompt, cwd=root, timeout=allocation,
                                          env=child_env,
@@ -1208,6 +1293,35 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 print(f"implementer: {args.vendor} ({args.model}, {args.effort}; source {request['requested']['sources']['vendor']}) session {session_note} -> {output}")
             else:
                 print(f"implementer: {attempt['reason']}", file=sys.stderr)
+            if args.vendor == "claude":
+                # The run record is final; nothing here changes this launch's result,
+                # so even building the turn's facts is a keep-warm fault if it fails.
+                try:
+                    turn = {
+                        "vendor": args.vendor, "cloud": False, "launched": attempt["launched"],
+                        "session": args.resume or args.session_id,
+                        "observed_session": attempt["observed"].get("session_id"),
+                        "outcome": record["outcome"], "cleanup_proven": record.get("cleanup_proven"),
+                        "launch_unresolved": record.get("launch_unresolved"),
+                        "session_identity_error": record.get("session_identity_error"),
+                        "stage": args.stage, "work": args.work, "root": str(root),
+                        "instalment": metadata.get("instalment"),
+                        "fallback_root": copy.get("holder_root") if copy else None,
+                        "plugin_root": str(Path(__file__).resolve().parent.parent),
+                        "command": command, "settings_bytes": prepared_settings,
+                        "env_start": args.keep_warm_env, "env_child": child_env,
+                        "shim": _shim_record(shim), "lineage_pull_request": args.lineage_pull_request,
+                        "dispatch_id": dispatch_id, "completed_at": record["completed_at"],
+                        "stdout_path": str(stdout_path), "projects": str(projects), "model": args.model,
+                        "starter": args.keep_warm_starter, "start_token": args.keep_warm_token,
+                    }
+                except Exception as exc:
+                    keep_warm.fault(args.work, "start", f"{type(exc).__name__}: {exc}",
+                                    session=args.resume or args.session_id)
+                    turn = None
+                pending = keep_warm.after_turn(turn) if turn is not None else None
+                if pending is not None and args.keep_warm_starter != "entrance":
+                    args.keep_warm_pending = pending
             return return_code
 
 
@@ -1263,17 +1377,34 @@ def parser() -> argparse.ArgumentParser:
                      help="declared caller limit; build defaults to 7200, other stages to 3600")
     cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
     cli.add_argument("--lifecycle-input", type=Path, help=argparse.SUPPRESS)
+    cli.add_argument("--preflight-input", type=Path, help=argparse.SUPPRESS)
     cli.add_argument("--budget-override-reason")
+    cli.add_argument("--keep-warm-starter", choices=("entrance",),
+                     help="leave a waiting session's keep-warm for the entrance to start after its cleanup")
+    cli.add_argument("--keep-warm-token", help="names the pending keep-warm start for the entrance")
     return cli
+
+
+def refusal_line(args: argparse.Namespace, scope, exc: BaseException) -> str:
+    """A refusal before the request record carries the split from the call (`until: handoff`).
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    if getattr(args, "request_recorded", False):
+        return f"implementer: {exc}"
+    return "implementer: refusal " + json.dumps(
+        {"reason": str(exc), "preflight": scope.snapshot("handoff")}, ensure_ascii=True, sort_keys=True)
 
 
 def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
-    try:
-        return run_implementer(parser().parse_args(argv))
-    except (OSError, UnicodeError, ValueError, CliError, records.RecordError, ImplementerError) as exc:
-        print(f"implementer: {exc}", file=sys.stderr)
-        return 1
+    args = parser().parse_args(argv)
+    with preflight.scope(seed=preflight.load_handoff(args.preflight_input)) as scope:
+        try:
+            return run_implementer(args)
+        except (OSError, UnicodeError, ValueError, CliError, records.RecordError, ImplementerError) as exc:
+            print(refusal_line(args, scope, exc), file=sys.stderr)
+            return 1
 
 
 if __name__ == "__main__":

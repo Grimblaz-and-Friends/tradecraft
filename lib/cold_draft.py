@@ -9,6 +9,7 @@ import re
 import subprocess
 
 import run_lifecycle as lifecycle
+from seat_process import run_read
 from source_claims import _classify_sources, attribute_error
 
 BINDING_VERSION = "0.191.0"
@@ -28,11 +29,9 @@ def artifact_digest(body: str) -> str:
 
 def _get(endpoint: str) -> object:
     try:
-        result = subprocess.run(
-            ["gh", "api", "--method", "GET", endpoint],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=lifecycle.probe_timeout(120),
-        )
+        result = run_read(["gh", "api", "--method", "GET", endpoint], cwd=None,
+                          timeout=lifecycle.probe_timeout(120),
+                          cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.SubprocessError) as exc:
         raise BindingError(f"GitHub GET failed for {endpoint}: {exc}") from exc
     if result.returncode:

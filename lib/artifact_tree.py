@@ -16,7 +16,7 @@ import uuid
 
 import dispatch_record as records
 import run_lifecycle as lifecycle
-from seat_process import run_process
+from seat_process import run_process, run_read
 from winio import utf8_stdio
 
 MECHANISM_VERSION = "0.188.0"
@@ -74,7 +74,7 @@ def isolated_git_environment():
         os.environ.update(saved)
 
 
-def git(root, *args, trust=(), lazy_fetch=False):
+def git(root, *args, trust=(), lazy_fetch=False, writes=False):
     command = ["git"]
     for path in trust:
         command.extend(("-c", f"safe.directory={path}"))
@@ -83,9 +83,9 @@ def git(root, *args, trust=(), lazy_fetch=False):
     if lazy_fetch:
         env["GIT_NO_LAZY_FETCH"] = "0"
     try:
-        result = run_process(command, input=b"", cwd=Path.cwd(), env=env,
-                             timeout=_remaining(), on_tick=lambda: None,
-                             cleanup_deadline=lifecycle.cleanup_deadline())
+        # A caller marks a command that changes the copy as a write: it is judged by its exit status.
+        result = run_read(command, cwd=Path.cwd(), env=env, timeout=_remaining(),
+                          cleanup_deadline=lifecycle.cleanup_deadline(), writes=writes)
     except (OSError, subprocess.SubprocessError) as exc:
         error = ArtifactTreeError(f"artifact Git {args[0] if args else 'probe'} failed at {root}: {exc}")
         error.cleanup_proven = getattr(exc, "cleanup_proven", True)
@@ -99,10 +99,10 @@ def git(root, *args, trust=(), lazy_fetch=False):
     return result.stdout.decode("utf-8").strip()
 
 
-def source_git(holder, *args):
+def source_git(holder, *args, writes=False):
     """Retry only an ownership refusal, with trust limited to this source."""
     try:
-        return git(holder, *args)
+        return git(holder, *args, writes=writes)
     except ArtifactTreeError as exc:
         if "detected dubious ownership" not in str(exc):
             raise
@@ -116,7 +116,7 @@ def source_git(holder, *args):
         if not text.startswith("gitdir: "):
             raise ArtifactTreeError(f"artifact source has an invalid Git marker: {marker}")
         git_dir = (holder / text.removeprefix("gitdir: ")).resolve()
-    return git(holder, *args, trust=(holder.as_posix(), git_dir.as_posix()))
+    return git(holder, *args, trust=(holder.as_posix(), git_dir.as_posix()), writes=writes)
 
 
 def source(holder):
@@ -297,7 +297,7 @@ def _hydrate(holder, root, commit):
                for key, value in values.items()
                if key.startswith("remote.") and key.endswith(".promisor") and value.lower() == "true"]
     if not remotes:
-        git(root, "checkout", "--detach", commit)
+        git(root, "checkout", "--detach", commit, writes=True)
         return
     failures = []
     for remote in remotes:
@@ -308,11 +308,11 @@ def _hydrate(holder, root, commit):
         if ":" not in url and not Path(url).is_absolute():
             url = str((holder / url).resolve())
         try:
-            git(root, "config", "remote.origin.url", url)
-            git(root, "config", "remote.origin.promisor", "true")
-            git(root, "config", "remote.origin.partialclonefilter", "blob:none")
+            git(root, "config", "remote.origin.url", url, writes=True)
+            git(root, "config", "remote.origin.promisor", "true", writes=True)
+            git(root, "config", "remote.origin.partialclonefilter", "blob:none", writes=True)
             git(root, "-c", "fetch.recurseSubmodules=false", "-c", "maintenance.auto=false",
-                "-c", "gc.auto=0", "checkout", "--detach", commit, lazy_fetch=True)
+                "-c", "gc.auto=0", "checkout", "--detach", commit, lazy_fetch=True, writes=True)
             return
         except GitCommandError as exc:
             failures.append(f"{remote}: {exc}")
@@ -543,12 +543,12 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
                      "-c", "core.longpaths=true", "-c", "filter.lfs.process=",
                      "-c", "filter.lfs.smudge=", "-c", "filter.lfs.clean=",
                      "-c", "filter.lfs.required=false", "--", str(holder), copy["root"])
-            source_git(holder, *clone)
+            source_git(holder, *clone, writes=True)
             # Check the effective tree before checkout can write any files.
             _working_root(Path(copy["root"]))
             _hydrate(holder, Path(copy["root"]), copy["source_commit"])
             for remote in git(Path(copy["root"]), "remote").splitlines():
-                git(Path(copy["root"]), "remote", "remove", remote)
+                git(Path(copy["root"]), "remote", "remove", remote, writes=True)
         prove(copy, fresh=not reuse, forbidden=forbidden)
         record["lfs_pointer_count"] = lfs_pointer_count(Path(copy["root"]))
         record["history_blobs"] = "holder-available; checkout-only hydration"

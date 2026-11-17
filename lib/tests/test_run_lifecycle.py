@@ -454,7 +454,7 @@ def test_cleanup_does_not_start_a_probe_that_previously_outlasted_its_window(tmp
         calls.append(command)
         current[0] += probe_seconds
         return subprocess.CompletedProcess(command, 0, b"fixture-head", b"")
-    monkeypatch.setattr(records, "run_process", probe)
+    monkeypatch.setattr(records, "run_read", probe)
     with lifecycle.deadline_scope(deadline):
         assert records.git_revision(tmp_path) == "fixture-head"
         assert deadline.probe_seconds == pytest.approx(probe_seconds)
@@ -475,7 +475,7 @@ def test_cleanup_probes_leave_time_for_the_completion_write(monkeypatch, tmp_pat
             assert lifecycle.probe_timeout() == 5
             assert lifecycle.cleanup_deadline() == 125
             current[0] = 125.1
-            monkeypatch.setattr(records, "run_process", lambda *_a, **_k: pytest.fail("launched after cleanup allowance"))
+            monkeypatch.setattr(records, "run_read", lambda *_a, **_k: pytest.fail("launched after cleanup allowance"))
             assert records.git_revision(tmp_path) is None
         assert deadline.remaining(cleanup=True) > 0  # Final recording still has its allowance.
 
@@ -495,7 +495,7 @@ def test_snapshot_bounds_deleted_path_traversal(monkeypatch, tmp_path, paths):
         else:
             output = b"\0".join(f"deleted-{i}".encode() for i in range(paths))
         return subprocess.CompletedProcess(command, 0, output, b"")
-    monkeypatch.setattr(lifecycle, "run_process", git)
+    monkeypatch.setattr(lifecycle.seat_process, "run_read", git)
     with lifecycle.deadline_scope(lifecycle.Deadline(15)):
         snapshot = lifecycle.content_snapshot(tmp_path, timeout=0.1)
     if paths == 1:

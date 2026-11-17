@@ -169,7 +169,7 @@ def machine(tmp_path, monkeypatch):
 
 
 def launch(machine, transport, *, stage="build", resume=None, brief=b"", copy=None, polls=5, entry=True,
-           preset=None, model="claude-opus-5-5", effort="high", timeout_seconds=600):
+           preset=None, model="claude-opus-5-5", effort="high", timeout_seconds=600, notice=b""):
     output = machine["records"] / f"{stage}-{len(list(machine['tmp'].glob('**/*.request.json')))}" / "result.md"
     args = argparse.Namespace(
         root=machine["root"], output=output, work=f"{REPO}#77", stage=stage, resume=resume,
@@ -183,7 +183,7 @@ def launch(machine, transport, *, stage="build", resume=None, brief=b"", copy=No
                      composition={"origin": "holder"}, settings_sources={"vendor": "v", "model": "m", "effort": "e"},
                      validate=lambda expected, returned: {"status": "pass"}, transport=transport,
                      record_root=machine["records"], plugin=machine["plugin"], install_path=machine["install"],
-                     preset_failure=preset)
+                     preset_failure=preset, github_write_notice=notice)
     request = json.loads((output.parent / "result.md.request.json").read_text())
     run = json.loads((output.parent / "result.md.run.json").read_text())
     return code, request, run, output
@@ -1153,3 +1153,43 @@ def test_894_ac4_a_cloud_run_record_says_the_github_write_block_did_not_run(mach
     assert bound["command_check"]["status"] == "not-run"
     assert "remote" in bound["command_check"]["reason"]
     assert bound["allowance"]["kind"] == "cloud-routine" and bound["allowance"]["posts"] == "none"
+    assert "github_write_notice" not in _request  # no notice appended, none recorded
+
+
+def test_a_cloud_request_records_the_notice_it_appended(machine):
+    notice = b"Launcher GitHub write bound: GitHub writes this run may make: ...\n"
+    code, request, _run, _output = launch(machine, Fake(), notice=notice)
+    assert code == 0 and request["github_write_notice"] == notice.decode()
+
+
+def test_978_cloud_request_record_carries_the_split(machine):
+    import time
+    import preflight
+    seen = []
+
+    class Watched(Fake):
+        def fire(self, routine, token, text):
+            # The record as it stood on disk at the fire is its first write.
+            [path] = list(machine["records"].rglob("*.request.json"))
+            seen.append(json.loads(path.read_text()))
+            return super().fire(routine, token, text)
+
+    # The entrance's time before the launcher reaches the cloud route arrives through its handoff.
+    seed = {"schema_version": 1, "started_monotonic": time.monotonic() - 5.0,
+            "parts": {"github": 2.0}, "read_route": {"contained": 3, "fallback": 0, "fallback_reasons": []}}
+    with preflight.scope(seed=seed):
+        code, request, _run, _output = launch(machine, Watched())
+    assert code == 0
+    [first] = seen
+    split = first["preflight"]
+    assert split["until"] == "request-record" and first["cloud"]["fire_state"] == "in-flight"
+    assert set(split["parts"]) == {"github_seconds", "removals_seconds", "markers_seconds",
+                                   "launch_preparation_seconds", "vendor_seconds", "unattributed_seconds"}
+    assert abs(sum(split["parts"].values()) - split["total_seconds"]) <= 1
+    assert split["total_seconds"] >= 5.0 and split["parts"]["github_seconds"] >= 2.0
+    assert split["read_route"]["contained"] == 3
+    assert request["preflight"] == split  # later writes keep the launch's split
+    # A refusal before any fire records its split in the record's only write.
+    _code, refused, _run, _output = launch(machine, Fake(), preset="refused before the fire")
+    assert refused["preflight"]["until"] == "request-record"
+    assert abs(sum(refused["preflight"]["parts"].values()) - refused["preflight"]["total_seconds"]) <= 1

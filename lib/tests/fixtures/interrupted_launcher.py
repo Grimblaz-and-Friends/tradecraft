@@ -54,8 +54,11 @@ if "--snapshot-fixture" in arguments:
             return {"head": None, "digest": None, "unavailable_reason": str(exc)}
         return dict(snapshot)
     lifecycle.content_snapshot = unchanged_snapshot
-    module.records.run_process = lambda command, **_kwargs: module.subprocess.CompletedProcess(
-        command, 0, snapshot["head"].encode(), b"")
+    # Only the revision probe reads the fixture head; every other read runs for real.
+    native_read = module.records.run_read
+    module.records.run_read = lambda command, **kwargs: (
+        module.subprocess.CompletedProcess(command, 0, snapshot["head"].encode(), b"")
+        if command[0] == "git" and command[-2:] == ["rev-parse", "HEAD"] else native_read(command, **kwargs))
 fast_ceiling = "--fast-ceiling" in arguments
 clock_offset = 0.0
 if fast_ceiling:
@@ -83,8 +86,8 @@ if fast_ceiling:
     lifecycle.time.monotonic = ceiling_clock
 if "--slow-final-probe" in arguments:
     arguments.remove("--slow-final-probe")
-    original_process = module.records.run_process
-    from seat_process import run_process as native_process
+    original_process = module.records.run_read
+    from seat_process import run_read as native_process
     revision_calls = 0
 
     def slow_final_probe(command, **kwargs):
@@ -106,5 +109,5 @@ if "--slow-final-probe" in arguments:
                 return native_process(command, **kwargs)
         return original_process(command, **kwargs)
 
-    module.records.run_process = slow_final_probe
+    module.records.run_read = slow_final_probe
 raise SystemExit(module.main(arguments))

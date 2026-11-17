@@ -158,10 +158,27 @@ def needs_notice(allowance: dict, prompt: bytes) -> bool:
     return own not in prompt
 
 
+def _stated_pattern() -> re.Pattern:
+    """A whole allowance sentence, local or cloud, as sentence() and cloud_sentence() compose one.
+
+    Built from the composed text itself, with only the writes left open, so a record that quotes
+    or describes an opening is not mistaken for an allowance it states.
+    """
+    shapes = []
+    local = sentence({"kind": "none"})
+    head = SENTENCE_OPENING + " "
+    shapes.append((head, local[len(head) + len("none"):]))
+    cloud = cloud_sentence("artifact")
+    pushes = "a push to its report branch, which carries its return"
+    shapes.append((cloud[:cloud.index(pushes)], cloud[cloud.index(pushes) + len(pushes):]))
+    return re.compile("|".join(re.escape(start) + r"[^\n]*?" + re.escape(end) for start, end in shapes))
+
+
 def _states_another(prompt: bytes, own: bytes) -> bool:
-    """Whether the prompt states an allowance besides every copy of ``own``."""
-    rest = prompt.replace(own, b"")
-    return any(opening.encode("utf-8") in rest for opening in (SENTENCE_OPENING, CLOUD_SENTENCE_OPENING))
+    """Whether the prompt states a whole allowance sentence other than ``own``."""
+    text = prompt.decode("utf-8", "replace")
+    mine = own.decode("utf-8")
+    return any(match.group(0) != mine for match in _stated_pattern().finditer(text))
 
 
 def cloud_sentence(stage: str) -> str:

@@ -472,7 +472,7 @@ def test_git_runs_in_the_c_locale_so_not_a_repository_is_read(tmp_path, monkeypa
     def fake(command, **kwargs):
         seen.append(kwargs.get("env") or {})
         return subprocess.CompletedProcess(command, 128, b"", b"fatal: not a git repository")
-    monkeypatch.setattr(launch_bound, "run_process", fake)
+    monkeypatch.setattr(launch_bound, "run_read", fake)
     plan = launch_bound.refs_plan(tmp_path, [])
     assert plan[0]["unavailable"] == "not-a-repository"
     assert seen[0]["LC_ALL"] == "C" and seen[0]["LANGUAGE"] == "C"

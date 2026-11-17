@@ -27,7 +27,9 @@ import dispatch_record as records
 from dispatch_lifecycle import CLAUDE_DISALLOWED_TOOLS
 import github_allowance
 import launch_bound
+import preflight
 import run_lifecycle as lifecycle
+import seat_process
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
@@ -39,6 +41,8 @@ def cloud_practice_path(practice: str, *parts: str) -> str:
 
 # A routine run may push to `claude/` branches without being told; report branches live there.
 REPORT_PREFIX = "claude/tradecraft-report-"
+# The Git commands the cloud route runs that change a repository; each is judged by its exit status.
+GIT_WRITES = frozenset({"push", "fetch", "merge"})
 
 
 @functools.cache
@@ -538,8 +542,10 @@ class Transport:
         if body is not None:
             command += ["--input", "-"]
             data = json.dumps(body).encode("utf-8")
-        result = subprocess.run(command, input=data if data is not None else b"", capture_output=True,
-                                timeout=120)
+        # Not passed as a write even when it changes GitHub: each `gh api` response is parsed, so it
+        # must be whole or refused, unlike a Git write whose caller reads only its exit status.
+        result = seat_process.run_read(command, input=data if data is not None else b"", cwd=Path.cwd(),
+                                       timeout=120, cleanup_deadline=lifecycle.cleanup_deadline())
         raw = result.stdout.replace(b"\r\n", b"\n")
         head, _, payload = raw.partition(b"\n\n")
         match = re.match(rb"HTTP/[0-9.]+ ([0-9]{3})", head)
@@ -564,6 +570,7 @@ class Transport:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", "replace")
 
+    # The vendor command keeps its own route: it is the recipient's start, not the entrance's work.
     def cli(self, argv: list[str], env: dict) -> tuple[int, bytes]:
         try:
             result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=120)
@@ -572,8 +579,11 @@ class Transport:
         return result.returncode, result.stdout
 
     def git(self, root: Path, *arguments: str) -> tuple[int, str]:
-        result = subprocess.run(["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL,
-                                capture_output=True, timeout=300)
+        # Every Git command here takes the contained route so a hung one is stopped with what it
+        # started; a push, fetch or merge is reported by its exit status even if its output was cut.
+        result = seat_process.run_read(["git", "-C", str(root), *arguments], input=b"", cwd=Path.cwd(),
+                                       timeout=300, cleanup_deadline=lifecycle.cleanup_deadline(),
+                                       writes=bool(arguments) and arguments[0] in GIT_WRITES)
         return result.returncode, (result.stdout or result.stderr).decode("utf-8", "replace").strip()
 
     def sleep(self, seconds: float) -> None:
@@ -695,23 +705,45 @@ def post_report(transport: Transport, work: str, stage: str, session_url: str, b
 
 # ---- the follow-up's session record ------------------------------------------
 
+def _utf8_json(raw: object) -> bool:
+    """Whether bytes the index parsed would also parse as strict UTF-8 text, as this module reads records."""
+    if not isinstance(raw, bytes) or json.detect_encoding(raw) != "utf-8":
+        return False  # `json.loads` on bytes also accepts a byte-order mark and UTF-16 or UTF-32.
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def session_attempts(record_root: Path, session: str) -> list[tuple[dict, dict]]:
     """Every recorded (request, run) for this cloud session, oldest first."""
     found = []
-    for path in sorted(record_root.rglob("*.request.json")):
-        try:
-            request = json.loads(path.read_text("utf-8"))
-        except (OSError, ValueError):
-            continue
-        cloud = request.get("cloud") if isinstance(request, dict) else None
-        if not isinstance(cloud, dict) or cloud.get("session_id") != session:
-            continue
-        run_path = path.with_name(path.name[:-len(".request.json")] + ".run.json")
-        try:
-            run = json.loads(run_path.read_text("utf-8"))
-        except (OSError, ValueError):
-            run = {}
-        found.append((request, run))
+    index = lifecycle.store_index(record_root)
+    if index is None:
+        for path in sorted(record_root.rglob("*.request.json")):
+            try:
+                request = json.loads(path.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+            cloud = request.get("cloud") if isinstance(request, dict) else None
+            if not isinstance(cloud, dict) or cloud.get("session_id") != session:
+                continue
+            run_path = path.with_name(path.name[:-len(".request.json")] + ".run.json")
+            try:
+                run = json.loads(run_path.read_text("utf-8"))
+            except (OSError, ValueError):
+                run = {}
+            found.append((request, run))
+    else:
+        def ours(value: object) -> bool:
+            cloud = value.get("cloud") if isinstance(value, dict) else None
+            return isinstance(cloud, dict) and cloud.get("session_id") == session
+        for path, raw, request in sorted(index.requests(where=ours), key=lambda entry: entry[0]):
+            if not _utf8_json(raw):
+                continue
+            run_raw, run = index.run(path.with_name(path.name[:-len(".request.json")] + ".run.json"))
+            found.append((request, run if _utf8_json(run_raw) and not isinstance(run, Exception) else {}))
     found.sort(key=lambda pair: pair[0].get("launched_at") or "")
     return found
 
@@ -822,12 +854,23 @@ def _previous_usage(attempts: list[tuple[dict, dict]], dispatch_id: str) -> tupl
     return latest, deltas
 
 
-def run(args, deadline, *, entry: dict | None, route_source: str, effective_prompt: bytes,
-        prompt: bytes, context: bytes, artifact_brief: bytes, metadata: dict, composition: dict,
-        settings_sources: dict, validate, transport: Transport | None = None,
-        record_root: Path | None = None, plugin: Path | None = None,
-        install_path: Path | None = None, preset_failure: str | None = None) -> int:
-    """Fire (or follow up) one cloud attempt and record it like a local bundle."""
+def run(args, deadline, **launch) -> int:
+    """Fire (or follow up) one cloud attempt and record it like a local bundle.
+
+    A cloud build is a launched stage, so its request record carries the split from
+    the call as a local launch's does; the launcher's scope is joined when open.
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    with preflight.scope(), preflight.part("launch_preparation"):
+        return _launch(args, deadline, **launch)
+
+
+def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_prompt: bytes,
+            prompt: bytes, context: bytes, artifact_brief: bytes, metadata: dict, composition: dict,
+            settings_sources: dict, validate, transport: Transport | None = None,
+            record_root: Path | None = None, plugin: Path | None = None,
+            install_path: Path | None = None, preset_failure: str | None = None,
+            github_write_notice: bytes = b"") -> int:
     import uuid
     from dispatch_lifecycle import GrowingRun
     import launch_bound
@@ -889,6 +932,10 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                           if context_path else None)
     request["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
     request["prompt_composition"] = composition
+    if github_write_notice:
+        # As a Codex or seat launch records the notice it appended, so the record holds what the
+        # run was told.
+        request["github_write_notice"] = github_write_notice.decode("utf-8")
     if brief_path:
         request["artifact_brief"] = {"path": str(brief_path),
                                      "source": args.artifact_brief_source or str(args.artifact_brief.resolve()),
@@ -926,7 +973,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     raise CloudError(f"cloud follow-up needs a cse_ session id: {args.resume!r}")
                 env = followup_env()
                 claude = claude_command(args)
-                login_check(transport, env, claude)
+                with preflight.part("vendor"):
+                    login_check(transport, env, claude)
                 start, loaded = loaded_commit(session_attempts(record_root, args.resume), args.resume)
                 try:
                     installed = installed_practice(plugin, install_path or install_record_path(),
@@ -1064,6 +1112,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         run_record["launch_unresolved"] = True  # recovery refuses another writer until it is resolved
     published = None
     with _reserved(reservation, streams):
+        _stamp_preflight(request)
         _rewrite(streams[request_path], records.json_bytes(request))
         streams[input_path].write(prompt)
         if context_path:
@@ -1157,10 +1206,20 @@ def _rewrite(stream, data: bytes) -> None:
     os.fsync(stream.fileno())
 
 
+def _stamp_preflight(request: dict) -> None:
+    """The launch is the request record's first write, so the split ends there and later writes keep it.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    if "preflight" not in request:
+        request["preflight"] = preflight.snapshot("request-record")
+
+
 def _persist_in_flight(streams, request: dict, request_path: Path, run_path: Path) -> None:
     """Keep a discoverable, unresolved launch before the fire, so an interrupted launcher leaves a
     record that refuses a second fire rather than nothing at all."""
     request["cloud"]["fire_state"] = "in-flight"
+    _stamp_preflight(request)
     _rewrite(streams[request_path], records.json_bytes(request))
     _rewrite(streams[run_path], records.json_bytes({
         "schema_version": records.SCHEMA_VERSION, "dispatch_id": request["dispatch_id"],
