@@ -819,6 +819,12 @@ def test_a_subcommand_git_does_not_build_in_is_refused_under_a_redirection(tree,
     "Invoke-RestMethod -Method:Post https://api.github.com/repos/o/r/issues",
     "irm -B x https://api.github.com/repos/o/r/issues",
     "iwr -Method Patch -Uri https://api.github.com/repos/o/r",
+    "wget --method=POST https://api.github.com/repos/o/r/issues",
+    "wget --method POST https://api.github.com/repos/o/r/issues",
+    "wget --post-data=x https://api.github.com/repos/o/r/issues",
+    "wget --body-file=b.json --method=PATCH https://api.github.com/repos/o/r",
+    "wget --unknown-option https://api.github.com/repos/o/r",
+    "wget -qE x https://api.github.com/repos/o/r",
 ])
 def test_an_api_request_the_check_cannot_read_as_a_get_is_refused(tree, command):
     assert decision(command, tree, "branch") == "deny"
@@ -831,6 +837,9 @@ def test_an_api_request_the_check_cannot_read_as_a_get_is_refused(tree, command)
     "Invoke-RestMethod -Uri https://api.github.com/repos/o/r -Headers $h",
     "Invoke-RestMethod -Method Get https://api.github.com/repos/o/r",
     "curl -X POST https://example.com/x",
+    "wget -qO- https://api.github.com/repos/o/r",
+    "wget -q -O out.json --header 'Accept: application/json' https://api.github.com/repos/o/r",
+    "wget --method=GET https://api.github.com/repos/o/r",
 ])
 def test_a_plain_get_or_another_host_passes(tree, command):
     assert decision(command, tree, "branch") == "allow"

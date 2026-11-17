@@ -1402,10 +1402,8 @@ def judge_http(name: str, arguments: list[str]) -> list[Finding]:
         problem = _curl_unread(arguments)
         return [Finding(write, f"{write} with {problem}")] if problem else []
     if name == "wget":
-        if any(word.startswith(("--method", "--post-", "--body-")) and
-               not re.match(r"--method=(?:GET|HEAD)$", word, re.I) for word in arguments):
-            return [Finding(write, f"{write} with a non-GET method or body")]
-        return []
+        problem = _wget_unread(arguments)
+        return [Finding(write, f"{write} with {problem}")] if problem else []
     problem = _web_cmdlet_unread(arguments)
     return [Finding(write, f"{write} with {problem}")] if problem else []
 
@@ -1450,6 +1448,48 @@ def _curl_unread(arguments: list[str]) -> str | None:
                         return f"method {value}"
                     break
                 if letter not in CURL_READ_LETTERS:
+                    return f"the option -{letter}"
+    return None
+
+
+# wget's options that send nothing and change no method, read the same way as curl's.
+WGET_READ_LETTERS = set("qSvN")
+WGET_READ_VALUE_LETTERS = set("OUTtoa")
+WGET_READ_SHORT = {"-nv", "-nc", "-nd", "-nH"}
+WGET_READ_LONG = {"--quiet", "--verbose", "--no-verbose", "--server-response", "--spider",
+                  "--no-check-certificate", "--no-clobber", "--timestamping"}
+WGET_READ_LONG_VALUES = {"--output-document", "--header", "--user-agent", "--timeout", "--tries",
+                         "--output-file", "--append-output", "--user", "--password",
+                         "--ca-certificate", "--max-redirect", "--wait"}
+
+
+def _wget_unread(arguments: list[str]) -> str | None:
+    """Why a wget request cannot be read as a GET with no body, or None when it can."""
+    words = list(arguments)
+    while words:
+        word = words.pop(0)
+        if word == "--":
+            return None
+        if word in WGET_READ_SHORT:
+            continue
+        if word.startswith("--"):
+            stem, _, joined = word.partition("=")
+            if stem == "--method":
+                method = joined or (words.pop(0) if words else "")
+                if method.upper() not in ("GET", "HEAD"):
+                    return f"method {method}"
+            elif stem in WGET_READ_LONG_VALUES:
+                if not joined and words:
+                    words.pop(0)
+            elif stem not in WGET_READ_LONG:
+                return f"the option {word}"
+        elif word.startswith("-") and len(word) > 1:
+            for index, letter in enumerate(word[1:], 1):
+                if letter in WGET_READ_VALUE_LETTERS:
+                    if not word[index + 1:] and words:
+                        words.pop(0)
+                    break
+                if letter not in WGET_READ_LETTERS:
                     return f"the option -{letter}"
     return None
 
