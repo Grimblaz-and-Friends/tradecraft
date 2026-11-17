@@ -1216,10 +1216,14 @@ def _graphql_document(fields: dict[str, str], cwd: str | None) -> str | None:
 def _mutation_fields(document: str) -> list[tuple[str, str]] | None:
     found: list[tuple[str, str]] = []
     original = document
-    # Brackets inside a string are content, so they are blanked for the structure scan; the
-    # arguments are still sliced from the original text.
-    document = re.sub(r'"""[\s\S]*?"""|"(?:\\.|[^"\\])*"',
-                      lambda m: re.sub(r"[{}()]", " ", m.group(0)), document)
+    # Brackets inside a string or a comment are content, so they are blanked for the structure
+    # scan; the arguments are still sliced from the original text. A block string may hold an
+    # escaped \""" without ending.
+    document = re.sub(r'"""(?:\\"""|[\s\S])*?"""|"(?:\\.|[^"\\\n])*"|#[^\n]*',
+                      lambda m: re.sub(r'[{}()"]', " ", m.group(0)), document)
+    # A quote left over, or brackets that do not pair, leaves the mutation set unknown.
+    if '"' in document or any(document.count(o) != document.count(c) for o, c in ("{}", "()")):
+        return None
     for match in re.finditer(r"\bmutation\b[^{]*\{", document):
         depth, i = 1, match.end()
         start = i

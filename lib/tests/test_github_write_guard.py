@@ -522,6 +522,17 @@ def test_brackets_in_a_graphql_string_hide_no_mutation(tree, monkeypatch):
     reply = ('mutation { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: "T", '
              'body: "a (b) {c}"}) { clientMutationId } }')
     assert decision(f"gh api graphql -f query='{reply}'", tree, "review-disposition") == "allow"
+    # An escaped triple quote does not end a block string; an unterminated string is unknown.
+    escaped = ('mutation { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: "T", '
+               'body: """prefix \\""" ("""}) { clientMutationId } mergePullRequest(input: '
+               '{pullRequestId: "P"}) { clientMutationId } }')
+    assert decision(f"gh api graphql -f query='{escaped}'", tree, "review-disposition") == "deny"
+    block = ('mutation { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: "T", '
+             'body: """a \\""" (b"""}) { clientMutationId } }')
+    assert decision(f"gh api graphql -f query='{block}'", tree, "review-disposition") == "allow"
+    unterminated = ('mutation { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: "T", '
+                    'body: "a}) { clientMutationId } }')
+    assert decision(f"gh api graphql -f query='{unterminated}'", tree, "review-disposition") == "deny"
 
 
 # The landing script's route: a message passed by -m, whatever it names.
