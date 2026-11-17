@@ -446,6 +446,84 @@ def test_a_redirected_own_push_passes(tree):
     assert decision(command, tree, "branch") == "allow"
 
 
+def test_an_unquoted_here_documents_substitutions_are_judged(tree):
+    assert decision("cat <<EOF\n$(gh issue comment 683 -b x)\nEOF", tree, "none") == "deny"
+    assert decision("cat <<EOF\n`gh issue comment 683 -b x`\nEOF", tree, "none") == "deny"
+    # Quoted, the body is data; unquoted text with no substitution stays data too.
+    assert decision("cat <<'EOF'\n$(gh issue comment 683 -b x)\nEOF", tree, "none") == "allow"
+    assert decision("cat > m.txt <<EOF\ngh issue comment 3 and $HOME\nEOF", tree, "none") == "allow"
+
+
+@pytest.mark.parametrize("command, expected", [
+    ("# don't merge yet\ngh pr merge 1\n# it's done", "deny"),
+    ("# Let's check\ngit status", "allow"),
+    ("git status # it's fine", "allow"),
+    ("echo a#b'c'", "allow"),
+])
+def test_a_comment_is_skipped_to_the_end_of_its_line(tree, command, expected):
+    assert decision(command, tree, "branch") == expected
+
+
+@pytest.mark.parametrize("command", [
+    f"ENABLE_CLAUDEAI_MCP_SERVERS=true {CHILD} -p hi\nENABLE_CLAUDEAI_MCP_SERVERS=false",
+    "export CLAUDE_CODE_SIMPLE=1; unset CLAUDE_CODE_SIMPLE",
+])
+def test_a_forbidden_assignment_is_not_taken_back_by_a_later_one(tree, command):
+    assert decision(command, tree, "branch") == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "timeout 600 python -m pytest -k claude",
+    "env PYTHONPATH=lib python -m pytest -k claude",
+    "find . -name '*.py' | xargs grep -n \"git push\"",
+])
+def test_a_reading_program_behind_a_pass_through_is_placed(tree, command):
+    assert decision(command, tree, "none") == "allow"
+
+
+@pytest.mark.parametrize("command", ["git config remote.origin.url", "git config branch.main.remote"])
+def test_a_bare_config_key_is_a_read(tree, command):
+    assert decision(command, tree, "branch") == "allow"
+    assert decision(command.replace("config ", "config --unset "), tree, "branch") == "deny"
+
+
+def test_a_stored_follow_tags_refuses_the_own_push(tree):
+    own = "git push origin HEAD:refs/heads/tradecraft/894-ab"
+    assert decision("git config push.followTags true", tree, "branch") == "deny"
+    git(tree, "config", "push.followTags", "true")
+    assert decision(own, tree, "branch") == "deny"
+    assert decision(own + " --no-follow-tags", tree, "branch") == "allow"
+
+
+def test_a_url_rewritten_by_a_stored_rule_is_refused(tree):
+    own = "git push https://github.com/o/r.git HEAD:refs/heads/tradecraft/894-ab"
+    assert decision(own, tree, "branch") == "allow"
+    git(tree, "config", "url.https://github.com/other/x.git.pushInsteadOf", "https://github.com/o/r.git")
+    assert decision(own, tree, "branch") == "deny"
+
+
+def test_gh_repo_chooses_the_repository_a_comment_goes_to(tree, monkeypatch):
+    monkeypatch.delenv("GH_REPO", raising=False)
+    assert decision("gh pr comment 12 -b x", tree, "review-disposition") == "allow"
+    assert decision("GH_REPO=other/x gh pr comment 12 -b x", tree, "review-disposition") == "deny"
+    assert decision("GH_REPO=o/r gh pr comment 12 -b x", tree, "review-disposition") == "allow"
+    assert decision("GH_REPO=other/x gh api repos/{owner}/{repo}/issues/12/comments -f body=x",
+                    tree, "review-disposition") == "deny"
+    monkeypatch.setenv("GH_REPO", "other/x")
+    assert decision("gh pr comment 12 -b x", tree, "review-disposition") == "deny"
+
+
+def test_brackets_in_a_graphql_string_hide_no_mutation(tree, monkeypatch):
+    monkeypatch.setattr(guard, "thread_owner", lambda thread: ("o/r", 12))
+    document = ('mutation { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: "T", '
+                'body: "("}) { clientMutationId } mergePullRequest(input: {pullRequestId: "P"}) '
+                '{ clientMutationId } }')
+    assert decision(f"gh api graphql -f query='{document}'", tree, "review-disposition") == "deny"
+    reply = ('mutation { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: "T", '
+             'body: "a (b) {c}"}) { clientMutationId } }')
+    assert decision(f"gh api graphql -f query='{reply}'", tree, "review-disposition") == "allow"
+
+
 # The landing script's route: a message passed by -m, whatever it names.
 PERSIST = "python scripts/persist.py --expect-branch tradecraft/894-ab"
 
@@ -738,6 +816,21 @@ def grant_body(**overrides):
     marker = ("<!-- tradecraft:write-grant:v1 brief={brief} row={row} stage={stage} write={write} "
               "target={target} -->").format(**values)
     return marker + "\n> The artifact must test a real push\n"
+
+
+def test_a_grant_cites_a_table_row_and_never_a_fenced_copy():
+    table = "| Row | Why |\n|---|---|\n| **4. The artifact must test a real push.** | x |\n| **5. Other.** | y |\n"
+    grant = allowance_module.parse_grant(9, grant_body())
+    accepted = allowance_module.validate_grant(grant, brief_comment=7, brief_body=table,
+                                               stage="artifact", resumed=True, repository="o/r")
+    assert accepted["row"] == 4
+    with pytest.raises(allowance_module.GrantError):
+        allowance_module.parse_grant(9, "```\n" + grant_body() + "```\n")
+
+
+def test_a_hook_path_bash_would_expand_is_refused():
+    with pytest.raises(allowance_module.BoundError):
+        allowance_module.hook_entry(Path("/tmp/$cache/github-write.json"))
 
 
 def test_a_grant_rests_on_an_affirmed_row():

@@ -747,6 +747,8 @@ def test_cloud_run_build_reaches_the_cloud_launcher_with_its_lineage_branch(laun
         reached.append((args.work, args.stage, args.lineage_branch, kwargs["entry"]["routine_id"]))
         told.append(kwargs["effective_prompt"].count(
             implementer.github_allowance.cloud_sentence("build").encode("utf-8")))
+        # Composition supplied the sentence, so the launcher appended no fallback of its own.
+        assert kwargs["github_write_notice"] == b""
         return 0
 
     def launch_cloud(command, **kwargs):

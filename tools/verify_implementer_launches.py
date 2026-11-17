@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -573,7 +574,8 @@ def bound_case_connectors(args, base):
     listed = bound_run(["claude", "mcp", "list"], cwd=tree, env=bound["env"], timeout=180)
     count = lambda raw: sum(1 for line in raw.decode("utf-8", "replace").splitlines() if "claude.ai" in line)
     return {"case": "connectors", "criterion": "AC8", "plain_claude_ai_lines": count(plain.stdout),
-            "prepared_claude_ai_lines": count(listed.stdout), "pass": count(listed.stdout) == 0}
+            "prepared_claude_ai_lines": count(listed.stdout),
+            "pass": listed.returncode == 0 and count(listed.stdout) == 0}
 
 
 def bound_case_child(args, base):
@@ -591,7 +593,8 @@ def bound_case_child(args, base):
         "each command's output verbatim. Do not change them.\n"
         f'1. {github_allowance.CHILD_START} -p --model {args.model} '
         "--output-format stream-json --verbose --tools Bash --allowedTools Bash --permission-mode dontAsk "
-        f"--no-session-persistence < {child_prompt.as_posix()} > {(base / 'child.jsonl').as_posix()}\n"
+        f"--no-session-persistence < {shlex.quote(child_prompt.as_posix())} "
+        f"> {shlex.quote((base / 'child.jsonl').as_posix())}\n"
         f'2. claude -p --model {args.model} "say hi"\n'
         f'3. claude --setting-sources user --strict-mcp-config --safe-mode --settings "$TRADECRAFT_CHILD_SETTINGS" -p '
         f'--model {args.model} "say hi"\n')

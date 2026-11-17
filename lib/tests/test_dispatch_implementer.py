@@ -2244,6 +2244,11 @@ def test_894_ac17_a_codex_launch_records_that_no_command_check_ran(job, monkeypa
     assert bound["command_check"]["self_test"] == "passed"
     assert captured["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
     assert captured["TRADECRAFT_CHILD_SETTINGS"] and captured["GIT_TERMINAL_PROMPT"] == "0"
+    # The appended allowance is part of what the entrance's composition check reproduces.
+    import work
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["github_write_notice"]
+    assert work._composition_error(request, None) is None
 
 
 GRANT = {"marker": 9001, "brief": 7001, "row": 4, "stage": "build", "write": "push",

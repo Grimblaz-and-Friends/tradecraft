@@ -65,7 +65,7 @@ GIT_OTHER_PUSHES = {"send-pack", "http-push"}
 # which this command's judgment sees, and a step's own work never needs to change one.
 PUSH_SHAPING_KEY = re.compile(
     r"^(alias\..+|remote\..+\.(push|pushurl|url|mirror)|remote\.pushdefault|push\.default"
-    r"|branch\..+\.(pushremote|remote)|url\..+\.(insteadof|pushinsteadof))$")
+    r"|push\.followtags|branch\..+\.(pushremote|remote)|url\..+\.(insteadof|pushinsteadof))$")
 # git's own commands, which no alias can replace, so a subcommand outside them is looked up as
 # a stored alias before it is judged.
 GIT_BUILTINS = {
@@ -226,6 +226,10 @@ def _scan(text: str, start: int = 0, closer: str | None = None
                     raise Unparsed("a here-document with no body")
                 return "".join(out), subs, docs, i
             depth -= 1
+        if char == "#" and (not out or out[-1][-1:] in (" ", "\t", ";", "&", "|", "(", ")")):
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
+            continue
         if char in "<>":
             _drop_stream_number(out)
         if char in "'\"":
@@ -244,14 +248,15 @@ def _scan(text: str, start: int = 0, closer: str | None = None
             if not match:
                 raise Unparsed("a here-document with no delimiter")
             delimiter = match.group(1) or match.group(2) or match.group(3)
-            pending.append((delimiter, strip, len(docs)))
+            quoted = match.group(3) is None or text[match.start(3) - 1] == "\\"
+            pending.append((delimiter, strip, len(docs), quoted))
             docs.append("")
             out.append(" " + HEREDOC_WORD.format(len(docs) - 1) + " ")
             i = match.end()
             continue
         elif char == "\n":
             i += 1
-            for delimiter, strip, index in pending:
+            for delimiter, strip, index, quoted in pending:
                 body: list[str] = []
                 while True:
                     if i >= len(text):
@@ -263,6 +268,9 @@ def _scan(text: str, start: int = 0, closer: str | None = None
                         break
                     body.append(line)
                 docs[index] = "\n".join(body)
+                if not quoted:
+                    # bash runs the substitutions of an unquoted body before the command starts.
+                    subs.extend(_body_substitutions(docs[index]))
             pending = []
             out.append(";")
             continue
@@ -275,6 +283,27 @@ def _scan(text: str, start: int = 0, closer: str | None = None
     if pending:
         raise Unparsed("a here-document with no body")
     return "".join(out), subs, docs, i
+
+
+def _body_substitutions(body: str) -> list[str]:
+    found = []
+    i = 0
+    while i < len(body):
+        if body[i] == "\\":
+            i += 2
+        elif body.startswith("$(", i):
+            _out, _subs, _docs, end = _scan(body, i + 2, ")")
+            found.append(body[i + 2:end])
+            i = end + 1
+        elif body[i] == "`":
+            end = body.find("`", i + 1)
+            if end < 0:
+                raise Unparsed("unbalanced backtick in a here-document")
+            found.append(body[i + 1:end])
+            i = end + 1
+        else:
+            i += 1
+    return found
 
 
 def _drop_stream_number(out: list[str]) -> None:
@@ -366,7 +395,14 @@ ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
 
 
 def _record_assignment(ctx: Context, name: str, value: str | None) -> None:
+    # A later assignment cannot take back the value an earlier command already ran with.
+    if name in ctx.assigned and _forbidden(name, ctx.assigned[name]):
+        return
     ctx.assigned[name] = value
+
+
+def _forbidden(name: str, value: str | None) -> bool:
+    return (name == CONNECTORS and value != "false") or name in GUARDED_VARIABLES
 
 
 # --- the decision ----------------------------------------------------------------
@@ -552,7 +588,7 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
         return []
     first = words[0]
     name = program(first)
-    if passed_through and name not in JUDGED_PROGRAMS:
+    if passed_through and name not in JUDGED_PROGRAMS and name not in INERT_PROGRAMS:
         # A pass-through option nobody listed leaves its value where the program should be,
         # so a write after it is refused on its signature rather than passed unjudged.
         found = _tripwire(" ".join(words), f"{first!r} stands where a pass-through command's "
@@ -748,9 +784,14 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
     if not words:
         return []
     subcommand = words[0]
+    config_keys = [word for word in words[1:] if not word.startswith("-")]
     if subcommand == "config" and any(PUSH_SHAPING_KEY.match(word.lower()) for word in words[1:]) and not (
             {"--get", "--get-all", "--get-regexp", "-l", "--list"} & set(words[1:])
-            or words[1:2] in (["get"], ["list"])):
+            or words[1:2] in (["get"], ["list"])
+            # A key alone, with no value and no writing option, is git's short read form.
+            or (len(config_keys) == 1 and not {"--unset", "--unset-all", "--add", "--replace-all",
+                                               "--remove-section", "--rename-section", "--edit",
+                                               "-e"} & set(words[1:]))):
         # Refused alone, not only beside a push: see PUSH_SHAPING_KEY.
         return [Finding("git config", "storing an alias or a push mapping, which changes what a "
                         "later push writes or runs")]
@@ -856,6 +897,14 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
         destination = remote or "origin"
     if _is_url_or_path(destination):
         urls = [destination]
+        # git rewrites a URL by url.<base>.insteadOf and pushInsteadOf before it connects, and the
+        # rewritten destination is not the one this check reads, so a matching rule refuses.
+        rules = _run_git(cwd, "config", "--get-regexp", r"^url\..*\.(pushinsteadof|insteadof)$") or ""
+        for line in rules.splitlines():
+            prefix = line.split(" ", 1)[1] if " " in line else ""
+            if prefix and destination.startswith(prefix):
+                return [Finding(f"git push to {destination}", f"a push to {destination}, which a "
+                                "stored URL rewrite sends elsewhere")]
     else:
         resolved = _run_git(cwd, "remote", "get-url", "--push", "--all", destination)
         if resolved:
@@ -868,6 +917,10 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
     if all(_is_local(url) for url in urls):
         return []
     write = f"git push to {destination}"
+    if "--no-follow-tags" not in arguments and _run_git(
+            cwd, "config", "--type=bool", "--get", "push.followTags") == "true":
+        # Stored, it pushes missing tags beside the branch, as --follow-tags does.
+        return [Finding(write, "git push with push.followTags set, which also pushes tags")]
     target = (allowance.get("repository") or "").lower()
     repositories = []
     for url in urls:
@@ -1053,6 +1106,9 @@ def _gh_repository(values: dict[str, list[str]], ctx: Context) -> str | None:
         repo = explicit.strip()
         repo = re.sub(r"^https?://github\.com/", "", repo).removesuffix(".git").lower()
         return repo
+    chosen = ctx.assigned["GH_REPO"] if "GH_REPO" in ctx.assigned else os.environ.get("GH_REPO")
+    if chosen:
+        return re.sub(r"^https?://github\.com/", "", chosen.strip()).removesuffix(".git").lower()
     return _tree_repository(ctx)
 
 
@@ -1116,7 +1172,7 @@ def judge_gh_api(positional: list[str], values: dict[str, list[str]], ctx: Conte
         return []
     path = endpoint.lstrip("/")
     if "{owner}" in path or "{repo}" in path:
-        repository = _tree_repository(ctx)
+        repository = _gh_repository({}, ctx)
         if repository is None:
             return [Finding(f"gh api {method} {endpoint}",
                             "{owner}/{repo} placeholders outside this step's registered tree")]
@@ -1159,6 +1215,11 @@ def _graphql_document(fields: dict[str, str], cwd: str | None) -> str | None:
 
 def _mutation_fields(document: str) -> list[tuple[str, str]] | None:
     found: list[tuple[str, str]] = []
+    original = document
+    # Brackets inside a string are content, so they are blanked for the structure scan; the
+    # arguments are still sliced from the original text.
+    document = re.sub(r'"""[\s\S]*?"""|"(?:\\.|[^"\\])*"',
+                      lambda m: re.sub(r"[{}()]", " ", m.group(0)), document)
     for match in re.finditer(r"\bmutation\b[^{]*\{", document):
         depth, i = 1, match.end()
         start = i
@@ -1192,7 +1253,7 @@ def _mutation_fields(document: str) -> list[tuple[str, str]] | None:
                         elif body[m] == ")":
                             depth_args -= 1
                         m += 1
-                    arguments = body[k:m]
+                    arguments = original[start + k:start + m]
                     j = m
                 found.append((name, arguments))
                 continue

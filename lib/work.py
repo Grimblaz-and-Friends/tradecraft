@@ -2710,6 +2710,11 @@ def _composition_error(request: dict[str, object], record: Marker) -> str | None
                     != controls.get("write_bound_notice_sha256")):
                 return "retained write-bound notice is missing or differs from its digest"
             effective += b"\n\n" + bound.encode("utf-8")
+    github_notice = request.get("github_write_notice")
+    if isinstance(github_notice, str):
+        # A Codex or cloud launch appends its allowance last (a Claude one carries it inside the
+        # write-bound notice), and the effective digest covers it.
+        effective += b"\n\n" + github_notice.encode("utf-8")
     digest = hashlib.sha256(effective).hexdigest()
     if digest != request.get("effective_input_sha256") or digest != evidence.get("effective_input_sha256"):
         return "composition evidence differs from retained effective input"

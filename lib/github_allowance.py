@@ -220,7 +220,11 @@ def notice(allowance: dict) -> bytes:
 def _quoted(path) -> str:
     # Hook commands and the prefix wrapper run under bash, where a backslash inside double
     # quotes can escape the next character; Windows takes these paths with forward slashes.
-    return '"' + str(path).replace("\\", "/") + '"'
+    text = str(path)
+    if "$" in text or "`" in text:
+        # bash expands both inside double quotes, so the installed entry would run another path.
+        raise BoundError(f"the path {text} holds $ or `, which the installed hook would expand")
+    return '"' + text.replace("\\", "/") + '"'
 
 
 def hook_entry(config_path: Path) -> dict[str, object]:
@@ -539,7 +543,8 @@ def brief_row(brief: str, number: int) -> str | None:
     lines = brief.splitlines()
     start = None
     for index, line in enumerate(lines):
-        if re.match(rf"^\s*\**\s*{number}\.\s", line):
+        # A row is a numbered paragraph, or a table row opening with its number.
+        if re.match(rf"^\s*\|?\s*\**\s*{number}\.\s", line):
             start = index
             break
     if start is None:
@@ -548,13 +553,17 @@ def brief_row(brief: str, number: int) -> str | None:
     # section a brief puts after its rows.
     end = len(lines)
     for index in range(start + 1, len(lines)):
-        if re.match(r"^\s*\**\s*\d+\.\s", lines[index]) or re.match(r"^\s*\**Not this", lines[index]):
+        if (re.match(r"^\s*\|?\s*\**\s*\d+\.\s", lines[index])
+                or re.match(r"^\s*\**Not this", lines[index])):
             end = index
             break
     return "\n".join(lines[start:end])
 
 
 def parse_grant(comment_id: int, body: str) -> dict[str, object]:
+    from brief import _without_fenced_regions
+    # A fenced copy is quoted, and a quoted marker claims nothing.
+    body = _without_fenced_regions(body)
     match = GRANT_MARKER.search(body)
     if not match:
         raise GrantError(f"comment {comment_id} carries no write-grant marker")

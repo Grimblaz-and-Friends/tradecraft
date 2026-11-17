@@ -633,7 +633,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         "a write grant cannot ride a cloud launch: its routine allows no write beyond the "
                         "change and report branches; run the granted turn locally or return it to the owner")
                 try:
-                    cloud_notice = github_allowance.cloud_notice(args.stage, prompt)
+                    # The context reaches the run too, so a sentence there counts as stated.
+                    cloud_notice = github_allowance.cloud_notice(args.stage, effective_prompt)
                 except github_allowance.BoundError as exc:
                     raise ImplementerError(str(exc)) from exc
                 if cloud_notice:
@@ -763,7 +764,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 # Refused like a failed preparation, so the run records it unlaunched and no
                 # session is left to resume.
                 try:
-                    if github_allowance.needs_notice(allowance, prompt):
+                    if github_allowance.needs_notice(allowance, effective_prompt):
                         github_notice = github_allowance.notice(allowance)
                 except github_allowance.BoundError as exc:
                     preparation_error = str(exc)
