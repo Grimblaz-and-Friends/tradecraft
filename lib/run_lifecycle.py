@@ -11,48 +11,201 @@ import os
 from pathlib import Path
 import socket
 import subprocess
-from seat_process import run_process
+import threading
 import time
+
+import preflight
+import seat_process
 
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
 TOTAL_BUILD_BUDGET_SECONDS = 14400.0
+# The entrance's and its launcher's own time from the call until the recipient starts.
+PREFLIGHT_CAP_SECONDS = 900.0
+# In-process work between a launcher's bounded steps, which starts no process and waits on nothing.
+SPAWN_MARGIN_SECONDS = 5.0
 MINIMUM_CLEANUP_RESERVE_SECONDS = 10.0
 ELAPSED_CHECKPOINT_INTERVAL_SECONDS = 0.25
+# A probe's own bound when its caller names none, such as a vendor program's version read.
+PROBE_DEFAULT_SECONDS = 20.0
 ELAPSED_CHECKPOINT_MARGIN_SECONDS = 10.0
 REPAIR_STAGES = frozenset({"floor", "review-disposition"})
+# Stages that launch nobody: their limit covers their own work after the entrance's decision.
+STAGE_WORK_STAGES = frozenset({"catch-up", "proof", "ready-reviewers", "release-report"})
 _DEADLINE = ContextVar("tradecraft_caller_deadline", default=None)
 _CLEANUP = ContextVar("tradecraft_recording_phase", default=False)
 
 
+class RunTimeout(TimeoutError):
+    """The run's own time ended; `limit` names the limit that ended it.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+
+    def __init__(self, message, deadline=None):
+        super().__init__(message)
+        self.limit = limit_phrase(deadline)
+
+
+class PreflightCapExceeded(RunTimeout):
+    """The entrance's cap ended before the recipient started; nothing is launched.
+
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+
+
+def cap_phrase(deadline):
+    source = "declared by --preflight-cap-seconds" if deadline.cap_declared else "the default"
+    return f"the entrance's {deadline.cap:g}-second cap before the recipient starts ({source})"
+
+
+def limit_phrase(deadline=None):
+    """Name the limit that ends this run, the one place a limit is named."""
+    deadline = deadline if deadline is not None else current_deadline()
+    if deadline is None:
+        return "no run limit is set"
+    if not deadline.in_window:
+        return cap_phrase(deadline)
+    stage = getattr(deadline, "stage", None)
+    if stage in REPAIR_STAGES and deadline.allotted < deadline.limit:
+        return f"the {stage} stage's {DEFAULT_STAGE_TIMEOUT_SECONDS:g}-second ceiling, counted from the launch"
+    kind = getattr(deadline, "window_kind", None)
+    counted = (", counted from the recipient's start" if kind == "recipient" else
+               ", counted from the start of the stage's own work" if kind == "stage-work" else "")
+    declared = getattr(deadline, "declared", None)
+    source = ("declared by --timeout-seconds" if declared else
+              "the stage's default" if declared is False else "the caller's limit")
+    return f"the {deadline.allotted:g}-second limit ({source}){counted}"
+
+
+def cap_refusal(deadline):
+    """The reason a run refused at its cap gives, naming what to run next."""
+    source = "declared" if deadline.cap_declared else "the default"
+    return (f"preflight cap: the entrance's {deadline.cap:g}-second cap ({source}) ended before the "
+            "recipient started; nothing was launched and no bundle was written. When the cause is "
+            "known, run again with --preflight-cap-seconds N --preflight-cap-reason TEXT.")
+
+
 class Deadline:
-    def __init__(self, limit, *, started=None):
+    """A run's time in two phases: the entrance's capped work, then the recipient's window.
+
+    Before the window the run's end is the latest return it prints; once the recipient starts at S,
+    the end is S plus the allotted time plus the reserve, so an unused part of the cap is not spent.
+    A deadline with no cap opens its window at its start.
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+
+    def __init__(self, limit, *, started=None, cap=None, cap_declared=False, cap_reason=None,
+                 ceiling=None):
         if not math.isfinite(limit) or limit <= 0:
             raise ValueError("caller limit must be finite and positive")
         self.limit = float(limit)
         self.started = time.monotonic() if started is None else started
         if not math.isfinite(self.started) or self.started > time.monotonic():
             raise ValueError("invocation start must be a finite past monotonic time")
-        self.reserve = min(60.0, max(MINIMUM_CLEANUP_RESERVE_SECONDS, self.limit / 10))
-        self.end = self.started + self.limit
+        if cap is not None and (not math.isfinite(cap) or cap <= 0):
+            raise ValueError("preflight cap must be finite and positive")
+        self.ceiling = None if ceiling is None else float(ceiling)
+        self.allotted = min(self.limit, self.ceiling) if self.ceiling is not None else self.limit
+        self.reserve = min(60.0, max(MINIMUM_CLEANUP_RESERVE_SECONDS, self.allotted / 10))
+        self.cap = None if cap is None else float(cap)
+        self.cap_declared, self.cap_reason = bool(cap_declared), cap_reason
+        self.cap_end = self.started + (self.cap or 0.0)
+        self.latest_end = self.cap_end + self.allotted + self.reserve
+        self.window_opened = None
+        self.window_opened_late_seconds = None
         self.probe_seconds = 0.0
+        self.end = self.latest_end
+        if self.cap is None:
+            self.open_window(self.started)
+
+    @property
+    def in_window(self):
+        return self.window_opened is not None
+
+    def open_window(self, at=None):
+        """The recipient starts now (or at `at`): its whole allotted time and the reserve follow."""
+        at = time.monotonic() if at is None else at
+        self.window_opened = at
+        late = at - self.cap_end
+        if self.cap is not None and late > 0:
+            # Only a machine suspended between two bounded steps lands here; the printed time holds.
+            self.window_opened_late_seconds = round(late, 3)
+            self.end = self.latest_end
+        else:
+            self.end = at + self.allotted + self.reserve
+        return self.end
+
+    def withdraw_window(self):
+        """An attempt spawned nothing, or a fallback's turn comes: the cap runs again."""
+        if self.cap is not None:
+            self.window_opened = None
+            self.end = self.latest_end
+
+    def cap_left(self):
+        return self.cap_end - time.monotonic()
+
+    def require_cap(self, seconds=0):
+        """Refuse when no more than `seconds` of the cap is left.
+
+        A step calls it before work that must still reach the spawn by the cap's end, with that work's
+        allowance; `remaining()` and `write_timeout()` also refuse, but only once the cap has ended.
+        """
+        if self.cap is None or self.in_window:
+            return
+        if self.cap_left() <= seconds:
+            raise PreflightCapExceeded(cap_refusal(self), self)
 
     def remaining(self, *, cleanup=False):
+        if not self.in_window:
+            # Before the recipient starts, reads are cut at the cap's end.
+            remaining = self.cap_left() + (self.reserve if cleanup else 0)
+            if remaining <= 0:
+                raise PreflightCapExceeded(cap_refusal(self), self)
+            return remaining
         remaining = self.end - time.monotonic() - (0 if cleanup else self.reserve)
         if remaining <= 0:
-            raise TimeoutError("caller limit leaves no useful launch window")
+            raise RunTimeout("caller limit leaves no useful launch window", self)
         return remaining
 
-    def probe(self, default=20, *, cleanup=False):
+    def write_timeout(self, default):
+        """A write's bound: never begun after the cap, never past the printed return less the reserve.
+
+        A write in flight is not cut at the cap's end, because a half-made worktree or push is worse
+        than a refusal a little late.
+        """
+        if self.in_window:
+            return self.probe(default)
+        now = time.monotonic()
+        if now >= self.cap_end:
+            raise PreflightCapExceeded(cap_refusal(self), self)
+        return max(0.0, min(default, self.latest_end - self.reserve - now))
+
+    def cleanup_write_timeout(self, default):
+        """A refusal's own cleanup write before the window: it comes after the cap by definition, so it is
+        bounded as a write in flight is, by the printed return less the reserve."""
+        left = self.latest_end - self.reserve - time.monotonic()
+        if left <= 0:
+            raise RunTimeout("caller limit leaves no time for the refusal's cleanup", self)
+        return min(default, left)
+
+    def latest_return_seconds(self):
+        return (self.cap or 0.0) + self.allotted + self.reserve
+
+    def cap_record(self):
+        return {"seconds": self.cap, "source": "declared" if self.cap_declared else "default",
+                "reason": self.cap_reason}
+
+    def probe(self, default=PROBE_DEFAULT_SECONDS, *, cleanup=False):
         remaining = self.remaining(cleanup=cleanup)
         if cleanup:
             # Cleanup probes share only half the reserve. Closing streams and
             # atomically completing the record still need time afterward.
             remaining -= self.reserve / 2
         if remaining <= 0:
-            raise TimeoutError("caller limit leaves no probe window before final recording")
+            raise RunTimeout("caller limit leaves no probe window before final recording", self)
         if cleanup and remaining <= self.probe_seconds:
-            raise TimeoutError("remaining cleanup window is shorter than an observed probe")
+            raise RunTimeout("remaining cleanup window is shorter than an observed probe", self)
         return min(default, remaining)
 
     def note_probe(self, started):
@@ -78,11 +231,90 @@ class Deadline:
         return self.wait_end - self.reserve / 8
 
 
-def stage_deadline(stage, caller_limit, *, started=None):
-    deadline = Deadline(caller_limit, started=started)
-    if stage in REPAIR_STAGES:
-        deadline.end = min(deadline.end, deadline.started + DEFAULT_STAGE_TIMEOUT_SECONDS)
+def stage_deadline(stage, caller_limit, *, started=None, declared=None, cap=None, cap_reason=None):
+    deadline = Deadline(caller_limit, started=started,
+                        cap=PREFLIGHT_CAP_SECONDS if cap is None else cap,
+                        cap_declared=cap is not None, cap_reason=cap_reason,
+                        ceiling=DEFAULT_STAGE_TIMEOUT_SECONDS if stage in REPAIR_STAGES else None)
+    deadline.stage, deadline.declared = stage, declared
+    deadline.window_kind = "stage-work" if stage in STAGE_WORK_STAGES else "recipient"
     return deadline
+
+
+def validate_cap_flags(seconds, reason):
+    """A declared cap needs both flags, a figure above the default and a reason that is not blank.
+
+    A cap no larger than the default would only shorten a run; a caller with a fixed stop shortens its
+    limit instead.
+    """
+    if seconds is None and reason is None:
+        return
+    if seconds is None or reason is None:
+        raise ValueError("--preflight-cap-seconds and --preflight-cap-reason are declared together")
+    if not math.isfinite(seconds) or seconds <= PREFLIGHT_CAP_SECONDS:
+        raise ValueError(f"--preflight-cap-seconds must be finite and larger than {PREFLIGHT_CAP_SECONDS:g}")
+    if not reason.strip():
+        raise ValueError("--preflight-cap-reason must not be blank")
+
+
+def write_launch_notice(path, deadline, *, refused_at_cap=False):
+    """Tell the entrance when its launcher's recipient started, so its wait follows that window,
+    and that the launcher refused at the cap, so the entrance's record names that outcome."""
+    if path is None:
+        return
+    path = Path(path)
+    sibling = path.with_name(path.name + ".tmp")
+    notice = {"schema_version": 1, "window_opened_monotonic": deadline.window_opened}
+    if refused_at_cap:
+        notice["refused_at_cap"] = True
+    sibling.write_text(json.dumps(notice), encoding="utf-8")
+    os.replace(sibling, path)
+
+
+def read_launch_notice(path):
+    """The window a launcher reported: a monotonic start, None when withdrawn, or ... when unread."""
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ...
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        return ...
+    opened = value.get("window_opened_monotonic")
+    return opened if isinstance(opened, (int, float)) and math.isfinite(opened) else None
+
+
+def window_line(deadline):
+    """The latest return time a named stage prints first, computed from its own deadline."""
+    # The wall clock is read once per run, so the line and every record name the same return time.
+    called = getattr(deadline, "called_epoch", None)
+    if called is None:
+        opened = preflight.current()
+        same_run = opened is not None and opened.called_epoch is not None and opened.started == deadline.started
+        called = opened.called_epoch if same_run else time.time() - (time.monotonic() - deadline.started)
+        deadline.called_epoch = called
+        if opened is not None and opened.started == deadline.started and opened.called_epoch is None:
+            opened.called_epoch = called
+    stage = getattr(deadline, "stage", None)
+    note = None
+    if deadline.ceiling is not None and deadline.limit > deadline.ceiling:
+        note = (f"the {stage} stage's ceiling is {deadline.ceiling:g} seconds, counted from the launch; "
+                f"its recipient gets {deadline.allotted:g} seconds, not the declared {deadline.limit:g}")
+    seconds = deadline.latest_return_seconds()
+    return {
+        "schema_version": 1, "stage": stage, "limit_seconds": deadline.limit,
+        "limit_source": "declared" if getattr(deadline, "declared", None) else "default",
+        "allotted_seconds": deadline.allotted, "stage_ceiling_seconds": deadline.ceiling,
+        "ceiling_note": note,
+        "counted_from": ("stage-work-start" if getattr(deadline, "window_kind", None) == "stage-work"
+                         else "recipient-start"),
+        "preflight_cap": deadline.cap_record(), "reserve_seconds": deadline.reserve,
+        "called_at": _iso(called), "latest_return_at": _iso(called + seconds),
+        "latest_return_seconds": seconds,
+    }
+
+
+def _iso(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def current_deadline():
@@ -117,7 +349,30 @@ def cleanup_scope():
         _CLEANUP.reset(token)
 
 
-def probe_timeout(default=20, *, cleanup=None):
+def write_timeout(default):
+    """A write's bound in the open run: a refusal's own cleanup before the window keeps a write's bound,
+    since the cleanup allowance ends with the cap; in the window it has the cleanup allowance.
+
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+    deadline = current_deadline()
+    if deadline is None:
+        return default
+    if _CLEANUP.get():
+        if deadline.cap is not None and not deadline.in_window:
+            return deadline.cleanup_write_timeout(default)
+        return deadline.probe(default, cleanup=True)
+    return deadline.write_timeout(default)
+
+
+def after_write():
+    """The cap is checked again after each write made before the recipient starts."""
+    deadline = current_deadline()
+    if deadline is not None and not _CLEANUP.get():
+        deadline.require_cap()
+
+
+def probe_timeout(default=PROBE_DEFAULT_SECONDS, *, cleanup=None):
     deadline = current_deadline()
     phase = _CLEANUP.get() if cleanup is None else cleanup
     return deadline.probe(default, cleanup=phase) if deadline else default
@@ -164,9 +419,8 @@ def process_identity(pid=None):
         except FileNotFoundError:
             if Path("/proc").is_dir():
                 raise ProcessLookupError(pid) from None
-            result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, timeout=1)
+            result = seat_process.run_read(["ps", "-p", str(pid), "-o", "lstart="],
+                                           cwd=None, timeout=1)
             if result.returncode == 1:
                 raise ProcessLookupError(pid)
             if result.returncode != 0 or not result.stdout.strip():
@@ -209,12 +463,8 @@ def content_snapshot(root, *, timeout=20):
         if allowance <= 0:
             raise TimeoutError("content snapshot deadline")
         command = ["git", "-C", str(root), *args]
-        if current_deadline() is None:
-            result = subprocess.run(command, stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=allowance)
-        else:
-            result = run_process(command, input=b"", cwd=Path.cwd(), timeout=allowance,
-                                 on_tick=lambda: None, cleanup_deadline=cleanup_deadline())
+        result = seat_process.run_read(command, input=b"", cwd=Path.cwd(), timeout=allowance,
+                                       cleanup_deadline=cleanup_deadline())
         if result.returncode:
             raise OSError("cannot read Git content snapshot: " + result.stderr.decode("utf-8", "replace"))
         return result.stdout
@@ -334,20 +584,189 @@ def runtime_account(bundles, *, root=None, branch=None, lineage=None):
             "runs": rows}
 
 
+def _json_copy(value):
+    """A JSON value's own copy; parsed JSON holds only dicts, lists and immutable scalars."""
+    if isinstance(value, dict):
+        return {key: _json_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_copy(item) for item in value]
+    return value
+
+
+def _signature(path):
+    try:
+        status = os.stat(path)
+    except OSError:
+        return None
+    return status.st_size, status.st_mtime_ns
+
+
+def _read_record(path):
+    """One record's signature, bytes (or the OSError) and one parse (or its failure)."""
+    # Taken before the read: a write racing the read then shows as a change at the next refresh.
+    signature = _signature(path)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return signature, exc, exc
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        value = exc
+    return signature, raw, value
+
+
+class _StoreRecords:
+    """One store root's records as this run read them, shared by every spelling of that root.
+
+    Paths are kept relative to the root so each caller's own spelling comes back to it.
+    """
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self._lock = threading.RLock()
+        self._requests = None  # Listed on first use, so a run that never asks lists nothing.
+        self._runs = None
+        self._stale = False
+        self._records = {}  # Each record is parsed once and kept until its signature changes.
+
+    def mark_stale(self):
+        with self._lock:
+            self._stale = True
+
+    def forget(self, relative):
+        with self._lock:
+            self._records.pop(relative, None)
+            self._stale = True  # A record the run wrote may be new to the listing too.
+
+    def _relative(self, paths):
+        return [path.relative_to(self.root) for path in paths]
+
+    def _listed(self):
+        """List on first use, and again after a refresh, rereading only what changed."""
+        if self._requests is not None and not self._stale:
+            return
+        if self._stale:
+            for relative, (signature, _raw, _value) in list(self._records.items()):
+                if _signature(self.root / relative) != signature:
+                    del self._records[relative]
+        self._requests = self._relative(self.root.rglob("*.request.json"))
+        self._runs = self._relative(self.root.rglob("*.run.json"))
+        self._stale = False
+
+    def _record(self, relative):
+        found = self._records.get(relative)
+        if found is None:
+            found = self._records[relative] = _read_record(self.root / relative)
+        return found
+
+    # The store is read to check what markers claim, so every read of it counts under markers,
+    # even one made while counting removals, and the store's cost stays in one part.
+    def requests(self):
+        with self._lock, preflight.part("markers"):
+            self._listed()
+            return [(relative, *self._record(relative)[1:]) for relative in self._requests]
+
+    def listing(self):
+        with self._lock, preflight.part("markers"):
+            self._listed()
+            return list(self._requests), list(self._runs)
+
+    def lookup(self, relative):
+        with self._lock, preflight.part("markers"):
+            self._listed()
+            return self._record(relative)[1:]
+
+
+class StoreIndex:
+    """The dispatch store as this run reads it: each request record once, each selected run once.
+
+    Records come back as copies, so a reader that changes one cannot change what another sees.
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+
+    def __init__(self, records, root):
+        self._records = records
+        self.root = Path(root)
+
+    def _relative(self, path):
+        path = Path(path)
+        try:
+            return path.relative_to(self.root)
+        except ValueError:
+            return path.resolve().relative_to(self._records.root.resolve())
+
+    def requests(self, where=None):
+        """`(path, raw, value)` per request record in rglob order; `where` sees the shared value and must not change it."""
+        with preflight.part("markers"):
+            return [(self.root / relative, raw, value if isinstance(value, Exception) else _json_copy(value))
+                    for relative, raw, value in self._records.requests()
+                    if where is None or where(value)]
+
+    def requests_listing(self):
+        return [self.root / relative for relative in self._records.listing()[0]]
+
+    def runs_listing(self):
+        return [self.root / relative for relative in self._records.listing()[1]]
+
+    def run(self, path):
+        """`(raw, value)` for one record, read at most once until it changes or is forgotten."""
+        with preflight.part("markers"):
+            raw, value = self._records.lookup(self._relative(path))
+            return raw, value if isinstance(value, Exception) else _json_copy(value)
+
+    def mark_stale(self):
+        self._records.mark_stale()
+
+    def forget(self, path):
+        self._records.forget(self._relative(path))
+
+
+def store_index(store):
+    """The open run's index of `store`, or None outside a run or when the store is not a directory."""
+    opened = preflight.current()
+    if opened is None or store is None or not Path(store).is_dir():
+        return None
+    root = Path(store)
+    return StoreIndex(opened.index(root, lambda: _StoreRecords(root)), root)
+
+
 def launch_bundles(store, work, stages, *, after=None, exact_work=False, include_missing_stage=False):
     """Discover requests first so an unfinished newest attempt cannot disappear."""
     bundles = {}
     if not Path(store).is_dir():
         return []
-    for path in Path(store).rglob("*.request.json"):
-        try:
-            request = json.loads(path.read_bytes())
-        except (OSError, ValueError):
-            continue  # No attribution can be established.
+
+    def wanted(request):
         attributed = (request.get("work") == work if exact_work else
                       str(request.get("work", "")).lower() == work.lower()) if isinstance(request, dict) else False
-        if not attributed or (request.get("stage") not in stages
-                              and not (include_missing_stage and not request.get("stage"))):
+        return attributed and (request.get("stage") in stages
+                               or (include_missing_stage and not request.get("stage")))
+
+    index = store_index(store)
+    if index is None:
+        def requests():
+            for path in Path(store).rglob("*.request.json"):
+                try:
+                    yield path, json.loads(path.read_bytes())
+                except (OSError, ValueError):
+                    continue  # No attribution can be established.
+
+        def read_run(run_path):
+            try:
+                return json.loads(run_path.read_bytes())
+            except (OSError, ValueError):
+                return None
+    else:
+        # Only attributed requests are copied; a failed parse is never attributed.
+        def requests():
+            return ((path, value) for path, _raw, value in index.requests(where=wanted))
+
+        def read_run(run_path):
+            value = index.run(run_path)[1]
+            return None if isinstance(value, Exception) else value
+    for path, request in requests():
+        if not wanted(request):
             continue
         stamp = request.get("launched_at") or request.get("started_at")
         try:
@@ -361,9 +780,8 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False, include
         if after is not None and order <= datetime.fromisoformat(after.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat():
             continue
         run_path = path.with_name(path.name.removesuffix(".request.json") + ".run.json")
-        try:
-            run = json.loads(run_path.read_bytes())
-        except (OSError, ValueError):
+        run = read_run(run_path)
+        if run is None:
             run = {"recovery_error": "run record missing or unreadable"}
         if not isinstance(run, dict):
             run = {"recovery_error": "run record is not an object"}

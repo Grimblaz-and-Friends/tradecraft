@@ -27,10 +27,14 @@ class ArtifactTransport:
                      "created_at": "2026-09-19T00:00:00Z",
                      "html_url": "https://github.example/issue#issuecomment-751",
                      "user": {"login": PRODUCER}}]
-        if "/pulls?" in endpoint:
+        if "/timeline?" in endpoint:
             return []
         return {"number": 12, "state": "open", "body": "", "labels": [],
                 "user": {"login": PRODUCER}}
+
+    def closing_pull_requests(self, query, variables):
+        return {"data": {"repository": {"issue": {"closedByPullRequestsReferences": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}}
 
 
 @pytest.fixture
@@ -196,13 +200,13 @@ def test_public_retained_git_timeout_is_unresolved_and_resumable(entrance, monke
     _, bundle, request, _ = bundles(store)[-1]
     root, copy = Path(request["root"]), request["artifact_copy"]
     before = snapshot(root)
-    original = trees.run_process
+    original = trees.run_read
     def timeout(command, **kwargs):
         if str(root) in command and any(probe in command for probe in ("fsck", "cat-file")):
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         return original(command, **kwargs)
     with monkeypatch.context() as m:
-        m.setattr(trees, "run_process", timeout)
+        m.setattr(trees, "run_read", timeout)
         state = repair_state(holder, store)
         decision = work.Decision("artifact", True, "resume", "artifact-marker-absent", "resume draft")
         report = work._reported_decision(state, decision)
@@ -224,12 +228,12 @@ def test_public_retained_git_timeout_is_unresolved_and_resumable(entrance, monke
 
 def test_public_clone_timeout_returns_holder_owned_copy_and_bundle_refusal(entrance, monkeypatch, capsys):
     _holder, store, commands, setup = entrance
-    original = trees.run_process
+    original = trees.run_read
     def timeout(command, **kwargs):
         if "clone" in command:
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         return original(command, **kwargs)
-    monkeypatch.setattr(trees, "run_process", timeout)
+    monkeypatch.setattr(trees, "run_read", timeout)
     args, _, _ = setup("codex")
     assert work.run(args, transport=ArtifactTransport()) == 0
     assert not commands and not bundles(store)
@@ -1026,3 +1030,36 @@ def test_cloud_author_is_revised_in_its_own_session_through_the_entrance(entranc
     assert argv[3:5] == ["--cloud", "cse_ABC123"] and f"checkout: commit {current}" in argv[2]
     assert revised_run["outcome"] == "success"
     assert_cloud_task(fake.dispatch.decode("utf-8"))
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_978_slow_copy_refuses_at_the_cap(entrance, monkeypatch, capsys, declared):
+    import preflight
+    import time
+    holder, store, commands, setup = entrance
+    args, _capture, _dispatch = setup("codex")
+    if declared:
+        args.preflight_cap_seconds, args.preflight_cap_reason = 1800.0, "large repository"
+        monkeypatch.setattr(work, "_records_home", lambda _state: holder.parent / "records-home")
+    git = trees.git
+    delayed = []
+
+    def slow_copy(root, *arguments, **kwargs):
+        if not delayed and "clone" in arguments:
+            delayed.append(True)
+            time.sleep(4)  # The copy's creation takes four seconds in the entrance's own process.
+        return git(root, *arguments, **kwargs)
+    monkeypatch.setattr(trees, "git", slow_copy)
+    # Three seconds of the default cap are left when the entrance is called.
+    with preflight.scope(started=time.monotonic() - lifecycle.PREFLIGHT_CAP_SECONDS + 3):
+        if not declared:
+            with pytest.raises(lifecycle.PreflightCapExceeded, match="the entrance's 900-second cap"):
+                work.run(args, transport=ArtifactTransport())
+            assert delayed and commands == []  # The slow copy reached the cap; no launcher was started.
+            return
+        work.run(args, transport=ArtifactTransport())
+    # With a larger cap declared, the same copy launches, and the cap reaches the launcher's record.
+    assert delayed and len(commands) == 1
+    assert "--preflight-cap-seconds" in commands[0] and "--preflight-cap-reason" in commands[0]
+    [(_order, _path, request, _run)] = bundles(store)
+    assert request["preflight_cap"] == {"seconds": 1800, "source": "declared", "reason": "large repository"}

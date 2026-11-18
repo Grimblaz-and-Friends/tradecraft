@@ -932,6 +932,28 @@ def test_a_failed_holder_only_stage_is_no_return(home, stage):
     assert remind(home, T0 + 12) is None
 
 
+@pytest.mark.parametrize("stage", ["release-report", "proof", "ready-reviewers", "catch-up"])
+def test_a_failed_holder_only_stage_after_its_window_line_is_no_return(home, stage):
+    # Every named stage prints its window line first, so a failed run's text carries that
+    # line and no report.
+    bind(home, output=json.dumps(decision_dict("waiting", "waiting",
+                                               "latest-check-run-pending")),
+         command=f"python lib/work.py run build --repo {REPO_NAME} --issue 888 --root D:/r")
+    before = tick(home, T0 + 1)["view"]
+    command = f"python lib/work.py run {stage} --repo {REPO_NAME} --issue 888 --root D:/r"
+    window = json.dumps({"schema_version": 1, "stage": stage, "limit_seconds": 3600.0,
+                         "preflight_cap": {"seconds": 900.0, "source": "default", "reason": None},
+                         "latest_return_seconds": 4560.0})
+    core.observe(ctx_at(home, T0 + 10), {
+        "session_id": SID, "command": command, "started_at": T0 + 9, "ended_at": T0 + 10,
+        "output": f"work: window {window}\nwork: change-proof policy missing\n",
+        "title": allow_title("Start 888", "auto")})
+    view = tick(home, T0 + 11)["view"]
+    assert (view["stage"], view["waiting_on"], view["next_step"]) == (
+        before["stage"], before["waiting_on"], before["next_step"])
+    assert view["failure"].startswith(f"{stage} failed")
+
+
 class Clock:
     def __init__(self, now):
         self.value = now

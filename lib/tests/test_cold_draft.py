@@ -131,13 +131,14 @@ def test_C3_get_is_authenticated_and_names_all_streams(monkeypatch):
     def run(command, **kwargs):
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, json.dumps(draft_get(command[-1])).encode(), b"")
-    monkeypatch.setattr(cold_draft.subprocess, "run", run)
+    monkeypatch.setattr(cold_draft, "run_read", run)
     assert cold_draft.resolve_draft("example/product#12", "20") == ("20", DRAFT)
     assert len(calls) == 2
     for command, kwargs in calls:
         assert command[:4] == ["gh", "api", "--method", "GET"]
-        assert kwargs["stdin"] == subprocess.DEVNULL
-        assert kwargs["stdout"] == kwargs["stderr"] == subprocess.PIPE
+        # run_read always captures both streams; an empty input is its closed stdin.
+        assert kwargs.get("input", b"") == b""
+        assert "timeout" in kwargs
 
 
 @pytest.mark.parametrize("identity,body", [("0", DRAFT), (None, DRAFT), ("20", ""), ("20", None)])
@@ -166,7 +167,7 @@ def test_C3_work_identity_is_resolved_before_get(work_value):
 @pytest.mark.parametrize("result", [subprocess.CompletedProcess([], 1, b"{}", b"failed"),
                                   subprocess.CompletedProcess([], 0, b"not JSON", b"")])
 def test_C3_failed_get_or_unavailable_canonical_response_refuses(monkeypatch, result):
-    monkeypatch.setattr(cold_draft.subprocess, "run", lambda *_a, **_k: result)
+    monkeypatch.setattr(cold_draft, "run_read", lambda *_a, **_k: result)
     with pytest.raises(cold_draft.BindingError, match="GitHub GET"):
         cold_draft._get("repos/example/product/issues/comments/20")
 
@@ -175,7 +176,7 @@ def test_C3_failed_get_or_unavailable_canonical_response_refuses(monkeypatch, re
 def test_C3_get_launch_failure_and_timeout_are_named_binding_refusals(monkeypatch, failure):
     def run(*_args, **_kwargs):
         raise failure
-    monkeypatch.setattr(cold_draft.subprocess, "run", run)
+    monkeypatch.setattr(cold_draft, "run_read", run)
     with pytest.raises(cold_draft.BindingError, match="GitHub GET failed for repos/example/product/issues/comments/20"):
         cold_draft.resolve_draft("example/product#12", "20")
 

@@ -1404,3 +1404,43 @@ def test_an_overtaken_once_refused_reading_is_listed_unposted_and_owes_nothing(c
     work.validate_marker_claims(fixture)
     rows = work._cold_reading_measures(fixture)["readings"]
     assert [(row["posted"], row["can_tell"]) for row in rows] == [(False, True), (True, True)]
+
+
+@pytest.mark.cold_reading
+def test_978_a_cold_reader_started_by_the_entrance_gets_the_whole_limit(change, monkeypatch, capsys):
+    import preflight
+    import run_lifecycle as lifecycle
+    scenario = change.tmp / "scenario.json"
+    scenario.write_text(json.dumps({"claude": {"message": clean()}}), encoding="utf-8")
+    output = change.store / "seat-reading" / "result.md"
+    stand_in = Path(__file__).resolve().parent / "seat_cli.py"
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, _explicit=None: [f"--{vendor}", str(stand_in)])
+    monkeypatch.setattr(dispatch_seat, "resolve_command", lambda vendor, _explicit: [
+        sys.executable, str(stand_in), vendor, str(scenario)])
+    monkeypatch.setattr(dispatch_seat.records, "runtime_version", lambda *_: "fixture-cli 1.0")
+    monkeypatch.setattr(dispatch_seat, "is_windows", lambda: False)
+    commands = []
+
+    def invoke(command, deadline):
+        # The entrance hands the seat its own start, as its launch does.
+        commands.append(command)
+        return dispatch_seat.run_dispatch(dispatch_seat.parser().parse_args(
+            [*command[2:], "--invocation-started-monotonic", str(deadline.started)]))
+    monkeypatch.setattr(work, "_invoke_recipient", invoke)
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "fixture build bundle"))
+    monkeypatch.setattr(work.records, "resolved_output", lambda *_a: output)
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    # The entrance spent 500 seconds before it launched the reader.
+    with preflight.scope(started=lifecycle.time.monotonic() - 500) as opened:
+        deadline = lifecycle.stage_deadline("cold-reader", 1800, started=opened.started, declared=True)
+        with lifecycle.deadline_scope(deadline):
+            assert work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                                             dispatch_path=None, tree_metadata=None, timeout_seconds=1800,
+                                             claude_path=None, codex_path=None) == 0
+    [command] = commands
+    assert command[command.index("--timeout-seconds") + 1] == "1800"
+    request = json.loads(output.with_name("result.md.request.json").read_text("utf-8"))
+    assert request["recipient_allocation_seconds"] == 1800
+    run = json.loads(output.with_name("result.md.run.json").read_text("utf-8"))
+    assert run["attempts"][0]["allocation_seconds"] >= 1799

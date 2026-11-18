@@ -75,35 +75,32 @@ def test_unreadable_snapshot_is_unknown(tmp_path):
 def test_default_deadline_and_invalid_limits(monkeypatch):
     monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 10)
     window = lifecycle.Deadline(lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS)
-    assert window.remaining() == 7140
-    assert window.remaining(cleanup=True) == 7200
+    # The limit is the recipient's whole time; the reserve comes after it.
+    assert window.remaining() == 7200
+    assert window.remaining(cleanup=True) == 7260
     assert lifecycle.TOTAL_BUILD_BUDGET_SECONDS == 14400
     short = lifecycle.Deadline(15)
     assert lifecycle.MINIMUM_CLEANUP_RESERVE_SECONDS == 10
-    assert short.remaining() == 5
+    assert short.remaining() == 15
     for bad in [0, -1, float("nan"), float("inf")]:
         with pytest.raises(ValueError):
             lifecycle.Deadline(bad)
-    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 15)
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 25)
     with pytest.raises(TimeoutError):
         short.remaining()
 
 
-@pytest.mark.parametrize("limit, reserve, allocation", [
-    (5, 10, None), (10, 10, None), (10.5, 10, 0.5),
-    (15, 10, 5), (30, 10, 20), (100, 10, 90),
-    (120, 12, 108), (600, 60, 540), (7200, 60, 7140),
+@pytest.mark.parametrize("limit, reserve", [
+    (5, 10), (10, 10), (10.5, 10), (15, 10), (30, 10), (100, 10),
+    (120, 12), (600, 60), (7200, 60),
 ])
-def test_cleanup_reserve_minimum_proportion_cap_and_launch_window(monkeypatch, limit, reserve, allocation):
+def test_cleanup_reserve_minimum_proportion_cap_and_launch_window(monkeypatch, limit, reserve):
     monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 100)
     deadline = lifecycle.Deadline(limit)
     assert deadline.reserve == reserve
-    assert deadline.remaining(cleanup=True) == limit
-    if allocation is None:
-        with pytest.raises(TimeoutError, match="no useful launch window"):
-            deadline.remaining()
-    else:
-        assert deadline.remaining() == allocation
+    # The recipient gets the whole limit, and the reserve follows it.
+    assert deadline.remaining(cleanup=True) == limit + reserve
+    assert deadline.remaining() == limit
 
 
 def bundle(dispatch, stage, elapsed, *, unfinished=False, allocation=1000, reason=None):
@@ -125,11 +122,15 @@ def test_repair_run_keeps_stage_ceiling_and_shorter_caller_limit(monkeypatch, st
     monkeypatch.setattr(implementer, "_run_implementer", lambda args, deadline: seen.append(deadline) or 0)
     for caller in [8000, 30]:
         window = lifecycle.stage_deadline(stage, caller)
-        assert window.remaining() == (3540 if caller == 8000 else 20)
         args = SimpleNamespace(stage=stage, timeout_seconds=caller)
         assert implementer.run_implementer(args) == 0
         assert seen[-1].end == window.end
-    assert lifecycle.stage_deadline("build", 7200).remaining() == 7140
+        # The ceiling bounds the allotted time, counted from the window's opening.
+        window.open_window()
+        assert window.remaining() == (3600 if caller == 8000 else 30)
+    build = lifecycle.stage_deadline("build", 7200)
+    build.open_window()
+    assert build.remaining() == 7200
 
 
 def test_build_budget_excludes_repairs_deduplicates_and_retains_uncertainty():
@@ -454,11 +455,11 @@ def test_cleanup_does_not_start_a_probe_that_previously_outlasted_its_window(tmp
         calls.append(command)
         current[0] += probe_seconds
         return subprocess.CompletedProcess(command, 0, b"fixture-head", b"")
-    monkeypatch.setattr(records, "run_process", probe)
+    monkeypatch.setattr(records, "run_read", probe)
     with lifecycle.deadline_scope(deadline):
         assert records.git_revision(tmp_path) == "fixture-head"
         assert deadline.probe_seconds == pytest.approx(probe_seconds)
-        current[0] = 120
+        current[0] = 130  # The recipient has reached its allotted time.
         with lifecycle.cleanup_scope():
             assert records.git_revision(tmp_path) == ("fixture-head" if probe_seconds < 5 else None)
     assert len(calls) == (2 if probe_seconds < 5 else 1)
@@ -468,14 +469,14 @@ def test_cleanup_probes_leave_time_for_the_completion_write(monkeypatch, tmp_pat
     monkeypatch.setattr(lifecycle.time, "monotonic", lambda: current[0])
     deadline = lifecycle.Deadline(30)
     with lifecycle.deadline_scope(deadline):
-        current[0] = 120  # The recipient has reached its stopping ceiling.
+        current[0] = 130  # The recipient has reached its stopping ceiling.
         with pytest.raises(TimeoutError):
             lifecycle.probe_timeout()
         with lifecycle.cleanup_scope():
             assert lifecycle.probe_timeout() == 5
-            assert lifecycle.cleanup_deadline() == 125
-            current[0] = 125.1
-            monkeypatch.setattr(records, "run_process", lambda *_a, **_k: pytest.fail("launched after cleanup allowance"))
+            assert lifecycle.cleanup_deadline() == 135
+            current[0] = 135.1
+            monkeypatch.setattr(records, "run_read", lambda *_a, **_k: pytest.fail("launched after cleanup allowance"))
             assert records.git_revision(tmp_path) is None
         assert deadline.remaining(cleanup=True) > 0  # Final recording still has its allowance.
 
@@ -495,7 +496,7 @@ def test_snapshot_bounds_deleted_path_traversal(monkeypatch, tmp_path, paths):
         else:
             output = b"\0".join(f"deleted-{i}".encode() for i in range(paths))
         return subprocess.CompletedProcess(command, 0, output, b"")
-    monkeypatch.setattr(lifecycle, "run_process", git)
+    monkeypatch.setattr(lifecycle.seat_process, "run_read", git)
     with lifecycle.deadline_scope(lifecycle.Deadline(15)):
         snapshot = lifecycle.content_snapshot(tmp_path, timeout=0.1)
     if paths == 1:
@@ -568,7 +569,7 @@ def test_984_the_entrance_waits_until_wait_end_and_the_final_write_begins_an_eig
     assert deadline.final_write_at == deadline.wait_end - deadline.reserve / 8
     seen = {}
 
-    def run(command, *, timeout, cleanup_deadline):
+    def run(command, *, timeout, cleanup_deadline, on_tick=None):
         seen.update(timeout=timeout, now=time.monotonic())
         return subprocess.CompletedProcess(command, 0)
 

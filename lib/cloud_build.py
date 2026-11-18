@@ -26,7 +26,9 @@ import urllib.request
 import dispatch_record as records
 from dispatch_lifecycle import CLAUDE_DISALLOWED_TOOLS
 import launch_bound
+import preflight
 import run_lifecycle as lifecycle
+import seat_process
 
 RECORD_SCHEMA = 1
 DEFAULT_PIN_BRANCH = "cloud-practice"
@@ -38,6 +40,8 @@ def cloud_practice_path(practice: str, *parts: str) -> str:
 
 # A routine run may push to `claude/` branches without being told; report branches live there.
 REPORT_PREFIX = "claude/tradecraft-report-"
+# The Git commands the cloud route runs that change a repository; each is judged by its exit status.
+GIT_WRITES = frozenset({"push", "fetch", "merge"})
 
 
 @functools.cache
@@ -537,8 +541,12 @@ class Transport:
         if body is not None:
             command += ["--input", "-"]
             data = json.dumps(body).encode("utf-8")
-        result = subprocess.run(command, input=data if data is not None else b"", capture_output=True,
-                                timeout=120)
+        # Not passed as a write even when it changes GitHub: each `gh api` response is parsed, so it
+        # must be whole or refused, unlike a Git write whose caller reads only its exit status.
+        # Before the send a read is the entrance's work, so it is cut at the cap's end.
+        result = seat_process.run_read(command, input=data if data is not None else b"", cwd=Path.cwd(),
+                                       timeout=lifecycle.probe_timeout(120) if _before_send() else 120,
+                                       cleanup_deadline=lifecycle.cleanup_deadline())
         raw = result.stdout.replace(b"\r\n", b"\n")
         head, _, payload = raw.partition(b"\n\n")
         match = re.match(rb"HTTP/[0-9.]+ ([0-9]{3})", head)
@@ -563,16 +571,26 @@ class Transport:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", "replace")
 
+    # The vendor command keeps its own route, the sign-in check's included, because the send is the
+    # recipient's start. A call before the send, the sign-in check among them, is the entrance's work,
+    # so its bound is what is left of the cap.
     def cli(self, argv: list[str], env: dict) -> tuple[int, bytes]:
         try:
-            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=120)
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
+                                    timeout=lifecycle.probe_timeout(120))
         except FileNotFoundError:
             return 127, b""
         return result.returncode, result.stdout
 
     def git(self, root: Path, *arguments: str) -> tuple[int, str]:
-        result = subprocess.run(["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL,
-                                capture_output=True, timeout=300)
+        # Every Git command here takes the contained route so a hung one is stopped with what it
+        # started; a push, fetch or merge is reported by its exit status even if its output was cut.
+        writes = bool(arguments) and arguments[0] in GIT_WRITES
+        # A push before the send is not cut at the cap's end, only where it would outlast the printed
+        # return; after it, a fetch or merge records the session's result and so reaches into the reserve.
+        result = seat_process.run_read(["git", "-C", str(root), *arguments], input=b"", cwd=Path.cwd(),
+                                       timeout=lifecycle.write_timeout(300) if writes and _before_send() else 300,
+                                       cleanup_deadline=lifecycle.cleanup_deadline(), writes=writes)
         return result.returncode, (result.stdout or result.stderr).decode("utf-8", "replace").strip()
 
     def sleep(self, seconds: float) -> None:
@@ -694,23 +712,45 @@ def post_report(transport: Transport, work: str, stage: str, session_url: str, b
 
 # ---- the follow-up's session record ------------------------------------------
 
+def _utf8_json(raw: object) -> bool:
+    """Whether bytes the index parsed would also parse as strict UTF-8 text, as this module reads records."""
+    if not isinstance(raw, bytes) or json.detect_encoding(raw) != "utf-8":
+        return False  # `json.loads` on bytes also accepts a byte-order mark and UTF-16 or UTF-32.
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def session_attempts(record_root: Path, session: str) -> list[tuple[dict, dict]]:
     """Every recorded (request, run) for this cloud session, oldest first."""
     found = []
-    for path in sorted(record_root.rglob("*.request.json")):
-        try:
-            request = json.loads(path.read_text("utf-8"))
-        except (OSError, ValueError):
-            continue
-        cloud = request.get("cloud") if isinstance(request, dict) else None
-        if not isinstance(cloud, dict) or cloud.get("session_id") != session:
-            continue
-        run_path = path.with_name(path.name[:-len(".request.json")] + ".run.json")
-        try:
-            run = json.loads(run_path.read_text("utf-8"))
-        except (OSError, ValueError):
-            run = {}
-        found.append((request, run))
+    index = lifecycle.store_index(record_root)
+    if index is None:
+        for path in sorted(record_root.rglob("*.request.json")):
+            try:
+                request = json.loads(path.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+            cloud = request.get("cloud") if isinstance(request, dict) else None
+            if not isinstance(cloud, dict) or cloud.get("session_id") != session:
+                continue
+            run_path = path.with_name(path.name[:-len(".request.json")] + ".run.json")
+            try:
+                run = json.loads(run_path.read_text("utf-8"))
+            except (OSError, ValueError):
+                run = {}
+            found.append((request, run))
+    else:
+        def ours(value: object) -> bool:
+            cloud = value.get("cloud") if isinstance(value, dict) else None
+            return isinstance(cloud, dict) and cloud.get("session_id") == session
+        for path, raw, request in sorted(index.requests(where=ours), key=lambda entry: entry[0]):
+            if not _utf8_json(raw):
+                continue
+            run_raw, run = index.run(path.with_name(path.name[:-len(".request.json")] + ".run.json"))
+            found.append((request, run if _utf8_json(run_raw) and not isinstance(run, Exception) else {}))
     found.sort(key=lambda pair: pair[0].get("launched_at") or "")
     return found
 
@@ -821,12 +861,50 @@ def _previous_usage(attempts: list[tuple[dict, dict]], dispatch_id: str) -> tupl
     return latest, deltas
 
 
-def run(args, deadline, *, entry: dict | None, route_source: str, effective_prompt: bytes,
-        prompt: bytes, context: bytes, artifact_brief: bytes, metadata: dict, composition: dict,
-        settings_sources: dict, validate, transport: Transport | None = None,
-        record_root: Path | None = None, plugin: Path | None = None,
-        install_path: Path | None = None, preset_failure: str | None = None) -> int:
-    """Fire (or follow up) one cloud attempt and record it like a local bundle."""
+def run(args, deadline, **launch) -> int:
+    """Fire (or follow up) one cloud attempt and record it like a local bundle.
+
+    A cloud build is a launched stage, so its request record carries the split from
+    the call as a local launch's does; the launcher's scope is joined when open.
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    with preflight.scope(), preflight.part("launch_preparation"):
+        return _launch(args, deadline, **launch)
+
+
+def _before_send() -> bool:
+    """Whether the run's recipient has yet to start, so its steps are the entrance's capped work."""
+    deadline = lifecycle.current_deadline()
+    return deadline is not None and getattr(deadline, "cap", None) is not None and not deadline.in_window
+
+
+def _cut_at_cap(deadline, exc) -> bool:
+    return (isinstance(exc, (subprocess.TimeoutExpired, TimeoutError))
+            and getattr(deadline, "cap", None) is not None and not deadline.in_window
+            and deadline.cap_left() <= 0)
+
+
+def _undo_at_cap(transport, request, cloud, branch) -> None:
+    """A refusal at the cap leaves no bundle, so the reservation unwinds unready, and the report
+    branch this launch made goes with it."""
+    if cloud.get("dispatch_commit"):
+        with lifecycle.cleanup_scope():
+            try:
+                delete_report_branch(transport, request)
+            except (CloudError, OSError, subprocess.SubprocessError) as exc:
+                print(f"implementer: report branch {branch} not deleted: {exc}", file=sys.stderr)
+
+
+def _window_notice(args, deadline) -> None:
+    # The entrance's wait follows the window only through this notice, as for a local launch.
+    lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
+
+
+def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_prompt: bytes,
+            prompt: bytes, context: bytes, artifact_brief: bytes, metadata: dict, composition: dict,
+            settings_sources: dict, validate, transport: Transport | None = None,
+            record_root: Path | None = None, plugin: Path | None = None,
+            install_path: Path | None = None, preset_failure: str | None = None) -> int:
     import uuid
     from dispatch_lifecycle import GrowingRun
     import launch_bound
@@ -875,6 +953,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         "instructions_applied": INSTRUCTIONS_APPLIED,
         "caller_limit_seconds": args.timeout_seconds,
         "budget_override_reason": metadata.get("budget_override_reason"),
+        "preflight_cap": deadline.cap_record(),
+        "latest_return_at": lifecycle.window_line(deadline)["latest_return_at"],
     })
     request.update({key: metadata[key] for key in (
         "instalment", "recovery_restart_reason", "recovery_restart_bundle", "budget_lineage",
@@ -893,7 +973,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                                      "source": args.artifact_brief_source or str(args.artifact_brief.resolve()),
                                      "sha256": hashlib.sha256(artifact_brief).hexdigest()}
     # The build budget counts a cloud attempt by its allocation and measured time, as a local one.
-    allocation = metadata.get("recipient_allocation_seconds") or args.timeout_seconds
+    allocation = metadata.get("recipient_allocation_seconds") or deadline.allotted
     request["recipient_allocation_seconds"] = allocation
     request["runtime_version"] = None
     request["runtime_version_unavailable_reason"] = "the runtime runs in the cloud session"
@@ -905,6 +985,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                                 "follow_up": follow_up}
     request["cloud"] = cloud
     failure, refused, token, env = None, False, None, None
+    # A follow-up's split ends at its send, so nothing lies between them; a fire's ends at its in-flight write.
+    pre_spawn = (0.0, preflight.render("spawn", 0.0, {}, {})["parts"])
     copy = metadata.get("artifact_copy") or {}
     # The bundle's files are reserved before anything fires, so a run never starts with nowhere to
     # be recorded; the request, with the session the fire returns, is written as soon as it returns.
@@ -925,7 +1007,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     raise CloudError(f"cloud follow-up needs a cse_ session id: {args.resume!r}")
                 env = followup_env()
                 claude = claude_command(args)
-                login_check(transport, env, claude)
+                with preflight.part("vendor"):
+                    login_check(transport, env, claude)
                 start, loaded = loaded_commit(session_attempts(record_root, args.resume), args.resume)
                 try:
                     installed = installed_practice(plugin, install_path or install_record_path(),
@@ -977,7 +1060,14 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
             if len(text) > FIRE_TEXT_LIMIT:
                 raise CloudRefusal(f"fire text is {len(text)} characters, over the fire's {FIRE_TEXT_LIMIT}; "
                                    "only the header is fired, and the task travels on the report branch")
+            # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+            # The cloud recipient starts at the send, the last act this launcher controls.
+            deadline.require_cap()
             if follow_up:
+                deadline.open_window()
+                _window_notice(args, deadline)
+                # A follow-up's request record is first written after the send, so its split ends here.
+                _stamp_preflight(request)
                 code, raw = transport.cli([*claude, "-p", text, "--cloud", args.resume,
                                            "--output-format", "json"], env)
                 try:
@@ -986,10 +1076,22 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     value = {}
                 if code or not isinstance(value, dict) or value.get("ok") is not True \
                         or value.get("session_id") != args.resume:
+                    deadline.withdraw_window()  # A failed send started nothing.
+                    _window_notice(args, deadline)
                     raise CloudError(f"follow-up send failed: exit {code} {raw[:300]!r}")
             else:
                 # Never retried: a second fire cannot be told apart from a second session.
                 _persist_in_flight(streams, request, request_path, run_path)
+                scope = preflight.current()
+                mark = scope.mark() if scope is not None else None
+                # The in-flight write is the entrance's time, so the cap is checked again after it; a refusal
+                # here unwinds the unready record, while a launcher stopped first leaves it on disk.
+                deadline.require_cap()
+                streams.mark_ready()
+                deadline.open_window()
+                _window_notice(args, deadline)
+                if mark is not None:
+                    pre_spawn = scope.since(mark)
                 try:
                     status, body = transport.fire(entry["routine_id"], token, text)
                 except Exception as exc:
@@ -1013,6 +1115,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                     raise CloudError(f"fire answered HTTP {status}: {body[:300]}")
                 if status != 200:
                     cloud["fire_state"] = "refused"
+                    deadline.withdraw_window()  # A client error started nothing.
+                    _window_notice(args, deadline)
                     raise CloudError(f"fire failed: HTTP {status} {body[:300]}")
                 cloud["session_id"] = session
                 cloud["session_url"] = value.get("claude_code_session_url")
@@ -1030,7 +1134,14 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
                             cloud["handover_relink_error"] = f"{type(exc).__name__}: {exc}"
         except CloudRefusal as exc:
             failure, refused = str(exc), True
+        except lifecycle.PreflightCapExceeded:
+            _undo_at_cap(transport, request, cloud, branch)
+            raise
         except (CloudError, OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
+            if _cut_at_cap(deadline, exc):
+                # A step before the send cut at the cap's end is a refusal at the cap, not a failed launch.
+                _undo_at_cap(transport, request, cloud, branch)
+                raise lifecycle.PreflightCapExceeded(lifecycle.cap_refusal(deadline), deadline) from exc
             failure = str(exc) if isinstance(exc, CloudError) else f"{type(exc).__name__}: {exc}"
     except BaseException:
         if not reservation.__exit__(*sys.exc_info()):
@@ -1048,6 +1159,8 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         "environment": {"status": "cloud", "route": "cloud", "instructions_applied": INSTRUCTIONS_APPLIED},
         "cloud": {"session_id": cloud.get("session_id"), "report_branch": branch},
     }
+    if deadline.in_window and attempt["launched"] is not False:
+        attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = pre_spawn
     run_record: dict[str, object] = {
         "schema_version": records.SCHEMA_VERSION, "dispatch_id": dispatch_id,
         "request": str(request_path), "actual_vendor": "claude", "attempts": [attempt],
@@ -1061,6 +1174,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
         run_record["launch_unresolved"] = True  # recovery refuses another writer until it is resolved
     published = None
     with _reserved(reservation, streams):
+        _stamp_preflight(request)
         _rewrite(streams[request_path], records.json_bytes(request))
         streams[input_path].write(prompt)
         if context_path:
@@ -1071,6 +1185,7 @@ def run(args, deadline, *, entry: dict | None, route_source: str, effective_prom
             if path:
                 streams[path].flush()
         streams.mark_ready()
+        args.request_recorded = True  # A launcher called directly names this bundle as its launch.
         run_record["launched_at"] = request["launched_at"]
         print(f"implementer: dispatch {dispatch_id} -> {output} (cloud route)")
         growing = GrowingRun(run_path, run_record, streams)
@@ -1154,17 +1269,26 @@ def _rewrite(stream, data: bytes) -> None:
     os.fsync(stream.fileno())
 
 
+def _stamp_preflight(request: dict) -> None:
+    """The launch is the request record's first write, so the split ends there and later writes keep it.
+
+    Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+    """
+    if "preflight" not in request:
+        request["preflight"] = preflight.snapshot("request-record")
+
+
 def _persist_in_flight(streams, request: dict, request_path: Path, run_path: Path) -> None:
     """Keep a discoverable, unresolved launch before the fire, so an interrupted launcher leaves a
     record that refuses a second fire rather than nothing at all."""
     request["cloud"]["fire_state"] = "in-flight"
+    _stamp_preflight(request)
     _rewrite(streams[request_path], records.json_bytes(request))
     _rewrite(streams[run_path], records.json_bytes({
         "schema_version": records.SCHEMA_VERSION, "dispatch_id": request["dispatch_id"],
         "request": str(request_path), "actual_vendor": "claude", "attempts": [], "route": "cloud",
         "lifecycle": "running", "launched_at": request["launched_at"],
         "launcher_process": lifecycle.process_identity(), "launch_unresolved": True}))
-    streams.mark_ready()
 
 
 def _relink_handover(path: Path, session: str) -> None:
