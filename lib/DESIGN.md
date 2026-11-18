@@ -155,7 +155,9 @@ The comparison of a Claude launch (`launch_bound.py`) also reads, before and aft
 - A ping is never a launch: nothing it writes is under the dispatch store or named `*.request.json` or `*.run.json`, so liveness, resume selection and the launch comparison never see it, and the runner, hook and starter run with `-B` so no bytecode lands in a compared plugin tree. The setting is a covered comparison item, as the cloud switch is. A dead runner is recorded `runner-gone` by the next launch for its work or by `status`.
 - The change's cost report carries keep-warm as its own line, each ping priced once on the rate card and read only after every dispatch's share is fixed, because the session's own running total leaves pings out and nothing else would count them. Beside it, the reload list names each resumed local Claude turn whose first call still wrote more than it read, with its idle time, first-call tokens and the pings sent in that gap, because that list is how the owner judges whether keep-warm works and whether its cap is right. Cloud attempts are left out of the list, since their calls are not logged on this machine.
 
-**Decisions in force:** D-993, a waiting local Claude builder or author is kept warm by an outside resume that saves nothing, capped at eight hours and one wasted reload, recorded on the change's cost records and never as a launch; D-1003, a resume's wait for a ping in flight comes before the recipient's window and within the cap, so the recipient keeps its whole limit.
+How a ping is priced, including one on a model with no price or one priced per request by prompt length, is in [Pricing a run](#pricing-a-run).
+
+**Decisions in force:** D-993, a waiting local Claude builder or author is kept warm by an outside resume that saves nothing, capped at eight hours and one wasted reload, recorded on the change's cost records and never as a launch; D-1003, a resume's wait for a ping in flight comes before the recipient's window and within the cap, so the recipient keeps its whole limit; D-999, a ping on a model with no price is a named floor and a tiered model's ping is priced call by call.
 
 ## Consumer trees
 
@@ -205,13 +207,13 @@ Wherever a model has no price, whether the run ends known, as a floor or unknown
 - The runtime's figure is trusted only when marked as a list price, because a runtime too old to know a model charges it at another model's rates and marks that figure otherwise.
 - The repository file sits in the repository, not beside the shipped card, because the shipped card lives in the installed plugin, where an entry pasted there would be lost at the next update and would show as a change to the plugin.
 - A shipped row beats a repository row, because the practice checks the shipped card against the posted page and a pasted entry is checked by no one; the note says when the pasted one has served its purpose. It waits for the whole interval, because deleting the entry loses every use the shipped rows don't price, whichever uses one report happens to hold.
-- A tier's prices are checked as strictly as a pasted row's, so a malformed shipped tier stops the report rather than pricing long prompts at nothing.
+- A tier's prices are checked as strictly as a pasted row's, so a malformed shipped tier stops the report rather than pricing long prompts at nothing. A shipped row's base classes are not checked that way, because a `null` base price is how the card says a class has no price, and a run that uses that class is reported unknown for that reason.
 - A damaged repository file doesn't stop the report, so a half-filled paste can't take away every other figure, and the guidance still shows how to finish it.
 - A runtime figure or a zero excluded share is in USD whatever the card's currency, so a dispatch no card row priced is reported in USD and counts in the change total; a runtime figure is never added to a card figure in another currency.
 - The guidance is built from where a missing price was met, not from the run's final status, so a run that ends unknown for another reason still says how to price the model.
 - Tiers are priced per request because the vendor bills each request at the tier its own prompt reaches. Tiers are not applied to totals, because totals can't show which requests crossed the threshold, and pricing them at the lower tier would understate every request above it.
 - A helper subagent writes five-minute cache and a main conversation writes one-hour cache, while `modelUsage` reports only their sum. Without the second reading, every recorded helper share would be flagged against a runtime figure that was right.
-- No reading of the live page while a report runs and no command that writes an entry, because the owner chose report guidance for adding a model.
+- No reading of the live page while a report runs and no command that writes an entry: adding a model is a lookup on the vendor's page and a paste into the repository's file, which the guidance makes complete, and a reader who looks the price up sees what the page says that day.
 
 **Decisions in force:** D-999, price every model a run used and say how to add a missing price.
 

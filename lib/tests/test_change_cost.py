@@ -1293,7 +1293,7 @@ def test_new_rows_carry_the_retrieval_and_its_record():
     # Pins every new price to the retrieved table, so a mistyped price fails here, and each row's
     # retrieval time and record, so a reader can check the price against its source.
     rows = {row["model"]: row for row in SHIPPED}
-    expected = {  # input, 5m write, 1h write, cache hit, output
+    expected = {
         "claude-fable-5-2": (8, 10, 16, .2, 40), "claude-sonnet-5-5": (2, 2.5, 4, .1, 10),
         "claude-sonnet-5": (2, 2.5, 4, .2, 10), "claude-haiku-4-5-20251001": (1, 1.25, 2, .1, 5),
         "claude-haiku-5-5": (.1, .125, .2, .01, .5),
@@ -2062,7 +2062,6 @@ def test_a_ping_on_a_tiered_model_prices_each_call_at_its_own_tier(report_inputs
     keep_warm_rows(keep_warm_file(inputs), row)
     price = cost.report(**inputs)["keep_warm"]["price"]
     assert price["status"] == "known" and not price["floor"]
-    # 120,000 reads and 10 outputs at five times the base, plus 20,000 reads and 10 outputs at base.
     assert Decimal(price["amount"]) == Decimal("0.121") + Decimal("0.0042")
 
 

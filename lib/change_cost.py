@@ -380,6 +380,7 @@ def load_rates(path: Path) -> list[dict[str, object]]:
     for row in value["rates"]:
         if not isinstance(row, dict) or not set(_RATE_FIELDS).issubset(row):
             raise CostError("each rate row must carry the complete dated rate-card shape")
+        # Base class prices go unchecked: a null one is how the card says that class has no price.
         problem = _tier_problem(row)
         if problem:
             raise CostError(f"rate row for {row.get('model')}: {problem}")
@@ -1409,8 +1410,9 @@ def _ping_price(row: dict, rates: list[dict], reasons: list[str],
                 unpriced: dict | None = None) -> tuple[dict[str, int], Decimal | None]:
     """One ping's classes and card price, or None for the price with its reasons.
 
-    A model with no price, or a tiered one whose calls can't be read, is left out and
-    recorded in unpriced, as a dispatch's would be, rather than voiding the line."""
+    A model with no price is left out and recorded in unpriced, as a dispatch's would be,
+    rather than voiding the line. A ping whose calls can't be read is a fault, so a tiered
+    model is never priced from its total."""
     label = f"ping at {row.get('at')}"
     found: list[str] = []
     usage = _mapping(row.get("usage"))
@@ -1450,11 +1452,7 @@ def _ping_price(row: dict, rates: list[dict], reasons: list[str],
             entry["pings"] += 1
             entry["first_use"] = min(entry["first_use"], when.isoformat())
             entry["last"] = max(entry["last"], when)
-        elif rate.get("prompt_tiers") and per_call is None:
-            entry = unpriced.setdefault(model, {"model": model, "vendor": "claude", "cause": "per-request-tiers",
-                                                "share": "excluded", "pings": 0})
-            entry["pings"] += 1
-        else:
+        elif per_call is not None:  # with no readable calls the ping has already faulted above
             if rate.get("currency") != "USD":
                 found.append(f"{label} rate currency is not USD")
             # Each call is one request, so a tiered row prices each on its own prompt; the
@@ -1517,13 +1515,9 @@ def _keep_warm(path: Path, repo: str, issue: int,
     card = _card(rates)
     excluded = []
     for entry in unpriced.values():
-        if entry["cause"] == "no-price":
-            count = entry["pings"]
-            subject = "1 ping on it is" if count == 1 else f"{count} pings on it are"
-            excluded.append(_missing_reason(card, "claude", entry["model"], entry.pop("last"), subject))
-        else:
-            excluded.append(f"{entry['model']} is priced per request by prompt length, and its pings recorded "
-                            "no readable calls; their usage is excluded from the known amount")
+        count = entry["pings"]
+        subject = "1 ping on it is" if count == 1 else f"{count} pings on it are"
+        excluded.append(_missing_reason(card, "claude", entry["model"], entry.pop("last"), subject))
     line["price"] = _unknown_price(reasons) if reasons else {
         "status": "known", "currency": "USD", "amount": format(total, "f"),
         "basis": "API list-price equivalence", "source": "rate-card", "reasons": [],
