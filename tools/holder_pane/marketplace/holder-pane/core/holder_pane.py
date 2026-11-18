@@ -124,6 +124,8 @@ STATUS_FIELDS = (
 
 WORK_PY = re.compile(r"[\\/]lib[\\/]work\.py$")
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+# The first line a named stage prints, as `work: window {...}` or a launcher's own name.
+WINDOW_LINE = re.compile(r"[a-z]+: window ")
 
 
 class Ctx:
@@ -319,7 +321,9 @@ def last_json_object(text: str) -> dict[str, Any] | None:
         except ValueError:
             index = start + 1
             continue
-        if isinstance(value, dict):
+        # A named stage's window line opens its output and is never its report.
+        line = text[text.rfind("\n", 0, start) + 1:start]
+        if isinstance(value, dict) and not WINDOW_LINE.fullmatch(line):
             found = value
         index = end
 

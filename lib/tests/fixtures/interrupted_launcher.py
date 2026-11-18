@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import dispatch_implementer
 import dispatch_seat
 import launch_bound
+import preflight
 import run_lifecycle as lifecycle
 
 kind, vendor, store = sys.argv[1:4]
@@ -110,4 +111,5 @@ if "--slow-final-probe" in arguments:
         return original_process(command, **kwargs)
 
     module.records.run_read = slow_final_probe
-raise SystemExit(module.main(arguments))
+# The split counts from the process's creation, as the launcher run as a program does.
+raise SystemExit(module.main(arguments, started=preflight.process_started()))

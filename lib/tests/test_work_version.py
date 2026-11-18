@@ -9,8 +9,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import work
+from window_fixture import PastWindow
 from version_fixture import (ADVANCED, BASE, FORK, HEAD, REPO, RULES, SPEC,
                              adopted_repository, blob, fixture_state)
+
+
+@pytest.fixture
+def capsys(capsys):
+    """These tests read the entrance's report, which follows the window line."""
+    return PastWindow(capsys)
 
 
 def assess(state, transport, rules=RULES):

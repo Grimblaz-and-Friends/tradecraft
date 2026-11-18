@@ -626,7 +626,7 @@ def _assert_time_named(out, err, phrase_parts):
     return turns
 
 
-def a19_change(tmp_path, monkeypatch):
+def three_turn_proof_change(tmp_path, monkeypatch):
     fixture = made_up_change(tmp_path, monkeypatch)
     for number in range(3):
         add_turn(fixture, {f"single/turn-{number}.txt": f"{number}\n".encode()})
@@ -643,8 +643,9 @@ def a19_change(tmp_path, monkeypatch):
     return fixture
 
 
-def test_978_timeout_says_time_ran_out(tmp_path, monkeypatch, capfd):
-    fixture = a19_change(tmp_path, monkeypatch)
+def test_978_cap_cut_count(tmp_path, monkeypatch, capfd):
+    # The removals count is the entrance's reading before the launch, so the cap is its bound.
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
     measured = {"turns": 0}
     measure = build_reach.measure
 
@@ -657,22 +658,26 @@ def test_978_timeout_says_time_ran_out(tmp_path, monkeypatch, capfd):
 
     def slow(command, root):
         if measured["turns"] >= 1:
-            # The first turn is measured; this read outlives the stage's deadline.
+            # The first turn is measured; this read outlives the entrance's cap.
             deadline = run_lifecycle.current_deadline()
-            while deadline is not None and time.monotonic() <= deadline.end:
+            while deadline is not None and time.monotonic() <= deadline.cap_end:
                 time.sleep(0.2)
         return git(command, root)
     monkeypatch.setattr(work, "_git", slow)
     capfd.readouterr()
+    # The entrance has already spent all but 20 seconds of its cap when the count begins.
     work.main(["run", "proof", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
-               "--timeout-seconds", "20"])
+               "--timeout-seconds", "20"], started=time.monotonic() - run_lifecycle.PREFLIGHT_CAP_SECONDS + 20)
     out, err = _searched(capfd)
-    turns = _assert_time_named(out, err, [r"\b20-second\b", r"--timeout-seconds|default"])
+    turns = _assert_time_named(out, err, [r"the entrance's 900-second cap"])
     assert measured["turns"] >= 1 and len(turns) >= 3, turns
+    for stream in (out, err):
+        assert "raise the limit" not in stream.lower(), stream
+    assert "--preflight-cap-seconds" in out + err
 
 
 def test_978_timeout_says_time_ran_out_without_a_run_deadline(tmp_path, monkeypatch, capfd):
-    fixture = a19_change(tmp_path, monkeypatch)
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
     git = work._git
     outlived = {"command": None, "times": 0}
 
@@ -743,3 +748,478 @@ def test_978_open_pull_request_reads_are_on_the_allowed_list():
     for read in ("pulls/7", "pulls/7/reviews", "pulls/7/files", "rules/branches/main",
                  f"commits/{tw.SHA}/check-runs", f"compare/{ancestor}...{tw.SHA}"):
         assert f"repos/example/product/{read}" in paths, read
+
+
+def _proof(fixture, *extra, started=None):
+    return work.main(["run", "proof", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+                      *extra], started=started)
+
+
+def test_978_no_launch_stages_refuse_at_the_cap_having_written_nothing(tmp_path, monkeypatch, capfd):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    writes = []
+    git = work._git
+
+    def watched(command, root):
+        if work._git_writes(command):
+            writes.append(command)
+        return git(command, root)
+    monkeypatch.setattr(work, "_git", watched)
+    monkeypatch.setattr(work, "_execute_proof", lambda *_a, **_k: pytest.fail("the stage's own work began"))
+    capfd.readouterr()
+    assert _proof(fixture, started=time.monotonic() - run_lifecycle.PREFLIGHT_CAP_SECONDS - 1) == 1
+    out, err = _searched(capfd)
+    assert "the entrance's 900-second cap" in out + err
+    assert writes == []
+
+
+def test_978_a_no_launch_stage_counts_its_limit_from_its_own_work(tmp_path, monkeypatch, capfd):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    seen = {}
+
+    def proof(*_a, **_k):
+        deadline = run_lifecycle.current_deadline()
+        seen.update(opened=deadline.window_opened, end=deadline.end, limit=deadline.allotted,
+                    reserve=deadline.reserve, started=deadline.started)
+        return 0
+    monkeypatch.setattr(work, "_execute_proof", proof)
+    # Five minutes were spent reading and deciding; the stage's own work still gets its whole hour.
+    assert _proof(fixture, started=time.monotonic() - 300) == 0
+    assert seen["opened"] is not None and seen["opened"] - seen["started"] >= 300
+    assert seen["end"] - seen["opened"] == pytest.approx(seen["limit"] + seen["reserve"])
+
+
+@pytest.mark.parametrize("spent, outcome", [(901, "completed"), (1801, "refused-at-cap")])
+def test_978_declared_cap_record_for_a_stage_that_launches_nobody(tmp_path, monkeypatch, capfd, spent, outcome):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    home = tmp_path / "records-home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    order = []
+    get = Recorder.get
+
+    def first_read(self, endpoint, **kwargs):
+        order.append(sorted(str(path) for path in home.rglob("*.json")))
+        return get(self, endpoint, **kwargs)
+    monkeypatch.setattr(Recorder, "get", first_read)
+    monkeypatch.setattr(work, "_execute_proof", lambda *_a, **_k: 0)
+    _proof(fixture, "--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository",
+           started=time.monotonic() - spent)
+    [declared] = list((home / "preflight-caps").rglob("*.json"))
+    record = json.loads(declared.read_bytes())
+    assert record["stage"] == "proof" and record["called_at"]
+    assert record["preflight_cap"] == {"seconds": 1800, "source": "declared", "reason": "large repository"}
+    assert record["outcome"] == outcome
+    # Written before the run's first read.
+    assert not order or order[0] == [str(declared)]
+
+
+def test_978_cap_refusal(tmp_path, monkeypatch, capfd):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("a launcher was started"))
+    store = work.records.default_record_root().expanduser().resolve()
+    before = sorted(store.rglob("*")) if store.is_dir() else []
+    capfd.readouterr()
+    code = work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+                      "--holder-session-id", "holder"],
+                     started=time.monotonic() - run_lifecycle.PREFLIGHT_CAP_SECONDS - 1)
+    out, err = _searched(capfd)
+    assert code == 1
+    assert out.splitlines()[0].startswith("work: window ")
+    reports = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+    assert reports, out
+    report = reports[-1]
+    assert report["status"] == "refused"
+    for text in ("the entrance's 900-second cap", "--preflight-cap-seconds", "--preflight-cap-reason"):
+        assert text in report["reason"]
+    lines = [line for line in err.splitlines() if line.startswith("work: preflight ")]
+    assert lines, err
+    split = json.loads(lines[-1].removeprefix("work: preflight "))
+    assert abs(sum(split["parts"].values()) - split["total_seconds"]) <= 1
+    assert (sorted(store.rglob("*")) if store.is_dir() else []) == before
+
+
+def test_978_declared_caps_for_held_and_launching_stages_reach_the_release_report(tmp_path, monkeypatch, capfd):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    home = tmp_path / "records-home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    declared = ["--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository"]
+    # A floor with no command holds by decision without launching.
+    work.main(["run", "floor", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+               "--holder-session-id", "holder", *declared])
+    # A build whose entrance spent the declared cap refuses before any launch.
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("a launcher was started"))
+    work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+               "--holder-session-id", "holder", *declared], started=time.monotonic() - 1801)
+    rows = work.declared_caps(f"{REPO}#12", None)
+    assert sorted((row["stage"], row["outcome"]) for row in rows) == [
+        ("build", "refused-at-cap"), ("floor", "held")]
+    assert all(row["preflight_cap"]["reason"] == "large repository" for row in rows)
+
+
+@pytest.mark.parametrize("limit", [1, 7200])
+def test_978_write_in_flight_at_the_cap_through_run_build(tmp_path, monkeypatch, capfd, limit):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    writes, deadlines = [], []
+    probe = work._run_probe
+
+    def fake_writes(command, **kwargs):
+        if command[3:5] == ["worktree", "add"]:
+            deadline = run_lifecycle.current_deadline()
+            deadlines.append(deadline)
+            began = time.monotonic()
+            writes.append(("worktree", began, kwargs["timeout"]))
+            # The worktree's creation is still running four seconds after the cap's end.
+            time.sleep(max(0.0, min(deadline.cap_end + 4 - began, kwargs["timeout"])))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if work._git_writes(command[3:]):
+            writes.append((command[3], time.monotonic(), kwargs["timeout"]))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        return probe(command, **kwargs)
+    monkeypatch.setattr(work, "_run_probe", fake_writes)
+
+    def stage_root(state, decision, root, instalment, holder):
+        work._git(["worktree", "add", str(tmp_path / "implementation")], fixture.holder_root)
+        work._git(["push", "origin", "HEAD"], fixture.holder_root)  # The write queued after it.
+        return tmp_path / "implementation", "tradecraft/12-x", False
+    monkeypatch.setattr(work, "_dispatch_root", stage_root)
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("a launcher was started"))
+    capfd.readouterr()
+    called = time.monotonic()
+    code = work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+                      "--holder-session-id", "holder", "--timeout-seconds", str(limit)],
+                     started=called - run_lifecycle.PREFLIGHT_CAP_SECONDS + 20)
+    returned = time.monotonic()
+    out, err = _searched(capfd)
+    assert code == 1 and "the entrance's 900-second cap" in out + err, (out, err)
+    [deadline] = deadlines
+    [(kind, began, bound)] = writes  # The queued write was never begun after the cap.
+    assert kind == "worktree" and began < deadline.cap_end
+    if limit == 1:
+        # Cut where it would outlast the printed return less the reserve: the cap's end plus the limit.
+        assert began + bound == pytest.approx(deadline.cap_end + 1, abs=0.5)
+    else:
+        # At a default limit the write runs to its end, four seconds past the cap, then the run refuses.
+        assert bound == 120 and returned >= deadline.cap_end + 4 - 0.2
+    assert returned < deadline.latest_end
+
+
+NO_LAUNCH_STAGES = ["catch-up", "proof", "ready-reviewers", "release-report"]
+
+
+def _noting(remaining, order, home):
+    """Each bound a read asks for is a read about to start: note what the records home held then."""
+    def noted(self, **kwargs):
+        order.append(sorted(str(path) for path in home.rglob("*.json")))
+        return remaining(self, **kwargs)
+    return noted
+STAGE_WORK = {"catch-up": "_execute_catch_up", "proof": "_execute_proof",
+              "ready-reviewers": "_execute_ready_reviewers"}
+
+
+def _files(*roots):
+    return sorted((str(path), path.stat().st_mtime_ns) for root in roots if Path(root).is_dir()
+                  for path in Path(root).rglob("*") if path.is_file())
+
+
+def _no_launch_run(fixture, stage, *extra, started):
+    return work.main(["run", stage, "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+                      "--holder-session-id", "holder", *extra], started=started)
+
+
+@pytest.mark.parametrize("stage", NO_LAUNCH_STAGES)
+def test_978_no_launch_stages(tmp_path, monkeypatch, capfd, stage):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    writes = []
+    git = work._git
+
+    def watched(command, root):
+        if work._git_writes(command) or command[:1] in (["commit"], ["checkout"], ["reset"], ["update-ref"],
+                                                       ["merge"], ["worktree"]):
+            writes.append(command)
+        return git(command, root)
+    monkeypatch.setattr(work, "_git", watched)
+    transport = work.GitHubREST()
+    store = work.records.default_record_root().expanduser().resolve()
+    before = (_files(fixture.holder_root, store), work.read_registry())
+    capfd.readouterr()
+    # The cap is spent: the stage refuses having written nothing.
+    assert _no_launch_run(fixture, stage, started=time.monotonic() - run_lifecycle.PREFLIGHT_CAP_SECONDS - 1) == 1
+    out, err = _searched(capfd)
+    assert "the entrance's 900-second cap" in out + err
+    assert writes == []
+    assert all(kind in {"GET", "GRAPHQL"} for kind, _value in transport.requests)
+    assert (_files(fixture.holder_root, store), work.read_registry()) == before
+    # Five minutes of reading and deciding: the stage's own work still gets its whole limit.
+    seen = {}
+    opened = work._open_stage_work_window
+
+    def window():
+        opened()
+        deadline = run_lifecycle.current_deadline()
+        seen.update(opened=deadline.window_opened, end=deadline.end, allotted=deadline.allotted,
+                    reserve=deadline.reserve, started=deadline.started)
+        raise work.WorkError("the test stops the stage's own work here")
+    monkeypatch.setattr(work, "_open_stage_work_window", window)
+    _no_launch_run(fixture, stage, started=time.monotonic() - 300)
+    assert seen, _searched(capfd)
+    assert seen["opened"] - seen["started"] >= 300
+    assert seen["end"] - seen["opened"] == pytest.approx(seen["allotted"] + seen["reserve"])
+
+
+@pytest.mark.parametrize("stage", NO_LAUNCH_STAGES)
+@pytest.mark.parametrize("spent, outcome", [(901, "completed"), (1801, "refused-at-cap")])
+def test_978_declared_cap_record_for_each_stage_that_launches_nobody(tmp_path, monkeypatch, capfd, stage,
+                                                                     spent, outcome):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    home = tmp_path / "records-home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    order = []
+    get = Recorder.get
+
+    def first_read(self, endpoint, **kwargs):
+        order.append(sorted(str(path) for path in home.rglob("*.json")))
+        return get(self, endpoint, **kwargs)
+    monkeypatch.setattr(Recorder, "get", first_read)
+    probe = work._run_probe
+
+    def first_probe(command, **kwargs):
+        order.append(sorted(str(path) for path in home.rglob("*.json")))
+        return probe(command, **kwargs)
+    monkeypatch.setattr(work, "_run_probe", first_probe)
+    # A spent cap may refuse before any read starts; the declaration still exists.
+    monkeypatch.setattr(work.lifecycle.Deadline, "remaining", _noting(work.lifecycle.Deadline.remaining, order, home))
+    if stage in STAGE_WORK:
+        monkeypatch.setattr(work, STAGE_WORK[stage], lambda *_a, **_k: 0)
+    _no_launch_run(fixture, stage, "--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository",
+                   started=time.monotonic() - spent)
+    [declared] = list((home / "preflight-caps").rglob("*.json"))
+    record = json.loads(declared.read_bytes())
+    assert record["stage"] == stage and record["called_at"]
+    assert record["preflight_cap"] == {"seconds": 1800, "source": "declared", "reason": "large repository"}
+    assert record["outcome"] == outcome, _searched(capfd)
+    # Written before the run's first read.
+    assert order and order[0] == [str(declared)]
+
+
+def _real_launch(tmp_path, monkeypatch, fixture):
+    """The entrance's launch goes to the real implementer launcher, with a Codex stand-in, in this fixture's store."""
+    home = tmp_path / "launch-home"
+    home.mkdir()
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    scenario = tmp_path / "scenario.json"
+    # The stand-in answers as the session the fixture's builder turns recorded, as a resumed builder does.
+    from version_fixture import BUILDER_SESSION
+    scenario.write_bytes(json.dumps({"codex": {"native_session": BUILDER_SESSION}}).encode())
+    # The build resumes the fixture's own builder, in the root its turns recorded.
+    recorded = [json.loads(path.read_bytes()) for path in fixture.record_root.rglob("*.request.json")]
+    root = Path(next(request["root"] for request in recorded if request.get("root")))
+    branch = next((request["lineage_branch"] for request in recorded if request.get("lineage_branch")), None)
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, branch, False))
+    monkeypatch.setattr(work, "_attached_branch", lambda _root: branch)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a, **_k: [])
+    setting = home / ".tradecraft" / "implementer-vendor"
+    setting.parent.mkdir(parents=True)
+    setting.write_bytes(b"codex")
+    original = work._recipient_run
+    commands = []
+
+    def launch(command, **kwargs):
+        commands.append(command)
+        if Path(command[1]).name != "dispatch_implementer.py":
+            return original(command, **kwargs)
+        output = fixture.record_root / f"launch-{len(commands)}" / "result.md"
+        actual = [sys.executable, str(LIB / "tests" / "fixtures" / "window_launcher.py"), str(scenario),
+                  *command[2:], "--output", str(output)]
+        return original(actual, **kwargs)
+    monkeypatch.setattr(work, "_recipient_run", launch)
+    return commands
+
+
+def _bundles(fixture):
+    """The bundles this test's launches wrote, beside the fixture's own builder turns."""
+    return sorted(fixture.record_root.glob("launch-*/result.md.request.json"))
+
+
+def test_978_declared_cap_through_the_entrance_to_a_real_launcher(tmp_path, monkeypatch, capfd):
+    fixture = three_turn_proof_change(tmp_path, monkeypatch)
+    home = tmp_path / "records-home"
+    monkeypatch.setattr(work, "_records_home", lambda _state: home)
+    commands = _real_launch(tmp_path, monkeypatch, fixture)
+    declared = ["--preflight-cap-seconds", "1800", "--preflight-cap-reason", "large repository"]
+    capfd.readouterr()
+    # The entrance, past the default cap but inside the declared one, launches.
+    work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+               "--holder-session-id", "holder", *declared], started=time.monotonic() - 901)
+    out, err = _searched(capfd)
+    window = json.loads(out.splitlines()[0].removeprefix("work: window "))
+    assert _bundles(fixture), (commands, [{key: report.get(key) for key in ("stage", "status", "reason", "detail")}
+                                          for report in map(json.loads, (line for line in out.splitlines()
+                                                                         if line.startswith("{")))],
+                               err[-1500:])
+    [request_path] = _bundles(fixture)
+    request = json.loads(request_path.read_bytes())
+    # The entrance passed its declared cap to the launcher, whose record carries it and the same return time.
+    assert "--preflight-cap-seconds" in commands[0]
+    assert request["preflight_cap"] == {"seconds": 1800, "source": "declared", "reason": "large repository"}
+    assert request["latest_return_at"] == window["latest_return_at"]
+    record = json.loads(Path(window["cap_record"]).read_bytes())
+    assert record["outcome"] == "launched"
+    assert record["bundle"] == str(request_path.with_name("result.md.run.json"))
+    # The real launcher's own check at its request write refuses when its cap is nearly spent.
+    capfd.readouterr()
+    work.main(["run", "build", "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+               "--holder-session-id", "holder", *declared], started=time.monotonic() - 1797)
+    out, err = _searched(capfd)
+    assert len(_bundles(fixture)) == 1, (out, err)
+    refused = [json.loads(path.read_bytes()) for path in (home / "preflight-caps").rglob("*.json")]
+    assert sorted(row["outcome"] for row in refused) == ["launched", "refused-at-cap"], [
+        {key: report.get(key) for key in ("stage", "status", "reason", "detail")}
+        for report in map(json.loads, (line for line in out.splitlines() if line.startswith("{")))]
+    # A stage that launches nobody completes its work, one past its declared cap refuses there,
+    # and a floor with no command holds by decision.
+    monkeypatch.setattr(work, "_execute_proof", lambda *_a, **_k: 0)
+    for stage, spent in (("proof", 901), ("proof", 1801), ("floor", 0)):
+        work.main(["run", stage, "--repo", REPO, "--issue", "12", "--root", str(fixture.holder_root),
+                   "--holder-session-id", "holder", *declared], started=time.monotonic() - spent)
+    # A following release report lists every declared cap with its outcome.
+    # This change's own fixture holds before the report for want of a reach reading, so the stage runs on
+    # the release-report harness's change, reading this test's records home.
+    released = tw.state(pr=True)
+    released.pr["mergeable_state"] = "clean"
+    released.record_root = tmp_path / "release-store"
+    released.record_root.mkdir()
+    monkeypatch.setattr(work.records, "default_record_root", lambda: released.record_root)
+
+    class ReleaseTransport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint == f"{BASE}/pulls/7":
+                return released.pr
+            return tw.FakeTransport({}).get(endpoint, paginate=paginate)
+    capfd.readouterr()
+    assert work.execute_stage(released, work.Decision("release-report", False, None, "holder-named-stage"),
+                              tmp_path, None, transport=ReleaseTransport()) == 0
+    out, err = _searched(capfd)
+    reports = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+    assert "declared_caps" in reports[-1], [{key: report.get(key) for key in ("stage", "status", "reason")}
+                                           for report in reports]
+    rows = reports[-1]["declared_caps"]
+    assert sorted((row["stage"], row["outcome"]) for row in rows) == [
+        ("build", "launched"), ("build", "refused-at-cap"), ("floor", "held"),
+        ("proof", "completed"), ("proof", "refused-at-cap")]
+    assert all(row["preflight_cap"]["reason"] == "large repository" for row in rows)
+    # Read with the store that holds the launch's own bundle, spelled another way, the launch is still one row.
+    both = work.declared_caps(f"{REPO}#12", fixture.record_root / "launch-1" / "..")
+    assert sorted((row["stage"], row["outcome"]) for row in both) == sorted(
+        (row["stage"], row["outcome"]) for row in rows)
+    assert all(isinstance(row[key], (str, type(None))) for row in both for key in ("record", "bundle"))
+
+
+def test_978_a_worktree_add_that_outlasts_the_cap_leaves_no_orphan(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tw.repository(tmp_path, "holder")
+    probe = work._run_probe
+
+    def slow_add(command, **kwargs):
+        result = probe(command, **kwargs)
+        if command[3:5] == ["worktree", "add"]:
+            time.sleep(3)  # The add runs to its end, past the cap's.
+        return result
+    monkeypatch.setattr(work, "_run_probe", slow_add)
+    deadline = run_lifecycle.stage_deadline("build", 600, started=time.monotonic() - 898)
+    with run_lifecycle.deadline_scope(deadline), pytest.raises(run_lifecycle.PreflightCapExceeded):
+        work.create_implementation_root(holder, "example/product", 12, None, "holder-session")
+    # The refusal leaves neither a worktree nor a branch the registry does not name.
+    listed = subprocess.run(["git", "-C", str(holder), "worktree", "list", "--porcelain"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert listed.count("worktree ") == 1
+    branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert branches.strip() == ""
+    assert not list((holder / ".claude" / "worktrees").glob("issue-12-*"))
+
+
+def test_978_a_worktree_add_far_past_the_cap_is_still_removed(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tw.repository(tmp_path, "holder")
+    probe = work._run_probe
+
+    def slow_add(command, **kwargs):
+        result = probe(command, **kwargs)
+        if command[3:5] == ["worktree", "add"]:
+            time.sleep(10)  # The add ends further past the cap than half the reserve.
+        return result
+    monkeypatch.setattr(work, "_run_probe", slow_add)
+    # A 20-second limit has a 10-second reserve, so an allowance counted from the cap is spent by then.
+    deadline = run_lifecycle.stage_deadline("build", 20, started=time.monotonic() - 897)
+    with run_lifecycle.deadline_scope(deadline), pytest.raises(run_lifecycle.PreflightCapExceeded):
+        work.create_implementation_root(holder, "example/product", 12, None, "holder-session")
+    assert deadline.cap_left() < -deadline.reserve / 2
+    assert "after the cap failed" not in capsys.readouterr().err
+    listed = subprocess.run(["git", "-C", str(holder), "worktree", "list", "--porcelain"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert listed.count("worktree ") == 1
+    branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert branches.strip() == ""
+    assert not list((holder / ".claude" / "worktrees").glob("issue-12-*"))
+
+
+@pytest.mark.parametrize("when", ["before the add", "a failed add"])
+def test_978_a_refusal_removes_nothing_the_add_did_not_make(tmp_path, monkeypatch, when):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tw.repository(tmp_path, "holder")
+    # Another run's branch already carries the name this run would choose.
+    monkeypatch.setattr(work.secrets, "token_hex", lambda _n: "0123456789ab")
+    tw.git(holder, "branch", "tradecraft/12-0123456789ab")
+    probe = work._run_probe
+
+    def slow_add(command, **kwargs):
+        result = probe(command, **kwargs)
+        if command[3:5] == ["worktree", "add"]:
+            time.sleep(3)  # The add fails on the existing branch, and the cap ends meanwhile.
+        return result
+    monkeypatch.setattr(work, "_run_probe", slow_add)
+    if when == "before the add":
+        prepare = work._ensure_implementation_parent_ignored
+        # The cap ends after the holder's reads and before the add begins.
+        monkeypatch.setattr(work, "_ensure_implementation_parent_ignored",
+                            lambda root: (prepare(root), time.sleep(3))[0])
+    deadline = run_lifecycle.stage_deadline("build", 600, started=time.monotonic() - 898)
+    with run_lifecycle.deadline_scope(deadline), pytest.raises((run_lifecycle.PreflightCapExceeded, work.WorkError)):
+        work.create_implementation_root(holder, "example/product", 12, None, "holder-session")
+    branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert "tradecraft/12-0123456789ab" in branches
+
+
+def test_978_a_refusal_during_registration_leaves_no_unregistered_worktree(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tw.repository(tmp_path, "holder")
+    snapshot = work._git_snapshot
+
+    def slow_snapshot(path):
+        time.sleep(3)  # The cap ends while the registration reads the new worktree.
+        return snapshot(path)
+    monkeypatch.setattr(work, "_git_snapshot", slow_snapshot)
+    deadline = run_lifecycle.stage_deadline("build", 600, started=time.monotonic() - 898)
+    with run_lifecycle.deadline_scope(deadline), pytest.raises(run_lifecycle.PreflightCapExceeded):
+        work.create_implementation_root(holder, "example/product", 12, None, "holder-session")
+    # The registry was never written, so nothing the add made is left behind.
+    listed = subprocess.run(["git", "-C", str(holder), "worktree", "list", "--porcelain"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert listed.count("worktree ") == 1
+    branches = subprocess.run(["git", "-C", str(holder), "branch", "--list", "tradecraft/12-*"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True).stdout
+    assert branches.strip() == ""
+    assert not [row for row in work.read_registry()["worktrees"] if "issue-12-" in str(row.get("root"))]

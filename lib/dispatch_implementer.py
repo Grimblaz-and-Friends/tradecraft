@@ -31,6 +31,7 @@ import time
 import uuid
 
 import dispatch_record as records
+import cap_declaration
 import artifact_tree
 import cloud_build
 from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TOOLS,
@@ -191,8 +192,10 @@ def _stop_waiting(args: argparse.Namespace, deadline, metadata: dict) -> None:
     if held is None:
         return
     try:
-        # A ping in flight is waited for only within what the launch's own deadline leaves.
-        wait = deadline.remaining()
+        # A ping in flight is waited for only within what the launch's own deadline leaves; before the
+        # window opens, only until the spawn can still fall by the cap's end.
+        wait = (max(0.0, deadline.cap_left() - lifecycle.SPAWN_MARGIN_SECONDS)
+                if deadline.cap is not None and not deadline.in_window else deadline.remaining())
     except TimeoutError:
         wait = 0.0
     held.enter_context(keep_warm.stop_for_launch(args.work, args.stage, args.resume, wait_seconds=wait,
@@ -453,19 +456,42 @@ def _cloud_route(args: argparse.Namespace) -> tuple[dict | None, str, str | None
     return cloud_build.launch_route(args.stage, args.resume, args.work)
 
 
+def _spawned_nothing(attempt, deadline, args) -> None:
+    """An attempt that started nothing opens no window and names no spawn; the cap runs on.
+
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+    attempt.pop("pre_spawn_seconds", None)
+    attempt.pop("pre_spawn_parts", None)
+    deadline.withdraw_window()
+    lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
+
+
 def run_implementer(args: argparse.Namespace) -> int:
     if args.timeout_seconds is None:
         args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
+    cap_seconds = getattr(args, "preflight_cap_seconds", None)
+    cap_reason = getattr(args, "preflight_cap_reason", None)
+    try:
+        lifecycle.validate_cap_flags(cap_seconds, cap_reason)
+    except ValueError as exc:
+        raise ImplementerError(str(exc)) from exc
     deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
-                                         started=getattr(args, "invocation_started_monotonic", None))
+                                         started=getattr(args, "invocation_started_monotonic", None),
+                                         cap=cap_seconds, cap_reason=cap_reason)
+    return cap_declaration.launcher_run(args, deadline, lambda: _launch_implementer(args, deadline),
+                                        "implementer")
+
+
+def _launch_implementer(args: argparse.Namespace, deadline) -> int:
+    deadline.remaining()  # A launch whose cap has ended reserves no bundle.
     # The launch's environment changes are read against the launcher's own,
     # taken before an artifact launch sanitizes it.
     if getattr(args, "keep_warm_env", None) is None:
         args.keep_warm_env = dict(os.environ)
     args.keep_warm_pending = None
-    # This joins the scope `main` opened, and gives a launcher called without
-    # `main` (in process, as the entrance's tests and the cloud route do) its own
-    # scope seeded from the handoff.
+    # This joins the scope `main` opened, and gives a launcher called in process
+    # without `main`, as the entrance's tests call it, its own scope seeded from the handoff.
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     seed = preflight.load_handoff(getattr(args, "preflight_input", None))
     with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline), \
@@ -752,13 +778,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             request["caller_limit_seconds"] = args.timeout_seconds
             request["stage_ceiling_seconds"] = (
                 lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS if args.stage in lifecycle.REPAIR_STAGES else None)
-            allocation = 0 if preparation_error else deadline.remaining()
+            # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+            # The recipient gets its whole limit (or ceiling) from its start, whatever came before.
+            allocation = 0 if preparation_error else deadline.allotted
             supplied = metadata.get("recipient_allocation_seconds")
             if supplied is not None:
                 if not isinstance(supplied, (int, float)) or not math.isfinite(supplied) or supplied <= 0:
                     raise ImplementerError("recipient allocation must be finite and positive")
                 allocation = min(allocation, supplied)
             request["recipient_allocation_seconds"] = allocation
+            request["preflight_cap"] = deadline.cap_record()
+            request["latest_return_at"] = lifecycle.window_line(deadline)["latest_return_at"]
             request["budget_override_reason"] = budget_reason
             if args.vendor == "claude" and command is not None and not preparation_error:
                 # The notice is part of the effective input; its digest covers it.
@@ -840,6 +870,10 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             request["input"] = str(input_path)
             # The launch is this write: the split ends here, and each attempt's
             # pre-spawn interval starts here.
+            # The last check that can refuse a local launch: every step after this write must still
+            # reach the spawn by the cap's end, so a refusal at the cap never leaves a bundle.
+            deadline.require_cap((COMPARISON_SECONDS if "write_bound" in request and comparison is not None else 0)
+                                 + lifecycle.SPAWN_MARGIN_SECONDS)
             scope = preflight.current()
             request["preflight"] = scope.snapshot("request-record")
             streams[request_path].write(records.json_bytes(request))
@@ -913,6 +947,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if comparison is not None:
                     try:
                         seconds = deadline.probe(COMPARISON_SECONDS)
+                        if not deadline.in_window:
+                            seconds = max(0.0, min(seconds, deadline.cap_left()
+                                                   - lifecycle.SPAWN_MARGIN_SECONDS))
                     except TimeoutError:
                         deadline.remaining()  # An exhausted window is not a recorded comparison.
                         seconds = 0
@@ -967,8 +1004,13 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                             args.handover_state, args.session_id or args.resume, "running"
                         )
                     # Just before the spawn, so a launch that starts nothing leaves keep-warm as it was;
-                    # before the allocation, so a wait for a ping in flight comes out of the recipient's time.
+                    # before the window opens, so a wait for a ping in flight is the launcher's time, not the
+                    # recipient's.
                     _stop_waiting(args, deadline, metadata)
+                    deadline.open_window()
+                    if deadline.window_opened_late_seconds is not None:
+                        record["window_opened_late_seconds"] = deadline.window_opened_late_seconds
+                    lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation
                     attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = scope.since(mark)
@@ -999,6 +1041,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     if hasattr(exc, "cleanup_proven"):
                         record["cleanup_proven"] = exc.cleanup_proven
                     attempt["launched"] = getattr(exc, "launched", attempt["launched"])
+                    if attempt["launched"] is False:
+                        _spawned_nothing(attempt, deadline, args)
                     result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
                     reason = f"cannot launch {args.vendor}: {exc}"
                     record["error"] = reason
@@ -1302,7 +1346,12 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--claude-unavailable-reason",
                      help="refuse without rediscovering a missing Claude executable")
     cli.add_argument("--timeout-seconds", type=float,
-                     help="declared caller limit; build defaults to 7200, other stages to 3600")
+                     help="the time the recipient gets from its start; build defaults to 7200, "
+                          "other stages to 3600")
+    cli.add_argument("--preflight-cap-seconds", type=float,
+                     help="a cap larger than 900 seconds on the work before the recipient starts")
+    cli.add_argument("--preflight-cap-reason", help="why this run declares a larger preflight cap")
+    cli.add_argument("--launch-notice", type=Path, help=argparse.SUPPRESS)
     cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
     cli.add_argument("--lifecycle-input", type=Path, help=argparse.SUPPRESS)
     cli.add_argument("--preflight-input", type=Path, help=argparse.SUPPRESS)
@@ -1324,10 +1373,14 @@ def refusal_line(args: argparse.Namespace, scope, exc: BaseException) -> str:
         {"reason": str(exc), "preflight": scope.snapshot("handoff")}, ensure_ascii=True, sort_keys=True)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, started: float | None = None) -> int:
     utf8_stdio()
     args = parser().parse_args(argv)
-    with preflight.scope(seed=preflight.load_handoff(args.preflight_input)) as scope:
+    args.print_window = args.preflight_input is None
+    if args.invocation_started_monotonic is None and started is not None:
+        args.invocation_started_monotonic = started
+    with preflight.scope(seed=preflight.load_handoff(args.preflight_input), started=started,
+                         clock_start="process" if started is not None else None) as scope:
         try:
             return run_implementer(args)
         except (OSError, UnicodeError, ValueError, CliError, records.RecordError, ImplementerError) as exc:
@@ -1336,4 +1389,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # The run's clock starts at the process's creation, so module loading is in its split.
+    raise SystemExit(main(started=preflight.process_started()))

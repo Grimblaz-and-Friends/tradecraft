@@ -31,6 +31,7 @@ import tomllib
 import uuid
 
 import dispatch_record as records
+import cap_declaration
 import cold_draft
 from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claude_launch_notice,
                                 claude_stream_check, claude_terminal, stream_check_reason,
@@ -504,15 +505,41 @@ def resolve_settings(args):
                          **fallback_plan(args.vendor, args.own_vendor, args.requires)}}
 
 
+def spawned_nothing(attempt, deadline, args) -> None:
+    """An attempt that started nothing opens no window and names no spawn; the cap runs on."""
+    attempt.pop("pre_spawn_seconds", None)
+    attempt.pop("pre_spawn_parts", None)
+    deadline.withdraw_window()
+    lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
+
+
+def _steps_before_spawn(args, vendor, comparison):
+    """The bounded steps an attempt still takes after the request write: its version read and before-snapshot."""
+    # The version read takes the probe's own bound, since it names none of its own.
+    return lifecycle.PROBE_DEFAULT_SECONDS + (
+        COMPARISON_SECONDS if comparison is not None and compared_launch(args, vendor) else 0)
+
+
 def run_dispatch(args, *, now=None) -> int:
+    cap_seconds = getattr(args, "preflight_cap_seconds", None)
+    cap_reason = getattr(args, "preflight_cap_reason", None)
     try:
-        deadline = lifecycle.Deadline(args.timeout_seconds,
-                                      started=getattr(args, "invocation_started_monotonic", None))
+        lifecycle.validate_cap_flags(cap_seconds, cap_reason)
+        deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
+                                             started=getattr(args, "invocation_started_monotonic", None),
+                                             declared=True, cap=cap_seconds, cap_reason=cap_reason)
     except ValueError as exc:
         raise DispatchError(str(exc)) from exc
-    # This joins the scope `main` opened, and gives a launcher called without
-    # `main` (in process, as the entrance's tests and the cloud route do) its own
-    # scope seeded from the handoff.
+    return cap_declaration.launcher_run(args, deadline, lambda: _launch_dispatch(args, deadline, now), "seat")
+
+
+def _launch_dispatch(args, deadline, now) -> int:
+    try:
+        deadline.remaining()  # A launch whose cap has ended reserves no bundle.
+    except TimeoutError as exc:
+        raise DispatchError(str(exc)) from exc
+    # This joins the scope `main` opened, and gives a launcher called in process
+    # without `main`, as the entrance's tests call it, its own scope seeded from the handoff.
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     seed = preflight.load_handoff(getattr(args, "preflight_input", None))
     with preflight.scope(seed=seed), ExitStack() as preparation, lifecycle.deadline_scope(deadline):
@@ -636,7 +663,11 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
             request["lineage_branch"] = args.lineage_branch
             request["lineage_pull_request"] = args.lineage_pull_request
         request["caller_limit_seconds"] = args.timeout_seconds
-        request["recipient_allocation_seconds"] = deadline.remaining()
+        # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+        # Every recipient this launch starts, a fallback's included, gets the whole limit from its start.
+        request["recipient_allocation_seconds"] = deadline.allotted
+        request["preflight_cap"] = deadline.cap_record()
+        request["latest_return_at"] = lifecycle.window_line(deadline)["latest_return_at"]
         claude_notice = None
         if "claude" in vendors:
             # One ceiling for the request: a Claude attempt's own allocation is
@@ -650,6 +681,10 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
             request["judged_draft"] = judged_draft
         # The launch is this write: the split ends here, and the first attempt's
         # pre-spawn interval starts here.
+        # The last check that can refuse: every attempt's steps after this write must still reach its
+        # spawn by the cap's end, so a refusal at the cap never leaves a bundle.
+        deadline.require_cap(sum(_steps_before_spawn(args, vendor, comparison) for vendor in vendors)
+                             + lifecycle.SPAWN_MARGIN_SECONDS)
         scope = preflight.current()
         request["preflight"] = scope.snapshot("request-record")
         streams[request_path].write(records.json_bytes(request))
@@ -708,6 +743,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                            )}
                 attempt["runtime_version"] = None
                 attempt["runtime_version_unavailable_reason"] = "attempt was not launched"
+                spawned_before = any(previous.get("launched") for previous in record["attempts"])
                 record["attempts"].append(attempt)
                 growing.begin_attempt(attempt, vendor,
                     sidecar(output, f".{vendor}.stdout.log"),
@@ -715,7 +751,12 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                 reset = read_holds(hold_file).get(vendor)
                 current = now if now is not None else datetime.now(timezone.utc)
                 message = ""
-                if not can_supply(vendor, args.requires):
+                # A fallback may spawn only by the cap's end. One refused here leaves the primary's window
+                # open, so the primary's launch is still recorded whole.
+                if spawned_before and deadline.cap_left() <= (
+                        _steps_before_spawn(args, vendor, comparison) + lifecycle.SPAWN_MARGIN_SECONDS):
+                    outcome, reason = "unavailable", "the entrance's cap ended before this fallback could start"
+                elif not can_supply(vendor, args.requires):
                     outcome, reason = "unavailable", capability_refusal(vendor, args.requires)
                 elif (
                     vendor == "codex" and codex_sandbox is not None
@@ -727,6 +768,11 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                 elif reset and reset > current:
                     outcome, reason = "unavailable", f"owner hold until {reset.isoformat()}"
                 else:
+                    # This attempt's steps come before its own window, so the cap runs again until its spawn,
+                    # and the entrance's wait follows it back to the cap, not the earlier attempt's window.
+                    if deadline.in_window:
+                        deadline.withdraw_window()
+                        lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
                     try:
                         executable = resolve_command(vendor, getattr(args, vendor))
                     except CliNotFound as exc:
@@ -754,13 +800,20 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             try:
                                 record["actual_vendor"] = vendor
                                 if comparison is not None and compared_launch(args, vendor):
-                                    # The before-snapshot comes out of the recipient's window.
+                                    # The before-snapshot is taken before the recipient starts, so it comes out of
+                                    # the cap, clipped to leave the spawn inside it, not out of the recipient's window.
                                     try:
                                         seconds = deadline.probe(COMPARISON_SECONDS)
+                                        seconds = max(0.0, min(seconds, deadline.cap_left()
+                                                               - lifecycle.SPAWN_MARGIN_SECONDS))
                                     except TimeoutError:
                                         deadline.remaining()
                                         seconds = 0
                                     comparison.take_before(seconds)
+                                deadline.open_window()
+                                if deadline.window_opened_late_seconds is not None:
+                                    record["window_opened_late_seconds"] = deadline.window_opened_late_seconds
+                                lifecycle.write_launch_notice(getattr(args, "launch_notice", None), deadline)
                                 allocation = deadline.remaining()
                                 attempt["allocation_seconds"] = allocation
                                 launch_input, launch_env = prompt, None
@@ -796,10 +849,13 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             except FileNotFoundError as exc:
                                 result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
                                 outcome, reason = "unavailable", f"{vendor} executable disappeared before launch"
+                                spawned_nothing(attempt, deadline, args)
                             except OSError as exc:
                                 if hasattr(exc, "cleanup_proven"):
                                     record["cleanup_proven"] = exc.cleanup_proven
                                 attempt["launched"] = getattr(exc, "launched", attempt["launched"])
+                                if attempt["launched"] is False:
+                                    spawned_nothing(attempt, deadline, args)
                                 reason = (
                                     f"Cannot launch {vendor}: {exc}. From native Codex on Windows, "
                                     "use approval-managed host execution for the user's CLI/login. "
@@ -817,9 +873,11 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 attempt["launched"] = True
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
-                            # A later attempt is measured from here, because the
-                            # recipient's run that just ended is not the launcher's work.
-                            mark = scope.mark()
+                            # A later attempt is measured from here, because the recipient's run that
+                            # just ended is not the launcher's work; after an attempt that started
+                            # nothing, the next one's interval keeps this one's preparation.
+                            if attempt["launched"]:
+                                mark = scope.mark()
                             elapsed = time.monotonic() - started
                             if record.get("interruption_cause") == "ceiling":
                                 reason = lifecycle.ceiling_reason(vendor, caller_limit=args.timeout_seconds,
@@ -1025,8 +1083,13 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--hold-file", type=Path, default=default_hold_file(), help="shared availability holds")
     cli.add_argument(
         "--timeout-seconds", type=float, default=900,
-        help="declared caller limit for the whole invocation, including fallback and recording",
+        help=("the time the recipient gets from its start, fallback included; the launcher's own work "
+              "before it has a separate cap"),
     )
+    cli.add_argument("--preflight-cap-seconds", type=float,
+                     help="a cap larger than 900 seconds on the work before the recipient starts")
+    cli.add_argument("--preflight-cap-reason", help="why this run declares a larger preflight cap")
+    cli.add_argument("--launch-notice", type=Path, help=argparse.SUPPRESS)
     cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
     cli.add_argument("--preflight-input", type=Path, help=argparse.SUPPRESS)
     for vendor, model in DEFAULT_MODELS.items():
@@ -1055,10 +1118,14 @@ def refusal_line(args, scope, exc) -> str:
         {"reason": str(exc), "preflight": scope.snapshot("handoff")}, ensure_ascii=True, sort_keys=True)
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, started=None) -> int:
     utf8_stdio()
     args = parser().parse_args(argv)
-    with preflight.scope(seed=preflight.load_handoff(args.preflight_input)) as scope:
+    args.print_window = args.preflight_input is None
+    if args.invocation_started_monotonic is None and started is not None:
+        args.invocation_started_monotonic = started
+    with preflight.scope(seed=preflight.load_handoff(args.preflight_input), started=started,
+                         clock_start="process" if started is not None else None) as scope:
         try:
             return run_dispatch(args)
         except (OSError, UnicodeError, CliError, records.RecordError, DispatchError,
@@ -1068,4 +1135,5 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # The run's clock starts at the process's creation, so module loading is in its split.
+    raise SystemExit(main(started=preflight.process_started()))

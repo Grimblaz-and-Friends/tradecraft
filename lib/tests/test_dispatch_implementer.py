@@ -278,8 +278,10 @@ def test_artifact_codex_permissions_select_only_copy_without_broad_temp_roots(jo
 def test_caller_limit_with_no_launch_window_starts_no_implementer(job, monkeypatch, limit):
     args, _ = job
     args.timeout_seconds = limit
+    # The limit is the recipient's whole time; a launch is refused only once the entrance's cap is spent.
+    args.invocation_started_monotonic = implementer.time.monotonic() - 901
     monkeypatch.setattr(implementer, "run_process", lambda *_a, **_k: pytest.fail("launched without a useful window"))
-    with pytest.raises(TimeoutError, match="no useful launch window"):
+    with pytest.raises(TimeoutError, match="900-second cap"):
         implementer.run_implementer(args)
     assert not args.output.exists()
     assert not (args.root / "seen-codex.json").exists()
@@ -558,7 +560,7 @@ def test_ceiling_reason_distinguishes_caller_allocation_and_elapsed(job, monkeyp
     snapshots = []
     def snapshot(*_a, **_k):
         if not snapshots:
-            clock[0] += 20.2  # Preflight consumes part of the same caller window.
+            clock[0] += 20.2  # Preflight spends the cap, not the recipient's window.
         snapshots.append(True)
         return {"digest": "fixture"}
     monkeypatch.setattr(implementer.lifecycle, "content_snapshot", snapshot)
@@ -570,11 +572,11 @@ def test_ceiling_reason_distinguishes_caller_allocation_and_elapsed(job, monkeyp
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
     attempt = record(args)["attempts"][0]
     assert request["recipient_allocation_seconds"] == 90.78
-    assert attempt["allocation_seconds"] == pytest.approx(87.8)
-    assert attempt["elapsed_seconds"] == pytest.approx(87.8)
+    assert attempt["allocation_seconds"] == pytest.approx(90.78)
+    assert attempt["elapsed_seconds"] == pytest.approx(90.78)
     assert attempt["reason"] == (
         f"{vendor} stopped at the recipient ceiling; caller limit 120s; "
-        "recipient allocation 87.80s; measured elapsed 87.80s")
+        "recipient allocation 90.78s; measured elapsed 90.78s")
 
 
 def test_claude_ceiling_with_truncated_utf8_retains_interruption_and_identity(job, monkeypatch):
@@ -2253,12 +2255,12 @@ def test_984_after_a_ceiling_stop_a_slow_store_read_still_records_before_the_wai
     raw = json.dumps({"type": "system", "subtype": "init", "session_id": FIXTURE_SESSION}).encode() + b"\n"
 
     def stopped(command, **kwargs):
+        # The recipient ran nearly its whole window: a little more than the reserve is left, and
+        # the walk is quick, so the comparing runs until the final write must begin.
+        implementer.lifecycle.current_deadline().open_window(time.monotonic() - 148)
         raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=raw, stderr=b"")
 
     monkeypatch.setattr(implementer, "run_process", stopped)
-    # A little more than the reserve left: enough to launch, and the walk is quick, so the
-    # comparing runs until the final write must begin.
-    args.invocation_started_monotonic = time.monotonic() - 132
     assert implementer.run_implementer(args) == 1
     logged = record(args)
     assert slow.deadline is not None, logged.get("launch_comparison")

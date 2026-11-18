@@ -8,7 +8,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 import math
+import os
 from pathlib import Path
+import sys
 import threading
 import time
 
@@ -17,18 +19,76 @@ UNTIL = ("report", "handoff", "request-record", "spawn")
 # A tally line names each distinct refusal; a refusal repeated per read must not grow every report.
 FALLBACK_REASONS_KEPT = 20
 _SCOPE: ContextVar["Scope | None"] = ContextVar("tradecraft_preflight", default=None)
+# Where a split's clock starts: the process's creation, or the scope's opening when that is unknown.
+CLOCK_STARTS = ("process", "entry")
+# A creation time older than this is not this call's (a reused or misread process) and is not trusted.
+PROCESS_AGE_LIMIT_SECONDS = 600
+# FILETIME counts 100-nanosecond ticks from 1601-01-01; this many separate that from the Unix epoch.
+_FILETIME_UNIX_EPOCH = 116444736000000000
+
+
+def _windows_process_age():
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    times = [wintypes.FILETIME() for _ in range(4)]
+    if not kernel.GetProcessTimes(kernel.GetCurrentProcess(), *(ctypes.byref(item) for item in times)):
+        return None
+    ticks = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    return time.time() - (ticks - _FILETIME_UNIX_EPOCH) / 10_000_000
+
+
+def _linux_process_age():
+    # The command name may hold spaces or parentheses, so fields are counted after the last ')'.
+    fields = Path("/proc/self/stat").read_text(encoding="ascii", errors="replace").rsplit(")", 1)[1].split()
+    started_ticks = int(fields[19])  # Field 22, starttime: clock ticks after boot; fields here begin at 3.
+    return time.clock_gettime(time.CLOCK_BOOTTIME) - started_ticks / os.sysconf("SC_CLK_TCK")
+
+
+def process_started():
+    """This process's creation time on the monotonic clock, or None where it cannot be read.
+
+    Interpreter start-up and imports run before any scope opens, and the caller waits through them.
+
+    Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    """
+    try:
+        if os.name == "nt":
+            age = _windows_process_age()
+        elif sys.platform.startswith("linux"):
+            age = _linux_process_age()
+        else:
+            return None
+    except Exception:  # noqa: BLE001 - an unreadable creation time falls back to the scope's opening.
+        return None
+    if age is None or not math.isfinite(age) or age < 0 or age > PROCESS_AGE_LIMIT_SECONDS:
+        return None
+    return time.monotonic() - age
 
 
 class Scope:
     """Everything one run learns before its launch, kept only for that run's process."""
 
-    def __init__(self, *, started=None, seed=None):
+    def __init__(self, *, started=None, seed=None, clock_start=None):
         seed = seed if isinstance(seed, dict) else {}
-        start = seed.get("started_monotonic", started)
+        seeded = seed.get("started_monotonic")
         now = time.monotonic()
         # A seed's start comes from the entrance's own monotonic clock on this machine.
-        self.started = float(start) if isinstance(start, (int, float)) and math.isfinite(start) and start <= now else (
-            now if started is None else float(started))
+        if isinstance(seeded, (int, float)) and math.isfinite(seeded) and seeded <= now:
+            self.started = float(seeded)
+            # A seed keeps the clock its entrance started; an older handoff names none.
+            found = seed.get("clock_start")
+            self.clock_start = found if found in CLOCK_STARTS else "entry"
+        else:
+            self.started = now if started is None else float(started)
+            self.clock_start = clock_start if started is not None and clock_start in CLOCK_STARTS else "entry"
+        # The call's wall-clock time, read once, so every record of this run names the same return time.
+        called = seed.get("called_epoch")
+        self.called_epoch = float(called) if isinstance(called, (int, float)) and math.isfinite(called) else None
         self.parts = {name: 0.0 for name in PARTS}
         for name, value in (seed.get("parts") or {}).items():
             if name in self.parts and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
@@ -90,7 +150,7 @@ class Scope:
         if until not in UNTIL:
             raise ValueError(f"unknown preflight boundary {until!r}")
         total = max(0.0, time.monotonic() - self.started)
-        return render(until, total, self.current_parts(), self.read_route())
+        return render(until, total, self.current_parts(), self.read_route(), self.clock_start)
 
     def mark(self):
         return time.monotonic(), self.current_parts()
@@ -104,7 +164,8 @@ class Scope:
         return round(seconds, 2), _rendered_parts(seconds, parts)
 
     def handoff(self):
-        return {"schema_version": 1, "started_monotonic": self.started,
+        return {"schema_version": 1, "started_monotonic": self.started, "clock_start": self.clock_start,
+                "called_epoch": self.called_epoch,
                 "parts": self.current_parts(), "read_route": self.read_route()}
 
     def index(self, root, factory):
@@ -140,8 +201,8 @@ def _rendered_parts(total, parts):
     return rounded
 
 
-def render(until, total, parts, read_route):
-    return {"schema_version": 1, "until": until, "total_seconds": round(total, 2),
+def render(until, total, parts, read_route, clock_start="entry"):
+    return {"schema_version": 1, "until": until, "total_seconds": round(total, 2), "clock_start": clock_start,
             "parts": _rendered_parts(total, parts), "read_route": read_route}
 
 
@@ -152,8 +213,10 @@ def combine(record_split, pre_spawn_seconds, pre_spawn_parts):
     for name in PARTS:
         key = f"{name}_seconds"
         parts[name] = float(record_split.get("parts", {}).get(key, 0.0)) + float((pre_spawn_parts or {}).get(key, 0.0))
+    clock_start = record_split.get("clock_start")
     return render("spawn", total, parts, record_split.get("read_route") or
-                  {"contained": 0, "fallback": 0, "fallback_reasons": []})
+                  {"contained": 0, "fallback": 0, "fallback_reasons": []},
+                  clock_start if clock_start in CLOCK_STARTS else "entry")
 
 
 def current() -> Scope | None:
@@ -161,13 +224,13 @@ def current() -> Scope | None:
 
 
 @contextmanager
-def scope(*, started=None, seed=None):
+def scope(*, started=None, seed=None, clock_start=None):
     """Open one run's scope, or join the one already open."""
     existing = _SCOPE.get()
     if existing is not None:
         yield existing
         return
-    opened = Scope(started=started, seed=seed)
+    opened = Scope(started=started, seed=seed, clock_start=clock_start)
     token = _SCOPE.set(opened)
     try:
         yield opened
