@@ -1358,7 +1358,8 @@ def _missing_prices(prices: list[dict], files: dict) -> list[dict[str, object]]:
                 continue
             key = (entry["vendor"], entry["model"])
             target = found.setdefault(key, {"uses": [], "first": _timestamp(entry["first_use"])})
-            use = {"dispatch_id": price["dispatch_id"], "attempt_index": price["attempt_index"]}
+            use = ({"keep_warm": price["keep_warm"], "pings": entry["pings"]} if "keep_warm" in price
+                   else {"dispatch_id": price["dispatch_id"], "attempt_index": price["attempt_index"]})
             if "replies" in entry:
                 use["replies"] = entry["replies"]
             target["uses"].append(use)
@@ -1404,8 +1405,12 @@ def _ping_counts(value: object, label: str, reasons: list[str]) -> dict[str, int
     return counts
 
 
-def _ping_price(row: dict, rates: list[dict], reasons: list[str]) -> tuple[dict[str, int], Decimal | None]:
-    """One ping's classes and card price, or None for the price with its reasons."""
+def _ping_price(row: dict, rates: list[dict], reasons: list[str],
+                unpriced: dict | None = None) -> tuple[dict[str, int], Decimal | None]:
+    """One ping's classes and card price, or None for the price with its reasons.
+
+    A model with no price, or a tiered one whose calls can't be read, is left out and
+    recorded in unpriced, as a dispatch's would be, rather than voiding the line."""
     label = f"ping at {row.get('at')}"
     found: list[str] = []
     usage = _mapping(row.get("usage"))
@@ -1413,12 +1418,16 @@ def _ping_price(row: dict, rates: list[dict], reasons: list[str]) -> tuple[dict[
         found.append(f"{label} has incomplete usage")
     total = _ping_counts(usage.get("total"), label, found)
     calls = usage.get("calls")
+    per_call: list[dict[str, int]] | None = None
     if not isinstance(calls, list):
         found.append(f"{label} has no per-call usage")
     else:
         summed: dict[str, int] = {}
+        per_call = []
         for call in calls:
-            for name, count in _ping_counts(call, f"{label} call", found).items():
+            counts = _ping_counts(call, f"{label} call", found)
+            per_call.append(counts)
+            for name, count in counts.items():
                 summed[name] = summed.get(name, 0) + count
         if any(summed.get(name, 0) != total.get(name, 0) for name in {*summed, *total}):
             found.append(f"{label} total disagrees with its calls")
@@ -1431,14 +1440,30 @@ def _ping_price(row: dict, rates: list[dict], reasons: list[str]) -> tuple[dict[
         found.append(f"{label} has no readable time")
     elif any(total.values()):
         rate = _card(rates).lookup("claude", model, when)[0] if isinstance(model, str) else None
-        if rate is None:
-            found.append(f"{label} has no dated rate for claude {model}")
+        unpriced = unpriced if unpriced is not None else {}
+        if not isinstance(model, str):
+            found.append(f"{label} names no model")
+        elif rate is None:
+            entry = unpriced.setdefault(model, {"model": model, "vendor": "claude", "cause": "no-price",
+                                                "share": "excluded", "pings": 0, "first_use": when.isoformat(),
+                                                "last": when})
+            entry["pings"] += 1
+            entry["first_use"] = min(entry["first_use"], when.isoformat())
+            entry["last"] = max(entry["last"], when)
+        elif rate.get("prompt_tiers") and per_call is None:
+            entry = unpriced.setdefault(model, {"model": model, "vendor": "claude", "cause": "per-request-tiers",
+                                                "share": "excluded", "pings": 0})
+            entry["pings"] += 1
         else:
             if rate.get("currency") != "USD":
                 found.append(f"{label} rate currency is not USD")
-            # The duration-specific writes carry the aggregate, so it is not charged twice.
-            classes = {name: Decimal(count) for name, count in total.items() if name != "cache_creation"}
-            amount = _class_price(classes, rate, str(model), found)
+            # Each call is one request, so a tiered row prices each on its own prompt; the
+            # duration-specific writes carry the aggregate, so it is not charged twice.
+            for counts in (per_call if rate.get("prompt_tiers") else [total]):
+                classes = {name: Decimal(count) for name, count in counts.items() if name != "cache_creation"}
+                prompt = sum((classes.get(name, Decimal(0)) for name in
+                              ("input", "cache_read", "cache_write_5m", "cache_write_1h")), Decimal(0))
+                amount += _class_price(classes, _prompt_tier(rate, prompt)[0], model, found)
     reasons.extend(found)
     return total, None if found else amount
 
@@ -1454,7 +1479,7 @@ def _keep_warm(path: Path, repo: str, issue: int,
     except CostError as exc:
         rows = []
         reasons.append(f"keep-warm record is unreadable: {exc}")
-    kept, total, sessions = [], Decimal(0), {}
+    kept, total, sessions, unpriced = [], Decimal(0), {}, {}
     for number, row in enumerate(rows, 1):
         change = _change(str(row.get("work") or ""))
         kind = row.get("kind")
@@ -1477,7 +1502,7 @@ def _keep_warm(path: Path, repo: str, issue: int,
         session["pings"] += 1
         outcome = str(row.get("outcome"))
         line["outcomes"][outcome] = line["outcomes"].get(outcome, 0) + 1
-        counts, amount = _ping_price(row, rates, reasons)
+        counts, amount = _ping_price(row, rates, reasons, unpriced)
         for name, count in counts.items():
             line["tokens"][name] = line["tokens"].get(name, 0) + count
         if amount is None or session["amount"] is None:
@@ -1489,9 +1514,22 @@ def _keep_warm(path: Path, repo: str, issue: int,
         if session["amount"] is not None:
             session["amount"] = format(session["amount"], "f")
     line["sessions"] = list(sessions.values())
+    card = _card(rates)
+    excluded = []
+    for entry in unpriced.values():
+        if entry["cause"] == "no-price":
+            count = entry["pings"]
+            subject = "1 ping on it is" if count == 1 else f"{count} pings on it are"
+            excluded.append(_missing_reason(card, "claude", entry["model"], entry.pop("last"), subject))
+        else:
+            excluded.append(f"{entry['model']} is priced per request by prompt length, and its pings recorded "
+                            "no readable calls; their usage is excluded from the known amount")
     line["price"] = _unknown_price(reasons) if reasons else {
         "status": "known", "currency": "USD", "amount": format(total, "f"),
-        "basis": "API list-price equivalence", "source": "rate-card", "reasons": []}
+        "basis": "API list-price equivalence", "source": "rate-card", "reasons": [],
+        "floor": bool(excluded), "floor_reasons": excluded}
+    if unpriced:
+        line["price"]["unpriced_models"] = list(unpriced.values())
     return line, kept
 
 
@@ -1662,6 +1700,7 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
     keep_warm_amount = None
     if keep_warm["price"]["status"] == "known":
         keep_warm_amount = Decimal(keep_warm["price"]["amount"])
+        floor_reasons.extend(keep_warm["price"].get("floor_reasons") or [])
         if keep_warm["pings"]:
             known_total += keep_warm_amount
     else:
@@ -1704,7 +1743,9 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
             "runtime_list_price_models": runtime_models,
         },
         "price_files": price_files,
-        "missing_prices": _missing_prices(prices, price_files),
+        "missing_prices": _missing_prices(
+            [*prices, {"dispatch_id": None, "attempt_index": None, "keep_warm": keep_warm["source"],
+                       "value": keep_warm["price"]}], price_files),
         "repository_entries_now_shipped": rates.now_shipped(),
         "bill_plan_status": bill_plan_status(rows, terms_path, gauges_path),
         "keep_warm": keep_warm,

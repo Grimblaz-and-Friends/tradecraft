@@ -2024,19 +2024,46 @@ def test_resumed_dispatch_shares_ignore_pings_between_turns(report_inputs):
     assert [row["pings_in_gap"] for row in with_pings["reloads"]] == [2]
 
 
-def test_ping_without_a_dated_rate_is_unknown_and_a_floor_not_zero(report_inputs):
+def test_a_ping_on_a_model_with_no_price_is_a_floor_naming_it_with_guidance(report_inputs):
+    # A ping is priced from the card like any other share, so a model with no price leaves the
+    # line known, floored by name, and enters the guidance, rather than voiding the line.
     inputs = claude_inputs(report_inputs)
     claude_bundle(inputs, "fresh", continuity="fresh", launched=0, completed=10)
     without = cost.report(**inputs)
-    keep_warm_rows(keep_warm_file(inputs), ping(60, model="claude-unpriced"))
+    keep_warm_rows(keep_warm_file(inputs), ping(60, model="claude-unpriced"), ping(70, model="claude-unpriced"))
     result = cost.report(**inputs)
     price = result["keep_warm"]["price"]
-    assert price["status"] == "unknown" and "no dated rate for claude claude-unpriced" in price["reason"]
-    assert result["keep_warm"]["sessions"][0]["amount"] is None
-    assert result["total"]["keep_warm_amount"] is None
+    assert price["status"] == "known" and price["amount"] == "0" and price["floor"]
+    assert price["floor_reasons"] == [
+        "no price for claude claude-unpriced; 2 pings on it are excluded from the known amount"]
+    assert result["total"]["keep_warm_amount"] == "0"
     assert result["total"]["known_amount"] == without["total"]["known_amount"]
     assert result["total"]["floor"] and not without["total"]["floor"]
-    assert any("keep-warm" in reason for reason in result["total"]["floor_reasons"])
+    assert price["floor_reasons"][0] in result["total"]["floor_reasons"]
+    [guidance] = result["missing_prices"]
+    assert guidance["model"] == "claude-unpriced"
+    assert guidance["uses"] == [{"keep_warm": str(keep_warm_file(inputs)), "pings": 2}]
+    assert guidance["entry"]["effective_from"] == at(60)[:10] + "T00:00:00Z"
+
+
+def test_a_ping_on_a_tiered_model_prices_each_call_at_its_own_tier(report_inputs):
+    # Each call in a ping is one request, so a call over the threshold takes the higher prices
+    # and one under it the base prices; pricing the ping's total would take one tier for both.
+    inputs = claude_inputs(report_inputs)
+    tiered = claude_rate("claude-tiered")
+    tiered["prompt_tiers"] = [{"above_prompt_tokens": 100000,
+                               "classes": {name: price * 5 for name, price in tiered["classes"].items()}}]
+    write_json(inputs["rates_path"], {"schema_version": 1, "rates": [claude_rate(), tiered]})
+    zero = {"input": 0, "output": 10, "cache_read": 0, "cache_creation": 0, "cache_write_5m": 0, "cache_write_1h": 0}
+    large, small = {**zero, "cache_read": 120000}, {**zero, "cache_read": 20000}
+    total = {name: large[name] + small[name] for name in zero}
+    row = ping(60, model="claude-tiered")
+    row["usage"] = {"calls": [large, small], "total": total}
+    keep_warm_rows(keep_warm_file(inputs), row)
+    price = cost.report(**inputs)["keep_warm"]["price"]
+    assert price["status"] == "known" and not price["floor"]
+    # 120,000 reads and 10 outputs at five times the base, plus 20,000 reads and 10 outputs at base.
+    assert Decimal(price["amount"]) == Decimal("0.121") + Decimal("0.0042")
 
 
 def test_unreadable_keep_warm_record_is_unknown_without_failing_the_report(report_inputs):
