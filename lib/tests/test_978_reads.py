@@ -1,4 +1,7 @@
-"""The read route: one contained process per read, stopped at its bound."""
+"""The read route: one contained process per read, stopped at its bound.
+
+Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+"""
 import ast
 import os
 from pathlib import Path

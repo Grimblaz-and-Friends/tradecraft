@@ -8,13 +8,14 @@ import sys
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 import version_fixture
+from window_fixture import past_window
 
 
 def cli(*arguments, env):
     result = subprocess.run([sys.executable, str(TESTS / "version_fixture.py"), *arguments],
                             env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert result.returncode == 0, result.stdout + result.stderr
-    return json.loads(result.stdout)
+    return json.loads(past_window(result.stdout))
 
 
 def git(cwd, *arguments, env):

@@ -1,4 +1,7 @@
-"""The entrance finds pull requests from the issue and says when time ran out."""
+"""The entrance finds pull requests from the issue and says when time ran out.
+
+Design: lib/DESIGN.md#the-entrances-work-before-a-launch
+"""
 import json
 from pathlib import Path
 import re
@@ -317,13 +320,14 @@ def test_978_own_bound_gets_its_own_name_and_advice(monkeypatch):
     assert f"For turn-own: time ran out ({own}); --timeout-seconds does not lengthen that bound;" in advice
     assert "raise the limit" not in advice and "restore" not in advice.lower()
 
-    spent = work.lifecycle.stage_deadline("proof", 60, started=time.monotonic() - 61, declared=True)
+    spent = work.lifecycle.stage_deadline("proof", 60, declared=True)
+    spent.open_window(time.monotonic() - 61)
     with work.lifecycle.deadline_scope(spent):
         limit = work._time_ran_out(stopped)
-    assert limit == LIMIT
+    assert limit.startswith(LIMIT)
     advice = owed_refusal(monkeypatch, [turn("turn-spent", f"ReachTimeout: time ran out before this read finished: {limit}")]
                           ).detail.split("]. ", 1)[1]
-    assert f"For turn-spent: time ran out ({LIMIT}); raise the limit and run again." in advice
+    assert f"For turn-spent: time ran out ({limit}); raise the limit and run again." in advice
     assert "does not lengthen" not in advice
 
 

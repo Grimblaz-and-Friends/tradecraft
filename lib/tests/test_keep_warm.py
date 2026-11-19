@@ -938,7 +938,7 @@ def test_ping_plan_moves_only_the_launchers_import_and_leaves_a_directory_it_did
     assert moved[-1] == "@" + (Path(spec["root"]) / "AGENTS.md").as_posix()
 
 
-@pytest.mark.parametrize("exit_", ["unavailable", "preparation", "existing-output", "no-window"])
+@pytest.mark.parametrize("exit_", ["unavailable", "preparation", "existing-output", "past-the-cap"])
 def test_a_launch_that_starts_nothing_leaves_the_waiting_keep_warm(claude, tmp_path, monkeypatch, exit_):
     """The session stays the one the entrance resumes next, so its keep-warm stays."""
     args, home, spawned = claude
@@ -958,7 +958,8 @@ def test_a_launch_that_starts_nothing_leaves_the_waiting_keep_warm(claude, tmp_p
         with pytest.raises(implementer.ImplementerError):
             implementer.run_implementer(args)
     else:
-        args.timeout_seconds = 0.001
+        # The limit is the recipient's own time, so a launch with no window is one whose cap has ended.
+        args.invocation_started_monotonic = time.monotonic() - implementer.lifecycle.PREFLIGHT_CAP_SECONDS - 1
         with pytest.raises(TimeoutError):
             implementer.run_implementer(args)
     assert (waiting / "spec.json").exists()

@@ -13,6 +13,7 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import work
+from window_fixture import PastWindow
 import launch_settings
 import connected_review
 import raw_output
@@ -73,6 +74,12 @@ CONFIG = work.WorkConfig(
     connected_reviewers=frozenset({REVIEWER}),
     marker_producers=frozenset({PRODUCER}),
 )
+
+
+@pytest.fixture
+def capsys(capsys):
+    """These tests read the entrance's report, which follows the window line."""
+    return PastWindow(capsys)
 
 
 def _fixture_digest(body):

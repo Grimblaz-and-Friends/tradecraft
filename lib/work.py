@@ -51,6 +51,7 @@ import cold_draft
 import cold_reader
 from connected_review import is_review_job
 import dispatch_record as records
+import cap_declaration
 from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
 import github_allowance
@@ -4072,7 +4073,11 @@ def _reach_advice(owed: list[dict[str, object]]) -> str:
     advice = [f"For {', '.join(turns)}: time ran out ({limit}); "
               + ("--timeout-seconds does not lengthen that bound; run again when the machine is less loaded, "
                  "or check why Git reads slowly in that repository."
-                 if limit.startswith(build_reach.OWN_BOUND) else "raise the limit and run again.")
+                 if limit.startswith(build_reach.OWN_BOUND) else
+                 # The cap is lengthened only by declaring a larger one; --timeout-seconds leaves it.
+                 "declare a larger cap for this run with --preflight-cap-seconds and --preflight-cap-reason, "
+                 "or run again when the machine is less loaded."
+                 if limit.startswith("the entrance's") else "raise the limit and run again.")
               for limit, turns in timed_out.items()]
     if unavailable:
         advice.append(f"For {', '.join(unavailable)}: restore unavailable objects/read capability "
@@ -6481,24 +6486,49 @@ def create_implementation_root(holder_root: Path, repo: str, issue: int,
     target = holder / ".claude" / "worktrees" / f"issue-{issue}-{suffix}"
     _ensure_implementation_parent_ignored(holder)
     target.parent.mkdir(parents=True, exist_ok=True)
-    added = _git(["worktree", "add", "-b", branch, str(target), "HEAD"], holder)
+    # The cap is checked after the add here, so a refusal removes only a worktree and branch this add made.
+    added = _git_unchecked(["worktree", "add", "-b", branch, str(target), "HEAD"], holder)
     if added.returncode:
         raise WorkError(f"cannot create implementation worktree: {_git_failure(added)}")
-    implementation_root, attached_branch = _validate_implementation_row({
-        "root": str(target), "holder_root": str(holder), "branch": branch,
-    }, holder)
-    created_revision = _git_text(
-        ["rev-parse", "HEAD"], implementation_root, "inspect implementation HEAD"
-    )
-    if created_revision != revision:
-        raise WorkError(
-            "created implementation worktree does not begin at the holder revision"
+    try:
+        lifecycle.after_write()
+        implementation_root, attached_branch = _validate_implementation_row({
+            "root": str(target), "holder_root": str(holder), "branch": branch,
+        }, holder)
+        created_revision = _git_text(
+            ["rev-parse", "HEAD"], implementation_root, "inspect implementation HEAD"
         )
-    register_worktree(
-        implementation_root, repo, issue, instalment, holder_session_id,
-        holder_root=holder, branch=attached_branch,
-    )
+        if created_revision != revision:
+            raise WorkError(
+                "created implementation worktree does not begin at the holder revision"
+            )
+        # The registration reads the worktree before its one write, so a refusal raised here comes
+        # before the row exists; once the row is written the worktree stays, named by it.
+        register_worktree(
+            implementation_root, repo, issue, instalment, holder_session_id,
+            holder_root=holder, branch=attached_branch,
+        )
+    except lifecycle.PreflightCapExceeded:
+        _discard_unregistered_worktree(holder, target, branch)
+        raise
     return implementation_root, attached_branch
+
+
+def _discard_unregistered_worktree(holder: Path, target: Path, branch: str) -> None:
+    """A worktree refused at the cap before its registry row was written goes with the refusal:
+    registering it would begin new work after the cap, and left unregistered it would be an orphan
+    the next run never reuses."""
+    with lifecycle.cleanup_scope():
+        for command in (["worktree", "remove", "--force", str(target)], ["branch", "-D", branch]):
+            try:
+                result = _git(command, holder)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"work: {' '.join(command[:2])} after the cap failed: {exc}", file=sys.stderr)
+                continue
+            # A removal that exits nonzero leaves the worktree or branch behind, so it is said aloud.
+            if result.returncode:
+                print(f"work: {' '.join(command[:2])} after the cap failed: {_git_failure(result)}",
+                      file=sys.stderr)
 
 
 def publish_implementation_branch(root: Path, branch: str) -> str:
@@ -7087,7 +7117,8 @@ def _cold_stage_prompt(state: WorkState, root: Path) -> bytes:
 
 
 # Git commands here that change a repository, working copy or remote; their callers read only the exit status.
-GIT_WRITES = (("worktree", "add"), ("push",), ("fetch",), ("merge",), ("add",))
+GIT_WRITES = (("worktree", "add"), ("worktree", "remove"), ("branch", "-D"), ("push",), ("fetch",), ("merge",),
+              ("add",))
 
 
 def _git_writes(command: list[str]) -> bool:
@@ -7095,16 +7126,27 @@ def _git_writes(command: list[str]) -> bool:
 
 
 def _git(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
+    result = _git_unchecked(command, root)
+    if _git_writes(command):
+        lifecycle.after_write()
+    return result
+
+
+def _git_unchecked(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
+    """A Git command without the cap's check after a write, for a caller that checks it itself."""
     environment = {
         key: value for key, value in os.environ.items()
         if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
     }
+    writes = _git_writes(command)
     # A write that exited 0 stands even when a held pipe cut its output short; a read's output must be whole.
-    return _run_probe(
-        ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120), env=environment,
-        writes=_git_writes(command),
+    # A write before the launch is not cut at the cap's end, only at the printed return less the reserve.
+    result = _run_probe(
+        ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=environment, writes=writes,
+        timeout=lifecycle.write_timeout(120) if writes else lifecycle.probe_timeout(120),
     )
+    return result
 
 
 def _git_failure(result: subprocess.CompletedProcess[bytes]) -> str:
@@ -9494,9 +9536,39 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     return 0
 
 
-def _recipient_run(command, *, timeout, cleanup_deadline):
+def _recipient_run(command, *, timeout, cleanup_deadline, on_tick=None):
     return run_inherited_process(command, cwd=Path.cwd(), timeout=timeout,
-                                 cleanup_deadline=cleanup_deadline)
+                                 cleanup_deadline=cleanup_deadline, on_tick=on_tick)
+
+
+def _refused_at_cap(notice):
+    try:
+        return json.loads(Path(notice).read_text(encoding="utf-8")).get("refused_at_cap") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _window_follower(notice, deadline):
+    """Follow the launcher's window through its notice, so the wait ends by its recipient's end."""
+    # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    seen = [None]
+
+    def tick():
+        # The notice is compared by its content: two writes within the clock's resolution keep one time.
+        try:
+            content = notice.read_bytes()
+        except OSError:
+            content = None
+        if content is None or content == seen[0]:
+            return None  # The wait keeps its bound until the launcher's window changes.
+        seen[0] = content
+        opened = lifecycle.read_launch_notice(notice)
+        if opened is None:
+            deadline.withdraw_window()
+        elif opened is not ...:
+            deadline.open_window(opened)
+        return deadline.wait_end, deadline.end - deadline.reserve / 8
+    return tick
 
 
 # The open stage's launch-preparation timer, which the handoff to a launcher stops, and its store.
@@ -9529,13 +9601,16 @@ def _launched_split(command, store, launched_after):
     where = (Path(output).parent if output else
              Path(store) if store is not None else records.default_record_root().expanduser().resolve())
     # Only a bundle launched after this call can be this launch's own.
-    for _order, _run_path, request, run in lifecycle.launch_bundles(where, work_value, {stage}, after=launched_after):
+    for _order, run_path, request, run in lifecycle.launch_bundles(where, work_value, {stage}, after=launched_after):
         split = request.get("preflight")
         if not isinstance(split, dict) or split.get("until") != "request-record":
             continue
+        _note_cap_outcome(cap_declaration.bundle_outcome(run), bundle=run_path)
         attempts = run.get("attempts")
         for attempt in attempts if isinstance(attempts, list) else []:
-            if isinstance(attempt, dict) and attempt.get("pre_spawn_seconds") is not None:
+            # Only an attempt that spawned, or whose spawn is unresolved, names the spawn line.
+            if (isinstance(attempt, dict) and attempt.get("pre_spawn_seconds") is not None
+                    and attempt.get("launched") is not False):
                 return preflight.combine(split, attempt["pre_spawn_seconds"], attempt.get("pre_spawn_parts"))
         # No recipient was spawned: the split ends at the request record.
         return split
@@ -9561,6 +9636,10 @@ def _invoke_recipient(command, deadline):
     preparation, store = _PREPARATION.get() or (None, None)
     if preparation is not None:
         preparation.close()  # The handoff ends the entrance's launch preparation.
+    # The launcher counts the same cap from the same call.
+    if deadline.cap_declared and "--preflight-cap-seconds" not in command:
+        command.extend(("--preflight-cap-seconds", repr(deadline.cap),
+                        "--preflight-cap-reason", deadline.cap_reason))
     if "--invocation-started-monotonic" not in command:
         command.extend(("--invocation-started-monotonic", str(deadline.started)))
     # Let the child spend its recording reserve, then stop a stuck launcher
@@ -9571,16 +9650,23 @@ def _invoke_recipient(command, deadline):
         handoff = Path(temporary) / "preflight.json"
         if "--preflight-input" not in command and preflight.write_handoff(handoff):
             command.extend(("--preflight-input", str(handoff)))
+        notice = Path(temporary) / "launch-notice.json"
+        if "--launch-notice" not in command:
+            command.extend(("--launch-notice", str(notice)))
         launched_after = datetime.now(timezone.utc).isoformat()
         try:
             return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
-                                  cleanup_deadline=deadline.end - deadline.reserve / 8).returncode
+                                  cleanup_deadline=deadline.end - deadline.reserve / 8,
+                                  on_tick=_window_follower(notice, deadline)).returncode
         except subprocess.TimeoutExpired:
             raise WorkError("launcher exceeded its bounded recording allowance; retained bundle may be unfinished") from None
         finally:
             # The launcher wrote its bundle; the run's store index reads what changed.
             preflight.refresh()
             _note_launched_split(command, store, launched_after)
+            if _refused_at_cap(notice):
+                _CAP_OUTCOME.set(_kept_outcome("the launcher refused at the entrance's cap",
+                                               {"outcome": "refused-at-cap"}))
 
 
 def _seat_returned(decision, command, deadline):
@@ -9589,6 +9675,15 @@ def _seat_returned(decision, command, deadline):
         # A seat's stage prints no report of its own after the return; this line carries its split.
         _emit_report({"stage": decision.stage, "recipient_returned": True}, flush=True)
     return code
+
+
+def _open_stage_work_window():
+    """A stage that launches nobody: its own work begins, and its limit is counted from here."""
+    # Everything before this point is reading and deciding, so a refusal here changed nothing.
+    deadline = lifecycle.current_deadline()
+    if deadline is not None:
+        deadline.require_cap()
+        deadline.open_window()
 
 
 def _release_holder_close(state):
@@ -9726,6 +9821,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             raise WorkError("run catch-up accepts no dispatch, tree or recipient executable")
         if transport is None or rules is None:
             raise WorkError("run catch-up requires the entrance GitHub and policy context")
+        _open_stage_work_window()
         return _execute_catch_up(transport, state, root, instalment, holder_session_id, rules)
     if decision.stage == "cold-reader":
         return _execute_cold_reader(state, decision, dispatch_path=dispatch_path,
@@ -9862,12 +9958,14 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
     if decision.stage == "proof":
         if transport is None or rules is None or use_rules_path is None:
             raise WorkError("run proof requires the entrance GitHub and policy context")
+        _open_stage_work_window()
         return _execute_proof(
             transport, state, root, rules, use_rules_path, dispatch_path, tree_metadata
         )
     if decision.stage == "ready-reviewers":
         if transport is None or rules is None:
             raise WorkError("run ready-reviewers requires the entrance GitHub and policy context")
+        _open_stage_work_window()
         return _execute_ready_reviewers(
             transport, state, rules, dispatch_path, tree_metadata
         )
@@ -9879,6 +9977,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             detail=(decision.detail or
                     "Write and deliver the release report from the completed evidence; launch nobody."),
         ))
+        _open_stage_work_window()
         current_head = _head_sha(state)
         fresh_sync = state
         if (transport is not None and state.pr is not None
@@ -10007,6 +10106,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "path_departures": path_departures,
             "holder_close": _release_holder_close(state),
             "cold_readings": _cold_reading_measures(state),
+            "declared_caps": declared_caps(f"{state.repo}#{state.issue_number}", state.record_root),
         })
         _emit_report(payload, state)
         return 0
@@ -10184,7 +10284,9 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                      resume_source.request.get("lineage_branch") if resume_source else None)
     account = lifecycle.runtime_account(work_recovery.launches(state, "build"),
                                        root=budget_root, branch=budget_branch) if budget_root else lifecycle.runtime_account([])
-    allocation = deadline.remaining()
+    # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+    # The recipient gets its whole limit (or ceiling), whatever the entrance spent before it.
+    allocation = deadline.allotted
     if decision.stage == "build":
         try:
             allocation = lifecycle.allocation(account, allocation, override_reason=budget_override_reason)
@@ -10193,6 +10295,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 json.dumps({"reason": str(exc), "account": account}, ensure_ascii=True), status="holder-owned"))
             _emit_report(refused.as_dict(), state)
             return 0
+    deadline.remaining()  # The cap is checked before any registration, worktree or copy is made.
     with _stage_root(state, decision, root, instalment, holder_identity, resume_source) as (selected, artifact_run):
         if isinstance(selected, Decision):
             _emit_report(_reported_decision(state, selected).as_dict(), state)
@@ -10379,7 +10482,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     "github_write_grants": github_write_grants or [],
                     "recovery_restart_reason": restart_unresolved_reason,
                     "recovery_restart_bundle": restart_source[1] if restart_source else None,
-                    "recipient_allocation_seconds": min(allocation, deadline.remaining()),
+                    "recipient_allocation_seconds": allocation,
                     "budget_account_before": account,
                     "budget_override_reason": budget_override_reason,
                 }
@@ -10577,8 +10680,11 @@ def parser() -> argparse.ArgumentParser:
                      help="the record path tree printed; required by run use")
     cli.add_argument(
         "--timeout-seconds", type=float,
-        help="declared caller limit; defaults to 7200 for build and 3600 for every other stage",
+        help="the time the recipient gets, from its start (default 7200 for build, 3600 otherwise)",
     )
+    cli.add_argument("--preflight-cap-seconds", type=float,
+                     help="a cap larger than 900 seconds on the entrance's own work before the recipient starts")
+    cli.add_argument("--preflight-cap-reason", help="why this run declares a larger preflight cap; required with it")
     cli.add_argument("--budget-override-reason", help="reason for this build invocation beyond its runtime budget")
     cli.add_argument("--cloud", action="store_true",
                      help="with allowance: print the cloud route's sentence, for a launch the cloud route takes")
@@ -10806,19 +10912,101 @@ def run(
     reason = getattr(args, "budget_override_reason", None)
     if reason is not None and (args.command != "run" or args.stage != "build" or not reason.strip()):
         raise WorkError("--budget-override-reason requires a named build and nonempty reason")
-    if args.command == "run":
+    cap_seconds = getattr(args, "preflight_cap_seconds", None)
+    cap_reason = getattr(args, "preflight_cap_reason", None)
+    if (cap_seconds is not None or cap_reason is not None) and (args.command != "run" or args.stage is None):
+        raise WorkError("--preflight-cap-seconds applies only to a named run stage")
+    if args.command == "run" and args.stage is not None:
+        try:
+            lifecycle.validate_cap_flags(cap_seconds, cap_reason)
+        except ValueError as exc:
+            raise WorkError(str(exc)) from exc
         limit = args.timeout_seconds if args.timeout_seconds is not None else (
             DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else DEFAULT_STAGE_TIMEOUT_SECONDS)
+        if not math.isfinite(limit) or limit <= 0:
+            raise WorkError("--timeout-seconds must be finite and positive")
         opened = preflight.current()
         # The stage's deadline and the run's timing split share the run's one clock.
         deadline = lifecycle.stage_deadline(args.stage, limit, started=opened.started if opened else None,
-                                            declared=args.timeout_seconds is not None)
-        with lifecycle.deadline_scope(deadline):
-            if args.stage == "artifact":
-                with artifact_tree.isolated_git_environment():
-                    return _run(args, transport=transport, executor=executor)
-            return _run(args, transport=transport, executor=executor)
+                                            declared=args.timeout_seconds is not None,
+                                            cap=cap_seconds, cap_reason=cap_reason)
+        # Design: lib/DESIGN.md#a-runs-window-and-the-entrances-cap
+        # The stage's first output names the latest time it can return, before any read.
+        window = lifecycle.window_line(deadline)
+        declaration = (cap_declaration.write(_records_home(None), f"{args.repo}#{args.issue}", args.stage,
+                                             deadline, window) if deadline.cap_declared else None)
+        window["cap_record"] = str(declaration) if declaration else None
+        print("work: window " + json.dumps(window, ensure_ascii=True), flush=True)
+        outcome_token = _CAP_OUTCOME.set(None)
+        try:
+            with lifecycle.deadline_scope(deadline):
+                if args.stage == "artifact":
+                    with artifact_tree.isolated_git_environment():
+                        code = _run(args, transport=transport, executor=executor)
+                else:
+                    code = _run(args, transport=transport, executor=executor)
+        except lifecycle.PreflightCapExceeded as exc:
+            cap_declaration.outcome(declaration, _kept_outcome(str(exc), {"outcome": "refused-at-cap"}))
+            if getattr(exc, "stage", None) is None:
+                exc.stage = args.stage
+            raise
+        except BaseException as exc:
+            cap_declaration.outcome(declaration, _kept_outcome(str(exc), {"outcome": "failed", "error": str(exc)}))
+            raise
+        else:
+            cap_declaration.outcome(declaration, _ran_outcome(args.stage, deadline, code))
+        finally:
+            _CAP_OUTCOME.reset(outcome_token)
+        return code
     return _run(args, transport=transport, executor=executor)
+
+
+_CAP_OUTCOME: ContextVar[dict | None] = ContextVar("tradecraft_cap_outcome", default=None)
+
+
+def _note_cap_outcome(outcome: str, **detail) -> None:
+    """A run that learns its outcome before returning names it, as a launch names its bundle."""
+    _CAP_OUTCOME.set({"outcome": outcome, **detail})
+
+
+def _kept_outcome(error: str, unnoted: dict) -> dict:
+    """A refusal or error after an outcome was noted keeps that outcome and its bundle, adding the error,
+    so the report lists the run once; with nothing noted it records `unnoted`."""
+    noted = _CAP_OUTCOME.get()
+    return {**noted, "error": error} if noted else unnoted
+
+
+def _ran_outcome(stage, deadline, code):
+    noted = _CAP_OUTCOME.get()
+    if noted is not None:
+        return noted
+    if stage in lifecycle.STAGE_WORK_STAGES and deadline.in_window:
+        # The stage reached its own work; whether that work succeeded is its exit status.
+        return {"outcome": "completed"} if code == 0 else {"outcome": "failed", "error": f"exit status {code}"}
+    return {"outcome": "held" if code == 0 else "refused"}
+
+
+def declared_caps(work: str, store: Path | None) -> list[dict]:
+    """Every declared cap for the work, from its declaration files and its request records."""
+    rows = cap_declaration.read(_records_home(None), work)
+
+    def same(path):
+        # One bundle may be spelled differently by the declaration and by the store's own listing.
+        return os.path.normcase(str(Path(path).resolve()))
+    seen = {same(row["bundle"]) for row in rows if row.get("bundle")}
+    if store is not None and Path(store).is_dir():
+        stages = set(lifecycle.REPAIR_STAGES) | {"artifact", "build", "cold-seat", "use", "cold-reader"}
+        for _order, run_path, request, _run_record in lifecycle.launch_bundles(store, work, stages):
+            cap = request.get("preflight_cap")
+            # A launch the entrance made is already listed by its declaration file, through its bundle. A
+            # launcher called directly writes its file under its own records home, which need not be this
+            # one, so its request record is where this report finds it.
+            if isinstance(cap, dict) and cap.get("source") == "declared" and same(run_path) not in seen:
+                rows.append({"record": str(run_path), "stage": request.get("stage"),
+                             "called_at": request.get("launched_at"), "preflight_cap": cap,
+                             "outcome": cap_declaration.bundle_outcome(_run_record), "bundle": str(run_path),
+                             "reason_code": None, "error": None})
+    return rows
 
 
 def _selected_policy_path(args: argparse.Namespace, root: Path) -> Path:
@@ -11043,16 +11231,18 @@ def _run(
         raise
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, started: float | None = None) -> int:
     utf8_stdio()
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
-    # One scope per run, opened at the call, holds its clock, timing split, read memo and store indexes.
-    with preflight.scope():
+    # One scope per run, so each read and each store record is taken once and the split covers the whole run.
+    with preflight.scope(started=started, clock_start="process" if started is not None else None):
         try:
             return run(parser().parse_args(argv))
         except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
+            # A refusal at the cap is always reported, so the holder reads its reason with the stage's report.
             if (getattr(exc, "raw_output", None) is not None or getattr(exc, "reach", None) is not None
-                    or getattr(exc, "version_obligation", None) is not None):
+                    or getattr(exc, "version_obligation", None) is not None
+                    or isinstance(exc, lifecycle.PreflightCapExceeded)):
                 _emit_report({"status": "refused", "reason": str(exc),
                               "stage": getattr(exc, "stage", None), "head": getattr(exc, "head", None),
                               "version_obligation": getattr(exc, "version_obligation", None),
@@ -11067,4 +11257,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # The run's clock starts at the process's creation, so module loading is in its split.
+    raise SystemExit(main(started=preflight.process_started()))

@@ -1,0 +1,138 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "efaebe58a866464b9a3a2866f671f132",
+  "completed_at": "2026-11-09T18:04:14.202542+00:00",
+  "attempts": [
+    {
+      "vendor": "claude",
+      "observed": {
+        "source": "modelUsage",
+        "raw": {
+          "claude-opus-5-5": {
+            "inputTokens": 44,
+            "outputTokens": 61415,
+            "cacheReadInputTokens": 2209881,
+            "cacheCreationInputTokens": 154405,
+            "webSearchRequests": 0,
+            "costUSD": 2.9056922000000003,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 128000,
+            "thinkingTokens": 28214,
+            "canonicalModel": "claude-opus-5-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          },
+          "claude-sonnet-5": {
+            "inputTokens": 100,
+            "outputTokens": 61209,
+            "cacheReadInputTokens": 2889828,
+            "cacheCreationInputTokens": 323626,
+            "webSearchRequests": 0,
+            "costUSD": 1.9993206000000003,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 11615,
+            "canonicalModel": "claude-sonnet-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          }
+        },
+        "normalized": {
+          "scope": "invocation",
+          "models": {
+            "claude-opus-5-5": {
+              "inputTokens": 44,
+              "cacheReadInputTokens": 2209881,
+              "cacheCreationInputTokens": 154405,
+              "outputTokens": 61415
+            },
+            "claude-sonnet-5": {
+              "inputTokens": 100,
+              "cacheReadInputTokens": 2889828,
+              "cacheCreationInputTokens": 323626,
+              "outputTokens": 61209
+            }
+          }
+        },
+        "normalized_unavailable_reason": null,
+        "additional_native_classes": {
+          "claude-opus-5-5": {
+            "maxOutputTokens": 128000,
+            "thinkingTokens": 28214
+          },
+          "claude-sonnet-5": {
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 11615
+          }
+        },
+        "reported_models": [
+          "claude-opus-5-5",
+          "claude-sonnet-5"
+        ],
+        "reported_models_unavailable_reason": null,
+        "thread_ids": [
+          "01f53ccd-ca75-4657-ad82-3925c5be79a1"
+        ],
+        "session_id": "01f53ccd-ca75-4657-ad82-3925c5be79a1"
+      },
+      "elapsed_seconds": 1048.4966576998122,
+      "usage": {
+        "change": {
+          "repository": "Grimblaz-and-Friends/Organizations-of-Verra",
+          "issue": 576,
+          "unknown_reason": null
+        },
+        "dispatch": {
+          "id": "efaebe58a866464b9a3a2866f671f132",
+          "requested_vendor": "claude",
+          "actual_vendor": "claude",
+          "stage": "artifact",
+          "continuity": "fresh",
+          "launched_at": "2026-11-09T17:46:17.400292+00:00",
+          "completed_at": "2026-11-09T18:04:09.924614+00:00",
+          "staffing_status": "qualified"
+        },
+        "model": {
+          "requested": "claude-opus-5-5",
+          "reported": [
+            "claude-opus-5-5",
+            "claude-sonnet-5"
+          ],
+          "reported_unknown_reason": null
+        },
+        "tokens": {
+          "models": {
+            "claude-opus-5-5": {
+              "input": 44,
+              "cache_read": 2209881,
+              "cache_creation": 154405,
+              "output": 61415
+            },
+            "claude-sonnet-5": {
+              "input": 100,
+              "cache_read": 2889828,
+              "cache_creation": 323626,
+              "output": 61209
+            }
+          }
+        },
+        "tokens_unknown_reason": null,
+        "additional_native_classes": {
+          "claude-opus-5-5": {
+            "maxOutputTokens": 128000,
+            "thinkingTokens": 28214
+          },
+          "claude-sonnet-5": {
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 11615
+          }
+        },
+        "scope": "invocation",
+        "source_field": "modelUsage",
+        "raw_source": "fixture.stdout.log",
+        "runtime_version": "2.1.280 (Claude Code)",
+        "runtime_version_unknown_reason": null
+      }
+    }
+  ]
+}
