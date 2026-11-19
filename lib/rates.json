@@ -71,6 +71,140 @@
       "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
     },
     {
+      "vendor": "claude",
+      "model": "claude-fable-5-2",
+      "effective_from": "2026-09-20T00:00:00Z",
+      "effective_to": null,
+      "currency": "USD",
+      "per_tokens": 1000000,
+      "classes": {
+        "input": 8,
+        "cache_read": 0.2,
+        "cache_creation": 16,
+        "output": 40,
+        "cache_write_5m": 10,
+        "cache_write_1h": 16
+      },
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved_at": "2026-11-12T05:21:04Z",
+      "processing": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation",
+      "retrieval_record": "https://github.com/Grimblaz-and-Friends/tradecraft/issues/936#issuecomment-6815693523",
+      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+      "duration_rates_retrieved_at": "2026-11-12T05:21:04Z",
+      "duration_rates_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+    },
+    {
+      "vendor": "claude",
+      "model": "claude-sonnet-5-5",
+      "effective_from": "2026-09-20T00:00:00Z",
+      "effective_to": null,
+      "currency": "USD",
+      "per_tokens": 1000000,
+      "classes": {
+        "input": 2,
+        "cache_read": 0.1,
+        "cache_creation": 4,
+        "output": 10,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 4
+      },
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved_at": "2026-11-12T05:21:04Z",
+      "processing": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation",
+      "retrieval_record": "https://github.com/Grimblaz-and-Friends/tradecraft/issues/936#issuecomment-6815693523",
+      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+      "duration_rates_retrieved_at": "2026-11-12T05:21:04Z",
+      "duration_rates_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+    },
+    {
+      "vendor": "claude",
+      "model": "claude-sonnet-5",
+      "effective_from": "2026-09-20T00:00:00Z",
+      "effective_to": null,
+      "currency": "USD",
+      "per_tokens": 1000000,
+      "classes": {
+        "input": 2,
+        "cache_read": 0.2,
+        "cache_creation": 4,
+        "output": 10,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 4
+      },
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved_at": "2026-11-12T05:21:04Z",
+      "processing": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation",
+      "retrieval_record": "https://github.com/Grimblaz-and-Friends/tradecraft/issues/936#issuecomment-6815693523",
+      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+      "duration_rates_retrieved_at": "2026-11-12T05:21:04Z",
+      "duration_rates_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+    },
+    {
+      "vendor": "claude",
+      "model": "claude-haiku-4-5-20251001",
+      "effective_from": "2026-09-20T00:00:00Z",
+      "effective_to": null,
+      "currency": "USD",
+      "per_tokens": 1000000,
+      "classes": {
+        "input": 1,
+        "cache_read": 0.1,
+        "cache_creation": 2,
+        "output": 5,
+        "cache_write_5m": 1.25,
+        "cache_write_1h": 2
+      },
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved_at": "2026-11-12T05:21:04Z",
+      "processing": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation",
+      "retrieval_record": "https://github.com/Grimblaz-and-Friends/tradecraft/issues/936#issuecomment-6815693523",
+      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+      "duration_rates_retrieved_at": "2026-11-12T05:21:04Z",
+      "duration_rates_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+    },
+    {
+      "vendor": "claude",
+      "model": "claude-haiku-5-5",
+      "effective_from": "2026-09-20T00:00:00Z",
+      "effective_to": null,
+      "currency": "USD",
+      "per_tokens": 1000000,
+      "classes": {
+        "input": 0.1,
+        "cache_read": 0.01,
+        "cache_creation": 0.2,
+        "output": 0.5,
+        "cache_write_5m": 0.125,
+        "cache_write_1h": 0.2
+      },
+      "prompt_basis": "a request's input, cache-read and cache-write tokens, each request priced on its own",
+      "prompt_tiers": [
+        {
+          "above_prompt_tokens": 100000,
+          "classes": {
+            "input": 0.5,
+            "cache_read": 0.05,
+            "cache_creation": 1,
+            "output": 2.5,
+            "cache_write_5m": 0.625,
+            "cache_write_1h": 1
+          }
+        }
+      ],
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved_at": "2026-11-12T05:21:04Z",
+      "processing": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation; priced per request by prompt length",
+      "retrieval_record": "https://github.com/Grimblaz-and-Friends/tradecraft/issues/936#issuecomment-6815693523",
+      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+      "duration_rates_retrieved_at": "2026-11-12T05:21:04Z",
+      "duration_rates_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+    },
+    {
       "vendor": "codex",
       "model": "gpt-6-astra",
       "effective_from": "2026-09-20T00:00:00Z",
