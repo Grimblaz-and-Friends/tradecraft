@@ -740,7 +740,7 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False, include
     def wanted(request):
         attributed = (request.get("work") == work if exact_work else
                       str(request.get("work", "")).lower() == work.lower()) if isinstance(request, dict) else False
-        return attributed and (request.get("stage") in stages
+        return attributed and (stages is None or request.get("stage") in stages
                                or (include_missing_stage and not request.get("stage")))
 
     index = store_index(store)

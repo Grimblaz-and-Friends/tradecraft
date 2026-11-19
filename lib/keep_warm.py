@@ -81,7 +81,15 @@ LAUNCH_ENV_NAMES = ("CLAUDE_CODE_ENABLE_FUNCTION_HOOKS",
                     "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
                     "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "BASH_MAX_TIMEOUT_MS",
                     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "GIT_LFS_SKIP_SMUDGE",
-                    "GIT_NO_LAZY_FETCH")
+                    "GIT_NO_LAZY_FETCH",
+                    # The GitHub write bound's connector switch and child settings shape the
+                    # session a ping resumes, so a ping carries them as the turn did.
+                    "ENABLE_CLAUDEAI_MCP_SERVERS", "TRADECRAFT_CHILD_SETTINGS")
+# The GitHub write bound's removal of git's push credential guards only commands, and a ping
+# refuses every tool, so these are neither carried nor a foreign change; leaving them out also
+# keeps an inherited GIT_CONFIG_PARAMETERS, which may hold a credential, out of the spec file.
+COMMAND_ONLY_ENV_NAMES = ("GIT_CONFIG_PARAMETERS", "GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE",
+                          "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK")
 # The launch strips these inherited plugin directories from its child, so their
 # absence is the launch's own change, not a foreign one.
 REMOVABLE_ENV_NAMES = ("CLAUDE_CODE_PLUGIN_DIR", "CLAUDE_CODE_PLUGIN_DIRS")
@@ -271,6 +279,8 @@ def launch_env_changes(start: dict[str, str], child: dict[str, str]) -> tuple[di
     from artifact_tree import _binding
     set_, unset, other = {}, [], []
     for name in sorted(set(start) | set(child)):
+        if name in COMMAND_ONLY_ENV_NAMES:
+            continue
         if name in child and start.get(name) != child[name]:
             (set_.__setitem__(name, child[name]) if name in LAUNCH_ENV_NAMES else other.append(name))
         elif name not in child:

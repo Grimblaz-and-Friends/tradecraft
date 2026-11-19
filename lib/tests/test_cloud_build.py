@@ -191,7 +191,7 @@ def machine(tmp_path, monkeypatch):
 
 
 def launch(machine, transport, *, stage="build", resume=None, brief=b"", copy=None, polls=5, entry=True,
-           preset=None, model="claude-opus-5-5", effort="high", timeout_seconds=600):
+           preset=None, model="claude-opus-5-5", effort="high", timeout_seconds=600, notice=b""):
     output = machine["records"] / f"{stage}-{len(list(machine['tmp'].glob('**/*.request.json')))}" / "result.md"
     args = argparse.Namespace(
         root=machine["root"], output=output, work=f"{REPO}#77", stage=stage, resume=resume,
@@ -205,7 +205,7 @@ def launch(machine, transport, *, stage="build", resume=None, brief=b"", copy=No
                      composition={"origin": "holder"}, settings_sources={"vendor": "v", "model": "m", "effort": "e"},
                      validate=lambda expected, returned: {"status": "pass"}, transport=transport,
                      record_root=machine["records"], plugin=machine["plugin"], install_path=machine["install"],
-                     preset_failure=preset)
+                     preset_failure=preset, github_write_notice=notice)
     request = json.loads((output.parent / "result.md.request.json").read_text())
     run = json.loads((output.parent / "result.md.run.json").read_text())
     return code, request, run, output
@@ -1168,6 +1168,22 @@ def test_the_entrance_and_the_launcher_read_one_routing_decision(tmp_path, monke
 def test_a_repair_change_branch_reason_names_its_stage():
     assert cloud.change_branch_check(TIP, TIP, [], "identical", repair=True, stage="floor")["reason"] \
         == "a floor turn can rightly make no commit"
+
+
+def test_894_ac4_a_cloud_run_record_says_the_github_write_block_did_not_run(machine):
+    code, _request, run, _output = launch(machine, Fake())
+    assert code == 0
+    bound = run["github_write_bound"]
+    assert bound["command_check"]["status"] == "not-run"
+    assert "remote" in bound["command_check"]["reason"]
+    assert bound["allowance"]["kind"] == "cloud-routine" and bound["allowance"]["posts"] == "none"
+    assert "github_write_notice" not in _request  # no notice appended, none recorded
+
+
+def test_a_cloud_request_records_the_notice_it_appended(machine):
+    notice = b"Launcher GitHub write bound: GitHub writes this run may make: ...\n"
+    code, request, _run, _output = launch(machine, Fake(), notice=notice)
+    assert code == 0 and request["github_write_notice"] == notice.decode()
 
 
 def test_978_cloud_request_record_carries_the_split(machine):

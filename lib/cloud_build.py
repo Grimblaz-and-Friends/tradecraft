@@ -25,6 +25,7 @@ import urllib.request
 
 import dispatch_record as records
 from dispatch_lifecycle import CLAUDE_DISALLOWED_TOOLS
+import github_allowance
 import launch_bound
 import preflight
 import run_lifecycle as lifecycle
@@ -904,7 +905,8 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
             prompt: bytes, context: bytes, artifact_brief: bytes, metadata: dict, composition: dict,
             settings_sources: dict, validate, transport: Transport | None = None,
             record_root: Path | None = None, plugin: Path | None = None,
-            install_path: Path | None = None, preset_failure: str | None = None) -> int:
+            install_path: Path | None = None, preset_failure: str | None = None,
+            github_write_notice: bytes = b"") -> int:
     import uuid
     from dispatch_lifecycle import GrowingRun
     import launch_bound
@@ -968,6 +970,10 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                           if context_path else None)
     request["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
     request["prompt_composition"] = composition
+    if github_write_notice:
+        # As a Codex or seat launch records the notice it appended, so the record holds what the
+        # run was told.
+        request["github_write_notice"] = github_write_notice.decode("utf-8")
     if brief_path:
         request["artifact_brief"] = {"path": str(brief_path),
                                      "source": args.artifact_brief_source or str(args.artifact_brief.resolve()),
@@ -1169,6 +1175,8 @@ def _launch(args, deadline, *, entry: dict | None, route_source: str, effective_
                    "published_output_unavailable_reason": "no completed final source return",
                    "assessment": "unassessed"},
         "route": "cloud", "launch_comparison": launch_bound.cloud_not_run(),
+        # The GitHub write bound's launch block runs on this machine, never on the remote one.
+        "github_write_bound": github_allowance.cloud_record(args.stage, getattr(args, "lineage_branch", None), branch),
     }
     if cloud.get("fire_unresolved"):
         run_record["launch_unresolved"] = True  # recovery refuses another writer until it is resolved
