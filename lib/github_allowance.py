@@ -24,6 +24,10 @@ import github_write_guard as guard
 GUARD = Path(guard.__file__).resolve()
 SCHEMA_VERSION = 1
 MATCHER = "Bash|PowerShell"
+# Each self-test process's own bound, and the most a preparation's self-test runs: the
+# shell-prefix carrier starts three, so a launcher can leave room for them before its cap ends.
+SELF_TEST_PROCESS_SECONDS = 60.0
+SELF_TEST_SECONDS = 3 * SELF_TEST_PROCESS_SECONDS
 CONNECTORS = guard.CONNECTORS
 CHILD_VARIABLE = guard.CHILD_VARIABLE
 SHELL_PREFIX = "CLAUDE_CODE_SHELL_PREFIX"
@@ -319,19 +323,21 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
         # interpreter, script and quoting the hook carries are the ones proved.
         result = subprocess.run(shlex.split(hook_entry(config_path)["hooks"][0]["command"]),
                                 input=json.dumps(payload).encode("utf-8"), capture_output=True,
-                                timeout=60, cwd=directory)
+                                timeout=SELF_TEST_PROCESS_SECONDS, cwd=directory)
         if b'"deny"' not in result.stdout:
             failures.append("hook entry: a wrapped comment was not refused")
     else:
         # The installed wrapper itself, so the file the launch runs is the file proved.
         result = subprocess.run([wrapper["bash"], wrapper["path"], harness_string(command)],
-                                capture_output=True, timeout=60, cwd=directory, env=env,
+                                capture_output=True, timeout=SELF_TEST_PROCESS_SECONDS, cwd=directory,
+                                env=env,
                                 stdin=subprocess.DEVNULL)
         if result.returncode != guard.PREFIX_REFUSED_EXIT or guard.REFUSED.encode() not in result.stderr:
             failures.append(f"prefix entry: a wrapped comment exited {result.returncode}, "
                             f"not {guard.PREFIX_REFUSED_EXIT}")
         result = subprocess.run([wrapper["bash"], wrapper["path"], harness_string("printf ok; exit 3")],
-                                capture_output=True, timeout=60, cwd=directory, env=env,
+                                capture_output=True, timeout=SELF_TEST_PROCESS_SECONDS, cwd=directory,
+                                env=env,
                                 stdin=subprocess.DEVNULL)
         if result.stdout != b"ok" or result.returncode != 3:
             failures.append(f"pass-through: expected 'ok' and exit 3, got {result.stdout!r} "

@@ -2016,6 +2016,24 @@ def test_a_use_consumer_dispatch_stating_another_allowance_is_an_unlaunched_atte
     assert attempt["permission_boundary_unavailable_reason"] == "attempt was not launched"
 
 
+def test_a_use_consumer_leaves_its_bounds_self_test_room_before_the_cap(job, tmp_path, monkeypatch):
+    import time
+    import github_allowance
+    args = _use_consumer(job, tmp_path, monkeypatch)
+    # The bound is prepared after the request write, so the last cap check counts its self-test.
+    steps = seat._steps_before_spawn(args, "claude", None)
+    assert steps >= github_allowance.SELF_TEST_SECONDS
+    # A cap that leaves room for the version read but not the self-test refuses before any bundle.
+    lifecycle = seat.lifecycle
+    short = lifecycle.PROBE_DEFAULT_SECONDS + lifecycle.SPAWN_MARGIN_SECONDS + 30
+    args.invocation_started_monotonic = time.monotonic() - (lifecycle.PREFLIGHT_CAP_SECONDS - short)
+    launched = []
+    monkeypatch.setattr(seat, "run_process", lambda *a, **k: launched.append(a))
+    with pytest.raises(seat.DispatchError, match="cap"):
+        seat.run_dispatch(args)
+    assert launched == [] and not seat.sidecar(args.output, ".request.json").exists()
+
+
 def test_a_use_consumer_is_judged_on_the_bytes_it_launches(job, tmp_path, monkeypatch):
     import github_allowance
     args = _use_consumer(job, tmp_path, monkeypatch)

@@ -543,9 +543,13 @@ def spawned_nothing(attempt, deadline, args) -> None:
 
 
 def _steps_before_spawn(args, vendor, comparison):
-    """The bounded steps an attempt still takes after the request write: its version read and before-snapshot."""
-    # The version read takes the probe's own bound, since it names none of its own.
+    """The bounded steps an attempt still takes after the request write: its version read, its
+    GitHub write bound's preparation and its before-snapshot."""
+    # The version read takes the probe's own bound, since it names none of its own. The seat that
+    # carries the bound prepares it, self-test included, only after the request write.
+    # Design: lib/DESIGN.md#the-github-write-bound
     return lifecycle.PROBE_DEFAULT_SECONDS + (
+        github_allowance.SELF_TEST_SECONDS if compared_launch(args, vendor) else 0) + (
         COMPARISON_SECONDS if comparison is not None and compared_launch(args, vendor) else 0)
 
 
