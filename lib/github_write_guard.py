@@ -19,6 +19,7 @@ a script the shell starts is not seen. Design: lib/DESIGN.md#the-github-write-bo
 from __future__ import annotations
 
 import argparse
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
@@ -28,11 +29,15 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 from holder_tree_guard import contains, denial, path_key
 from winio import utf8_stdio
 
 REFUSED = "tradecraft GitHub write bound refused"
+# The monotonic end a caller sets for the check's own reads, as a self-test bounded as a whole
+# does; a session's check sets none, and each read keeps its own bound.
+READ_END: ContextVar[float | None] = ContextVar("tradecraft_github_check_read_end", default=None)
 REQUEST_ROUTE = ("return this write to the holder as a request in a **Write requests** section "
                  "of your final message: the write, why the work needs it, and what it would leave behind")
 CHILD_VARIABLE = "TRADECRAFT_CHILD_SETTINGS"
@@ -60,6 +65,8 @@ GIT_ENDING_OPTIONS = {"--exec-path", "--html-path", "--man-path", "--info-path",
 # Each writes refs to a remote outside `git push`; a step's own push goes through git push, so
 # these are refused rather than judged.
 GIT_OTHER_PUSHES = {"send-pack", "http-push"}
+# git's own commands that can write a remote: push, the other pushes, and subtree's push.
+GIT_REMOTE_WRITERS = GIT_OTHER_PUSHES | {"push", "subtree"}
 # Configuration a push reads when it runs. Writing one is refused even with no push beside it: it
 # changes what every later push writes, in a later command, step or started session too, none of
 # which this command's judgment sees, and a step's own work never needs to change one.
@@ -157,6 +164,8 @@ class Context:
     docs: list[str] = field(default_factory=list)
     # The words of the commands piped into this one, which a shell reading stdin runs.
     piped: str = ""
+    # A variable's value is being judged in program position, which is followed only once.
+    expanding: bool = False
 
 
 @dataclass
@@ -647,6 +656,22 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
         if found:
             return found
     if first.startswith("$") and not first.lower().startswith("$env:"):
+        variable = re.fullmatch(r"\$(?:\{(\w+)\}|(\w+))", first)
+        value = (ctx.assigned.get(variable.group(1) or variable.group(2))
+                 if variable and not ctx.expanding else None)
+        if value:
+            # Assigned earlier on this command line, so the program it names is known; it is judged
+            # as that program, once, so a value naming another variable is not followed further.
+            try:
+                expanded = shlex.split(value)
+            except ValueError:
+                expanded = []
+            if expanded:
+                ctx.expanding = True
+                try:
+                    return judge_simple([*expanded, *words[1:]], ctx)
+                finally:
+                    ctx.expanding = False
         return _tripwire(" ".join(words), "a variable in program position")
     if name in ("export", "declare", "typeset", "local", "readonly"):
         for word in words[1:]:
@@ -763,10 +788,15 @@ def _resolve_dir(cwd: str | None, target: str) -> str | None:
     return os.path.normpath(os.path.join(cwd, target)) if cwd else None
 
 
+def _read_timeout(seconds: float) -> float:
+    end = READ_END.get()
+    return seconds if end is None else max(0.001, min(seconds, end - time.monotonic()))
+
+
 def _run_git(cwd: str | None, *arguments: str) -> str | None:
     try:
         result = subprocess.run(["git", *(["-C", cwd] if cwd else []), *arguments],
-                                capture_output=True, timeout=20, stdin=subprocess.DEVNULL)
+                                capture_output=True, timeout=_read_timeout(20), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode:
@@ -779,7 +809,7 @@ def _run_git(cwd: str | None, *arguments: str) -> str | None:
 def _stored_alias(cwd: str | None, name: str) -> tuple[str, str | None]:
     try:
         result = subprocess.run(["git", *(["-C", cwd] if cwd else []), "config", "--get",
-                                 f"alias.{name}"], capture_output=True, timeout=20,
+                                 f"alias.{name}"], capture_output=True, timeout=_read_timeout(20),
                                 stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return "unreadable", None
@@ -821,8 +851,15 @@ def judge_git(arguments: list[str], ctx: Context, expansions: int = 0) -> list[F
             if "=" not in flag and words:
                 words.pop(0)
         elif flag not in GIT_FLAG_OPTIONS:
-            if "push" in words:
-                return [Finding("git push", f"git push behind {stem}, an option this check cannot "
+            # The option may have taken the next word as its value, so the subcommand is either
+            # of the next two words. Neither may be a route to a remote the check reads elsewhere:
+            # a push, another push, subtree's push, or a stored alias (or one it cannot read).
+            candidates = [word for word in words[:2] if not word.startswith("-")]
+            if "push" in words or any(
+                    word in GIT_REMOTE_WRITERS
+                    or (word not in GIT_BUILTINS and _stored_alias(cwd, word)[0] != "none")
+                    for word in candidates):
+                return [Finding(f"git {stem}", f"git behind {stem}, an option this check cannot "
                                 "read, so which subcommand runs is not known")]
             return []
     if any(name.startswith(REDIRECTING_GIT_PREFIX) and "alias." in str(value).lower()
@@ -1383,7 +1420,7 @@ def thread_owner(thread: str) -> tuple[str, int] | None:
     """
     try:
         result = subprocess.run(["gh", "api", "graphql", "-f", f"query={THREAD_LOOKUP}",
-                                 "-f", f"n={thread}"], capture_output=True, timeout=30,
+                                 "-f", f"n={thread}"], capture_output=True, timeout=_read_timeout(30),
                                 stdin=subprocess.DEVNULL)
         value = json.loads(result.stdout)
         pull = value["data"]["node"]["pullRequest"]

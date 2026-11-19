@@ -1150,3 +1150,45 @@ def test_a_self_test_that_ran_and_failed_says_so(tmp_path, monkeypatch):
                                  env=dict(os.environ))
     assert "self-test failed" in str(failed.value) and "could not run" not in str(failed.value)
     assert not isinstance(failed.value, OSError)
+
+
+def test_a_self_test_is_bounded_as_a_whole(tmp_path, monkeypatch):
+    # Its own reads stop at the caller's end, as do its entry processes, so a launch reserves one bound.
+    monkeypatch.setattr(guard, "READ_END", guard.READ_END)
+    token = guard.READ_END.set(0.0)
+    try:
+        assert guard._read_timeout(20) == 0.001
+    finally:
+        guard.READ_END.reset(token)
+    assert guard._read_timeout(20) == 20
+    monkeypatch.setattr(allowance_module, "SELF_TEST_SECONDS", 0.0)
+    allowance = allowance_module.allowance_for("artifact", repository="o/r", branch=None, pull_request=None)
+    with pytest.raises(allowance_module.BoundError):
+        allowance_module.prepare(tmp_path, allowance, carrier="pretooluse-hook", root=tmp_path,
+                                 env=dict(os.environ))
+
+
+@pytest.mark.parametrize("command, expected", [
+    ("git --frobnicate send-pack https://github.com/o/r HEAD:refs/heads/main", "deny"),
+    ("git --frobnicate value send-pack https://github.com/o/r HEAD:refs/heads/main", "deny"),
+    ("git --frobnicate p origin HEAD:refs/heads/main", "deny"),
+    ("git --frobnicate value p origin HEAD:refs/heads/main", "deny"),
+    ("git --frobnicate subtree push --prefix=x origin main", "deny"),
+    ("git --frobnicate HEAD status", "allow"),
+    ("git --frobnicate log -1", "allow"),
+    ("git --no-pager log -1", "allow"),
+])
+def test_an_unread_git_option_refuses_every_route_to_a_remote_behind_it(tree, command, expected):
+    git(tree, "config", "alias.p", "push")
+    assert decision(command, tree, "branch") == expected
+
+
+@pytest.mark.parametrize("command, expected", [
+    ("X=gh; $X issue comment 1 -R o/r --body x", "deny"),
+    ("X=gh; ${X} issue comment 1 -R o/r --body x", "deny"),
+    ("X='gh issue'; $X comment 1 -R o/r --body x", "deny"),
+    ("X=echo; $X hello", "allow"),
+    ("X='$X'; $X hello", "allow"),
+])
+def test_a_variable_assigned_on_the_line_is_judged_as_the_program_it_names(tree, command, expected):
+    assert decision(command, tree, "branch") == expected

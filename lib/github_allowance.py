@@ -18,16 +18,16 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 import github_write_guard as guard
 
 GUARD = Path(guard.__file__).resolve()
 SCHEMA_VERSION = 1
 MATCHER = "Bash|PowerShell"
-# Each self-test process's own bound, and the most a preparation's self-test runs: the
-# shell-prefix carrier starts three, so a launcher can leave room for them before its cap ends.
-SELF_TEST_PROCESS_SECONDS = 60.0
-SELF_TEST_SECONDS = 3 * SELF_TEST_PROCESS_SECONDS
+# The whole self-test's bound: its in-process cases' own reads and its entry processes all stop
+# at one end, so a launcher that prepares the bound after its last cap check reserves exactly this.
+SELF_TEST_SECONDS = 120.0
 CONNECTORS = guard.CONNECTORS
 CHILD_VARIABLE = guard.CHILD_VARIABLE
 SHELL_PREFIX = "CLAUDE_CODE_SHELL_PREFIX"
@@ -69,7 +69,13 @@ def repository_of(work: str) -> str:
 
 def allowance_for(stage: str, *, repository: str, branch: str | None,
                   pull_request: int | None, grants=()) -> dict[str, object]:
-    """The step's allowance; a stage that may push gets none without its registered branch."""
+    """The step's allowance; a stage that may push gets none without its registered branch.
+
+    With no registered branch there is no ref a push could be held to, and such a launch (a
+    direct launcher call, which the entrance never makes for a pushing stage) still has local
+    work to do. Its sentence says `none` before it acts, so the narrowing is what it is told,
+    not a surprise refusal mid-turn, and any push it needs returns as a request.
+    """
     if stage in PUSH_STAGES and branch:
         kind = "branch"
     elif stage == "review-disposition" and branch:
@@ -306,14 +312,20 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
     directory.mkdir()
     failures = []
     entry_case = None
-    for index, (label, allowance, command, expected) in enumerate(_self_test_cases()):
-        config = _config(allowance, scope="self-test", root=directory,
-                         log=directory / "self-test.log.jsonl", child_settings=child_settings)
-        decided = guard.decide(command, str(directory), config)["decision"]
-        if decided != expected:
-            failures.append(f"{label}: expected {expected}, got {decided}")
-        if label == "wrapped comment":
-            entry_case = (directory / f"case-{index}.json", config, command)
+    end = time.monotonic() + SELF_TEST_SECONDS
+    left = lambda: max(0.001, end - time.monotonic())
+    token = guard.READ_END.set(end)
+    try:
+        for index, (label, allowance, command, expected) in enumerate(_self_test_cases()):
+            config = _config(allowance, scope="self-test", root=directory,
+                             log=directory / "self-test.log.jsonl", child_settings=child_settings)
+            decided = guard.decide(command, str(directory), config)["decision"]
+            if decided != expected:
+                failures.append(f"{label}: expected {expected}, got {decided}")
+            if label == "wrapped comment":
+                entry_case = (directory / f"case-{index}.json", config, command)
+    finally:
+        guard.READ_END.reset(token)
     config_path, config, command = entry_case
     _write_json(config_path, config)
     if carrier == "pretooluse-hook":
@@ -323,25 +335,25 @@ def self_test(directory: Path, root, child_settings: Path, *, carrier: str,
         # interpreter, script and quoting the hook carries are the ones proved.
         result = subprocess.run(shlex.split(hook_entry(config_path)["hooks"][0]["command"]),
                                 input=json.dumps(payload).encode("utf-8"), capture_output=True,
-                                timeout=SELF_TEST_PROCESS_SECONDS, cwd=directory)
+                                timeout=left(), cwd=directory)
         if b'"deny"' not in result.stdout:
             failures.append("hook entry: a wrapped comment was not refused")
     else:
         # The installed wrapper itself, so the file the launch runs is the file proved.
         result = subprocess.run([wrapper["bash"], wrapper["path"], harness_string(command)],
-                                capture_output=True, timeout=SELF_TEST_PROCESS_SECONDS, cwd=directory,
-                                env=env,
+                                capture_output=True, timeout=left(), cwd=directory, env=env,
                                 stdin=subprocess.DEVNULL)
         if result.returncode != guard.PREFIX_REFUSED_EXIT or guard.REFUSED.encode() not in result.stderr:
             failures.append(f"prefix entry: a wrapped comment exited {result.returncode}, "
                             f"not {guard.PREFIX_REFUSED_EXIT}")
         result = subprocess.run([wrapper["bash"], wrapper["path"], harness_string("printf ok; exit 3")],
-                                capture_output=True, timeout=SELF_TEST_PROCESS_SECONDS, cwd=directory,
-                                env=env,
+                                capture_output=True, timeout=left(), cwd=directory, env=env,
                                 stdin=subprocess.DEVNULL)
         if result.stdout != b"ok" or result.returncode != 3:
             failures.append(f"pass-through: expected 'ok' and exit 3, got {result.stdout!r} "
                             f"and exit {result.returncode}")
+    if time.monotonic() > end:
+        failures.append("it outran its own bound")
     if failures:
         raise BoundError("GitHub write check self-test failed: " + "; ".join(failures))
     return "passed"
