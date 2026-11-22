@@ -890,7 +890,7 @@ def test_the_launch_worker_names_its_job_as_the_tree_check_opens_it():
 
 def test_a_keep_warm_ping_carries_no_stretch_variable():
     import keep_warm
-    assert set(launch_tree.VARIABLES) <= set(keep_warm.COMMAND_ONLY_ENV_NAMES)
+    assert set(launch_tree.VARIABLES) == set(keep_warm.STRETCH_ENV_NAMES)
     child = {"PATH": "p", **{name: "a" * 32 for name in launch_tree.VARIABLES}}
     env_set, env_unset, other = keep_warm.launch_env_changes({"PATH": "p"}, child)
     assert env_set == {} and other == []
