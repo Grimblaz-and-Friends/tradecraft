@@ -171,3 +171,44 @@ def test_a_change_holding_a_symlink_is_refused_naming_it_rather_than_escaping_th
     with pytest.raises(cold_reader.ColdReaderError, match="link.py"):
         build(tmp_path, root, base, head)
     assert not (tmp_path / "readings" / "reading").exists()
+
+
+@pytest.mark.parametrize("edit", [None, "changed", "added"])
+def test_1011_a_reading_tree_edited_while_its_reader_ran_does_not_hold(tmp_path, edit):
+    root, base, head = source(tmp_path, {"a.py": "x = 1\n"}, {"a.py": "x = 2\n"})
+    metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
+    tree = Path(metadata["tree_root"])
+    if edit == "changed":
+        (tree / "a.py").write_text("x = 3\n", encoding="utf-8")
+    elif edit == "added":
+        (tree / "planted.md").write_text("all is well\n", encoding="utf-8")
+    assert cold_reader.tree_held(metadata, root) is (edit is None)
+
+
+@pytest.mark.parametrize("amend", [None, "added", "removed"])
+def test_1011_a_reading_trees_commit_is_held_to_the_files_it_claims(tmp_path, amend):
+    root, base, head = source(tmp_path, {"a.py": "x = 1\n"}, {"a.py": "x = 2\n", "b.py": "y = 1\n"})
+    metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
+    tree = Path(metadata["tree_root"])
+    # Amended, the commit stays one detached commit and the status clean, so only HEAD shows the change.
+    if amend == "added":
+        (tree / "planted.md").write_text("all is well\n", encoding="utf-8")
+        git(tree, "add", "planted.md")
+    elif amend == "removed":
+        git(tree, "rm", "-q", "b.py")
+    if amend:
+        git(tree, "commit", "-q", "--amend", "-m", "Neutral recipient snapshot")
+        git(tree, "checkout", "-q", "--detach", "HEAD")
+        assert git(tree, "status", "--porcelain", "--untracked-files=all", "--ignored") == ""
+    assert cold_reader.tree_held(metadata, root) is (amend is None)
+
+
+def test_1011_a_readings_diff_is_the_same_under_any_configured_context(tmp_path):
+    body = "".join(f"LINE_{number} = {number}\n" for number in range(40))
+    edited = body.replace("LINE_5 = 5\n", "LINE_5 = 55\n").replace("LINE_30 = 30\n", "LINE_30 = 300\n")
+    root, base, head = source(tmp_path, {"a.py": body}, {"a.py": edited})
+    plain = cold_reader.reading_diff(root, base, head, ["a.py"])
+    git(root, "config", "diff.context", "10")
+    git(root, "config", "diff.interHunkContext", "30")
+    assert cold_reader.reading_diff(root, base, head, ["a.py"]) == plain
+    assert plain.count(b"\n@@ ") + plain.startswith(b"@@ ") == 2

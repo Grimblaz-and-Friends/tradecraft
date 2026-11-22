@@ -18,6 +18,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from winio import utf8_stdio
 from posix_tree import Descendants
+import launch_tree
 import preflight
 
 # Tests turn this off to show what an uncontained read leaves behind; production never does.
@@ -107,12 +108,25 @@ def _job_api():
     return _JOB_API
 
 
-def _kill_on_close_job(api):
-    """A new job whose handle no child inherits; closing it stops everything inside."""
+# The worker names a stretch launch's job from launch_tree's variable, then drops it, so the
+# launch tree check can open the job by the same name. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+STRETCH_JOB_VARIABLE = launch_tree.JOB_VARIABLE
+ERROR_ALREADY_EXISTS = 183
+
+
+def _kill_on_close_job(api, name=None):
+    """A new job whose handle no child inherits; closing it stops everything inside.
+
+    A named job that already exists is refused: the name must identify one launch's tree.
+    """
     ctypes = api.ctypes
-    handle = api.kernel.CreateJobObjectW(None, None)
+    ctypes.set_last_error(0)
+    handle = api.kernel.CreateJobObjectW(None, name)
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
+    if name is not None and ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+        api.kernel.CloseHandle(handle)
+        raise OSError(f"a job named {name} already exists")
     limits = api.ExtendedLimits()
     limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; no breakaway.
     if not api.kernel.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
@@ -122,10 +136,10 @@ def _kill_on_close_job(api):
     return handle
 
 
-def _join_kill_on_close_job():
+def _join_kill_on_close_job(name=None):
     """Join a worker-owned Windows job before starting any vendor process."""
     api = _job_api()
-    handle = _kill_on_close_job(api)
+    handle = _kill_on_close_job(api, name)
     if not api.kernel.AssignProcessToJobObject(handle, api.kernel.GetCurrentProcess()):
         raise api.ctypes.WinError(api.ctypes.get_last_error())
     # This worker owns the sole non-inherited handle. Its exit (including a
@@ -134,7 +148,11 @@ def _join_kill_on_close_job():
 
 
 def _worker(command, launched):
-    _join_kill_on_close_job()
+    stretch = os.environ.pop(STRETCH_JOB_VARIABLE, None)
+    if stretch:
+        _join_kill_on_close_job(launch_tree.job_name(stretch))
+    else:
+        _join_kill_on_close_job()
     child = subprocess.Popen(command, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
     try:
         staged = launched.with_suffix(".tmp")
@@ -319,16 +337,21 @@ class DuplexInput:
 
 
 def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
-                on_launch=None, env=None, cleanup_deadline=None):
+                on_launch=None, env=None, cleanup_deadline=None, on_window=None):
     """Drain both pipes while input is supplied independently of the deadline.
 
     Callbacks run serially on the calling thread. A blocked stdin or silent
     descendant therefore cannot prevent capture or elapsed checkpoints.
+    `on_window`, when given, is asked as `run_inherited_process`'s `on_tick` is, and moves
+    the wait and cleanup ends the same way, so a captured launch follows its window too.
     """
     if (not isinstance(input, DuplexInput) and on_output is None and on_tick is None
-            and on_launch is None and cleanup_deadline is None):
+            and on_launch is None and cleanup_deadline is None and on_window is None):
         return _buffered_process(command, input=input, cwd=cwd, timeout=timeout, env=env)
     deadline = time.monotonic() + timeout
+    if os.name != "nt" and env is not None and STRETCH_JOB_VARIABLE in env:
+        # Only the Windows worker reads it; a POSIX launch's tree is held by its subreaper.
+        env = {name: value for name, value in env.items() if name != STRETCH_JOB_VARIABLE}
     with tempfile.TemporaryDirectory(prefix="tradecraft-launch-") as temporary:
         failure = Path(temporary) / "launch-error.json"
         launched = failure.with_suffix(".started")
@@ -384,6 +407,7 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
         stopped = False
         notified = False
         drain_deadline = None
+        next_window = time.monotonic() + _INHERITED_TICK_SECONDS
 
         def drain_end(current):
             end = current + 0.25
@@ -444,6 +468,13 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 current = time.monotonic()
                 if stopped and descendants is not None:
                     descendants.kill()
+                if on_window and not stopped and (current >= deadline or current >= next_window):
+                    # Read before the old end stops the launch, so a window moved at its last moment holds.
+                    next_window = current + _INHERITED_TICK_SECONDS
+                    moved = notify(on_window)
+                    if moved is not None:
+                        deadline, cleanup_deadline = moved
+                    current = time.monotonic()
                 if current >= deadline and not stopped:
                     stopped = True
                     stop_tree()

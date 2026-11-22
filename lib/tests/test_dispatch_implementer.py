@@ -1,4 +1,6 @@
+from argparse import Namespace
 import json
+import re
 import base64
 import hashlib
 import math
@@ -2586,3 +2588,322 @@ def test_978_launcher_refusal_split_before_the_request_record(job, capsys):
     assert refusal["preflight"]["total_seconds"] >= 2.0
     assert refusal["preflight"]["parts"]["github_seconds"] == 2.0
     assert not implementer.records.sidecar(args.output, ".request.json").exists()
+
+
+# --- the stretch stage ------------------------------------------------------------------------
+
+STRETCH_SESSION = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+
+
+def stretch_job(job, monkeypatch, payload):
+    args, scenario = job
+    args.vendor, args.stage, args.work = "claude", "stretch", "o/r#5"
+    args.holder_session_id, args.lineage_branch = "11111111-2222-4333-8444-555555555555", "tradecraft/5-ab"
+    subprocess.run(["git", "init", "-q", "-b", args.lineage_branch, str(args.root)], check=True,
+                   capture_output=True, stdin=subprocess.DEVNULL)
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    monkeypatch.setattr(implementer, "new_session_id", lambda: STRETCH_SESSION)
+    monkeypatch.setattr(implementer.cloud_build, "launch_route", lambda *_a: None)
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps(payload)}}).encode())
+    return args
+
+
+DENIED_SUCCESS = {"type": "result", "subtype": "success", "is_error": False,
+                  "session_id": STRETCH_SESSION, "result": "Ready, after one refused call.",
+                  "permission_denials": [{"tool_name": "Write", "reason": "denied"}]}
+
+
+def test_a_stretch_turn_that_recovered_from_a_denial_stands_and_lists_it(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    assert implementer.run_implementer(args) == 0
+    logged = record(args)
+    assert logged["outcome"] == "success"
+    assert implementer.records.sidecar(args.output, ".source.bin").read_bytes() == b"Ready, after one refused call."
+    assert [entry["source"] for entry in logged["refusals"]] == ["permission-denial"]
+    assert logged["refusals"][0]["denial"] == {"tool_name": "Write", "reason": "denied"}
+
+
+def test_the_same_denial_still_fails_a_build(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    args.stage, args.work = "build", "issue-592"
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "error" and "refusals" not in logged
+    assert not args.output.exists()
+
+
+def test_stretch_refusals_gather_every_source_in_order(tmp_path):
+    attempt = {"permission_denials": [{"tool_name": "Bash"}]}
+    record_value = {"github_write_refusals": [{"tool": "Bash", "command": "gh issue comment 6",
+                                               "reason": "refused", "at": "t"}],
+                    "write_guard": {"refusals": [{"tool": "Write", "raw": "x", "canonical": "C:/x",
+                                                  "reason": "outside"}], "unguarded": []}}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt, Namespace(stretch_guard_log=log))
+    # With no stream to place them, each stays its own entry, the bounds' reports first.
+    assert [entry["sources"] for entry in record_value["refusals"]] == [
+        ["github-write-bound"], ["file-write-guard"], ["permission-denial"]]
+    assert "refusals_unknown" not in record_value
+
+
+@pytest.mark.parametrize("damage", ["github", "guard"])
+def test_an_unreadable_refusal_log_keeps_the_stretch_run_and_says_so(tmp_path, damage):
+    record_value = {"github_write_refusals": [], "write_guard": {"refusals": [], "unguarded": []}}
+    if damage == "github":
+        record_value["github_write_refusals_unknown"] = "1 line(s) of the refusal log could not be read"
+    log = tmp_path / ("missing.jsonl" if damage == "guard" else "guard.jsonl")
+    if damage == "github":
+        log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, {}, Namespace(stretch_guard_log=log))
+    assert record_value["refusals_unknown"] is True
+
+
+def test_a_stretch_recipient_is_named_and_a_build_is_not(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, {**DENIED_SUCCESS, "permission_denials": []})
+    assert implementer.run_implementer(args) == 0
+    seen_stretch = json.loads((args.root / "seen-claude.json").read_bytes())["stretch_variables"]
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert seen_stretch == {"TRADECRAFT_STRETCH_DISPATCH": request["dispatch_id"],
+                            "TRADECRAFT_STRETCH_WORK": "o/r#5"}
+    pointer = json.loads((Path.home() / ".tradecraft" / "dispatches" / "stretch-launches"
+                          / f"{request['dispatch_id']}.json").read_bytes())
+    assert pointer["work"] == "o/r#5" and pointer["session_id"] == STRETCH_SESSION
+    build = stretch_job(job, monkeypatch, {**DENIED_SUCCESS, "permission_denials": []})
+    build.stage, build.work = "build", "issue-592"
+    build.output = build.output.with_name("build.md")
+    assert implementer.run_implementer(build) == 0
+    assert json.loads((build.root / "seen-claude.json").read_bytes())["stretch_variables"] == {}
+
+
+@pytest.mark.parametrize("change, reason", [
+    ({"vendor": "codex"}, "started by hand"),
+    ({"holder_session_id": None}, "--holder-session-id"),
+    ({"lineage_branch": None}, "--lineage-branch"),
+    ({"work": "issue-592"}, "owner/name#n"),
+])
+def test_a_stretch_launch_that_cannot_run_refuses_before_any_bundle(job, monkeypatch, change, reason):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    for name, value in change.items():
+        setattr(args, name, value)
+    with pytest.raises(implementer.ImplementerError, match=re.escape(reason)):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+def test_a_stretch_launch_for_a_cloud_repository_refuses_before_any_bundle(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    monkeypatch.setattr(implementer.cloud_build, "launch_route",
+                        lambda stage, resume, work: ({"routine": "x"}, "record", None))
+    with pytest.raises(implementer.ImplementerError, match="cloud builds keep the relay route"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+@pytest.mark.parametrize("state, variable", [("held", None), ("none", "a" * 32)])
+def test_a_builder_launches_no_implementer(job, monkeypatch, state, variable):
+    args, _ = job
+    monkeypatch.setattr(implementer.launch_tree, "stretch_holding",
+                        lambda store: implementer.launch_tree.Holding(state, {"dispatch_id": "a" * 32}))
+    if variable:
+        monkeypatch.setenv("TRADECRAFT_STRETCH_DISPATCH", variable)
+    with pytest.raises(implementer.ImplementerError, match="a builder launches no implementer"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+def refused_stream(outside, *, unguarded=False):
+    """A stretch turn refused a GitHub write, then a file write, then a tool, and finished anyway.
+
+    The call writes its path with forward slashes, as a session does; the guard logs the resolved one.
+    """
+    written = outside.replace("\\", "/")
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "gh issue comment 6 --body x"}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": True}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_2", "name": "Write", "input": {"file_path": written}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_2", "is_error": not unguarded}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_3", "name": "WebFetch", "input": {"url": "https://example.com"}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_3", "is_error": True}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": STRETCH_SESSION,
+         "result": "Ready, after three refusals.",
+         "permission_denials": [{"tool_name": "Bash", "tool_use_id": "toolu_1"},
+                                {"tool_name": "Write", "tool_use_id": "toolu_2"},
+                                {"tool_name": "WebFetch", "tool_use_id": "toolu_3"}]},
+    ]
+    return "\n".join(json.dumps(event) for event in events)
+
+
+@pytest.mark.parametrize("stage", ["stretch", "build"])
+def test_1011_three_refused_calls_are_three_entries_in_stream_order(job, tmp_path, monkeypatch, stage):
+    args = stretch_job(job, monkeypatch, {})
+    outside = str(tmp_path / "home" / ".claude" / "settings.json")
+    if stage == "build":
+        args.stage, args.work = "build", "issue-592"
+    args.scenario = job[1]
+    job[1].write_bytes(json.dumps({"claude": {
+        "stdout": refused_stream(outside),
+        "guard_decisions": [{"tool": "Write", "raw": outside, "canonical": outside,
+                             "decision": "deny", "reason": "launch write bound: outside"}],
+        "github_decisions": [{"tool": "Bash", "command": "gh issue comment 6 --body x", "decision": "deny",
+                              "reason": "a comment on o/r#6"}]}}).encode())
+    code = implementer.run_implementer(args)
+    logged = record(args)
+    if stage == "build":
+        assert code == 1 and logged["outcome"] == "error" and not args.output.exists()
+        return
+    assert code == 0 and logged["outcome"] == "success"
+    assert implementer.records.sidecar(args.output, ".source.bin").read_bytes() == b"Ready, after three refusals."
+    assert [entry["sources"] for entry in logged["refusals"]] == [
+        ["github-write-bound", "permission-denial"], ["file-write-guard", "permission-denial"],
+        ["permission-denial"]]
+
+
+def test_1011_an_unguarded_completed_call_still_fails_a_stretch(job, tmp_path, monkeypatch):
+    args = stretch_job(job, monkeypatch, {})
+    outside = str(tmp_path / "home" / ".claude" / "settings.json")
+    job[1].write_bytes(json.dumps({"claude": {"stdout": refused_stream(outside, unguarded=True),
+                                              "guard_decisions": []}}).encode())
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert "write bound unproved: Write" in logged["attempts"][0]["reason"]
+
+
+def test_1011_one_command_refused_twice_is_two_entries(tmp_path):
+    command = "gh issue comment 6 --body x"
+    stream = "\n".join(json.dumps(event) for event in [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": f"toolu_{n}", "name": "Bash", "input": {"command": command}}]}}
+        for n in (1, 2)])
+    refusal = {"tool": "Bash", "command": command, "reason": "a comment on o/r#6", "at": "t"}
+    record_value = {"github_write_refusals": [refusal, dict(refusal)],
+                    "write_guard": {"refusals": [], "unguarded": []}}
+    attempt = {"permission_denials": [{"tool_name": "Bash", "tool_use_id": "toolu_1"},
+                                      {"tool_name": "Bash", "tool_use_id": "toolu_2"}]}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt,
+                                  Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
+    assert [entry["sources"] for entry in record_value["refusals"]] == [
+        ["github-write-bound", "permission-denial"], ["github-write-bound", "permission-denial"]]
+
+
+def test_1011_a_refusal_placed_by_its_text_goes_to_the_denied_call(tmp_path):
+    path = "D:/outside/notes.txt"
+    stream = "\n".join(json.dumps(event) for event in [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": f"cat {path}"}}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_2", "name": "Write",
+             "input": {"file_path": path, "content": "x"}}]}}])
+    record_value = {"github_write_refusals": [], "write_guard": {"refusals": [
+        {"tool": "Write", "raw": path, "canonical": "D:\\outside\\notes.txt", "reason": "outside"}],
+        "unguarded": []}}
+    attempt = {"permission_denials": [{"tool_name": "Write", "tool_use_id": "toolu_2"}]}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt,
+                                  Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
+    [entry] = record_value["refusals"]
+    assert entry["sources"] == ["file-write-guard", "permission-denial"]
+    assert entry["denial"]["tool_use_id"] == "toolu_2"
+
+
+def _placed(tmp_path, calls, guard, denied):
+    stream = "\n".join(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": f"toolu_{n}", "name": name, "input": value}]}})
+        for n, (name, value) in enumerate(calls, 1))
+    record_value = {"github_write_refusals": [], "write_guard": {"refusals": guard, "unguarded": []}}
+    attempt = {"permission_denials": [{"tool_name": "Write", "tool_use_id": f"toolu_{n}"} for n in denied]}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt,
+                                  Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
+    return [(entry["sources"], (entry.get("denial") or {}).get("tool_use_id"))
+            for entry in record_value["refusals"]]
+
+
+def test_1011_a_refusal_placed_by_its_text_prefers_the_call_it_names_exactly(tmp_path):
+    calls = [("Write", {"file_path": "D:/w/a.py", "content": "x"}),
+             ("Write", {"file_path": "D:/w/a.py.bak", "content": "x"})]
+    guard = [{"tool": "Write", "raw": "D:/w/a.py", "canonical": "D:\\w\\a.py", "reason": "outside"}]
+    # Claude denied only the second call; the guard's refusal is the first call's, so two entries.
+    assert _placed(tmp_path, calls, guard, [2]) == [(["file-write-guard"], None),
+                                                    (["permission-denial"], "toolu_2")]
+
+
+def test_1011_a_refusal_whose_text_ties_two_different_calls_stays_unplaced(tmp_path):
+    calls = [("Bash", {"command": "cat D:/w/a.py one"}), ("Bash", {"command": "cat D:/w/a.py two"})]
+    guard = [{"tool": "Bash", "raw": "D:/w/a.py", "canonical": "D:\\w\\a.py", "reason": "outside"}]
+    assert _placed(tmp_path, calls, guard, []) == [(["file-write-guard"], None)]
+
+
+def test_1011_a_stretch_launch_refuses_a_branch_its_root_has_not_checked_out(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    args.lineage_branch = "tradecraft/6-other"
+    with pytest.raises(implementer.ImplementerError, match="is not the branch checked out"):
+        implementer.run_implementer(args)
+    assert not implementer.records.sidecar(args.output, ".request.json").exists()
+
+
+def test_1011_a_stretch_launch_is_told_its_refusals_are_recorded_and_others_keep_their_text():
+    from dispatch_lifecycle import claude_write_bound_notice
+    other = claude_write_bound_notice("R", "S").decode()
+    stretch = claude_write_bound_notice("R", "S", stretch=True).decode()
+    assert "a write anywhere else is refused, names the path and fails this turn." in other
+    assert "the refusal is recorded and the turn goes on" in stretch and "fails this turn" in stretch
+    assert "completed with no guard decision" in stretch
+    assert other.replace("a write anywhere else is refused, names the path and fails this turn",
+                         __import__("dispatch_lifecycle").STRETCH_REFUSAL) == stretch
+    assert "a refused call fails this turn" in implementer.LAUNCH_HELPER_RULE
+    assert "a refused call fails this turn" not in implementer.STRETCH_HELPER_RULE
+    assert "in this stretch launch the turn goes on" in implementer.STRETCH_HELPER_RULE
+
+
+@pytest.mark.parametrize("registered, refused", [
+    ({"repository": "o/r", "issue": 6, "branch": "tradecraft/5-ab"}, True),
+    ({"repository": "o/r", "issue": 5, "branch": "tradecraft/5-other"}, True),
+    ({"repository": "o/elsewhere", "issue": 5, "branch": "tradecraft/5-ab"}, True),
+    ({"repository": "O/R", "issue": 5, "branch": "tradecraft/5-ab"}, False),
+])
+def test_1011_a_registered_root_launches_a_stretch_only_for_its_own_work(job, monkeypatch, registered, refused):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    registry = implementer.launch_bound.registry_path(Path.home())
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(json.dumps({"schema_version": 1, "worktrees": [
+        {"root": str(args.root), "active": True, **registered}]}), encoding="utf-8")
+    if refused:
+        with pytest.raises(implementer.ImplementerError, match="is registered to"):
+            implementer.run_implementer(args)
+        assert not implementer.records.sidecar(args.output, ".request.json").exists()
+    else:
+        implementer._require_own_registration(Path(args.root).resolve(), args.work, args.lineage_branch)
+
+
+def test_1011_one_command_refused_twice_with_different_descriptions_is_two_placed_entries(tmp_path):
+    command = "gh issue comment 1 --repo o/elsewhere --body x"
+    stream = "\n".join(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": f"toolu_{n}", "name": "Bash",
+         "input": {"command": command, "description": description}}]}})
+        for n, description in ((1, "Comment on another repository"), (2, "Allowed read"),
+                               (3, "Try the comment again")))
+    stream = stream.replace('"command": "gh issue comment 1 --repo o/elsewhere --body x", '
+                            '"description": "Allowed read"', '"command": "git status", "description": "Allowed read"')
+    refusal = {"tool": "Bash", "command": command, "reason": "a comment on o/elsewhere#1", "at": "t"}
+    record_value = {"github_write_refusals": [refusal, dict(refusal)],
+                    "write_guard": {"refusals": [], "unguarded": []}}
+    attempt = {"permission_denials": [{"tool_name": "Bash", "tool_use_id": "toolu_1"},
+                                      {"tool_name": "Bash", "tool_use_id": "toolu_3"}]}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt,
+                                  Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
+    assert [(entry["sources"], entry["denial"]["tool_use_id"]) for entry in record_value["refusals"]] == [
+        (["github-write-bound", "permission-denial"], "toolu_1"),
+        (["github-write-bound", "permission-denial"], "toolu_3")]

@@ -56,6 +56,7 @@ from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
 import github_allowance
 import launch_bound
+import launch_tree
 import run_lifecycle as lifecycle
 import work_recovery
 import cloud_build
@@ -77,6 +78,7 @@ import holder_transcript
 import keep_warm
 import preflight
 from winio import utf8_stdio
+import seat_process
 from seat_process import run_inherited_process, run_read
 
 
@@ -93,7 +95,11 @@ def _run_probe(command, **kwargs):
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
     "review-disposition", "proof", "ready-reviewers", "release-report", "catch-up", "cold-reader",
+    "acceptance-criterion",
 )
+# A stage whose sentence `allowance` prints though the entrance launches no such stage: the holder
+# writes a stretch builder's dispatch, and the sentence it carries must be the launch's own.
+ALLOWANCE_ONLY_STAGES = ("stretch",)
 DIRECT_COMMANDS = ("release", "adopt", "run", "tree", "allowance")
 CLI_COMMANDS = DIRECT_COMMANDS
 USE_HOLDER_DETAIL = (
@@ -233,6 +239,7 @@ STAGE_SAFETY = {
     ),
     "catch-up": (("0.173.0", "holder-owned checked catch-up"),),
     "cold-reader": ((COLD_READER_VERSION, "isolated cold reading of the change"),),
+    "acceptance-criterion": (("0.218.0", "a criterion reader composed from the settled artifact"),),
 }
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "affirmed-brief": {"required": set(), "optional": set(),
@@ -3756,6 +3763,13 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
         payload = {**payload, "implementer_environments": _implementer_environments(state),
                    "launch_findings": _evaluate_launch_findings(state),
                    "github_write_bound": _github_write_report(state)}
+        try:
+            checks = builder_checks(state)
+        except Exception as exc:
+            # The accounting informs the report and gates nothing, so its failure never costs the report.
+            checks = {"unknown": f"{type(exc).__name__}: {exc}"}
+        if checks is not None:
+            payload = {**payload, "builder_checks": checks}
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
@@ -4127,7 +4141,7 @@ def _reach_refusal(state: WorkState, stage: str) -> Decision | None:
 LAUNCH_ACCOUNT_PARTIES = frozenset({"owner", "plugin-update", "session", "builder-damage",
                                     "none-found", "cloud-check"})
 LAUNCH_ACCOUNT_FIELDS = frozenset({"id", "party", "basis", "session", "owner_report", "practice_issue"})
-LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposition", "use"})
+LAUNCH_FINDING_STAGES = frozenset({"artifact", "build", "floor", "review-disposition", "use", "stretch"})
 # `cloud-not-run`: a cloud builder cannot reach this machine, so it has nothing to compare.
 LAUNCH_CLEAR_STATUSES = frozenset({"clean", "not-launched", "cloud-not-run"})
 
@@ -5655,7 +5669,13 @@ def _held_by_cold_reading(state: WorkState, stage: str) -> bool:
 
 
 def _cold_reading_builder_vendor(state: WorkState, sha: str) -> tuple[str, str]:
-    """The builder's vendor from its bundle, else from the latest lawful `builder-session` marker."""
+    """The builder's vendor from its bundle, else from the latest lawful `builder-session` marker.
+
+    A stretch builder's is its own launch's, so a reading runs in a change's first launch.
+    """
+    builder = builder_mode()
+    if builder is not None:
+        return _holding_launch_vendor(builder)
     try:
         return _producer_vendor(state, RESUME_SOURCE_STAGES["build"], revision=sha,
                                 source_root=state.holder_root)
@@ -5717,7 +5737,8 @@ def _cold_reading_measures(state: WorkState) -> dict[str, object]:
 
 def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path: Path | None,
                          tree_metadata: Path | None, timeout_seconds: float | None,
-                         claude_path: Path | None, codex_path: Path | None) -> int:
+                         claude_path: Path | None, codex_path: Path | None,
+                         transport: GitHubREST | None = None) -> int:
     # The holder holds the brief, so a dispatch it wrote could aim the reader.
     if dispatch_path is not None or tree_metadata is not None:
         raise WorkError("run cold-reader composes its own prompt and tree; it accepts no "
@@ -5815,18 +5836,36 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         *_seat_launch_arguments(state, "cold-reader", "cold", claude_path=claude_path,
                                 codex_path=codex_path, plan=launch_plan),
     ]
+    builder = builder_mode()
+    if builder is not None:
+        # A builder's reading is framed and posted from this run. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+        command.extend(("--return-frame", "--launched-by-dispatch", builder["dispatch_id"],
+                        "--launched-by-session", str(builder.get("session_id")), "--dispatch-origin", "entrance"))
     setting_resolution.print_plan(launch_plan, label="work")
-    code = _invoke_recipient(command, deadline)
-    try:
-        returned = output.read_text("utf-8")
-    except OSError:
-        returned = None
+    captured = bytearray()
+    code = _invoke_recipient(command, deadline,
+                             **({"runner": _framed_recipient_run(captured)} if builder is not None else {}))
+    frame = dispatch_seat.read_return_frame(bytes(captured)) if builder is not None else None
+    if builder is not None:
+        returned = frame["return"].decode("utf-8", "replace") if frame and frame.get("return") else None
+        held = cold_reader.tree_held(metadata, state.holder_root)
+        posted = _post_check_report(transport or GitHubREST(), state, check_report_body(
+            stage="cold-reader", frame=frame, head=sha, tree="held" if held else "changed", criterion=None))
+        if posted["status"] in REPORT_NOT_COUNTED:
+            # A reading whose report never landed counts for nothing, so its run says so, as a composed check's does.
+            code = code or 1
+    else:
+        try:
+            returned = output.read_text("utf-8")
+        except OSError:
+            returned = None
     errors = (["the seat returned no account"] if returned is None
               else cold_reader.form_errors(returned, cold_reader.flaggable(metadata)))
     _emit_report({
         "schema_version": 1, "work": work, "stage": "cold-reader", "bundle": str(output),
         "head": sha, "covered": covered, "whole": metadata["whole"], "residue": metadata["residue"],
         "form": "fail" if errors else "pass", "form_errors": errors,
+        **({"check_report": posted} if builder is not None else {}),
     }, state)
     return code or (1 if errors else 0)
 
@@ -9631,7 +9670,7 @@ def _note_launched_split(command, store, launched_after):
         opened.memo[_LAUNCHED_SPLIT] = split
 
 
-def _invoke_recipient(command, deadline):
+def _invoke_recipient(command, deadline, runner=None):
     deadline.remaining()
     preparation, store = _PREPARATION.get() or (None, None)
     if preparation is not None:
@@ -9655,7 +9694,7 @@ def _invoke_recipient(command, deadline):
             command.extend(("--launch-notice", str(notice)))
         launched_after = datetime.now(timezone.utc).isoformat()
         try:
-            return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
+            return (runner or _recipient_run)(command, timeout=max(0, wait_end - time.monotonic()),
                                   cleanup_deadline=deadline.end - deadline.reserve / 8,
                                   on_tick=_window_follower(notice, deadline)).returncode
         except subprocess.TimeoutExpired:
@@ -9826,7 +9865,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
     if decision.stage == "cold-reader":
         return _execute_cold_reader(state, decision, dispatch_path=dispatch_path,
                                     tree_metadata=tree_metadata, timeout_seconds=timeout_seconds,
-                                    claude_path=claude_path, codex_path=codex_path)
+                                    claude_path=claude_path, codex_path=codex_path, transport=transport)
     if decision.stage in {"floor", "use", "review-disposition", "proof", "ready-reviewers"}:
         sync = _synchronization_decision(state)
         if sync is not None:
@@ -10655,7 +10694,7 @@ def parser() -> argparse.ArgumentParser:
             "release and adopt manage a registration without dispatching"
         ),
     )
-    cli.add_argument("stage", nargs="?", choices=COMMANDS,
+    cli.add_argument("stage", nargs="?", choices=COMMANDS + ALLOWANCE_ONLY_STAGES,
                      help="the single stage required after the run command")
     cli.add_argument("--repo", required=True)
     cli.add_argument("--issue", required=True, type=int)
@@ -10678,6 +10717,9 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--floor-command", help="exact repository command for a composed run floor dispatch")
     cli.add_argument("--tree-metadata", type=Path,
                      help="the record path tree printed; required by run use")
+    cli.add_argument("--job-from-artifact", action="store_true",
+                     help="run use in builder mode: the job is the settled artifact's Use session job")
+    cli.add_argument("--criterion", help="run acceptance-criterion: the settled artifact's criterion id")
     cli.add_argument(
         "--timeout-seconds", type=float,
         help="the time the recipient gets, from its start (default 7200 for build, 3600 otherwise)",
@@ -10849,9 +10891,13 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState,
     issue, as the launcher will, and refuses a tree or pull request other than those: the
     launcher refuses a dispatch stating any other allowance. Design: lib/DESIGN.md#the-github-write-bound
     """
-    if args.stage not in GITHUB_BOUND_STAGES | {"use"}:
-        raise WorkError("allowance requires an implementer stage or use: "
-                        + ", ".join(sorted(GITHUB_BOUND_STAGES | {"use"})))
+    if args.stage not in GITHUB_BOUND_STAGES | {"use", "stretch"}:
+        raise WorkError("allowance requires an implementer stage, use or stretch: "
+                        + ", ".join(sorted(GITHUB_BOUND_STAGES | {"use", "stretch"})))
+    if args.stage == "stretch" and getattr(args, "cloud", False):
+        raise WorkError("allowance stretch --cloud: cloud builds keep the relay route")
+    if args.stage == "stretch" and (grants or getattr(args, "grant", None)):
+        raise WorkError("allowance stretch: a stretch builder's writes are its own change's, and take no grant")
     if getattr(args, "cloud", False):
         # A cloud launch is told its route's sentence, which carries no grant and no branch of
         # this tree; the launcher refuses a grant on that route.
@@ -10885,7 +10931,8 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState,
                         f"request ({number}), which the launch holds")
     pull_request = number
     allowance = github_allowance.allowance_for(
-        args.stage, repository=args.repo, branch=branch, pull_request=pull_request, grants=grants)
+        args.stage, repository=args.repo, branch=branch, pull_request=pull_request, grants=grants,
+        issue=args.issue)
     print(github_allowance.sentence(allowance))
     return 0
 
@@ -10903,9 +10950,722 @@ def _refuse_tree_path_naming(output: Path, numbers: list[int]) -> None:
                 )
 
 
+# --- builder mode: the entrance run from inside a stretch launch's process tree ------------
+# Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+
+# The checks a builder runs as its tools, and the writes to its own change; every other stage is the
+# holder's. The read-only decision is open to anyone.
+BUILDER_STAGES = frozenset({"cold-reader", "use", "acceptance-criterion", "proof", "ready-reviewers",
+                            "catch-up"})
+_BUILDER: ContextVar[dict | None] = ContextVar("tradecraft_builder_mode", default=None)
+
+
+class BuilderRefused(WorkError):
+    """Builder mode refused this run before any other read or write."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+
+
+def builder_mode() -> dict | None:
+    """This run's builder: the holding launch's dispatch and session and how its identity stands."""
+    return _BUILDER.get()
+
+
+def _builder_identity(args: argparse.Namespace) -> dict | None:
+    """The stretch launch whose tree holds this process, checked against the variable, the work and the session.
+
+    The tree, not the variable, decides whether a run is a builder's. With the variable unset, a
+    check that could not be made leaves the run in holder mode, and its report names the bundle;
+    with it set, the run refuses. An empty session variable is an absent one.
+    """
+    holding = launch_tree.stretch_holding(records.default_record_root())
+    variable = os.environ.get(launch_tree.DISPATCH_VARIABLE)
+    if holding.state == "unknown":
+        if variable:
+            raise BuilderRefused("launch-tree-unknown", f"the tree check of the stretch launch whose "
+                                 f"request is {holding.launch.get('request')} could not be made: {holding.reason}")
+        args.stretch_tree_check = holding.record()
+        print("work: stretch tree check " + json.dumps(args.stretch_tree_check, ensure_ascii=True), flush=True)
+        return None
+    if holding.state == "none":
+        if variable:
+            raise BuilderRefused("builder-identity-unproved", f"{launch_tree.DISPATCH_VARIABLE} names "
+                                 f"{variable}, but no live stretch launch's tree holds this process")
+        return None
+    launch = holding.launch
+    if variable and variable != launch["dispatch_id"]:
+        raise BuilderRefused("builder-identity-unproved", f"{launch_tree.DISPATCH_VARIABLE} names {variable}, "
+                             f"but the launch whose tree holds this process is {launch['dispatch_id']}")
+    work = f"{args.repo}#{args.issue}"
+    if str(launch.get("work", "")).lower() != work.lower():
+        raise BuilderRefused("builder-identity-unproved", f"the launch holding this process carries "
+                             f"{launch.get('work')}, not {work}")
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
+    if session and session != launch.get("session_id"):
+        raise BuilderRefused("builder-identity-unproved", f"this session {session} is not the launch's "
+                             f"session {launch.get('session_id')}")
+    return {"role": "builder", "dispatch_id": launch["dispatch_id"], "session_id": launch.get("session_id"),
+            "identity": "proved" if session else "declared", "root": launch.get("root"),
+            "request": launch.get("request"), "work": launch.get("work")}
+
+
+def _builder_stage(args: argparse.Namespace) -> None:
+    """Refuse every command a builder may not run, before it reads or writes anything."""
+    named = args.stage if args.command in ("run", "allowance") else args.command
+    if getattr(args, "grant", None):
+        raise BuilderRefused("stage-not-the-builders", "a builder uses no write grant")
+    if args.command is None or (args.command == "allowance" and not args.grant):
+        return
+    if args.command == "run" and args.stage in BUILDER_STAGES:
+        return
+    raise BuilderRefused("stage-not-the-builders", f"{named or args.command} is the holder's; a builder runs "
+                         f"only {', '.join(sorted(BUILDER_STAGES))} and the read-only decision")
+
+
+def _builder_root(args: argparse.Namespace, builder: dict) -> None:
+    """--root must be the holder checkout under which the launch's implementation root is registered.
+
+    The run then selects that registration, so a check never resolves another instalment's root.
+    """
+    root = args.root.expanduser().resolve()
+    target = os.path.normcase(str(Path(builder["root"]).resolve())) if builder.get("root") else None
+    for row in read_registry()["worktrees"]:
+        if target and os.path.normcase(str(Path(row.get("root", "")).resolve())) == target:
+            if os.path.normcase(str(Path(row.get("holder_root", "")).resolve())) == os.path.normcase(str(root)):
+                named = getattr(args, "instalment", None)
+                if named is not None and named != row.get("instalment"):
+                    raise BuilderRefused("builder-root-mismatch", f"--instalment {named} names another "
+                                         f"registration than the launch's ({row.get('instalment')})")
+                args.instalment = row.get("instalment")
+                return
+            raise BuilderRefused("builder-root-mismatch", f"--root {root} is not the holder checkout "
+                                 f"{row.get('holder_root')} of the launch's implementation root")
+    raise BuilderRefused("builder-root-mismatch", f"the launch's implementation root {builder.get('root')} "
+                         "is not registered")
+
+
+def _enter_builder_mode(args: argparse.Namespace):
+    """Identity, then the stage table, then the root; on success the run's builder, with the variables removed.
+
+    Removing them from this process's environment means nothing the entrance starts names the launch.
+    A seat is not the builder, and a process carrying the builder's variable would be judged as the
+    builder wherever it is read: refused once the launch ends, or where its tree can't be checked.
+    """
+    builder = _builder_identity(args)
+    if builder is None:
+        return None
+    _builder_stage(args)
+    if args.command == "run":
+        _builder_root(args, builder)
+        _builder_check_inputs(args)
+    for name in launch_tree.VARIABLES:
+        os.environ.pop(name, None)
+    return _BUILDER.set(builder)
+
+
+# What a builder's checks read and are told comes from the settled artifact and the entrance, never
+# from the builder. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+CRITERION_PREAMBLE = (
+    "You are a fresh reader judging one acceptance criterion of a built change. Judge whether the "
+    "criterion below holds of the built result in the tree named here. Return pass, fail or unable, "
+    "with the evidence you read or ran. Change nothing.\n"
+)
+CRITERION_OPENING = re.compile(r"^[ \t]*(?:[-*+][ \t]+)?\*\*([A-Z][A-Za-z]*[0-9]+(?:\.[0-9]+)?)\.\*\*", re.M)
+HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
+FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
+FRESH_READER = re.compile(r"Fresh reader:\s*(read|execute)\s+(?:(tree)\b|consumer tree\s+([a-z0-9-]+))")
+TREE_DECLARATION_KEYS = {"mode", "paths", "loading_surfaces", "front_page", "root_instructions",
+                         "directed_paths", "exclusions", "deny_texts"}
+
+
+def _fenced_lines(lines: list[str]) -> set[int]:
+    """The indexes of lines inside a fenced block, its fences included: an example, never the plan's own text."""
+    fenced, fence = set(), None
+    for index, line in enumerate(lines):
+        if fence is None:
+            opening = FENCE.match(line)
+            if opening is not None:
+                fence = opening.group(2)
+                fenced.add(index)
+            continue
+        fenced.add(index)
+        stripped = line.strip()
+        if stripped.startswith(fence[0] * len(fence)) and not stripped.strip(fence[0]):
+            fence = None
+    return fenced
+
+
+def _fenced_under(text: str, heading: str, code: str) -> str:
+    """The first fenced block directly under the one heading whose text is exactly ``heading``."""
+    lines = text.splitlines(keepends=True)
+    fenced = _fenced_lines(lines)
+    found = [index for index, line in enumerate(lines) if index not in fenced
+             and (match := HEADING.match(line.rstrip("\r\n"))) and match.group(1) == heading]
+    if len(found) != 1:
+        raise BuilderRefused(code, f"the settled artifact carries {len(found)} headings {heading!r}; it must carry one")
+    index = found[0] + 1
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    opening = FENCE.match(lines[index]) if index < len(lines) else None
+    if opening is None:
+        raise BuilderRefused(code, f"no fenced block stands directly under the heading {heading!r}")
+    fence = opening.group(2)
+    body = []
+    for line in lines[index + 1:]:
+        if line.strip().startswith(fence[0] * len(fence)) and not line.strip().strip(fence[0]):
+            return "".join(body)
+        body.append(line)
+    raise BuilderRefused(code, f"the fenced block under {heading!r} never closes")
+
+
+def artifact_use_job(artifact: str) -> bytes:
+    """The use consumer's job: the fenced block under the settled artifact's `Use session job` heading."""
+    return _fenced_under(artifact, "Use session job", "artifact-use-job-absent").encode("utf-8")
+
+
+def artifact_criterion(artifact: str, identifier: str) -> str:
+    """A criterion's verbatim text: from its `**ID.**` opening to the next opening or heading.
+
+    An opening or heading inside a fenced block is an example the criterion carries, not a boundary.
+    """
+    lines = artifact.splitlines(keepends=True)
+    fenced = _fenced_lines(lines)
+    starts, offset = [], 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+    outside = {start for index, start in enumerate(starts) if index not in fenced}
+    openings = [match for match in CRITERION_OPENING.finditer(artifact) if match.start() in outside]
+    own = [match for match in openings if match.group(1) == identifier]
+    if len(own) != 1:
+        raise BuilderRefused("artifact-criterion-unresolved",
+                             f"the settled artifact opens criterion {identifier} {len(own)} times")
+    start = own[0].start()
+    following = [match.start() for match in openings if match.start() > start]
+    following.extend(match.start() for match in re.finditer(r"^#{1,6}\s", artifact, re.M)
+                     if match.start() > start and match.start() in outside)
+    return artifact[start:min(following, default=len(artifact))].rstrip() + "\n"
+
+
+def criterion_reader(criterion: str) -> tuple[str, str | None]:
+    """(capability, consumer tree name or None for the change's own tree) a criterion's fresh reader needs."""
+    match = FRESH_READER.search(criterion)
+    if match is None:
+        raise BuilderRefused("criterion-owes-no-fresh-reader", "the criterion names no `Fresh reader:` line")
+    return match.group(1), match.group(3)
+
+
+def artifact_tree_declaration(artifact: str, name: str) -> dict[str, object]:
+    """A consumer tree declaration: one JSON object of create_consumer_tree's caller parameters."""
+    if not re.fullmatch(r"[a-z0-9-]+", name):
+        raise BuilderRefused("artifact-tree-declaration-unresolved", f"{name!r} is not a declaration name")
+    code = "artifact-tree-declaration-unresolved"
+    block = _fenced_under(artifact, f"Consumer tree declaration {name}", code)
+    try:
+        value = json.loads(block)
+    except ValueError as exc:
+        raise BuilderRefused(code, f"declaration {name} is not JSON: {exc}") from exc
+    if not isinstance(value, dict) or "mode" not in value or set(value) - TREE_DECLARATION_KEYS:
+        raise BuilderRefused(code, f"declaration {name} must be one object with `mode` and only "
+                             f"{', '.join(sorted(TREE_DECLARATION_KEYS))}")
+    return {"block_sha256": hashlib.sha256(block.encode("utf-8")).hexdigest(), **value}
+
+
+def _check_conditions(tree: str, capability: str) -> str:
+    """What a check's reader is told of its tree and its return; the folder around the tree is its working space."""
+    lines = [f"Return at most {CHECK_RETURN_BYTES:,} UTF-8 bytes."]
+    if capability == "execute":
+        lines.insert(0, f"The tree must stay as built: write nothing in it. Write what you make in "
+                        f"{Path(tree).parent}, the folder around it, with shell commands, use your session "
+                        "scratchpad for file-tool writes, and run Python with -B. A tree found changed when "
+                        "you return doesn't count.")
+    return "\n".join(lines) + "\n"
+
+
+def compose_check_dispatch(stage: str, inputs: dict[str, object]) -> bytes:
+    """The one composer of a builder-mode use or criterion dispatch; the same inputs give the same bytes."""
+    head, tree = str(inputs["head"]), str(inputs["tree"])
+    if stage == "use":
+        return (bytes(inputs["job"]) + f"\n\nHead: {head}\nTree: {tree}\n\n"
+                f"{_check_conditions(tree, 'execute')}".encode("utf-8"))
+    if stage == "acceptance-criterion":
+        return (CRITERION_PREAMBLE + f"\nCapability: {inputs['capability']}\nHead: {head}\n"
+                f"Tree: {tree}\n{_check_conditions(tree, str(inputs['capability']))}\n"
+                f"Criterion:\n\n{inputs['criterion']}").encode("utf-8")
+    raise WorkError(f"compose_check_dispatch: {stage} is composed elsewhere")
+
+
+def _builder_check_inputs(args: argparse.Namespace) -> None:
+    """In builder mode a check's instructions and tree are never the caller's."""
+    if args.command != "run" or args.stage not in ("use", "acceptance-criterion"):
+        return
+    if args.dispatch is not None:
+        raise BuilderRefused("builder-may-not-write-a-check's-instructions",
+                             f"run {args.stage} composes its dispatch from the settled artifact")
+    if args.tree_metadata is not None:
+        raise BuilderRefused("stage-composes-its-own-tree",
+                             f"run {args.stage} builds its tree from the settled artifact's declaration")
+    if args.stage == "use" and not args.job_from_artifact:
+        raise WorkError("run use in builder mode requires --job-from-artifact")
+
+
+TREE_NAME_LETTERS = str.maketrans("0123456789", "ghijklmnop")
+REPORT_MARKER = "tradecraft:check-report:v1"
+NO_RETURN_LINE = "No return was retained; see the bundle."
+REPORT_POST_ATTEMPTS = 3
+# GitHub refuses a larger comment, counted in UTF-8 bytes; a check's return is bounded below it, as the
+# artifact stage's is, leaving room for the marker.
+COMMENT_LIMIT_BYTES = 262_144
+CHECK_RETURN_BYTES = 240_000
+OVERSIZED_LINE = "The return was too large to post: {size} bytes."
+
+
+def _settled_artifact_text(state: WorkState, missing: str) -> tuple[str, str | None]:
+    phase = state.artifact_phase or _artifact_phase(state)
+    if phase.source_error:
+        # The earlier settled text is kept for revision only; a check never reads it as governing.
+        raise BuilderRefused("artifact-source-unusable", phase.source_error)
+    marker = phase.settled_artifact
+    if marker is None:
+        raise BuilderRefused(missing, "the change has no settled artifact")
+    return marker.body, marker.source_id
+
+
+def _check_tree(state: WorkState, source: Path, artifact: str, artifact_comment: str | None,
+                name: str, built_by: str | None) -> tuple[Path, Path, dict]:
+    """Build a check's consumer tree from the settled artifact's declaration, in a directory the entrance names."""
+    declared = artifact_tree_declaration(artifact, name)
+    # No digits, so the name can never carry the change's issue or pull-request number. The tree sits in a
+    # folder of its own, the reader's working space, so a reader that runs commands can write without
+    # changing the tree its report is judged on.
+    letters = lambda: secrets.token_hex(8).translate(TREE_NAME_LETTERS)  # noqa: E731
+    output = Path(tempfile.gettempdir()) / f"tradecraft-check-{letters()}" / f"tradecraft-tree-{letters()}"
+    numbers = [state.issue_number, *([state.pr["number"]] if state.pr and state.pr.get("number") else [])]
+    _refuse_tree_path_naming(output, numbers)
+    output.parent.mkdir()
+    work = f"{state.repo}#{state.issue_number}"
+    try:
+        metadata = recipient_tree.create_consumer_tree(
+            source=source, output=output, work=work, producer_version=records.producer_version(),
+            mode=declared["mode"], paths=list(declared.get("paths") or []),
+            loading_surfaces=list(declared.get("loading_surfaces") or []),
+            front_page=declared.get("front_page"), root_instructions=declared.get("root_instructions"),
+            directed_paths=list(declared.get("directed_paths") or []),
+            exclusions=list(declared.get("exclusions") or []),
+            deny_texts=list(declared.get("deny_texts") or []),
+            records_home=_records_home(None))
+        claim = recipient_tree.load_consumer_tree_metadata(metadata, work=work)
+        root = recipient_tree.validate_consumer_tree(metadata, work=work, source=source,
+                                                    records_home=_records_home(None), claim=claim)
+    except recipient_tree.RecipientTreeError as exc:
+        # A check whose tree can't be built leaves no folder behind, as a refused check leaves no tree.
+        recipient_tree.remove_tree(output.parent)
+        raise WorkError(f"the check's consumer tree could not be built: {exc}") from exc
+    # Beside the tree's own record, which its digest seals: what declared it and which launch built it.
+    origin = {"declaration": {"name": name, "artifact_comment": artifact_comment,
+                              "sha256": declared["block_sha256"]},
+              "built_by": {"dispatch_id": built_by}, "source_revision": claim.get("source_revision")}
+    origins = metadata.parent.parent / "tree-origins"
+    origins.mkdir(parents=True, exist_ok=True)
+    records.write_json(origins / metadata.name, origin)
+    return root, metadata, claim
+
+
+def _change_tree(state: WorkState, source: Path, head: str, branch: str) -> tuple[Path, Path, dict]:
+    """The change's own tree at head, for a criterion whose fresh reader reads the change itself.
+
+    Built as the cold reader's reading tree is: every changed file and what its pointers name, in one
+    neutral commit, with the same second check when the seat returns.
+    """
+    base = ((state.pr or {}).get("base") or {}).get("sha")
+    if not isinstance(base, str):
+        raise WorkError("a criterion read on the change's own tree needs its pull request's base")
+    reading = Path(tempfile.mkdtemp(prefix="tradecraft-reading-")) / "reading"
+    numbers = [state.issue_number, *([state.pr["number"]] if isinstance(state.pr.get("number"), int) else [])]
+    try:
+        metadata_path = cold_reader.build_tree(
+            source=source, output=reading, work=f"{state.repo}#{state.issue_number}",
+            producer_version=records.producer_version(), base_tip=base, head=head, covered=None,
+            branch=branch, numbers=numbers, records_home=_records_home(None))
+        metadata = cold_reader.load_metadata(metadata_path)
+    except cold_reader.ColdReaderError as exc:
+        recipient_tree.remove_tree(reading.parent)
+        raise WorkError(f"the change's tree could not be built for the criterion: {exc}") from exc
+    return Path(metadata["tree_root"]), metadata_path, metadata
+
+
+def _tree_held(state: WorkState, source: Path, metadata: Path, claim: dict) -> bool:
+    """The second check of a check's tree, when its seat returns: unedited, and the source still at its revision."""
+    try:
+        recipient_tree.validate_consumer_tree(metadata, work=f"{state.repo}#{state.issue_number}",
+                                              source=source, records_home=_records_home(None), claim=claim)
+    except recipient_tree.RecipientTreeError:
+        return False
+    return True
+
+
+def _framed_recipient_run(captured: bytearray):
+    """A recipient runner that forwards the launcher's stdout and keeps it, so its return frame can be read."""
+    def runner(command, *, timeout, cleanup_deadline, on_tick=None):
+        # Forwarding is safe here though the inherited wait avoids it: the frame can only be read from a
+        # captured stream, and what it forwards to is the builder's own tool pipe, whose timeout bounds a
+        # stalled reader.
+        def forward(name, chunk):
+            if name == "stdout":
+                captured.extend(chunk)
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            else:
+                sys.stderr.buffer.write(chunk)
+                sys.stderr.buffer.flush()
+        # The wait follows the launcher's window, as the inherited wait does, so the recipient keeps its whole limit.
+        return seat_process.run_process(command, input=b"", cwd=str(Path.cwd()), timeout=timeout,
+                                        on_output=forward, cleanup_deadline=cleanup_deadline,
+                                        on_window=on_tick)
+    return runner
+
+
+def check_report_body(*, stage: str, frame: dict | None, head: str, tree: str,
+                      criterion: str | None) -> str:
+    """The comment the entrance posts: the marker, a blank line, and the frame's return bytes."""
+    frame = frame or {}
+    attributes = [f"stage={stage}", f"dispatch={frame.get('dispatch_id') or 'unknown'}", f"head={head}",
+                  f"dispatch_sha256={frame.get('dispatch_sha256') or 'unknown'}", f"tree={tree}",
+                  # A seat whose launcher left no frame proved no staffing, so it is never `qualified`.
+                  f"staffing_status={frame.get('staffing_status') or 'degraded'}"]
+    if frame.get("same_vendor_reason"):
+        attributes.append(f"same_vendor_reason={frame['same_vendor_reason']}")
+    if criterion:
+        attributes.append(f"criterion={criterion}")
+    attributes.append(f"outcome={frame.get('outcome') or 'error'}")
+    returned = frame.get("return") or b""
+    text = returned.decode("utf-8", "replace") if returned else NO_RETURN_LINE
+    return f"<!-- {REPORT_MARKER} {' '.join(attributes)} -->\n\n{text}"
+
+
+def _post_check_report(github, state: WorkState, body: str) -> dict[str, object]:
+    """Post a builder check's report, retried within the run because a report posted later would be
+    read from the store, which the builder can write. A post that landed but answered with an error
+    is posted again: the two comments are byte-identical and name one bundle, so both count or
+    neither does, and counting a bundle's findings once is for the gates that read the reports."""
+    endpoint = f"repos/{state.repo}/issues/{state.issue_number}/comments"
+    status = "posted"
+    if len(body.encode("utf-8")) > COMMENT_LIMIT_BYTES:
+        # GitHub would refuse it on every attempt, so the marker goes up with the return's size, and doesn't count.
+        marker, _, returned = body.partition("\n\n")
+        body = f"{marker}\n\n{OVERSIZED_LINE.format(size=len(returned.encode('utf-8')))}"
+        status = "check-report-oversized"
+    errors = []
+    for _attempt in range(REPORT_POST_ATTEMPTS):
+        try:
+            posted = github.post(endpoint, {"body": body})
+            return {"status": status, "comment": posted.get("id") if isinstance(posted, dict) else None}
+        except (OSError, ValueError, WorkError) as exc:
+            errors.append(str(exc))
+    return {"status": "check-report-unposted", "errors": errors}
+
+
+def _holding_launch_vendor(builder: dict) -> tuple[str, str]:
+    """The builder's vendor, from its own launch's request record: a first launch has no completed bundle."""
+    request = builder.get("request")
+    try:
+        vendor = (json.loads(Path(str(request)).read_bytes()).get("requested") or {}).get("vendor")
+    except (OSError, ValueError, AttributeError) as exc:
+        raise WorkError(f"the holding stretch launch's request {request} could not be read: {exc}") from exc
+    if vendor not in ("claude", "codex"):
+        raise WorkError(f"the holding stretch launch's request {request} names no vendor")
+    return vendor, f"holding stretch launch request {request}"
+
+
+def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, github,
+                   timeout_argument: str, rules: dict[str, object] | None = None,
+                   use_rules_path: Path | None = None) -> int:
+    """A use or criterion check whose dispatch and tree come from the settled artifact, never its caller.
+
+    It passes the holds a named stage passes before anything is built or launched. In builder mode
+    the entrance posts the seat's report from the launcher's frame inside this run.
+    Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    stage = args.stage
+    builder = builder_mode()
+    if state.raw_output is None and rules is not None:
+        _evaluate_raw_output(state, rules, str(use_rules_path or "selected change-proof policy"))
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    named = Decision(stage, True, None, "holder-named-stage", "")
+    for refused in (_launch_account_refusal(state, stage), _version_refusal(state, named)):
+        if refused is not None:
+            _emit_report(_reported_decision(state, refused).as_dict(), state)
+            return 0
+    if stage == "use" and _held_by_cold_reading(state, "use"):
+        return 0
+    # As the use stage does: a conflicted or behind branch goes to catch-up before any check of it.
+    sync = _synchronization_decision(state)
+    if sync is not None:
+        _emit_report(_reported_decision(state, sync).as_dict(), state)
+        return 0
+    resolved = resolve_implementation_root(root, state.repo, state.issue_number, state.instalment)
+    if resolved is None:
+        raise WorkError(f"no active implementation registration matches {state.repo}#{state.issue_number}")
+    source = resolved[0]
+    if builder is not None and not _same_path(source, Path(str(builder.get("root")))):
+        raise BuilderRefused("builder-root-mismatch", f"the selected implementation root {source} is not "
+                             f"the launch's {builder.get('root')}")
+    head = _git(["rev-parse", "HEAD"], source).stdout.decode("ascii").strip()
+    if stage == "use":
+        artifact, comment = _settled_artifact_text(state, "artifact-use-job-absent")
+        job = artifact_use_job(artifact)
+        tree_name, capability, criterion_id = "use", "execute", None
+    else:
+        criterion_id = args.criterion
+        if not criterion_id:
+            raise WorkError("run acceptance-criterion requires --criterion ID")
+        artifact, comment = _settled_artifact_text(state, "artifact-criterion-unresolved")
+        criterion = artifact_criterion(artifact, criterion_id)
+        capability, tree_name = criterion_reader(criterion)
+    # Every refusal comes before the tree is built, so a refused check leaves no tree or origin behind.
+    own_vendor, own_vendor_source = (_holding_launch_vendor(builder) if builder is not None else
+                                     _producer_vendor(state, RESUME_SOURCE_STAGES["build"] | {"stretch"},
+                                                      revision=head, source_root=source))
+    # The use consumer's staffing plan, with its fallback against the builder's vendor, as the use
+    # stage prints it; a criterion reader is staffed the same way.
+    launch_plan = _launch_plan(state, Decision("use", True, None, "holder-named-stage", ""),
+                               resolve_comparison=False)
+    launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+                               **dispatch_seat.fallback_plan("claude", own_vendor, capability),
+                               "comparison_vendor_source": own_vendor_source}
+    if tree_name is None:
+        consumer_root, metadata, reading = _change_tree(state, source, head, resolved[1])
+        held_now = lambda: cold_reader.tree_held(reading, source)  # noqa: E731
+    else:
+        consumer_root, metadata, claim = _check_tree(state, source, artifact, comment, tree_name,
+                                                     builder["dispatch_id"] if builder else None)
+        held_now = lambda: _tree_held(state, source, metadata, claim)  # noqa: E731
+    inputs = ({"job": job, "head": head, "tree": consumer_root} if stage == "use" else
+              {"criterion": criterion, "capability": capability, "head": head, "tree": consumer_root})
+    dispatch_bytes = compose_check_dispatch(stage, inputs)
+    with tempfile.TemporaryDirectory(prefix="tradecraft-check-") as temporary:
+        dispatch = Path(temporary) / "dispatch.md"
+        dispatch.write_bytes(dispatch_bytes)
+        setting_resolution.print_plan(launch_plan, label="work")
+        here = Path(__file__).resolve().parent
+        command = [
+            sys.executable, str(here / "dispatch_seat.py"),
+            "--dispatch", str(dispatch), "--root", str(consumer_root),
+            "--work", f"{state.repo}#{state.issue_number}", "--stage", stage,
+            "--settings-source", f"work entrance {stage} route",
+            "--settings-scope", "use-consumer" if stage == "use" else "criterion-reader",
+            "--vendor", "claude", "--own-vendor", own_vendor, "--own-vendor-source", own_vendor_source,
+            "--classification", "cold", "--requires", capability, "--timeout-seconds", timeout_argument,
+            "--return-frame",
+            *(["--same-vendor-reason", "owner-selected-claude-implementer"] if own_vendor == "claude" else []),
+            *(["--launched-by-dispatch", builder["dispatch_id"], "--launched-by-session",
+               str(builder.get("session_id")), "--dispatch-origin", "entrance"] if builder else []),
+            *_seat_launch_arguments(state, "use-consumer", "cold", claude_path=args.claude,
+                                    codex_path=args.codex, plan=launch_plan),
+        ]
+        captured = bytearray()
+        code = _invoke_recipient(command, lifecycle.current_deadline(), runner=_framed_recipient_run(captured))
+    frame = dispatch_seat.read_return_frame(bytes(captured))
+    held = held_now()
+    body = check_report_body(stage=stage, frame=frame, head=head, tree="held" if held else "changed",
+                             criterion=criterion_id)
+    posted = _post_check_report(github, state, body) if builder else {"status": "not-posted-outside-builder-mode"}
+    _emit_report({"stage": stage, "recipient_returned": True, "head": head,
+                  "tree": "held" if held else "changed", "tree_metadata": str(metadata),
+                  "frame": None if frame is None else {k: v for k, v in frame.items() if k != "return"},
+                  "check_report": posted}, state)
+    return code if posted["status"] not in REPORT_NOT_COUNTED else 1
+
+
+CHECK_STAGES = frozenset({"use", "acceptance-criterion", "cold-reader"})
+# A launch whose report never landed, or landed without its return, counts for nothing, and its run exits nonzero.
+REPORT_NOT_COUNTED = frozenset({"check-report-unposted", "check-report-oversized"})
+REPORT_MARKER_LINE = re.compile(r"\A<!--\s*tradecraft:check-report:v1\s+(.*?)\s*-->\n\n", re.S)
+
+
+def _bundle_file(run_path: Path, suffix: str) -> Path:
+    return run_path.with_name(run_path.name[:-len(".run.json")] + suffix)
+
+
+def recompose_check(state: WorkState, request: dict) -> tuple[bytes | None, str | None, str]:
+    """The dispatch the entrance would compose for a builder's check bundle, its head, and why not when it can't.
+
+    Use and criterion checks are recomposed from the current settled artifact and the tree record the
+    bundle's root names; a reading from its reading record and the entrance's own standard.
+    """
+    root = request.get("root")
+    if not isinstance(root, str):
+        return None, None, "the bundle names no tree"
+    home = _records_home(None)
+    stage = request.get("stage")
+    try:
+        if stage == "cold-reader":
+            return _recompose_reading(state, Path(root), home)
+        try:
+            claim = recipient_tree.load_consumer_tree_metadata(
+                recipient_tree.record_path(Path(root), home), work=f"{state.repo}#{state.issue_number}")
+            head = claim.get("source_revision")
+        except recipient_tree.RecipientTreeError:
+            if stage != "acceptance-criterion":
+                raise
+            # A criterion read on the change's own tree has a reading record instead.
+            head = cold_reader.load_metadata(cold_reader.reading_record(Path(root), home)).get("head")
+        artifact, _comment = _settled_artifact_text(state, "artifact-use-job-absent")
+        if stage == "use":
+            stale = _stale_declaration(artifact, Path(root), home, "use")
+            if stale:
+                return None, head, stale
+            return compose_check_dispatch("use", {"job": artifact_use_job(artifact), "head": head,
+                                                  "tree": Path(root)}), head, ""
+        dispatch = _bundle_file(Path(request["_run_path"]), ".dispatch.bin").read_bytes().decode("utf-8", "replace")
+        named = CRITERION_OPENING.search(dispatch.split("\nCriterion:\n\n", 1)[-1])
+        if named is None:
+            return None, head, "the dispatch names no criterion"
+        criterion = artifact_criterion(artifact, named.group(1))
+        capability, tree_name = criterion_reader(criterion)
+        stale = _stale_declaration(artifact, Path(root), home, tree_name) if tree_name else ""
+        if stale:
+            return None, head, stale
+        return compose_check_dispatch("acceptance-criterion", {
+            "criterion": criterion, "capability": capability, "head": head, "tree": Path(root)}), head, ""
+    except (OSError, ValueError, KeyError, WorkError, recipient_tree.RecipientTreeError,
+            cold_reader.ColdReaderError) as exc:
+        return None, None, str(exc)
+
+
+def _stale_declaration(artifact: str, root: Path, home: Path, name: str) -> str:
+    """Why a check's tree wasn't built from the current artifact's declaration of ``name``, or ''."""
+    metadata = recipient_tree.record_path(root, home)
+    try:
+        origin = json.loads((metadata.parent.parent / "tree-origins" / metadata.name).read_bytes())
+        declared = origin["declaration"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return "the tree's origin record is missing"
+    if declared.get("name") != name:
+        return f"the tree was built from declaration {declared.get('name')}, not {name}"
+    if declared.get("sha256") != artifact_tree_declaration(artifact, name)["block_sha256"]:
+        return f"the tree was built from an earlier declaration {name}"
+    return ""
+
+
+def _recompose_reading(state: WorkState, root: Path, home: Path) -> tuple[bytes | None, str | None, str]:
+    """A reading's prompt, rebuilt from its sealed reading record and a diff regenerated from the source.
+
+    The kept diff sits in the store, which a builder's shell can write, so it is never trusted here.
+    """
+    metadata = cold_reader.load_metadata(cold_reader.reading_record(root, home))
+    head, base = metadata.get("head"), metadata.get("base")
+    if os.path.normcase(str(Path(metadata.get("tree_root", "")).resolve())) != os.path.normcase(str(root.resolve())):
+        return None, head, "the reading record names another tree"
+    source = getattr(state, "holder_root", None)
+    if source is None:
+        return None, head, "no source to regenerate the reading's diff from"
+    present = cold_reader.current(Path(source), base, head)
+    covered = sorted(metadata.get("coverage") or {})
+    outside = [path for path in covered if path not in present["change_set"]]
+    if outside or present["base"] != base:
+        return None, head, "the reading's coverage is not in the change set at its base and head"
+    # Read as the launch reads its kept diff, text-mode, so the same bytes compose the same prompt.
+    diff = cold_reader.reading_diff(Path(source), base, head, covered).decode(
+        "utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    standard = (Path(__file__).resolve().parent.parent / "skills" / "authoring" / "references"
+                / "code-reasons.md").read_text("utf-8")
+    return cold_reader.compose_prompt(metadata, standard, diff if metadata["diff"] == "inline" else None), head, ""
+
+
+def builder_checks(state: WorkState) -> dict[str, object] | None:
+    """Each builder check bundle's dispatch against its recomposition, and which posted reports count.
+
+    A report counts only when its digest is the recomposed dispatch's, its bundle is a stretch
+    builder's of this work, its stage, head, staffing and outcome are the bundle's, its tree held,
+    and the store's return equals the posted text. Nothing here gates a stage.
+    Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    store = state.record_root or records.default_record_root()
+    work = f"{state.repo}#{state.issue_number}"
+    comments = [c for c in state.issue_comments if isinstance(c.get("body"), str)
+                and REPORT_MARKER in c["body"]]
+    rows = lifecycle.launch_bundles(store, work, CHECK_STAGES | {"stretch"})
+    stretches = {request.get("dispatch_id") for _o, _p, request, _r in rows if request.get("stage") == "stretch"}
+    bundles = {}
+    for _order, run_path, request, run in rows:
+        if request.get("stage") in CHECK_STAGES and isinstance(request.get("launched_by"), dict):
+            bundles[request.get("dispatch_id")] = (Path(run_path), {**request, "_run_path": str(run_path)}, run or {})
+    if not bundles and not comments:
+        return None
+    dispatches, recomposed = [], {}
+    for dispatch_id, (run_path, request, _run) in bundles.items():
+        composed, head, problem = recompose_check(state, request)
+        try:
+            actual = _bundle_file(run_path, ".dispatch.bin").read_bytes()
+        except OSError:
+            actual = None
+        status = "composed" if composed is not None and actual == composed else "differs"
+        recomposed[dispatch_id] = (composed, head, status)
+        dispatches.append({"bundle": str(run_path), "stage": request.get("stage"), "status": status,
+                           **({"reason": problem} if problem else {})})
+    reports = []
+    config = getattr(state, "config", None)
+    producers = config.marker_producers if config is not None else frozenset()
+    for comment in comments:
+        found = REPORT_MARKER_LINE.match(comment["body"])
+        attributes = dict(part.split("=", 1) for part in found.group(1).split() if "=" in part) if found else {}
+        reasons = []
+        if _author(comment) not in {producer.lower() for producer in producers}:
+            # The entrance posts under a configured marker-producer login; any other author is a claim.
+            reasons.append("not from a configured marker producer")
+        bundle = bundles.get(attributes.get("dispatch"))
+        if found is None:
+            reasons.append("malformed")
+        elif bundle is None:
+            reasons.append("names no builder check bundle")
+        else:
+            run_path, request, run = bundle
+            composed, head, status = recomposed[attributes["dispatch"]]
+            if status != "composed" or attributes.get("dispatch_sha256") != hashlib.sha256(composed).hexdigest():
+                reasons.append("dispatch does not recompose")
+            if request["launched_by"].get("dispatch_id") not in stretches:
+                reasons.append("not a stretch builder's of this work")
+            expected = {"stage": request.get("stage"), "head": head, "outcome": run.get("outcome"),
+                        "staffing_status": run.get("staffing_status"),
+                        # Absent on both sides where the bundle has no reason, as the frame posts it.
+                        "same_vendor_reason": (run.get("staffing_qualification") or {}).get("same_vendor_reason")}
+            reasons.extend(f"{key} differs" for key, value in expected.items() if attributes.get(key) != value)
+            if attributes.get("tree") != "held":
+                reasons.append("tree=changed")
+            try:
+                stored = _bundle_file(run_path, ".source.bin").read_bytes().decode("utf-8", "replace")
+            except OSError:
+                stored = NO_RETURN_LINE
+            posted_text = comment["body"][found.end():]
+            if re.fullmatch(re.escape(OVERSIZED_LINE).replace(r"\{size\}", "[0-9]+"), posted_text):
+                reasons.append("return too large to post")
+            elif stored != posted_text:
+                reasons.append("store-and-posted-differ")
+        reports.append({"comment": comment.get("id"), "dispatch": attributes.get("dispatch"),
+                        "counts": not reasons, "invalid": reasons})
+    return {"check_dispatches": dispatches, "check_reports": reports}
+
+
 def run(
     args: argparse.Namespace, *, transport: GitHubREST | None = None,
     executor: Callable[..., int] = execute_stage,
+) -> int:
+    # Before any other read or write: a run inside a stretch launch's tree is the builder's.
+    token = _enter_builder_mode(args)
+    try:
+        return _run_entry(args, transport=transport, executor=executor)
+    finally:
+        if token is not None:
+            _BUILDER.reset(token)
+
+
+def _run_entry(
+    args: argparse.Namespace, *, transport: GitHubREST | None,
+    executor: Callable[..., int],
 ) -> int:
     if getattr(args, "draft_comment", None) is not None and (args.command != "run" or args.stage != "cold-seat"):
         raise WorkError("--draft-comment requires run cold-seat")
@@ -11056,6 +11816,8 @@ def _run(
         raise WorkError("a stage is accepted only after the run or allowance command")
     if args.command == "run" and args.stage is None:
         raise WorkError("run requires a stage")
+    if args.command == "run" and args.stage in ALLOWANCE_ONLY_STAGES:
+        raise WorkError(f"run {args.stage}: the entrance launches no {args.stage}; allowance prints its sentence")
     if args.command == "run" and args.stage == "catch-up" and args.implementation_root is not None:
         raise WorkError("run catch-up accepts no caller-supplied implementation root")
     if args.restart_unresolved_reason is not None and (
@@ -11193,6 +11955,15 @@ def _run(
     if args.command is None:
         _emit_report(recommendation.as_dict(), state)
         return 0
+    if getattr(args, "job_from_artifact", False) and (args.stage != "use" or builder_mode() is None):
+        raise WorkError("--job-from-artifact applies only to a builder's run use")
+    # A stand-in executor is handed the named decision as every stage's is; only the real one composes.
+    if executor is execute_stage and (
+            args.stage == "acceptance-criterion" or (args.stage == "use" and builder_mode() is not None)):
+        limit = args.timeout_seconds if args.timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
+        if not math.isfinite(limit) or limit <= 0:
+            raise WorkError("--timeout-seconds must be finite and positive")
+        return _builder_check(state, args, root, github, f"{limit:g}", rules, use_rules_path)
     decision = _reported_decision(state, Decision(
         args.stage, args.stage not in {"proof", "ready-reviewers", "release-report", "catch-up"},
         _named_continuity(state, args.stage, recommendation),

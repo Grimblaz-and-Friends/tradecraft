@@ -67,8 +67,15 @@ def repository_of(work: str) -> str:
     return work.split("#", 1)[0]
 
 
+def issue_of(work: str) -> int | None:
+    """The issue number of an ``owner/name#n`` work value, or None when it names none."""
+    number = work.partition("#")[2]
+    # ASCII digits only: str.isdigit() also takes digits such as "²", which int() then rejects.
+    return int(number) if re.fullmatch(r"[0-9]+", number) and int(number) > 0 else None
+
+
 def allowance_for(stage: str, *, repository: str, branch: str | None,
-                  pull_request: int | None, grants=()) -> dict[str, object]:
+                  pull_request: int | None, grants=(), issue: int | None = None) -> dict[str, object]:
     """The step's allowance; a stage that may push gets none without its registered branch.
 
     With no registered branch there is no ref a push could be held to, and such a launch (a
@@ -76,6 +83,11 @@ def allowance_for(stage: str, *, repository: str, branch: str | None,
     work to do. Its sentence says `none` before it acts, so the narrowing is what it is told,
     not a surprise refusal mid-turn, and any push it needs returns as a request.
     """
+    if stage == "stretch" and branch:
+        # A builder carrying its change to ready writes to that change alone: its branch, its
+        # pull request and its issue. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+        return {"kind": "stretch", "repository": repository, "branch": branch, "issue": issue,
+                "pull_request": pull_request, "grants": list(grants)}
     if stage in PUSH_STAGES and branch:
         kind = "branch"
     elif stage == "review-disposition" and branch:
@@ -123,12 +135,30 @@ def _writes(allowance: dict) -> str:
         text = (f"a push to your own branch {branch} of {repository}; a reply on, and a resolve "
                 f"of, a review thread of your own pull request {repository}#{number}; and a "
                 f"conversation comment on {repository}#{number} answering a body finding")
+    elif kind == "stretch":
+        own = f"#{number}" if number is not None else f"the one you open from {branch}"
+        text = (f"a push to your own branch {branch} of {repository}; opening a pull request from "
+                f"{branch} in {repository}, marking it ready, and editing its title and body; on that "
+                f"pull request ({own}) a conversation comment and replying on and resolving its "
+                f"review threads; and a comment on issue #{allowance.get('issue')} of {repository}; "
+                "and nothing else")
     else:
         text = "none"
     grants = [f"the granted {g.get('write')} {g.get('target')}" for g in allowance.get("grants") or ()]
     if grants:
         text += "; and " + "; ".join(grants)
     return text
+
+
+STRETCH_HOW = ("Reply on a review thread with the comment's numeric id written as digits in the "
+               "command (`gh api repos/{repository}/pulls/N/comments/<id>/replies -F body=@FILE`), or "
+               "with `-F in_reply_to=<id>` on `repos/{repository}/pulls/N/comments`; resolve a thread "
+               "with its node id written literally. An id held in a shell variable is refused. Give a "
+               "comment body as a file (`--body-file FILE`, or `-F body=@FILE` with gh api); a body "
+               "holding `$` or a command substitution, or piped in, is refused. Name the pull request "
+               "number unless the current branch is {branch} with one open pull request. Launch "
+               "checks only through the entrance (`work.py run STAGE`); a direct call of a dispatch "
+               "launcher is refused. ")
 
 
 def sentence(allowance: dict) -> str:
@@ -140,9 +170,11 @@ def sentence(allowance: dict) -> str:
     start = (f"Start a Claude session only as `{CHILD_START} ...`, without `--safe-mode` or "
              f"`--bare` and without changing `{CONNECTORS}`; it may make no GitHub write. "
              "Start no Codex session.")
+    how = (STRETCH_HOW.format(repository=allowance.get("repository"), branch=allowance.get("branch"))
+           if allowance.get("kind") == "stretch" else "")
     return (f"GitHub writes this step may make: {_writes(allowance)}. Make no other GitHub write "
             "- no comment, pull request, branch, branch deletion, tag, release, workflow run or "
-            "setting. GitHub reads (`gh api --method GET`, fetches) stay open. " + start
+            "setting. GitHub reads (`gh api --method GET`, fetches) stay open. " + how + start
             + " If the work needs any other write, do not make it: end your return with a "
             "**Write requests** section naming each write, why the work needs it, and what it "
             "would leave behind.")
@@ -177,11 +209,16 @@ def _stated_pattern() -> re.Pattern:
     shapes = []
     local = sentence({"kind": "none"})
     head = SENTENCE_OPENING + " "
-    shapes.append((head, local[len(head) + len("none"):]))
+    # A stretch sentence carries its thread and launch instructions before the child start, so
+    # the text between those two fixed parts is left open too.
+    tail = local[len(head) + len("none"):]
+    split = tail.index("Start a Claude session")
+    shapes.append((head, tail[:split], tail[split:]))
     cloud = cloud_sentence("artifact")
     pushes = "a push to its report branch, which carries its return"
     shapes.append((cloud[:cloud.index(pushes)], cloud[cloud.index(pushes) + len(pushes):]))
-    return re.compile("|".join(re.escape(start) + r"[^\n]*?" + re.escape(end) for start, end in shapes))
+    return re.compile("|".join(r"[^\n]*?".join(re.escape(part) for part in shape)
+                               for shape in shapes))
 
 
 def _states_another(prompt: bytes, own: bytes) -> bool:

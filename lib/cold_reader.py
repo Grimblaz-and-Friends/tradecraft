@@ -245,6 +245,16 @@ def _digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()
 
 
+def reading_diff(source: Path, base: str, head: str, selected: list[str]) -> bytes:
+    """The diff a reading carries for its covered paths, regenerated the same way wherever it is needed."""
+    # A rename's old path joins the pathspec so the diff shows the edit as a rename, removed lines and all.
+    moved = renames(source, base, head)
+    pathspec = sorted(set(selected) | {moved[path] for path in selected if path in moved})
+    # Git's default context, named so a machine's diff settings can't change what the reader is given.
+    return _git(source, "diff", "--no-color", "--no-ext-diff", "--unified=3", "--inter-hunk-context=0",
+                "-M", base, head, "--", *pathspec)
+
+
 def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
                base_tip: str, head: str, covered: list[str] | None, branch: str,
                numbers: list[int], records_home: Path) -> Path:
@@ -284,10 +294,7 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
     except recipient_tree.RecipientTreeError as exc:
         # A file the tree can't hold, such as a symlink, refuses the reading rather than escaping the stage.
         raise ColdReaderError(str(exc)) from exc
-    # A rename's old path joins the pathspec so the diff shows the edit as a rename, removed lines and all.
-    moved = renames(source, state["base"], head)
-    pathspec = sorted(set(selected) | {moved[path] for path in selected if path in moved})
-    diff = _git(source, "diff", "--no-color", "--no-ext-diff", "-M", state["base"], head, "--", *pathspec)
+    diff = reading_diff(source, state["base"], head, selected)
     diff_text = diff.decode("utf-8", errors="replace")
     # With nothing else to carry the diff travels as a file, since the neutral commit can't be empty.
     inline = len(diff_text) <= INLINE_DIFF_CHARACTERS and bool(files)
@@ -365,6 +372,29 @@ def load_metadata(path: Path) -> dict:
         raise ColdReaderError("reading metadata digest does not match")
     value["metadata_sha256"] = claimed
     return value
+
+
+def tree_held(metadata: dict, source: Path) -> bool:
+    """Whether a reading tree still stands as built: clean, its commit the claimed files, and each its object.
+
+    Checked again when a builder's reader returns, so an edit made while it read leaves no counting
+    report. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    root = Path(metadata["tree_root"])
+    try:
+        recipient_tree._prove_neutral_repository(root, source)
+        if recipient_tree._text(root, "status", "--porcelain", "--untracked-files=all", "--ignored"):
+            return False
+        # A clean status only compares the files with HEAD, so an amended commit is held to the claims too.
+        if recipient_tree._tree_files(root, "HEAD") != (metadata.get("files") or {}):
+            return False
+        for name, claim in (metadata.get("files") or {}).items():
+            content = (root / Path(*PurePosixPath(name).parts)).read_bytes()
+            if recipient_tree._blob_oid(source, content) != claim.get("oid"):
+                return False
+    except (recipient_tree.RecipientTreeError, OSError):
+        return False
+    return True
 
 
 def compose_prompt(metadata: dict, standard: str, diff_text: str | None) -> bytes:

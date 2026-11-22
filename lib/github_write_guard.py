@@ -30,6 +30,7 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.parse
 
 from holder_tree_guard import contains, denial, path_key
 from winio import utf8_stdio
@@ -166,6 +167,8 @@ class Context:
     piped: str = ""
     # A variable's value is being judged in program position, which is followed only once.
     expanding: bool = False
+    # Kept so a comment body given on standard input is read as the comment GitHub will post.
+    inputs: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -178,7 +181,16 @@ class Finding:
 
 HEREDOC_WORD = "__tradecraft_heredoc_{}__"
 HEREDOC = re.compile(r"__tradecraft_heredoc_(\d+)__")
+# What a command substitution leaves in its word: its output, which the check never sees.
+SUBSTITUTION_WORD = "__tradecraft_substitution__"
+# Their targets are read as a comment's body, which reaches gh on standard input.
+STDIN_REDIRECTS = {"<", "<>", "<<<", "<&"}
 DELIMITER = re.compile(r"[ \t]*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\?([^\s;&|<>()'\"]+))")
+
+
+class HereDocument(str):
+    """A here-document's body; ``expands`` when its delimiter was unquoted, so bash expands it."""
+    expands = False
 
 
 def _scan(text: str, start: int = 0, closer: str | None = None
@@ -214,7 +226,7 @@ def _scan(text: str, start: int = 0, closer: str | None = None
             # $( ) runs its body, and so do <( ) and >( ), whose output stands in as a file.
             _out, _subs, _docs, end = _scan(text, i + 2, ")")
             subs.append(text[i + 2:end])
-            out.append("__tradecraft_substitution__")
+            out.append(SUBSTITUTION_WORD)
             i = end + 1
             continue
         if char == "`":
@@ -222,7 +234,7 @@ def _scan(text: str, start: int = 0, closer: str | None = None
             if end < 0:
                 raise Unparsed("unbalanced backtick")
             subs.append(text[i + 1:end])
-            out.append("__tradecraft_substitution__")
+            out.append(SUBSTITUTION_WORD)
             i = end + 1
             continue
         if quote == '"':
@@ -280,7 +292,8 @@ def _scan(text: str, start: int = 0, closer: str | None = None
                     if (line.lstrip("\t") if strip else line) == delimiter:
                         break
                     body.append(line)
-                docs[index] = "\n".join(body)
+                docs[index] = HereDocument("\n".join(body))
+                docs[index].expands = not quoted
                 if not quoted:
                     # bash runs the substitutions of an unquoted body before the command starts.
                     subs.extend(_body_substitutions(docs[index]))
@@ -353,7 +366,10 @@ def _operators(token: str) -> list[str]:
     return found
 
 
-def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str], list[str]]:
+def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str], list[str],
+                                       list[list[tuple[str, str]]]]:
+    """Each simple command's words, the substitutions and here-documents, the words piped into
+    each command, and the (redirection, target) pairs that feed each command's standard input."""
     outer, subs, docs, _end = _scan(text)
     lexer = shlex.shlex(outer, posix=True, punctuation_chars="();<>|&")
     lexer.whitespace_split = True
@@ -364,36 +380,44 @@ def split_commands(text: str) -> tuple[list[list[str]], list[str], list[str], li
         raise Unparsed(str(exc)) from exc
     commands: list[list[str]] = []
     feeds: list[str] = []
+    inputs: list[list[tuple[str, str]]] = []
     pipeline: list[str] = []
     current: list[str] = []
-    skip = False
+    current_inputs: list[tuple[str, str]] = []
+    redirect: str | None = None  # The redirection whose target is the next token.
 
     def close(operator: str) -> None:
-        nonlocal current, pipeline
+        nonlocal current, pipeline, current_inputs
         if current:
             commands.append(current)
             feeds.append(" ".join(pipeline))
+            inputs.append(current_inputs)
             pipeline = pipeline + current
         # A pipe, or a bracket around part of a pipeline, carries output on to what follows.
         if operator not in ("|", "|&", "(", ")"):
             pipeline = []
         current = []
+        current_inputs = []
 
     for token in tokens:
-        if skip:
-            skip = False
+        if redirect:
+            if redirect in STDIN_REDIRECTS:
+                current_inputs.append((redirect, token))
+            redirect = None
             continue
         if token and set(token) <= set("();<>|&"):
             for operator in _operators(token):
                 if operator in SEPARATORS:
                     close(operator)
-                    skip = False
+                    redirect = None
                 else:
-                    skip = True
+                    redirect = operator
         else:
             current.append(token)
+            if HEREDOC.fullmatch(token):
+                current_inputs.append(("<<", token))
     close(";")
-    return commands, subs, docs, feeds
+    return commands, subs, docs, feeds, inputs
 
 
 def program(word: str) -> str:
@@ -452,7 +476,7 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
     if ctx.depth > 8:
         return [Finding("deeply nested command", "the command nests shells too deeply to judge")]
     try:
-        commands, subs, docs, feeds = split_commands(text)
+        commands, subs, docs, feeds, inputs = split_commands(text)
     except Unparsed as exc:
         # A signature scan would pass a write it does not name, such as git send-pack.
         return [Finding("unparsed command", f"the command could not be parsed ({exc}), so what it "
@@ -462,11 +486,11 @@ def judge_text(text: str, ctx: Context) -> list[Finding]:
     for sub in subs:
         findings.extend(judge_text(sub, Context(ctx.cwd, ctx.config, ctx.assigned, ctx.cleared,
                                                 ctx.depth + 1)))
-    outer_piped = ctx.piped
-    for words, fed in zip(commands, feeds):
-        ctx.piped = fed
+    outer_piped, outer_inputs = ctx.piped, ctx.inputs
+    for words, fed, given in zip(commands, feeds, inputs):
+        ctx.piped, ctx.inputs = fed, given
         findings.extend(judge_simple(words, ctx))
-    ctx.piped = outer_piped
+    ctx.piped, ctx.inputs = outer_piped, outer_inputs
     ctx.docs = outer_docs
     return findings
 
@@ -638,6 +662,11 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
     first = words[0]
     name = program(first)
     cleared = ctx.cleared or local_cleared
+    if ctx.config["allowance"].get("kind") == "stretch":
+        # Before the inert-program shortcut, which would pass `python <launcher>` unjudged.
+        launcher = _launcher_call(words)
+        if launcher:
+            return [Finding(f"a direct call of {launcher}", LAUNCHER_REFUSED)]
     if appended and name not in INERT_PROGRAMS:
         # xargs adds words read from its input to the command, and the check sees none of them:
         # `printf ':refs/heads/main' | xargs git push origin` deletes a branch it never names.
@@ -1047,7 +1076,7 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
         # Each ref counts only on its own repository: a grant's on the grant's, and the step's
         # branch on the step's, so a grant elsewhere never carries the step's branch there.
         allowed = set(_push_grant_refs(allowance, repository))
-        if (repository == target and allowance.get("kind") in ("branch", "review-disposition")
+        if (repository == target and allowance.get("kind") in ("branch", "review-disposition", "stretch")
                 and allowance.get("branch")):
             allowed.add("refs/heads/" + allowance["branch"])
         for ref, problem in destinations:
@@ -1126,7 +1155,7 @@ def _destination_refs(refspecs: list[str], cwd: str | None, remote: str
 
 
 def permits_push(allowance: dict) -> bool:
-    return allowance.get("kind") in ("branch", "review-disposition") or any(
+    return allowance.get("kind") in ("branch", "review-disposition", "stretch") or any(
         grant.get("write") == "push" for grant in allowance.get("grants") or ())
 
 
@@ -1180,6 +1209,8 @@ def judge_gh(arguments: list[str], ctx: Context) -> list[Finding]:
     if (command, sub) in GH_READS:
         return []
     write = "gh " + " ".join(positional[:2])
+    if allowance.get("kind") == "stretch" and command in ("pr", "issue"):
+        return judge_gh_stretch(command, sub, arguments, positional, values, ctx)
     if command in ("pr", "issue") and sub == "comment":
         if "--edit-last" in booleans or "--delete-last" in booleans:
             return [Finding(write, "editing or deleting an earlier comment")]
@@ -1226,9 +1257,10 @@ def _tree_repository(ctx: Context) -> str | None:
 def _number_of(target: str | None, repository: str) -> int | None:
     if target is None:
         return None
-    if target.isdigit():
+    # ASCII digits only: str.isdigit() also takes digits such as "²", which int() then rejects.
+    if re.fullmatch(r"[0-9]+", target):
         return int(target)
-    match = re.match(r"^https?://github\.com/([^/]+/[^/]+)/(?:pull|issues)/(\d+)", target)
+    match = re.match(r"^https?://github\.com/([^/]+/[^/]+)/(?:pull|issues)/([0-9]+)", target)
     if match and match.group(1).lower() == repository:
         return int(match.group(2))
     return None
@@ -1270,7 +1302,7 @@ def judge_gh_api(positional: list[str], values: dict[str, list[str]], ctx: Conte
         # As gh does: given fields or --input and no method, it sends POST.
         method = "POST" if has_body else "GET"
     if endpoint == "graphql":
-        return judge_graphql(fields, ctx)
+        return judge_graphql(fields, ctx, values)
     if method == "GET":
         return []
     path = endpoint.lstrip("/")
@@ -1284,6 +1316,8 @@ def judge_gh_api(positional: list[str], values: dict[str, list[str]], ctx: Conte
     write = f"gh api {method} {path}"
     if _api_granted(allowance, method, path):
         return []
+    if allowance.get("kind") == "stretch":
+        return _judge_api_stretch(method, path, fields, values, ctx)
     match = re.match(r"^repos/([^/]+/[^/]+)/issues/(\d+)/comments$", path, re.I)
     if method == "POST" and match and _comment_granted(allowance, match.group(1).lower(), int(match.group(2))):
         return []
@@ -1368,7 +1402,8 @@ def _mutation_fields(document: str) -> list[tuple[str, str]] | None:
     return found
 
 
-def judge_graphql(fields: dict[str, str], ctx: Context) -> list[Finding]:
+def judge_graphql(fields: dict[str, str], ctx: Context,
+                  values: dict[str, list[str]] | None = None) -> list[Finding]:
     allowance = ctx.config["allowance"]
     document = _graphql_document(fields, ctx.cwd)
     if document is None:
@@ -1377,7 +1412,11 @@ def judge_graphql(fields: dict[str, str], ctx: Context) -> list[Finding]:
         return []
     mutations = _mutation_fields(document) or [("unknown", "")]
     write = "gh api graphql mutation " + ", ".join(name for name, _ in mutations)
-    if allowance.get("kind") != "review-disposition":
+    if allowance.get("kind") == "stretch":
+        problem = _graphql_body_refusal(fields, values or {}, ctx)
+        if problem:
+            return [Finding(write, problem)]
+    if allowance.get("kind") not in ("review-disposition", "stretch"):
         return [Finding(write, f"the GraphQL mutation {', '.join(n for n, _ in mutations)}")]
     for name, arguments in mutations:
         if name not in REVIEW_MUTATIONS:
@@ -1390,6 +1429,11 @@ def judge_graphql(fields: dict[str, str], ctx: Context) -> list[Finding]:
                 return [Finding(write, f"a {name} whose thread id could not be read")]
             owner = thread_owner(thread)
             expected = (str(allowance.get("repository") or "").lower(), allowance.get("pull_request"))
+            if allowance.get("kind") == "stretch":
+                if owner is not None and owner[0] == expected[0] and _own_pull(allowance, owner[1]):
+                    continue
+                where = f"{owner[0]}#{owner[1]}" if owner else "an unconfirmed pull request"
+                return [Finding(write, f"a {name} on a thread of {where}")]
             if owner is None or owner != expected:
                 where = f"{owner[0]}#{owner[1]}" if owner else "an unconfirmed pull request"
                 return [Finding(write, f"a {name} on a thread of {where}")]
@@ -1427,6 +1471,503 @@ def thread_owner(thread: str) -> tuple[str, int] | None:
         return pull["repository"]["nameWithOwner"].lower(), int(pull["number"])
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         return None
+
+
+# --- a stretch builder's own change ----------------------------------------------------
+# Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+
+LAUNCHER_FILES = ("dispatch_seat.py", "dispatch_implementer.py", "dispatch_record.py")
+LAUNCHER_REFUSED = ("a builder launches checks through the entrance (work.py run STAGE); a direct "
+                    "launcher call is refused")
+REPORT_MARKER = "tradecraft:check-report"
+REPORT_REFUSED = ("a comment carrying tradecraft:check-report, which only the entrance posts from "
+                  "the run that launched the check")
+EDIT_REFUSED = "editing or deleting a comment, which keeps a posted report as the entrance posted it"
+# Every name Python runs a script under: a versioned or windowless interpreter (`python3.12`,
+# `pythonw`, `pyw`) runs one as `python` and `py` do.
+PYTHON_NAME = re.compile(r"pythonw?(?:\d+(?:\.\d+)*)?|pyw?")
+
+
+def _is_python(name: str) -> bool:
+    return PYTHON_NAME.fullmatch(name) is not None
+
+
+# Python's long options that take the next word as their value; any other long option takes none.
+PYTHON_VALUE_OPTIONS = {"--check-hash-based-pycs"}
+# Python's short options that take a value, from the rest of their word or else the next word.
+PYTHON_VALUE_LETTERS = set("XWQ")
+# A launcher given to one of these runs as it would under its own name.
+MODULE_RUNNERS = {"cProfile", "profile", "pdb", "trace", "runpy", "coverage"}
+# No label, reviewer or assignee: the reviewer label is `ready-reviewers`' write, not the builder's.
+PR_CREATE_OPTIONS = {"--fill", "-f", "--title", "-t", "--body", "-b", "--body-file", "-F",
+                     "--base", "-B", "--draft", "-d", "--head", "-H", "--repo", "-R"}
+PR_EDIT_OPTIONS = {"--title", "-t", "--body", "-b", "--body-file", "-F", "--repo", "-R"}
+GH_VALUE_OPTIONS = {"--title", "-t", "--body", "-b", "--body-file", "-F", "--base", "-B", "--head",
+                    "-H", "--repo", "-R", "--label", "-l", "--reviewer", "-r", "--assignee", "-a",
+                    "--milestone", "-m", "--project", "-p", "--add-label", "--remove-label",
+                    "--add-reviewer", "--remove-reviewer", "--add-assignee", "--remove-assignee",
+                    "--add-project", "--remove-project", "--template", "-T", "--recover"}
+PULL_LOOKUP_JQ = "[.head.repo.full_name,.head.ref]"
+BODY_ROUTE = "write the body to a file and pass it as --body-file FILE (gh api: -F body=@FILE)"
+BODY_EXPANDED = ("a comment body holding `$` or a command substitution, which the shell may expand "
+                 f"into text the check never sees; {BODY_ROUTE}")
+BODY_PIPED = f"a comment body piped in from another command, whose output the check cannot read; {BODY_ROUTE}"
+BODY_NO_INPUT = ("a comment body read from standard input with no here-document or file the check can "
+                 f"read feeding it; {BODY_ROUTE}")
+REPLY_ID_REFUSED = "a reply whose in_reply_to is not a comment id written as digits"
+# JSON and GraphQL strings both decode \uXXXX; GraphQL also reads \u{X...}.
+UNICODE_ESCAPE = re.compile(r"\\u(?:\{([0-9A-Fa-f]{1,6})\}|([0-9A-Fa-f]{4}))")
+GRAPHQL_STRING = re.compile(r'"""(?:\\"""|[\s\S])*?"""|"(?:\\.|[^"\\\n])*"')
+
+
+def _is_launcher(word: str) -> bool:
+    return re.split(r"[\\/]", word)[-1].lower() in LAUNCHER_FILES
+
+
+def _launcher_name(word: str) -> str | None:
+    """The launcher file a word names, as a script path or as a module, or None."""
+    if _is_launcher(word):
+        return re.split(r"[\\/]", word)[-1]
+    module = word.rsplit(".", 1)[-1] + ".py"
+    return module if module in LAUNCHER_FILES else None
+
+
+def _module_launcher(module: str, arguments: list[str]) -> str | None:
+    """The launcher a `-m module` run calls: the module itself, or one a runner module is given."""
+    name = module.rsplit(".", 1)[-1]
+    if name + ".py" in LAUNCHER_FILES:
+        return name + ".py"
+    if name in MODULE_RUNNERS:
+        # A runner's own options can't be told from its script, so any argument naming a launcher is one.
+        return next(filter(None, map(_launcher_name, arguments)), None)
+    return None
+
+
+def _launcher_call(words: list[str]) -> str | None:
+    """The launcher file a command runs as its program or as its interpreter's script, or None.
+
+    A launcher named only as data, as in `git add lib/dispatch_seat.py`, is not a call.
+    """
+    if not words:
+        return None
+    if _is_launcher(words[0]):
+        return re.split(r"[\\/]", words[0])[-1]
+    name = program(words[0])
+    if name == "uv":
+        return _uv_launcher(words[1:])
+    return _python_launcher(words[1:]) if _is_python(name) else None
+
+
+def _python_launcher(words: list[str]) -> str | None:
+    """The launcher an interpreter's arguments run: its script, its -m module, or one its -c code names.
+
+    Short options cluster as Python reads them (`-um x`, `-Xutf8`): a letter that takes a value
+    takes the rest of its word, or the next word when nothing is left, and -m and -c end the options.
+    """
+    rest = list(words)
+    while rest:
+        word = rest.pop(0)
+        if word == "--":
+            return re.split(r"[\\/]", rest[0])[-1] if rest and _is_launcher(rest[0]) else None
+        if word.startswith("--"):
+            if word in PYTHON_VALUE_OPTIONS and rest:
+                rest.pop(0)
+            continue
+        if word.startswith("-") and len(word) > 1:
+            for index, letter in enumerate(word[1:], 2):
+                if letter in "mc" or letter in PYTHON_VALUE_LETTERS:
+                    value = word[index:] or (rest.pop(0) if rest else "")
+                    if letter == "m":
+                        return _module_launcher(value, rest) if value else None
+                    if letter == "c":
+                        # Code can't be told from data, so a launcher named anywhere in it is a call.
+                        return next((f for f in LAUNCHER_FILES if f[:-3] in value), None)
+                    break
+            continue
+        return re.split(r"[\\/]", word)[-1] if _is_launcher(word) else None
+    return None
+
+
+def _uv_launcher(words: list[str]) -> str | None:
+    """The launcher a uv command calls through `uv run`, after any of uv's own options, or None."""
+    for index, word in enumerate(words):
+        if word == "run":
+            return _uv_run_launcher(words[index + 1:])
+        if word.startswith("-"):
+            continue
+        # A word after an option may be that option's value (`uv --directory lib run`).
+        if index and words[index - 1].startswith("-") and "=" not in words[index - 1]:
+            continue
+        return None
+    return None
+
+
+def _uv_run_launcher(words: list[str]) -> str | None:
+    """The launcher the command after `uv run`'s own options calls, or None.
+
+    Some of uv's options take a value (`--with pkg`) and the check cannot tell which, so each word
+    after an option is read both ways: as that option's value, and as the program. Either reading
+    that is a launcher call refuses. The first word that follows no option is the program, and
+    what comes after it is judged as that program's own command, so a launcher named as data there
+    (`uv run git add lib/dispatch_seat.py`) passes.
+    """
+    previous_is_option = False  # A word with no option before it is the program.
+    for index, word in enumerate(words):
+        if word == "--":
+            return _launcher_call(words[index + 1:])
+        module = None
+        if word == "--module" or word.startswith("--module="):
+            module = word.split("=", 1)[1] if "=" in word else (words[index + 1] if index + 1 < len(words) else "")
+            after = words[index + 1 + ("=" not in word):]
+        elif word.startswith("-") and not word.startswith("--") and "m" in word[1:]:
+            # A short cluster ending in m takes the next word; one with text after m takes that text.
+            tail = word[word.index("m", 1) + 1:]
+            module = tail or (words[index + 1] if index + 1 < len(words) else "")
+            after = words[index + 1 + (not tail):]
+        if module:
+            found = _module_launcher(module, after)
+            if found:
+                return found
+        if word.startswith("-"):
+            previous_is_option = True
+            continue
+        found = _launcher_call(words[index:])
+        if found or not previous_is_option:
+            return found
+        previous_is_option = False
+    return None
+
+
+def _expands(word: str) -> bool:
+    # Quotes are gone by the time a word is judged, so a `$` the shell left alone in single quotes
+    # can't be told from one it expanded, and both are refused.
+    return "$" in word or SUBSTITUTION_WORD in word
+
+
+def _stdin_body(ctx: Context) -> tuple[str | None, str | None]:
+    """The text a command reads on standard input, or why the check can't read it."""
+    if ctx.piped:
+        return None, BODY_PIPED
+    if not ctx.inputs:
+        return None, BODY_NO_INPUT
+    texts = []
+    for redirect, target in ctx.inputs:
+        if redirect == "<<":
+            index = int(HEREDOC.fullmatch(target).group(1))
+            if index >= len(ctx.docs):
+                return None, BODY_NO_INPUT
+            doc = ctx.docs[index]
+            # bash expands $ and backticks in a here-document whose delimiter was not quoted.
+            if getattr(doc, "expands", False) and ("$" in doc or "`" in doc):
+                return None, BODY_EXPANDED
+            texts.append(doc)
+        elif redirect == "<<<":
+            if _expands(target):
+                return None, BODY_EXPANDED
+            texts.append(target)
+        elif redirect == "<&":
+            return None, f"a comment body read from a duplicated stream, which the check cannot read; {BODY_ROUTE}"
+        else:
+            text, problem = _body_file(ctx, target)
+            if problem:
+                return None, problem
+            texts.append(text)
+    return "\n".join(texts), None
+
+
+def _body_file(ctx: Context, name: str) -> tuple[str | None, str | None]:
+    """The text of a body file (``-`` for standard input), or why the check can't read it."""
+    if name == "-":
+        return _stdin_body(ctx)
+    if _expands(name):
+        return None, BODY_EXPANDED
+    path = _resolve_dir(ctx.cwd, name)
+    unread = (f"a comment body read from {name}, which the check could not read as a file; pass a "
+              "readable file holding the body")
+    try:
+        # Only a regular file: a device or pipe such as /dev/stdin is not the text gh will read.
+        if path is None or not Path(path).is_file():
+            return None, unread
+        return Path(path).read_text(encoding="utf-8", errors="replace"), None
+    except OSError:
+        return None, unread
+
+
+def _unescaped(text: str) -> str:
+    def decode(match: re.Match) -> str:
+        try:
+            return chr(int(match.group(1) or match.group(2), 16))
+        except ValueError:
+            return match.group(0)
+    return UNICODE_ESCAPE.sub(decode, text)
+
+
+def _json_strings(text: str) -> list[str]:
+    """The text with its \\u escapes decoded, and every string a JSON request body holds as GitHub decodes it."""
+    found = [_unescaped(text)]
+    try:
+        # Pairs rather than a dict, so a key given twice keeps both values.
+        stack = [json.loads(text, object_pairs_hook=lambda pairs: pairs)]
+    except (ValueError, RecursionError):
+        return found
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            found.append(item)
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return found
+
+
+def _body_refusal(ctx: Context, texts=(), files=(), inputs=(), scanned=()) -> str | None:
+    """Why the body a comment would post is refused, or None when the check can read it and it
+    carries no report marker.
+
+    ``texts`` are bodies written in the command, ``files`` names whose text gh posts as it is
+    (``-`` for standard input), ``inputs`` --input request bodies, whose JSON GitHub decodes, and
+    ``scanned`` other text that only has to be free of the marker.
+    """
+    if any(_expands(text) for text in texts):
+        return BODY_EXPANDED
+    bodies = [*texts, *scanned, *ctx.docs, ctx.piped]
+    for name in files:
+        text, problem = _body_file(ctx, name)
+        if problem:
+            return problem
+        bodies.append(text)
+    for name in inputs:
+        text, problem = _body_file(ctx, name)
+        if problem:
+            return problem
+        bodies.extend([text, *_json_strings(text)])
+    return REPORT_REFUSED if any(REPORT_MARKER in body for body in bodies) else None
+
+
+def _field_entries(values: dict[str, list[str]]) -> list[tuple[str, str, str]]:
+    """Every (flag, name, value) gh api fields carry, a name given twice included."""
+    return [(flag, *value.partition("=")[::2]) for flag in ("-f", "--raw-field", "-F", "--field")
+            for value in values.get(flag, ())]
+
+
+def _field_bodies(values: dict[str, list[str]], skip=()) -> tuple[list[str], list[str]]:
+    """The field values gh posts as written, and the files -F reads for `name=@file`."""
+    texts, files = [], []
+    for flag, name, value in _field_entries(values):
+        if name in skip:
+            continue
+        if flag in ("-F", "--field") and value.startswith("@"):
+            files.append(value[1:])
+        else:
+            texts.append(value)
+    return texts, files
+
+
+def _graphql_body_refusal(fields: dict[str, str], values: dict[str, list[str]], ctx: Context) -> str | None:
+    """Why a stretch builder's GraphQL request is refused for its body, or None."""
+    texts, files = _field_bodies(values, skip={"query"})
+    query = fields.get("query", "")
+    if query.startswith("@"):
+        return _body_refusal(ctx, texts, files)
+    # A `$` in a string, or a `$name` no field supplies, is the shell's expansion, not a variable.
+    outside = GRAPHQL_STRING.sub(" ", query)
+    if (SUBSTITUTION_WORD in query or any("$" in found.group(0) for found in GRAPHQL_STRING.finditer(query))
+            or any(name not in fields for name in re.findall(r"\$(\w*)", outside))):
+        return BODY_EXPANDED
+    return _body_refusal(ctx, texts, files, scanned=[query, _unescaped(query)])
+
+
+def _options(arguments: list[str]) -> list[str]:
+    """The options a gh pr or issue command uses, skipping each value-taking option's value."""
+    found, rest = [], list(arguments)
+    while rest:
+        word = rest.pop(0)
+        if word == "--":
+            break
+        if word.startswith("-") and len(word) > 1:
+            flag = word.split("=", 1)[0] if word.startswith("--") else word[:2]
+            found.append(flag)
+            if flag in GH_VALUE_OPTIONS and word == flag and rest:
+                rest.pop(0)
+    return found
+
+
+def pull_owner(repository: str, number: int) -> tuple[str, str] | None:
+    """(owner/name, branch) of a pull request's head, read from GitHub; None when unreadable.
+
+    Like thread_owner, this read is the only way to hold a write to the pull request the builder
+    opened after its launch; an unreadable answer leaves it unconfirmed, and refused.
+    """
+    try:
+        result = subprocess.run(["gh", "api", "--method", "GET", f"repos/{repository}/pulls/{number}",
+                                 "--jq", PULL_LOOKUP_JQ], capture_output=True,
+                                timeout=_read_timeout(30), stdin=subprocess.DEVNULL)
+        value = json.loads(result.stdout)
+        return str(value[0]).lower(), str(value[1])
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
+        return None
+
+
+def branch_pulls(repository: str, owner: str, branch: str) -> list[int] | None:
+    """The numbers of the open pull requests in ``repository`` whose head is ``owner:branch``, read
+    from GitHub; None when unreadable.
+
+    Like pull_owner, this read is the only way to know which pull request a command that names
+    none acts on; an unreadable answer leaves it unknown, and refused.
+    """
+    head = urllib.parse.quote(f"{owner}:{branch}", safe=":/")
+    try:
+        result = subprocess.run(["gh", "api", "--method", "GET",
+                                 f"repos/{repository}/pulls?head={head}&state=open",
+                                 "--jq", "[.[].number]"], capture_output=True,
+                                timeout=_read_timeout(30), stdin=subprocess.DEVNULL)
+        value = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode or not isinstance(value, list) or any(type(n) is not int for n in value):
+        return None
+    return value
+
+
+def _tracks_own_branch(ctx: Context, branch: str, repository: str) -> bool:
+    """Whether gh, naming no pull request, looks for one headed by ``branch`` in ``repository``.
+
+    gh takes the head from the branch's configuration: its merge ref (refs/pull/N/head names N
+    outright) and the owner of the remote it pushes to or tracks.
+    """
+    merge = _run_git(ctx.cwd, "config", "--get", f"branch.{branch}.merge")
+    if merge and merge != f"refs/heads/{branch}":
+        return False
+    for key in (f"branch.{branch}.pushRemote", "remote.pushDefault", f"branch.{branch}.remote"):
+        remote = _run_git(ctx.cwd, "config", "--get", key)
+        if remote and remote != ".":
+            url = _run_git(ctx.cwd, "remote", "get-url", remote)
+            if not url or _github_repository(url) != repository:
+                return False
+    return True
+
+
+def _current_pull(ctx: Context, repository: str) -> int | None:
+    """The pull request a gh pr command naming none acts on, where the check can establish it is
+    the builder's own: the current branch is the builder's, gh looks it up as that branch of this
+    repository, and exactly one open pull request there has it as its head. None otherwise."""
+    branch = ctx.config["allowance"].get("branch")
+    if not branch or _run_git(ctx.cwd, "symbolic-ref", "--short", "-q", "HEAD") != branch:
+        return None
+    if not _tracks_own_branch(ctx, branch, repository):
+        return None
+    numbers = branch_pulls(repository, repository.partition("/")[0], branch)
+    return numbers[0] if numbers is not None and len(numbers) == 1 else None
+
+
+def _own_pull(allowance: dict, number: int | None) -> bool:
+    """Whether pull request ``number`` is the builder's own: the allowance's, or one opened from its branch."""
+    if number is None:
+        return False
+    # The allowance's own number is confirmed by the same read: the launch was told it, not shown it.
+    repository = str(allowance.get("repository") or "").lower()
+    return pull_owner(repository, number) == (repository, allowance.get("branch"))
+
+
+def _positive(text: str) -> bool:
+    return re.fullmatch(r"[0-9]+", text) is not None and int(text) > 0
+
+
+def judge_gh_stretch(command: str, sub: str, arguments: list[str], positional: list[str],
+                     values: dict[str, list[str]], ctx: Context) -> list[Finding]:
+    """A stretch builder's gh pr or gh issue command: its own pull request and issue only."""
+    allowance = ctx.config["allowance"]
+    write = f"gh {command} {sub}".strip()
+    if (command, sub) in GH_READS:
+        return []
+    start = arguments.index(sub) + 1 if sub in arguments else len(arguments)
+    options = _options(arguments[start:])
+    if "--edit-last" in options or "--delete-last" in options:
+        return [Finding(write, EDIT_REFUSED)]
+    repository = _gh_repository(values, ctx)
+    own_repository = str(allowance.get("repository") or "").lower()
+    if repository is None or repository != own_repository:
+        return [Finding(write, f"a write in {repository or 'a repository outside this step tree'}")]
+    files = [*values.get("--body-file", ()), *values.get("-F", ())]
+    bodies = [*values.get("--body", ()), *values.get("-b", ())]
+    # A here-document stands in the words as a placeholder, not as the number a command names.
+    positional = [word for word in positional if not HEREDOC.fullmatch(word)]
+    target = positional[2] if len(positional) > 2 else None
+    number = _number_of(target, repository)
+    if command == "issue":
+        if sub == "comment" and number is not None and number == allowance.get("issue"):
+            problem = _body_refusal(ctx, bodies, files)
+            return [Finding(write, problem)] if problem else []
+        where = f" on {repository}#{target}" if target else ""
+        return [Finding(write, f"`{write}`{where}, a write outside this step's own issue")]
+    if sub == "create":
+        unknown = sorted(set(options) - PR_CREATE_OPTIONS)
+        if unknown:
+            return [Finding(write, f"gh pr create with {', '.join(unknown)}")]
+        heads = [*values.get("--head", ()), *values.get("-H", ())]
+        branch = allowance.get("branch")
+        owner = own_repository.partition("/")[0]
+        if heads:
+            head = heads[-1]
+            if head.lower().startswith(owner + ":"):
+                head = head.split(":", 1)[1]
+            if head != branch:
+                return [Finding(write, f"a pull request from {heads[-1]}")]
+        elif _run_git(ctx.cwd, "symbolic-ref", "--short", "-q", "HEAD") != branch:
+            return [Finding(write, "a pull request from a branch other than this step's own")]
+        return []
+    if sub not in ("ready", "comment", "edit"):
+        return [Finding(write, f"`{write}`, a GitHub write")]
+    if sub == "edit" and set(options) - PR_EDIT_OPTIONS:
+        return [Finding(write, f"gh pr edit with {', '.join(sorted(set(options) - PR_EDIT_OPTIONS))}")]
+    if sub == "ready" and set(options) - {"--undo", "--repo", "-R"}:
+        return [Finding(write, "gh pr ready with an option other than --undo")]
+    if target is None:
+        # gh acts on the current branch's pull request, which only a live read can name.
+        if _current_pull(ctx, repository) is None:
+            return [Finding(write, f"a write on the current branch's pull request, which the check could "
+                                   f"not establish as the one open pull request from {allowance.get('branch')} "
+                                   f"in {repository}; name the pull request number")]
+    elif not _own_pull(allowance, number):
+        shown = number if number is not None else target
+        return [Finding(write, f"a write on {repository}#{shown}, which is not this step's own "
+                               "pull request")]
+    if sub == "comment":
+        problem = _body_refusal(ctx, bodies, files)
+        if problem:
+            return [Finding(write, problem)]
+    return []
+
+
+def _judge_api_stretch(method: str, path: str, fields: dict[str, str],
+                       values: dict[str, list[str]], ctx: Context) -> list[Finding]:
+    """A stretch builder's non-GET REST call: comments on its own issue and pull request, and thread replies."""
+    allowance = ctx.config["allowance"]
+    write = f"gh api {method} {path}"
+    lowered = path.lower()
+    if method in ("PATCH", "DELETE") and re.search(r"/comments(?:/|$)", lowered):
+        return [Finding(write, EDIT_REFUSED)]
+    if method != "POST":
+        return [Finding(write, f"`{write}`")]
+    own = f"repos/{allowance.get('repository')}".lower()
+    texts, files = _field_bodies(values, skip={"in_reply_to"})
+    problem = _body_refusal(ctx, texts, files, values.get("--input", ()))
+    if problem:
+        return [Finding(write, problem)]
+    issue = re.fullmatch(re.escape(own) + r"/issues/([0-9]+)/comments", lowered)
+    if issue:
+        number = int(issue.group(1))
+        if number == allowance.get("issue") or _own_pull(allowance, number):
+            return []
+        return [Finding(write, f"a comment on {allowance.get('repository')}#{number}")]
+    pull = re.fullmatch(re.escape(own) + r"/pulls/([0-9]+)/comments(?:/([0-9]+)/replies)?", lowered)
+    if pull:
+        replies = [value for _flag, name, value in _field_entries(values) if name == "in_reply_to"]
+        if pull.group(2) is None and replies and not all(map(_positive, replies)):
+            return [Finding(write, REPLY_ID_REFUSED)]
+        reply = _positive(pull.group(2)) if pull.group(2) is not None else bool(replies)
+        if reply and _own_pull(allowance, int(pull.group(1))):
+            return []
+    return [Finding(write, f"`{write}`")]
 
 
 # --- other HTTP clients and session starts ------------------------------------------
@@ -1635,6 +2176,12 @@ def describe(allowance: dict) -> str:
         text = (f"`review-disposition`: a push to refs/heads/{branch} of {repository}, a reply on "
                 f"and a resolve of a review thread of {repository}#{number}, and a conversation "
                 f"comment on {repository}#{number}")
+    elif kind == "stretch":
+        own = f"#{number}" if number is not None else f"the one opened from {branch}"
+        text = (f"`stretch`: a push to refs/heads/{branch} of {repository}; opening, readying and "
+                f"editing the title and body of a pull request from {branch}; a conversation comment "
+                f"on, and a reply on and a resolve of a review thread of, that pull request ({own}); "
+                f"and a comment on issue #{allowance.get('issue')} of {repository}")
     else:
         text = "`none`: no GitHub write"
     grants = [f"{grant.get('write')} {grant.get('target')}" for grant in allowance.get("grants") or ()]

@@ -39,6 +39,7 @@ from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TO
                                 claude_stream_check, claude_terminal, claude_write_bound_notice,
                                 stream_check_reason, stream_check_record)
 import github_allowance
+import launch_tree
 import launch_bound
 import launch_settings
 import preflight
@@ -158,8 +159,15 @@ def instruction_shim_plan(tree: Path, git_dir: Path | None) -> list[tuple[Path |
     return candidates
 
 
+# A stretch builder's turn stands after a refusal it recovered from, so its instruction file says so.
+STRETCH_HELPER_RULE = LAUNCH_HELPER_RULE.replace(
+    "and a refused call fails this turn.",
+    "and the refusal is recorded; in this stretch launch the turn goes on.")
+
+
 @contextmanager
-def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path, dispatch_id: str):
+def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path, dispatch_id: str,
+                     rule: str = LAUNCH_HELPER_RULE):
     """Write the launch's own instruction file for this invocation only, and remove it when it ends."""
     if not candidates:
         yield None
@@ -173,7 +181,7 @@ def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path,
             errors.append(f"{directory}: {exc}")
             continue
         try:
-            text = LAUNCH_HELPER_RULE + "\n" + (f"\n{line}\n" if line else "")
+            text = rule + "\n" + (f"\n{line}\n" if line else "")
             (directory / "CLAUDE.md").write_bytes(text.encode("utf-8"))
             yield directory
         finally:
@@ -254,7 +262,14 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
                                 artifact=getattr(args, "stage", None) == "artifact")
 
 
-def _claude_result(raw: bytes, check: dict | None = None) -> tuple[bool, bytes, str | None, str]:
+def _claude_result(raw: bytes, check: dict | None = None, *, refusals_stand: bool = False
+                   ) -> tuple[bool, bytes, str | None, str]:
+    """(complete, final message, session, failure reason) of a Claude result.
+
+    A reported permission denial fails the result unless ``refusals_stand``, which only a stretch
+    builder's launch passes: a builder that recovered from a refusal and finished keeps its return,
+    and its run record lists the refusal. Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
+    """
     check = claude_stream_check(raw) if check is None else check
     value = check["return"] or claude_terminal(raw)
     if value is None:
@@ -266,7 +281,7 @@ def _claude_result(raw: bytes, check: dict | None = None) -> tuple[bool, bytes, 
         session = None
     if check["status"] == "work_outlived_return":
         return False, b"", session, stream_check_reason(check)
-    if value.get("permission_denials"):
+    if value.get("permission_denials") and not refusals_stand:
         return False, b"", session, "Claude reported a tool permission denial; see its stdout log"
     if value.get("is_error") is not False or value.get("subtype") != "success":
         return False, b"", session, str(value.get("result") or "claude reported an error")
@@ -457,6 +472,178 @@ def _cloud_route(args: argparse.Namespace) -> tuple[dict | None, str, str | None
     return cloud_build.launch_route(args.stage, args.resume, args.work)
 
 
+STRETCH = "stretch"
+STRETCH_DISPATCH = launch_tree.DISPATCH_VARIABLE
+STRETCH_WORK = launch_tree.WORK_VARIABLE
+
+
+def _refuse_inside_a_stretch(args: argparse.Namespace) -> None:
+    """A builder launches no implementer: that would be a second writer at its stage.
+
+    Checked before any worktree, branch or bundle exists. A tree check that could not be made
+    refuses only where the variable says a stretch is running; otherwise the launch goes on, and
+    its request record names the bundle whose check failed.
+    Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    holding = launch_tree.stretch_holding(records.default_record_root())
+    args.stretch_tree_unknown = None
+    if holding.state == "held" or os.environ.get(STRETCH_DISPATCH):
+        raise ImplementerError("a builder launches no implementer")
+    if holding.state == "unknown":
+        args.stretch_tree_unknown = holding.record()
+
+
+def _validate_stretch(args: argparse.Namespace) -> None:
+    """A stretch launch carries one change from handoff to ready: Claude, local, and named whole.
+
+    Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    if args.vendor != "claude":
+        raise ImplementerError("a Codex builder is started by hand on the builder route")
+    if not args.holder_session_id:
+        raise ImplementerError("a stretch launch requires --holder-session-id")
+    if not args.lineage_branch:
+        raise ImplementerError("a stretch launch requires --lineage-branch")
+    if github_allowance.issue_of(args.work) is None:
+        raise ImplementerError("a stretch launch requires --work owner/name#n")
+    # The cloud route is decided per stage, and `stretch` is not one of its stages, so the question is
+    # whether this repository's builds go to the cloud. A resumed session runs where it started, which
+    # for a stretch, refused on the cloud from its first launch, is always here.
+    if not args.resume and cloud_build.launch_route("build", None, args.work) is not None:
+        raise ImplementerError("cloud builds keep the relay route")
+
+
+def _require_lineage_branch(root: Path, branch: str) -> None:
+    """The branch a stretch builder may push is the one its root has checked out, so the allowance names its own work."""
+    try:
+        result = subprocess.run(["git", "-C", str(root), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                                capture_output=True, stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ImplementerError(f"the branch checked out at {root} could not be read: {exc}") from exc
+    current = result.stdout.decode("utf-8", "replace").strip()
+    if result.returncode != 0 or current != branch:
+        raise ImplementerError(f"--lineage-branch {branch} is not the branch checked out at {root} "
+                               f"({current or 'none'})")
+
+
+def _require_own_registration(root: Path, work: str, branch: str) -> None:
+    """A root registered to one change launches a stretch only for that change, so its allowance names no other.
+
+    A root nobody registered has no registration to disagree with, and launching one is how the stage
+    is tried on a throwaway repository, so it launches as it is.
+    """
+    path = launch_bound.registry_path(Path.home())
+    rows = launch_bound._registry_rows(path)
+    if rows is None:
+        raise ImplementerError(f"the implementation registry {path} could not be read")
+    target = os.path.normcase(str(root.resolve()))
+    for row in rows:
+        if row.get("active") is not True or not isinstance(row.get("root"), str):
+            continue
+        if os.path.normcase(str(Path(row["root"]).resolve())) != target:
+            continue
+        registered = (str(row.get("repository") or "").casefold(), row.get("issue"), row.get("branch"))
+        if registered != (github_allowance.repository_of(work).casefold(), github_allowance.issue_of(work), branch):
+            raise ImplementerError(f"{root} is registered to {row.get('repository')}#{row.get('issue')} on "
+                                   f"{row.get('branch')}, not {work} on {branch}")
+
+
+def _spelling(text: str) -> str:
+    """A path or command as a match reads it: a guard logs the resolved path, the call the written one."""
+    return text.replace("\\", "/").casefold()
+
+
+def _stream_position(entry: dict, calls: list[tuple[str | None, list[str]]],
+                     taken: set[tuple[int, str]] = frozenset(), denied: set[int] = frozenset()) -> int:
+    """Where a refusal's call stands among the run's tool calls: by tool-use id, else by its text.
+
+    A call takes one report from each source, so one command refused twice is two entries. A
+    refusal placed by its text goes to the first call open to its source whose input holds that text
+    exactly, so `a.py` never lands on `a.py.bak`, denied calls first, so an earlier allowed call naming
+    the same path never takes it. Where no call holds it exactly, calls that only contain it and tie
+    while they differ leave it unplaced rather than merge two refusals. Unplaced refusals sort after
+    every call.
+    """
+    wanted_id = _tool_use_id(entry)
+    if wanted_id:
+        return next((position for position, (call_id, _) in enumerate(calls) if call_id == wanted_id),
+                    len(calls))
+    texts = [_spelling(text) for text in entry.get("texts") or () if text]
+    open_calls = [(position, leaves) for position, (_, leaves) in enumerate(calls)
+                  if (position, entry["source"]) not in taken]
+    exact = [call for call in open_calls if any(text == leaf for text in texts for leaf in call[1])]
+    partial = [call for call in open_calls if any(text in leaf for text in texts for leaf in call[1])]
+    if exact:
+        # Calls of one command differ only in fields such as `description`, so an exact match is no tie.
+        return ([call for call in exact if call[0] in denied] or exact)[0][0]
+    preferred = [call for call in partial if call[0] in denied] or partial
+    if preferred and all(leaves == preferred[0][1] for _, leaves in preferred):
+        return preferred[0][0]
+    return len(calls)
+
+
+def _tool_use_id(entry: dict) -> str | None:
+    denial = entry.get("denial") if isinstance(entry.get("denial"), dict) else {}
+    return entry.get("tool_use_id") or denial.get("tool_use_id")
+
+
+def _stream_calls(stream: bytes) -> list[tuple[str | None, list[str]]]:
+    return [(block.get("id"), [_spelling(leaf) for leaf in launch_bound._leaves(block.get("input"))])
+            for event in launch_bound._stream_events(stream) for block in launch_bound._blocks(event)
+            if block.get("type") == "tool_use"]
+
+
+def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> None:
+    """One entry per refused call, in stream order, naming every source that reported it.
+
+    A call the GitHub bound or the file guard refuses is also reported by Claude as a permission
+    denial, so the two reports of one call are one entry. The run stands after them.
+    """
+    found: list[dict[str, object]] = []
+    for refusal in record.get("github_write_refusals") or ():
+        found.append({"source": "github-write-bound", "tool": refusal.get("tool"),
+                      "command": refusal.get("command"), "reason": refusal.get("reason"),
+                      "at": refusal.get("at"), "texts": [refusal.get("command")]})
+    for refusal in (record.get("write_guard") or {}).get("refusals") or ():
+        found.append({"source": "file-write-guard", "tool": refusal.get("tool"),
+                      "command": refusal.get("canonical") or refusal.get("raw"),
+                      "reason": refusal.get("reason"),
+                      "texts": [refusal.get("raw"), refusal.get("canonical")]})
+    for denial in attempt.get("permission_denials") or ():
+        found.append({"source": "permission-denial",
+                      "tool": denial.get("tool_name") if isinstance(denial, dict) else None,
+                      "reason": "Claude reported a tool permission denial", "denial": denial})
+    calls = _stream_calls(getattr(args, "stretch_stream", b"") or b"")
+    merged: dict[int, dict[str, object]] = {}
+    unplaced: list[dict[str, object]] = []
+    taken: set[tuple[int, str]] = set()
+    positions: dict[int, int] = {}
+    # Reports that carry a tool-use id are placed first, so one placed by its text knows the denied calls.
+    for index, entry in sorted(enumerate(found), key=lambda item: _tool_use_id(item[1]) is None):
+        denied = {positions[i] for i in positions if "denial" in found[i]}
+        positions[index] = _stream_position(entry, calls, taken, denied)
+        taken.add((positions[index], entry["source"]))
+    for index, entry in enumerate(found):
+        position = positions[index]
+        entry.pop("texts", None)
+        if position == len(calls):
+            unplaced.append({**entry, "sources": [entry["source"]]})
+            continue
+        if position not in merged:
+            merged[position] = {**entry, "sources": [entry["source"]]}
+            continue
+        # The first report of a call names the entry: the bound's, which says what was refused and
+        # why, comes before Claude's denial, which says only that a call was denied.
+        held = merged[position]
+        held["sources"].append(entry["source"])
+        if "denial" in entry:
+            held["denial"] = entry["denial"]
+    record["refusals"] = [merged[position] for position in sorted(merged)] + unplaced
+    log = getattr(args, "stretch_guard_log", None)
+    if record.get("github_write_refusals_unknown") or (log is not None and not Path(log).is_file()):
+        record["refusals_unknown"] = True
+
+
 def _spawned_nothing(attempt, deadline, args) -> None:
     """An attempt that started nothing opens no window and names no spawn; the cap runs on.
 
@@ -470,7 +657,8 @@ def _spawned_nothing(attempt, deadline, args) -> None:
 
 def run_implementer(args: argparse.Namespace) -> int:
     if args.timeout_seconds is None:
-        args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
+        args.timeout_seconds = (lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage in ("build", STRETCH)
+                                else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS)
     cap_seconds = getattr(args, "preflight_cap_seconds", None)
     cap_reason = getattr(args, "preflight_cap_reason", None)
     try:
@@ -528,6 +716,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         args.vendor_source = f"explicit --vendor {args.vendor}"
     if args.vendor not in ("codex", "claude"):
         raise ImplementerError(f"unknown implementer vendor: {args.vendor}")
+    _refuse_inside_a_stretch(args)
+    if args.stage == STRETCH:
+        _validate_stretch(args)
     if args.model is not None and not args.model.strip():
         raise ImplementerError("--model must be nonempty when supplied")
     if args.effort is not None and not args.effort.strip():
@@ -556,6 +747,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     dispatch = args.dispatch.expanduser().resolve()
     if not root.is_dir():
         raise ImplementerError(f"root is not a directory: {root}")
+    if args.stage == STRETCH:
+        _require_lineage_branch(root, args.lineage_branch)
+        _require_own_registration(root, args.work, args.lineage_branch)
     prompt = dispatch.read_bytes()
     if not prompt.decode("utf-8").strip():
         raise ImplementerError(f"dispatch is empty: {dispatch}")
@@ -729,7 +923,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     continuity = "resume" if args.resume else "fresh"
     with records.reserve_bundle(destinations, output) as streams:
         with tempfile.TemporaryDirectory(prefix=environments.INVOCATION_TEMPORARY_PREFIX) as temporary, \
-                instruction_shim(shim_plan, Path(temporary), dispatch_id) as shim:
+                instruction_shim(shim_plan, Path(temporary), dispatch_id,
+                                 STRETCH_HELPER_RULE if args.stage == STRETCH else LAUNCH_HELPER_RULE) as shim:
             args.instruction_shim = shim
             last_message = Path(temporary) / "last.txt"
             child_env = artifact_tree.environment() if args.stage == "artifact" else None
@@ -739,7 +934,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             allowance = github_allowance.allowance_for(
                 args.stage, repository=github_allowance.repository_of(args.work),
                 branch=args.lineage_branch, pull_request=args.lineage_pull_request,
-                grants=metadata.get("github_write_grants") or ())
+                grants=metadata.get("github_write_grants") or (),
+                issue=github_allowance.issue_of(args.work))
             # Read once, before preparation, so the Codex bound record names the same version.
             with preflight.part("vendor"):
                 runtime_version = records.runtime_version(executable) if executable is not None else None
@@ -830,6 +1026,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 },
             )
             request["implementer_role"] = role
+            if getattr(args, "stretch_tree_unknown", None):
+                request["stretch_tree_check"] = args.stretch_tree_unknown
             # The bound's record holds this launch's temporary paths, so it lives in the run
             # record; the request stays comparable across launches of the same work.
             request["environment_request"] = {key: value for key, value in intent.items()
@@ -866,8 +1064,14 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 effective_prompt = effective_prompt + b"\n\n" + notice
                 composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
                 child_env = claude_launch_env(child_env, allocation)
+                if args.stage == STRETCH:
+                    # The builder's shell children inherit both; the worker names its job from the
+                    # third and drops it. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+                    child_env.update({STRETCH_DISPATCH: dispatch_id, STRETCH_WORK: args.work,
+                                      launch_tree.JOB_VARIABLE: dispatch_id})
                 guard = intent["write_guard"]["config"]
-                bound_notice = claude_write_bound_notice(guard["root"], launch_bound.allowed_scratchpad(guard))
+                bound_notice = claude_write_bound_notice(guard["root"], launch_bound.allowed_scratchpad(guard),
+                                                         stretch=args.stage == STRETCH)
                 # A Claude launch already carries a write-bound notice recorded in launch_controls,
                 # so its GitHub allowance rides inside that one notice and record.
                 bound_notice += github_notice
@@ -877,12 +1081,23 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     allocation, notice, disallowed=CLAUDE_DISALLOWED_TOOLS,
                     write_bound_notice=bound_notice)
                 write_guard_log = Path(intent["write_guard"]["log"])
+                args.stretch_guard_log = write_guard_log
                 comparison_error = None
+                pointer = None
+                if args.stage == STRETCH:
+                    # Where the tree check reads which stretch launches may hold a process; written
+                    # before the comparison's first snapshot, so its removal or rewrite is held.
+                    pointer = launch_tree.write_pointer(
+                        records.default_record_root(), dispatch_id=dispatch_id, work=args.work,
+                        request=request_path, run=record_path,
+                        session_id=args.resume or args.session_id,
+                        launcher=lifecycle.process_identity(), root=root)
                 try:
                     comparison = launch_bound.Comparison(
                         root=root, env=child_env, launcher_plugin=Path(__file__).resolve().parent.parent,
                         own_output=output, own_request=request_path,
-                        holder_session_id=args.holder_session_id, dispatch_id=dispatch_id, refs=True)
+                        holder_session_id=args.holder_session_id, dispatch_id=dispatch_id, refs=True,
+                        own_pointer=pointer, own_row_resnapshot=args.stage == STRETCH)
                 except (OSError, ValueError, TypeError) as exc:
                     comparison, comparison_error = None, f"coverage could not be planned: {exc}"
                 request["write_bound"] = {
@@ -1076,6 +1291,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if native:
                     native.refresh()
                 growing.tick()
+            # Bound before the turn, so the record's last steps can read it whether or not it ran.
+            result = None
             try:
                 try:
                     if args.handover_state:
@@ -1156,11 +1373,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     if attempt["launched"]:
                         attempt["stream_check"] = stream_check_record(check)
                     outlived = check["status"] == "work_outlived_return"
-                    complete, message, session_id, failure_reason = _claude_result(result.stdout, check)
+                    complete, message, session_id, failure_reason = _claude_result(
+                        result.stdout, check, refusals_stand=args.stage == STRETCH)
                     session_source = "claude JSON result.session_id" if session_id else ""
                     if "write_bound" in request and attempt["launched"]:
                         record["write_guard"], guard_failure = launch_bound.guard_outcome(
                             result.stdout, write_guard_log)
+                        if args.stage == STRETCH:
+                            # A deny wrote nothing, so it stands; an unproved write still fails.
+                            guard_failure = "; ".join(
+                                f"write bound unproved: {u['tool']} {u['raw']} completed with no guard decision"
+                                for u in record["write_guard"]["unguarded"])
                         if guard_failure:
                             # A refused or unproved write fails the turn like a denial.
                             complete = False
@@ -1269,6 +1492,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if github_bound is not None and github_bound.get("log"):
                     # A refusal is reported, not held: it changes no outcome.
                     github_allowance.record_refusals(record, github_bound["log"])
+                if args.stage == STRETCH:
+                    args.stretch_stream = result.stdout if result is not None else b""
+                    _stretch_refusals(record, attempt, args)
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)
                     if args.stage != "artifact":

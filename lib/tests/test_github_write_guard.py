@@ -1192,3 +1192,424 @@ def test_an_unread_git_option_refuses_every_route_to_a_remote_behind_it(tree, co
 ])
 def test_a_variable_assigned_on_the_line_is_judged_as_the_program_it_names(tree, command, expected):
     assert decision(command, tree, "branch") == expected
+
+
+# --- a stretch builder's own change --------------------------------------------------------
+
+def stretch_config(root, pull_request=None):
+    allowance = allowance_module.allowance_for(
+        "stretch", repository="o/r", branch="tradecraft/894-ab", pull_request=pull_request,
+        issue=allowance_module.issue_of("o/r#5"))
+    return {"allowance": allowance, "root": str(root), "child_settings": str(root / "child.json"),
+            "scope": "parent"}
+
+
+@pytest.fixture()
+def stretch(tree, monkeypatch):
+    # Pull request 12 was opened from the builder's branch; 13 from another; 14 cannot be read.
+    owners = {12: ("o/r", "tradecraft/894-ab"), 13: ("o/r", "other")}
+    monkeypatch.setattr(guard, "pull_owner", lambda repository, number: owners.get(number))
+    monkeypatch.setattr(guard, "thread_owner", lambda thread: {"T12": ("o/r", 12),
+                                                               "T13": ("o/r", 13)}.get(thread))
+    # No test reads GitHub: the current branch's pull requests are unreadable unless a test says so.
+    monkeypatch.setattr(guard, "branch_pulls", lambda repository, owner, branch: None)
+    (tree / "body.md").write_text("<!-- tradecraft:check-report:v1 stage=use -->\nx\n", encoding="utf-8")
+    (tree / "plain.md").write_text("plain\n", encoding="utf-8")
+    return tree
+
+
+def stretch_decision(command, root, pull_request=None):
+    return guard.decide(command, str(root), stretch_config(root, pull_request))
+
+
+def _mutation(name, arguments):
+    return "gh api graphql -f query='mutation{%s(input:{%s}){clientMutationId}}'" % (name, arguments)
+
+
+@pytest.mark.parametrize("command", [
+    "git push origin tradecraft/894-ab",
+    "gh pr create --head tradecraft/894-ab --title t --body b",
+    "gh pr create --head o:tradecraft/894-ab --title t --body b --base main --draft",
+    "gh pr create --fill",
+    "gh pr ready 12",
+    "gh pr ready 12 --undo",
+    "gh pr edit 12 --body-file plain.md",
+    "gh pr edit 12 --title t",
+    "gh api repos/o/r/pulls/12/comments/4242/replies -f body=x",
+    "gh api -X POST repos/o/r/pulls/12/comments -F in_reply_to=4242 -f body=x",
+    _mutation("addPullRequestReviewThreadReply", 'pullRequestReviewThreadId:"T12",body:"x"'),
+    _mutation("resolveReviewThread", 'threadId:"T12"'),
+    "gh pr comment 12 --body x",
+    "gh issue comment 5 --body x",
+    "gh api -X POST repos/o/r/issues/5/comments -f body=x",
+    "gh api -X POST repos/o/r/issues/12/comments -f body=x",
+    "git add lib/dispatch_seat.py",
+    "git diff -- lib/dispatch_seat.py lib/dispatch_record.py",
+    "uv run ruff check lib/dispatch_seat.py",
+    "uv run git add lib/dispatch_seat.py",
+    "uv run --with pkg ruff check lib/dispatch_seat.py",
+    "uv run mypy lib/dispatch_seat.py",
+    "uv run cat lib/dispatch_seat.py",
+    "uv run black lib/dispatch_seat.py",
+    "python -u lint.py lib/dispatch_seat.py",
+    "python lib/work.py run use --repo o/r --issue 5",
+    "cat lib/dispatch_implementer.py",
+])
+def test_a_stretch_builder_may_write_to_its_own_change(stretch, command):
+    verdict = stretch_decision(command, stretch)
+    assert verdict["decision"] == "allow", verdict["reason"]
+
+
+def test_a_stretch_builders_own_pull_request_is_confirmed_by_its_head_even_when_the_allowance_names_it(
+        stretch, monkeypatch):
+    owners = {20: ("o/r", "tradecraft/894-ab"), 22: ("o/r", "other")}
+    monkeypatch.setattr(guard, "pull_owner", lambda repository, number: owners.get(number))
+    assert stretch_decision("gh pr ready 20", stretch, pull_request=20)["decision"] == "allow"
+    # Named by the launch but headed by another branch, or unreadable: refused.
+    assert stretch_decision("gh pr ready 22", stretch, pull_request=22)["decision"] == "deny"
+    assert stretch_decision("gh pr ready 21", stretch, pull_request=21)["decision"] == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "gh pr create --head tradecraft/894-ab --title t --body b --label L",
+    "gh pr create --head tradecraft/894-ab --title t --body b --reviewer someone",
+    "gh pr create --head other --title t --body b",
+    "gh pr create --head tradecraft/894-ab --title t --body b --repo other/x",
+    "gh pr edit 12 --add-label L",
+    "gh pr ready 12 --repo o/elsewhere",
+    "gh pr edit 12 --repo o/elsewhere --body b",
+    "gh issue comment 5 --repo o/elsewhere --body x",
+    "gh issue comment 6 --body x",
+    "gh api -X POST repos/o/r/issues/6/comments -f body=x",
+    "gh pr comment 13 --body x",
+    "gh pr ready 13",
+    "gh pr ready 14",
+    "gh pr comment 14 --body x",
+    "git push origin HEAD:refs/heads/other",
+    "gh pr merge 12",
+    "gh api -X PUT repos/o/r/pulls/12/merge",
+    _mutation("mergePullRequest", 'pullRequestId:"P"'),
+    _mutation("enablePullRequestAutoMerge", 'pullRequestId:"P"'),
+    _mutation("markPullRequestReadyForReview", 'pullRequestId:"P"'),
+    "gh release create v1",
+    "gh workflow run ci.yml",
+    "gh run rerun 1",
+    "gh run cancel 1",
+    "gh issue close 5",
+    "gh issue edit 5 --title t",
+    "gh pr close 12",
+    "gh api -X PATCH repos/o/r/issues/comments/1 -f body=x",
+    "gh api -X DELETE repos/o/r/issues/comments/1",
+    "gh api -X PATCH repos/o/r/pulls/comments/1 -f body=x",
+    "gh api -X DELETE repos/o/r/pulls/comments/1",
+    "gh issue comment 5 --edit-last --body x",
+    "gh pr comment 12 --delete-last",
+    "gh issue comment 5 --body '<!-- tradecraft:check-report:v1 stage=use -->'",
+    "gh issue comment 5 --body-file body.md",
+    "gh pr comment 12 -F body.md",
+    "gh issue comment 5 --body-file - <<'X'\n<!-- tradecraft:check-report:v1 -->\nX",
+    "gh api -X POST repos/o/r/issues/5/comments -F body=@body.md",
+    "gh api -X POST repos/o/r/issues/5/comments -f 'body=<!-- tradecraft:check-report:v1 -->'",
+    "gh api repos/o/r/pulls/12/comments/4242/replies -f 'body=<!-- tradecraft:check-report:v1 -->'",
+    "gh api repos/o/r/pulls/13/comments/4242/replies -f body=x",
+    _mutation("addPullRequestReviewThreadReply",
+              'pullRequestReviewThreadId:"T12",body:"<!-- tradecraft:check-report:v1 -->"'),
+    _mutation("resolveReviewThread", 'threadId:"T13"'),
+    _mutation("resolveReviewThread", 'threadId:"T99"'),
+    "gh api repos/o/r/pulls/12/comments/$ID/replies -f body=x",
+    *[_mutation(name, 'id:"C"') for name in (
+        "updateIssueComment", "deleteIssueComment", "updatePullRequestReviewComment",
+        "deletePullRequestReviewComment", "minimizeComment")],
+])
+def test_a_stretch_builder_is_refused_every_other_write(stretch, command):
+    assert stretch_decision(command, stretch)["decision"] == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "lib/dispatch_seat.py --stage use",
+    "python lib/dispatch_seat.py --help",
+    "python3 -u lib/dispatch_implementer.py --stage build",
+    "py -3 D:/plugin/lib/dispatch_record.py begin",
+    "uv run python lib/dispatch_seat.py --help",
+    "uv run lib/dispatch_seat.py --help",
+    "uv run --with pkg python lib/dispatch_seat.py",
+    "uv run --python 3.14 -m dispatch_seat --help",
+    "python -m dispatch_seat --help",
+    "python -X utf8 lib/dispatch_seat.py",
+    "python3.12 lib/dispatch_seat.py --help",
+    "pythonw lib/dispatch_seat.py --help",
+    "python --check-hash-based-pycs always lib/dispatch_seat.py",
+    "cd lib && python dispatch_seat.py",
+    "bash -c 'python lib/dispatch_seat.py'",
+])
+def test_a_stretch_builder_is_refused_a_direct_launcher_call(stretch, command):
+    verdict = stretch_decision(command, stretch)
+    assert verdict["decision"] == "deny"
+    assert "through the entrance" in verdict["reason"]
+
+
+def test_a_direct_launcher_call_stays_open_outside_a_stretch(tree):
+    assert decision("python lib/dispatch_seat.py --help", tree, "branch") == "allow"
+
+
+def test_the_stretch_sentence_names_its_writes_and_how_to_reply():
+    allowance = allowance_module.allowance_for("stretch", repository="o/r", branch="B",
+                                               pull_request=None, issue=5)
+    text = allowance_module.sentence(allowance)
+    for part in ("a push to your own branch B of o/r", "opening a pull request from B in o/r",
+                 "marking it ready", "editing its title and body", "the one you open from B",
+                 "a comment on issue #5 of o/r", "written as digits", "in_reply_to",
+                 "An id held in a shell variable is refused", "work.py run STAGE"):
+        assert part in text
+    assert text.count(allowance_module.SENTENCE_OPENING) == 1
+    assert not allowance_module.needs_notice(allowance, text.encode("utf-8"))
+    other = allowance_module.allowance_for("build", repository="o/r", branch="B", pull_request=None)
+    with pytest.raises(allowance_module.BoundError):
+        allowance_module.needs_notice(other, text.encode("utf-8"))
+    with pytest.raises(allowance_module.BoundError):
+        allowance_module.needs_notice(allowance, allowance_module.sentence(other).encode("utf-8"))
+    assert allowance_module.allowance_for("stretch", repository="o/r", branch=None,
+                                          pull_request=None, issue=5)["kind"] == "none"
+
+
+@pytest.fixture()
+def bodies(stretch):
+    # A JSON request body that spells the marker with an escape GitHub decodes, and one without it.
+    (stretch / "escaped.json").write_text('{"body": "<!-- \\u0074radecraft:check-report:v1 -->"}',
+                                          encoding="utf-8")
+    (stretch / "plain.json").write_text('{"body": "plain"}', encoding="utf-8")
+    return stretch
+
+
+@pytest.mark.parametrize("command", [
+    "gh api -X POST repos/o/r/issues/5/comments --input escaped.json",
+    "gh api -X POST repos/o/r/issues/5/comments --input - < escaped.json",
+    "gh api -X POST repos/o/r/issues/5/comments --input - <<'X'\n{\"body\": \"\\u0074radecraft:check-report\"}\nX",
+    "gh api -X POST repos/o/r/issues/5/comments --input - <<'X'\n"
+    "{\"body\": \"\\u0074radecraft:check-report\", \"body\": \"x\"}\nX",
+    "gh issue comment 5 --body-file - < body.md",
+    "gh issue comment 5 --body-file - <<< '<!-- tradecraft:check-report:v1 -->'",
+    _mutation("addPullRequestReviewThreadReply",
+              'pullRequestReviewThreadId:"T12",body:"\\u0074radecraft:check-report"'),
+    "gh api graphql -f query='mutation($b:String!){addPullRequestReviewThreadReply(input:"
+    "{pullRequestReviewThreadId:\"T12\",body:$b}){clientMutationId}}' -F b=@body.md",
+])
+def test_a_stretch_builder_is_refused_a_report_marker_github_would_decode_or_read(bodies, command):
+    verdict = stretch_decision(command, bodies)
+    assert verdict["decision"] == "deny"
+    assert "tradecraft:check-report" in verdict["reason"]
+
+
+@pytest.mark.parametrize("command", [
+    "gh issue comment 5 --body-file missing.md",
+    "gh pr comment 12 -F missing.md",
+    "gh api -X POST repos/o/r/issues/5/comments --input missing.json",
+    "gh api -X POST repos/o/r/issues/5/comments -F body=@missing.md",
+    "gh api -X POST repos/o/r/issues/5/comments --input - < missing.json",
+    "gh issue comment 5 --body-file .",
+])
+def test_a_stretch_builder_is_refused_a_body_file_the_check_cannot_read(bodies, command):
+    verdict = stretch_decision(command, bodies)
+    assert verdict["decision"] == "deny"
+    assert "could not read" in verdict["reason"]
+
+
+@pytest.mark.parametrize("command", [
+    'gh issue comment 5 --body "$(cat report.md)"',
+    'gh issue comment 5 --body "`cat report.md`"',
+    'gh issue comment 5 --body "$BODY"',
+    'gh pr comment 12 --body "${BODY}"',
+    'gh pr comment 12 -b "$BODY"',
+    'gh api -X POST repos/o/r/issues/5/comments -f body="$(cat report.md)"',
+    'gh api -X POST repos/o/r/issues/5/comments -f body="$BODY"',
+    'gh api -X POST repos/o/r/issues/5/comments -F body=@"$FILE"',
+    'gh issue comment 5 --body-file "$FILE"',
+    'gh issue comment 5 --body-file - <<< "$BODY"',
+    "gh issue comment 5 --body-file - <<X\n$(cat body.md)\nX",
+    "gh issue comment 5 --body-file - <<X\n`cat body.md`\nX",
+    "gh issue comment 5 --body-file - <<X\n$BODY\nX",
+    "cat body.md | gh issue comment 5 --body-file -",
+    "gh issue comment 5 --body-file -",
+    "gh api -X POST repos/o/r/issues/5/comments --input -",
+    _mutation("addPullRequestReviewThreadReply", 'pullRequestReviewThreadId:"T12",body:"$BODY"'),
+    _mutation("addPullRequestReviewThreadReply", 'pullRequestReviewThreadId:"T12",body:$BODY'),
+])
+def test_a_stretch_builder_is_refused_a_body_whose_text_the_shell_supplies(bodies, command):
+    verdict = stretch_decision(command, bodies)
+    assert verdict["decision"] == "deny"
+    assert "--body-file FILE" in verdict["reason"]
+
+
+@pytest.mark.parametrize("command", [
+    "gh issue comment 5 --body-file plain.md",
+    "gh pr comment 12 --body 'plain words'",
+    "gh api -X POST repos/o/r/issues/5/comments --input plain.json",
+    "gh api -X POST repos/o/r/issues/5/comments --input - < plain.json",
+    "gh api -X POST repos/o/r/issues/5/comments -F body=@plain.md",
+    "gh api -X POST repos/o/r/issues/5/comments -f 'body=@someone thanks'",
+    "gh issue comment 5 --body-file - < plain.md",
+    "gh issue comment 5 --body-file - <<< 'plain words'",
+    "gh issue comment 5 --body-file - <<'X'\nFixed `foo` for $5\nX",
+    "gh api graphql -f query='mutation($b:String!){addPullRequestReviewThreadReply(input:"
+    "{pullRequestReviewThreadId:\"T12\",body:$b}){clientMutationId}}' -f b=plain",
+])
+def test_a_stretch_builder_may_post_a_body_the_check_can_read(bodies, command):
+    verdict = stretch_decision(command, bodies)
+    assert verdict["decision"] == "allow", verdict["reason"]
+
+
+# Digits str.isdigit() takes but int() or a path pattern refuses, built here so the file stays ASCII.
+SUPERSCRIPT_TWO = chr(0xB2)
+ARABIC_INDIC_THREE = chr(0x663)
+
+
+@pytest.mark.parametrize("command", [
+    "gh api -X POST repos/o/r/pulls/12/comments -F in_reply_to=$ID -f body=x",
+    "gh api -X POST repos/o/r/pulls/12/comments -F in_reply_to=0 -f body=x",
+    "gh api -X POST repos/o/r/pulls/12/comments -f in_reply_to=abc -f body=x",
+    "gh api -X POST repos/o/r/pulls/12/comments -F in_reply_to=-3 -f body=x",
+    f"gh api -X POST repos/o/r/pulls/12/comments -F in_reply_to={SUPERSCRIPT_TWO}{SUPERSCRIPT_TWO} -f body=x",
+    "gh api -X POST repos/o/r/pulls/12/comments -F in_reply_to=4242 -f in_reply_to=$ID -f body=x",
+    "gh api -X POST repos/o/r/pulls/12/comments -F in_reply_to=@id.txt -f body=x",
+    "gh api repos/o/r/pulls/12/comments/0/replies -f body=x",
+    f"gh api repos/o/r/pulls/12/comments/{SUPERSCRIPT_TWO}/replies -f body=x",
+])
+def test_a_stretch_reply_names_its_comment_as_a_positive_number(stretch, command):
+    assert stretch_decision(command, stretch)["decision"] == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "gh api -X POST repos/o/r/pulls/12/comments -F in_reply_to=4242 -f body=x",
+    "gh api -X POST repos/o/r/pulls/12/comments -f in_reply_to=4242 -f body=x",
+    "gh api repos/o/r/pulls/12/comments/4242/replies -f body=x",
+])
+def test_a_stretch_reply_with_a_numeric_id_on_its_own_pull_request_passes(stretch, command):
+    verdict = stretch_decision(command, stretch)
+    assert verdict["decision"] == "allow", verdict["reason"]
+
+
+def test_a_target_in_other_digits_is_refused_rather_than_raising(stretch):
+    assert stretch_decision(f"gh pr ready {SUPERSCRIPT_TWO}", stretch)["decision"] == "deny"
+    assert stretch_decision(f"gh pr comment {ARABIC_INDIC_THREE} --body x", stretch)["decision"] == "deny"
+
+
+@pytest.mark.parametrize("work, expected", [
+    ("o/r#5", 5), ("o/r#" + SUPERSCRIPT_TWO, None), ("o/r#" + ARABIC_INDIC_THREE, None),
+    ("o/r#0", None), ("o/r#x", None), ("o/r#-3", None), ("o/r", None),
+])
+def test_an_issue_suffix_is_a_positive_number_in_ascii_digits(work, expected):
+    assert allowance_module.issue_of(work) == expected
+
+
+IMPLICIT = ["gh pr ready", "gh pr ready --undo", "gh pr comment --body x", "gh pr edit --title t",
+            "gh pr comment --body-file - <<'X'\nplain\nX"]
+
+
+@pytest.mark.parametrize("command", IMPLICIT)
+def test_a_stretch_builder_may_name_no_pull_request_when_its_branch_has_one_open(stretch, monkeypatch,
+                                                                                  command):
+    asked = []
+    monkeypatch.setattr(guard, "branch_pulls",
+                        lambda repository, owner, branch: asked.append((repository, owner, branch)) or [12])
+    verdict = stretch_decision(command, stretch)
+    assert verdict["decision"] == "allow", verdict["reason"]
+    assert asked == [("o/r", "o", "tradecraft/894-ab")]
+
+
+@pytest.mark.parametrize("found", [[], [12, 20], None])
+@pytest.mark.parametrize("command", IMPLICIT)
+def test_a_pull_request_the_check_cannot_establish_must_be_named(stretch, monkeypatch, command, found):
+    monkeypatch.setattr(guard, "branch_pulls", lambda repository, owner, branch: found)
+    verdict = stretch_decision(command, stretch)
+    assert verdict["decision"] == "deny"
+    assert "name the pull request number" in verdict["reason"]
+
+
+@pytest.mark.parametrize("setup", [
+    ("checkout", "-q", "-b", "other"),
+    ("config", "branch.tradecraft/894-ab.merge", "refs/pull/99/head"),
+    ("config", "branch.tradecraft/894-ab.merge", "refs/heads/other"),
+    ("config", "branch.tradecraft/894-ab.pushRemote", "fork"),
+])
+def test_an_implicit_pull_request_needs_gh_to_look_up_the_builders_branch(stretch, monkeypatch, setup):
+    git(stretch, "remote", "add", "fork", "https://github.com/someone/r.git")
+    git(stretch, *setup)
+    monkeypatch.setattr(guard, "branch_pulls", lambda repository, owner, branch: [12])
+    verdict = stretch_decision("gh pr ready", stretch)
+    assert verdict["decision"] == "deny"
+    assert "name the pull request number" in verdict["reason"]
+
+
+def test_an_implicit_pull_request_may_track_the_builders_own_branch(stretch, monkeypatch):
+    git(stretch, "config", "branch.tradecraft/894-ab.remote", "origin")
+    git(stretch, "config", "branch.tradecraft/894-ab.merge", "refs/heads/tradecraft/894-ab")
+    monkeypatch.setattr(guard, "branch_pulls", lambda repository, owner, branch: [12])
+    verdict = stretch_decision("gh pr ready", stretch)
+    assert verdict["decision"] == "allow", verdict["reason"]
+
+
+@pytest.mark.parametrize("returncode, stdout, expected", [
+    (0, b"[12]\n", [12]),
+    (0, b"[]\n", []),
+    (0, b"[12,20]\n", [12, 20]),
+    (1, b"[12]\n", None),
+    (0, b'{"message":"Not Found"}', None),
+    (0, b"[true]", None),
+    (0, b"", None),
+])
+def test_branch_pulls_reads_the_open_pull_requests_headed_by_the_branch(monkeypatch, returncode, stdout,
+                                                                         expected):
+    seen = []
+
+    def run(arguments, **options):
+        seen.append(arguments)
+        return subprocess.CompletedProcess(arguments, returncode, stdout, b"")
+
+    monkeypatch.setattr(guard.subprocess, "run", run)
+    assert guard.branch_pulls("o/r", "o", "tradecraft/894-ab") == expected
+    assert "repos/o/r/pulls?head=o:tradecraft/894-ab&state=open" in seen[0]
+    assert seen[0][:4] == ["gh", "api", "--method", "GET"]
+
+
+@pytest.mark.parametrize("command", [
+    "python -mdispatch_seat",
+    "python -um dispatch_seat",
+    "python -c\"import dispatch_seat\"",
+    "python -Ic 'import dispatch_seat'",
+    "python -Xutf8 lib/dispatch_seat.py",
+    "python -Wignore lib/dispatch_seat.py",
+    "python -uX utf8 lib/dispatch_seat.py",
+    "python -- lib/dispatch_seat.py",
+    "python -m cProfile lib/dispatch_seat.py",
+    "python -m cProfile -o out.prof lib/dispatch_seat.py",
+    "python -m cProfile -m dispatch_seat",
+    "python -m profile lib/dispatch_seat.py",
+    "python -m pdb lib/dispatch_seat.py",
+    "python -m trace --count lib/dispatch_seat.py",
+    "python -m runpy dispatch_seat",
+    "python -m coverage run lib/dispatch_seat.py",
+    "uv --quiet run lib/dispatch_seat.py",
+    "uv -q run python lib/dispatch_seat.py",
+    "uv --directory lib run dispatch_seat.py",
+    "uv run -mdispatch_seat",
+    "uv run --module=dispatch_seat",
+    "uv run -m cProfile lib/dispatch_seat.py",
+    "uv run python -m cProfile lib/dispatch_seat.py",
+])
+def test_a_stretch_builder_is_refused_a_launcher_behind_joined_or_runner_options(stretch, command):
+    verdict = stretch_decision(command, stretch)
+    assert verdict["decision"] == "deny"
+    assert "through the entrance" in verdict["reason"]
+
+
+@pytest.mark.parametrize("command", [
+    "python -Wignore lint.py lib/dispatch_seat.py",
+    "python -uX utf8 lint.py lib/dispatch_seat.py",
+    "python -m pytest -q lib/tests/test_dispatch_seat.py",
+    "python -m cProfile lint.py",
+    "uv --quiet run ruff check lib/dispatch_seat.py",
+    "uv --directory lib run mypy dispatch_seat.py",
+])
+def test_a_stretch_builder_may_name_a_launcher_as_data_behind_joined_options(stretch, command):
+    verdict = stretch_decision(command, stretch)
+    assert verdict["decision"] == "allow", verdict["reason"]

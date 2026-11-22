@@ -1084,3 +1084,37 @@ def test_C7_report_and_local_counts_agree(registered, case, expected):
         assert any(item["status"] == "renamed" for item in state.files)
     if case.startswith("mode"):
         assert [item["status"] for item in state.files if item["filename"] == "version.json"] == ["changed"]
+
+
+def test_1011_a_builders_catch_up_leaves_its_launch_comparison_clean(registered, tmp_path, monkeypatch, capsys):
+    """A stretch builder catches its own branch up inside its launch comparison, and writes only its own change."""
+    import launch_bound
+    from comparison_window import comparison_window
+    root, implementation, branch, remote, transport, state = registered
+    commit(root, "src/other", "incoming\n")
+    git(root, "push", "origin", "main")
+    # The comparison reads the same registry the entrance wrote, so the holder checkout is covered.
+    monkeypatch.setattr(launch_bound, "registry_path", lambda home: tmp_path / "registry.json")
+    writes = []
+    for method in ("post", "patch", "put", "delete", "graphql"):
+        monkeypatch.setattr(transport, method, lambda *args, _method=method, **kwargs: writes.append(
+            (_method, args)) or {}, raising=False)
+
+    def remote_refs():
+        lines = git(root, "ls-remote", str(remote)).splitlines()
+        return dict(reversed(line.split("\t")) for line in lines if line.strip())
+
+    refs_before = remote_refs()
+    with comparison_window(root=implementation, tmp_path=tmp_path, checkouts=[root]) as window:
+        assert work._execute_catch_up(transport, state, root, None, "holder-id", RULES) == 0
+    capsys.readouterr()
+    assert any(item["item"].startswith("checkout:") for item in window["plan"])
+    # Unchanged, the comparison holds on the own root's registry row, which catch-up re-snapshots.
+    assert [finding["item"] for finding in window["unchanged"]["findings"]] == ["registry"]
+    assert window["result"]["findings"] == [], window["result"]["findings"]
+    # Its GitHub writes: none; only its own branch moved on the remote, to its own head.
+    assert writes == []
+    refs_after = remote_refs()
+    moved = {ref for ref in set(refs_before) | set(refs_after) if refs_before.get(ref) != refs_after.get(ref)}
+    assert moved == {f"refs/heads/{branch}"}
+    assert refs_after[f"refs/heads/{branch}"] == git(implementation, "rev-parse", "HEAD")

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -37,6 +38,7 @@ from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claud
                                 claude_stream_check, claude_terminal, stream_check_reason,
                                 stream_check_record)
 import github_allowance
+import launch_tree
 import launch_bound
 import launch_settings
 import preflight
@@ -554,6 +556,18 @@ def _steps_before_spawn(args, vendor, comparison):
 
 
 def run_dispatch(args, *, now=None) -> int:
+    # Who launched this seat is read from the launch tree, before any bundle exists, and no
+    # process this seat starts names a stretch launch: it is not the builder, and with the builder's
+    # variable it would be judged as one, refused once the launch ends or where its tree can't be
+    # checked. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    try:
+        args.launch_attribution = launch_tree.attribution(
+            records.default_record_root(), dispatch=getattr(args, "launched_by_dispatch", None),
+            session=getattr(args, "launched_by_session", None), origin=getattr(args, "dispatch_origin", None))
+    except launch_tree.LaunchRefused as exc:
+        raise DispatchError(str(exc)) from exc
+    for name in launch_tree.VARIABLES:
+        os.environ.pop(name, None)
     cap_seconds = getattr(args, "preflight_cap_seconds", None)
     cap_reason = getattr(args, "preflight_cap_reason", None)
     try:
@@ -563,7 +577,56 @@ def run_dispatch(args, *, now=None) -> int:
                                              declared=True, cap=cap_seconds, cap_reason=cap_reason)
     except ValueError as exc:
         raise DispatchError(str(exc)) from exc
-    return cap_declaration.launcher_run(args, deadline, lambda: _launch_dispatch(args, deadline, now), "seat")
+    code = cap_declaration.launcher_run(args, deadline, lambda: _launch_dispatch(args, deadline, now), "seat")
+    if getattr(args, "return_frame", False):
+        _write_return_frame(args)
+    return code
+
+
+FRAME_OPENING = b"tradecraft-return-frame "
+
+
+def _write_return_frame(args) -> None:
+    """The seat's return, as the launcher holds it, as its last stdout output.
+
+    The entrance in builder mode posts these bytes, never the store's copy, which a builder's shell
+    can write. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    value = getattr(args, "frame_return", None) or b""
+    record = getattr(args, "frame_record", None) or {}
+    header = {"bytes": len(value), "sha256": hashlib.sha256(value).hexdigest(),
+              "dispatch_sha256": getattr(args, "frame_dispatch_sha256", None),
+              "dispatch_id": getattr(args, "frame_dispatch_id", None),
+              "outcome": record.get("outcome") or "error",
+              "staffing_status": record.get("staffing_status"),
+              "same_vendor_reason": (record.get("staffing_qualification") or {}).get("same_vendor_reason")}
+    sys.stdout.flush()
+    stream = sys.stdout.buffer
+    stream.write(b"\n" + FRAME_OPENING + json.dumps(header, sort_keys=True).encode("ascii") + b"\n" + value)
+    stream.flush()
+
+
+def read_return_frame(output: bytes) -> dict | None:
+    """The return frame that ends a launcher's stdout, its bytes checked against its header; None if absent or broken.
+
+    The frame is the launcher's last output, so its header's byte count reaches exactly the end. The
+    first opening that does so is the frame: a return holding the opening text, even a whole frame of
+    its own, is read as return bytes.
+    """
+    start = -1
+    while (start := output.find(b"\n" + FRAME_OPENING, start + 1)) >= 0:
+        line_end = output.find(b"\n", start + 1)
+        if line_end < 0:
+            return None
+        try:
+            header = json.loads(output[start + 1 + len(FRAME_OPENING):line_end])
+            size = int(header["bytes"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        value = output[line_end + 1:]
+        if len(value) == size and hashlib.sha256(value).hexdigest() == header.get("sha256"):
+            return {**header, "return": value}
+    return None
 
 
 def _launch_dispatch(args, deadline, now) -> int:
@@ -608,6 +671,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
         prompt = cold_draft.read_input(dispatch) if args.stage == "cold-seat" else dispatch.read_bytes()
     except cold_draft.BindingError as exc:
         raise DispatchError(str(exc)) from exc
+    args.frame_dispatch_sha256 = hashlib.sha256(prompt).hexdigest()
     if not prompt.decode("utf-8").strip():
         raise DispatchError(f"Dispatch is empty: {dispatch}")
     judged_draft = None
@@ -673,6 +737,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
             setting_sources=setting_sources(args, args.vendor, codex_sandbox),
         )
         request["requested"]["required_capability"] = args.requires
+        request.update(getattr(args, "launch_attribution", None) or {})
         comparison = None
         process_started = False
         if "claude" in vendors and compared_launch(args, "claude"):
@@ -728,6 +793,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
         streams.mark_ready()
         args.request_recorded = True
         print(f"seat: dispatch {request['dispatch_id']} -> {output}")
+        args.frame_dispatch_id = request["dispatch_id"]
         record = {"schema_version": records.SCHEMA_VERSION,
                   "dispatch_id": request["dispatch_id"], "request": str(request_path),
                   "requested_vendor": args.vendor, "own_vendor": args.own_vendor,
@@ -742,6 +808,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                              "published_output": None,
                              "published_output_unavailable_reason": "no successful final source return",
                              "assessment": "unassessed"}}
+        args.frame_record = record
         pending_logs = {}
         if judged_draft is not None:
             record["judged_draft"] = judged_draft
@@ -1026,6 +1093,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                         "comparison_vendor": args.own_vendor,
                     }
                     record["outcome"] = "success"
+                    args.frame_return = verdict
                     streams[source_path].write(verdict)
                     streams[source_path].flush()
                     record["result"]["source_output"] = str(source_path)
@@ -1154,6 +1222,12 @@ def parser() -> argparse.ArgumentParser:
                      help="a cap larger than 900 seconds on the work before the recipient starts")
     cli.add_argument("--preflight-cap-reason", help="why this run declares a larger preflight cap")
     cli.add_argument("--launch-notice", type=Path, help=argparse.SUPPRESS)
+    # The entrance's own, in builder mode; recorded, never trusted over the launch tree.
+    cli.add_argument("--launched-by-dispatch", help=argparse.SUPPRESS)
+    cli.add_argument("--launched-by-session", help=argparse.SUPPRESS)
+    cli.add_argument("--dispatch-origin", choices=("entrance",), help=argparse.SUPPRESS)
+    # The entrance in builder mode takes the seat's return from this frame, never from the store.
+    cli.add_argument("--return-frame", action="store_true", help=argparse.SUPPRESS)
     cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
     cli.add_argument("--preflight-input", type=Path, help=argparse.SUPPRESS)
     for vendor, model in DEFAULT_MODELS.items():

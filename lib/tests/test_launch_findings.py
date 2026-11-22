@@ -437,3 +437,13 @@ def test_984_a_comparison_that_ran_out_of_time_holds_until_its_items_are_account
     entries = [{"id": f["id"], "party": "none-found", "basis": "inspected the item; nothing of this run's"}
                for f in comparison["findings"]]
     assert held(fixture_with(tmp_path / "r", account(*entries), comparison=comparison)) is None
+
+
+def test_a_completed_stretch_launchs_findings_hold_and_a_running_one_owes_none(tmp_path, monkeypatch):
+    fixture = fixture_with(tmp_path, stage="stretch")
+    assert held(fixture).reason == "launch-findings-unaccounted"
+    accounted = fixture_with(tmp_path / "accounted", account(OWNER, SESSION), stage="stretch")
+    assert held(accounted) is None
+    running = fixture_with(tmp_path / "running", stage="stretch", comparison=None)
+    monkeypatch.setattr(work.lifecycle, "liveness", lambda run: "active")
+    assert held(running) is None

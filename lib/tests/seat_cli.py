@@ -60,6 +60,9 @@ capture = {"argv": flags, "cwd": str(Path.cwd()), "stdin": base64.b64encode(prom
 capture["pytest_addopts"] = os.environ.get("PYTEST_ADDOPTS")
 capture["background_switch"] = os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
 capture["command_ceiling"] = os.environ.get("BASH_MAX_TIMEOUT_MS")
+# A builder's launch names itself to its recipient; no other launch may.
+capture["stretch_variables"] = {name: value for name, value in os.environ.items()
+                                if name.startswith("TRADECRAFT_STRETCH_")}
 if vendor == "claude":
     capture["additional_claude_md"] = os.environ.get("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD")
     capture["add_dirs"] = {flags[i + 1]: (Path(flags[i + 1], "CLAUDE.md").read_text(encoding="utf-8")
@@ -80,6 +83,16 @@ if vendor == "claude":
         capture["guard_config"] = config
         with Path(config["log"]).open("ab") as stream:
             for entry in scenario["guard_decisions"]:
+                stream.write((json.dumps(entry) + "\n").encode("utf-8"))
+    if "github_decisions" in scenario:
+        # Stand in for the launch's GitHub command check: its refusals land in its own log.
+        import re
+        settings = json.loads(Path(flags[flags.index("--settings") + 1]).read_bytes())
+        command = next(hook["command"] for entry in settings["hooks"]["PreToolUse"]
+                       for hook in entry["hooks"] if "github_write_guard" in hook["command"])
+        config = json.loads(Path(re.search(r'--config "([^"]+)"', command)[1]).read_bytes())
+        with Path(config["log"]).open("ab") as stream:
+            for entry in scenario["github_decisions"]:
                 stream.write((json.dumps(entry) + "\n").encode("utf-8"))
     transcript = scenario.get("transcript")
     if transcript:
