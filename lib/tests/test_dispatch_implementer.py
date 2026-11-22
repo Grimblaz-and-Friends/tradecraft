@@ -2771,3 +2771,22 @@ def test_1011_an_unguarded_completed_call_still_fails_a_stretch(job, tmp_path, m
     logged = record(args)
     assert logged["outcome"] == "error"
     assert "write bound unproved: Write" in logged["attempts"][0]["reason"]
+
+
+def test_1011_one_command_refused_twice_is_two_entries(tmp_path):
+    command = "gh issue comment 6 --body x"
+    stream = "\n".join(json.dumps(event) for event in [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": f"toolu_{n}", "name": "Bash", "input": {"command": command}}]}}
+        for n in (1, 2)])
+    refusal = {"tool": "Bash", "command": command, "reason": "a comment on o/r#6", "at": "t"}
+    record_value = {"github_write_refusals": [refusal, dict(refusal)],
+                    "write_guard": {"refusals": [], "unguarded": []}}
+    attempt = {"permission_denials": [{"tool_name": "Bash", "tool_use_id": "toolu_1"},
+                                      {"tool_name": "Bash", "tool_use_id": "toolu_2"}]}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt,
+                                  Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
+    assert [entry["sources"] for entry in record_value["refusals"]] == [
+        ["github-write-bound", "permission-denial"], ["github-write-bound", "permission-denial"]]

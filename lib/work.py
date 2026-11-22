@@ -11269,6 +11269,10 @@ def check_report_body(*, stage: str, frame: dict | None, head: str, tree: str,
 
 
 def _post_check_report(github, state: WorkState, body: str) -> dict[str, object]:
+    """Post a builder check's report, retried within the run because a report posted later would be
+    read from the store, which the builder can write. A post that landed but answered with an error
+    is posted again: the two comments are byte-identical and name one bundle, so both count or
+    neither does, and no gate reads counting reports yet."""
     endpoint = f"repos/{state.repo}/issues/{state.issue_number}/comments"
     errors = []
     for _attempt in range(REPORT_POST_ATTEMPTS):

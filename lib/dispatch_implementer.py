@@ -511,10 +511,13 @@ def _spelling(text: str) -> str:
     return text.replace("\\", "/").casefold()
 
 
-def _stream_position(entry: dict, calls: list[tuple[str | None, list[str]]]) -> int:
+def _stream_position(entry: dict, calls: list[tuple[str | None, list[str]]],
+                     taken: set[tuple[int, str]] = frozenset()) -> int:
     """Where a refusal's call stands among the run's tool calls: by tool-use id, else by its text.
 
-    Unplaced refusals sort after every call.
+    A call takes one report from each source, so a refusal placed by its text skips a call that
+    source has already reported, and one command refused twice is two entries. Unplaced refusals
+    sort after every call.
     """
     denial = entry.get("denial") if isinstance(entry.get("denial"), dict) else {}
     wanted_id = entry.get("tool_use_id") or denial.get("tool_use_id")
@@ -522,7 +525,8 @@ def _stream_position(entry: dict, calls: list[tuple[str | None, list[str]]]) -> 
     for position, (call_id, leaves) in enumerate(calls):
         if wanted_id and call_id == wanted_id:
             return position
-        if not wanted_id and any(text in leaf for text in texts for leaf in leaves):
+        if (not wanted_id and (position, entry["source"]) not in taken
+                and any(text in leaf for text in texts for leaf in leaves)):
             return position
     return len(calls)
 
@@ -556,8 +560,10 @@ def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> 
     calls = _stream_calls(getattr(args, "stretch_stream", b"") or b"")
     merged: dict[int, dict[str, object]] = {}
     unplaced: list[dict[str, object]] = []
+    taken: set[tuple[int, str]] = set()
     for entry in found:
-        position = _stream_position(entry, calls)
+        position = _stream_position(entry, calls, taken)
+        taken.add((position, entry["source"]))
         entry.pop("texts", None)
         if position == len(calls):
             unplaced.append({**entry, "sources": [entry["source"]]})

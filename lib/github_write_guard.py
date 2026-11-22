@@ -1456,6 +1456,12 @@ REPORT_REFUSED = ("a comment carrying tradecraft:check-report, which only the en
                   "the run that launched the check")
 EDIT_REFUSED = "editing or deleting a comment, which keeps a posted report as the entrance posted it"
 PYTHON_PROGRAMS = {"python", "py", "python3"}
+# A versioned or windowless interpreter (`python3.12`, `pythonw`, `pyw`) runs a script the same way.
+PYTHON_NAME = re.compile(r"pythonw?(?:\d+(?:\.\d+)*)?|pyw?")
+
+
+def _is_python(name: str) -> bool:
+    return name in PYTHON_PROGRAMS or PYTHON_NAME.fullmatch(name) is not None
 PYTHON_VALUE_OPTIONS = {"-X", "-W", "-Q"}
 PR_CREATE_OPTIONS = {"--fill", "-f", "--title", "-t", "--body", "-b", "--body-file", "-F",
                      "--base", "-B", "--draft", "-d", "--head", "-H", "--repo", "-R"}
@@ -1487,7 +1493,7 @@ def _launcher_call(words: list[str]) -> str | None:
         if not rest or rest[0] != "run":
             return None
         return _uv_run_launcher(rest[1:])
-    if name not in PYTHON_PROGRAMS:
+    if not _is_python(name):
         return None
     while rest:
         word = rest.pop(0)
@@ -1515,7 +1521,7 @@ def _uv_run_launcher(words: list[str]) -> str | None:
     what comes after it is judged as that program's own command, so a launcher named as data there
     (`uv run git add lib/dispatch_seat.py`) passes.
     """
-    previous_is_option = True
+    previous_is_option = False  # A word with no option before it is the program.
     for index, word in enumerate(words):
         if word == "--":
             return _launcher_call(words[index + 1:])

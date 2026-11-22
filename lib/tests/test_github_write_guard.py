@@ -1246,6 +1246,9 @@ def _mutation(name, arguments):
     "uv run ruff check lib/dispatch_seat.py",
     "uv run git add lib/dispatch_seat.py",
     "uv run --with pkg ruff check lib/dispatch_seat.py",
+    "uv run mypy lib/dispatch_seat.py",
+    "uv run cat lib/dispatch_seat.py",
+    "uv run black lib/dispatch_seat.py",
     "python lib/work.py run use --repo o/r --issue 5",
     "cat lib/dispatch_implementer.py",
 ])
@@ -1326,6 +1329,8 @@ def test_a_stretch_builder_is_refused_every_other_write(stretch, command):
     "uv run --python 3.14 -m dispatch_seat --help",
     "python -m dispatch_seat --help",
     "python -X utf8 lib/dispatch_seat.py",
+    "python3.12 lib/dispatch_seat.py --help",
+    "pythonw lib/dispatch_seat.py --help",
     "cd lib && python dispatch_seat.py",
     "bash -c 'python lib/dispatch_seat.py'",
 ])

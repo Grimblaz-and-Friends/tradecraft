@@ -6,6 +6,8 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 
 ## Rows and their reasons
 
+The brief has seven rows. This pull request carries rows 1, 3 and 5, the builder's tools; rows 2, 4, 6 and 7 (the holder-written plan, the final pass, the one handoff text, and the default route) are the second pull request's, as the brief's Delivery paragraph says.
+
 - **Row 1, the builder runs its checks as tools.** A builder's own `work.py run` is recognised and limited to the checks and own-change writes the brief gives it: `cold-reader`, `use`, `acceptance-criterion`, `proof`, `ready-reviewers` and `catch-up`. A check the builder launches records that it did.
 - **Row 3, a check's instructions, inputs and report are out of the builder's reach.** A check is independent only while the party it checks can't aim it or edit it. So the settled artifact supplies a builder's use job, criteria and consumer trees. The entrance builds the tree inside the run that launches the seat, and posts the report from the seat launcher's own frame before the run returns.
 - **Row 5, the builder writes only to its own change, and a refusal doesn't void its run.** The allowance covers the branch, the pull request opened from it and the change's issue. A refusal the builder recovered from is recorded in `refusals` and leaves the run standing. A seat keeps the rule that fails its launch on a refusal (#962 stays open for it).
