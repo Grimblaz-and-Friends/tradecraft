@@ -11016,7 +11016,7 @@ CRITERION_PREAMBLE = (
     "criterion below holds of the built result in the tree named here. Return pass, fail or unable, "
     "with the evidence you read or ran. Change nothing.\n"
 )
-CRITERION_OPENING = re.compile(r"^[ 	]*(?:[-*+][ 	]+)?\*\*([A-Z][A-Za-z]*[0-9]+(?:\.[0-9]+)?)\.\*\*", re.M)
+CRITERION_OPENING = re.compile(r"^[ \t]*(?:[-*+][ \t]+)?\*\*([A-Z][A-Za-z]*[0-9]+(?:\.[0-9]+)?)\.\*\*", re.M)
 HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
 FRESH_READER = re.compile(r"Fresh reader:\s*(read|execute)\s+(?:(tree)\b|consumer tree\s+([a-z0-9-]+))")
