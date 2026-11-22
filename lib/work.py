@@ -11467,10 +11467,16 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
         dispatches.append({"bundle": str(run_path), "stage": request.get("stage"), "status": status,
                            **({"reason": problem} if problem else {})})
     reports = []
+    config = getattr(state, "config", None)
+    producers = config.marker_producers if config is not None else frozenset()
     for comment in comments:
         found = REPORT_MARKER_LINE.match(comment["body"])
         attributes = dict(part.split("=", 1) for part in found.group(1).split() if "=" in part) if found else {}
         reasons = []
+        author = (comment.get("user") or {}).get("login") if isinstance(comment.get("user"), dict) else None
+        if author not in producers:
+            # The entrance posts under a configured marker-producer login; any other author is a claim.
+            reasons.append("not from a configured marker producer")
         bundle = bundles.get(attributes.get("dispatch"))
         if found is None:
             reasons.append("malformed")

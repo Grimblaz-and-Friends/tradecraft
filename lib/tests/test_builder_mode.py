@@ -500,6 +500,9 @@ def composed(holding, check_source, tmp_path, monkeypatch):
     monkeypatch.setattr(work, "_producer_vendor", lambda *a, **k: ("claude", "fixture"))
     monkeypatch.setattr(work, "_seat_launch_arguments", lambda *a, **k: [])
     monkeypatch.setattr(work, "_held_by_cold_reading", lambda *a, **k: False)
+    monkeypatch.setattr(work, "_synchronization_decision", lambda state: seen.get("sync"))
+    monkeypatch.setattr(work, "_launch_plan", lambda *a, **k: {"vendors": {"claude": {}, "codex": {}}})
+    monkeypatch.setattr(work, "_reported_decision", lambda state, decision: decision)
     monkeypatch.setattr(work, "_emit_report", lambda payload, *a, **k: seen["reports"].append(payload))
     behaviour = {"outcome": "success", "return": "The job ran.\n", "edit": False}
 
@@ -628,7 +631,8 @@ def counted(composed, tmp_path):
         {"outcome": "success", "staffing_status": "degraded"},
         {".dispatch.bin": seen["dispatch"], ".source.bin": b"The job ran.\n"})
     state.record_root = store
-    state.issue_comments = [{"id": 1, "body": transport.posts[0][1]}]
+    state.config = work.WorkConfig(marker_producers=frozenset({"producer"}))
+    state.issue_comments = [{"id": 1, "body": transport.posts[0][1], "user": {"login": "producer"}}]
     return state, output, transport.posts[0][1]
 
 
@@ -661,7 +665,7 @@ def test_a_caller_supplied_dispatch_differs_and_never_counts(counted):
 ])
 def test_a_hand_written_or_altered_report_counts_for_nothing(counted, change, reason):
     state, _output, body = counted
-    state.issue_comments = [{"id": 2, "body": change(body)}]
+    state.issue_comments = [{"id": 2, "body": change(body), "user": {"login": "producer"}}]
     report = work.builder_checks(state)["check_reports"][0]
     assert report["counts"] is False and reason in report["invalid"]
 
@@ -840,3 +844,45 @@ def test_a_reading_whose_record_names_another_tree_or_no_source_never_recomposes
     metadata, _path = reading(check_source, tmp_path)
     state = SimpleNamespace(repo="o/r", issue_number=5, holder_root=None)
     assert work._recompose_reading(state, Path(metadata["tree_root"]), work._records_home(None))[0] is None
+
+
+def test_a_report_from_an_account_that_is_no_marker_producer_counts_for_nothing(counted):
+    state, _output, body = counted
+    state.issue_comments = [{"id": 3, "body": body, "user": {"login": "someone-else"}}]
+    report = work.builder_checks(state)["check_reports"][0]
+    assert report["counts"] is False and report["invalid"] == ["not from a configured marker producer"]
+
+
+def test_a_failed_builder_accounting_shows_in_the_report_under_its_key(monkeypatch, capsys):
+    def failing(state):
+        raise KeyError("planted")
+
+    monkeypatch.setattr(work, "builder_checks", failing)
+    for name in ("_evaluate_reach", "_implementer_environments", "_evaluate_launch_findings",
+                 "_github_write_report"):
+        monkeypatch.setattr(work, name, lambda state: None)
+    work._emit_report({"stage": "use"}, SimpleNamespace(reach=None, version_obligation=None,
+                                                         proof_version_obligation=None, raw_output=None))
+    assert json.loads(capsys.readouterr().out)["builder_checks"] == {"unknown": "KeyError: 'planted'"}
+
+
+def test_a_composed_check_of_a_branch_owing_catch_up_launches_nothing(composed):
+    state, _behaviour, seen = composed
+    seen["sync"] = work.Decision("catch-up", False, None, "behind", "the base moved")
+    transport = PostingTransport()
+    assert run_check(state, "use", "--job-from-artifact", transport=transport) == 0
+    assert "dispatch" not in seen and transport.posts == []
+    assert seen["reports"][-1]["stage"] == "catch-up"
+
+
+def test_a_seat_or_record_begun_in_another_session_inside_the_tree_is_refused(tree_state, monkeypatch):
+    # One session rule everywhere: `declared` is for an absent session variable only.
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "f0cb89b1-e040-4e6e-919b-4b4e58c717d2")
+    with pytest.raises(launch_tree.LaunchRefused) as caught:
+        launch_tree.attribution(Path("store"))
+    assert caught.value.code == "builder-identity-unproved"
+
+
+def test_the_launch_worker_names_its_job_as_the_tree_check_opens_it():
+    assert seat_process.STRETCH_JOB_VARIABLE == launch_tree.JOB_VARIABLE
+    assert launch_tree.job_name("a" * 32) == "Local\\tradecraft-stretch-" + "a" * 32

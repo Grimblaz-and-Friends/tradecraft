@@ -1319,6 +1319,8 @@ def test_a_stretch_builder_is_refused_every_other_write(stretch, command):
     "py -3 D:/plugin/lib/dispatch_record.py begin",
     "uv run python lib/dispatch_seat.py --help",
     "uv run lib/dispatch_seat.py --help",
+    "uv run --with pkg python lib/dispatch_seat.py",
+    "uv run --python 3.14 -m dispatch_seat --help",
     "python -m dispatch_seat --help",
     "python -X utf8 lib/dispatch_seat.py",
     "cd lib && python dispatch_seat.py",
