@@ -56,6 +56,7 @@ from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
 import github_allowance
 import handoff
+import readiness
 import launch_bound
 import launch_tree
 import run_lifecycle as lifecycle
@@ -278,6 +279,10 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
                          "surfaces": {"issue", "issue-comment"}},
     "implementing-pr": {"required": {"number"}, "optional": set(),
                         "surfaces": {"issue-comment"}},
+    "readiness": {"required": {"head", "status", "dispatch"}, "optional": set(),
+                  "surfaces": {"issue-comment"}},
+    "send-back": {"required": {"dispatch"}, "optional": set(),
+                  "surfaces": {"issue-comment"}},
     "model-override": {
         "required": set(),
         "optional": {
@@ -1755,6 +1760,10 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "implementing-pr" and POSITIVE_INTEGER.fullmatch(
             values.get("number", "")) is None:
         return "implementing pull request number is invalid"
+    if marker.name == "readiness":
+        return readiness.marker_error(values, marker.body)
+    if marker.name == "send-back" and re.fullmatch(r"[0-9a-f]{32}", values.get("dispatch", "")) is None:
+        return "send-back dispatch is not a dispatch id"
     if marker.name == "model-override":
         for value in values.values():
             parts = value.split(":")
@@ -3785,6 +3794,13 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
             # Like the check accounting, the route reading informs the report and never costs it.
             route = {"name": None, "reason": "unknown", "error": f"{type(exc).__name__}: {exc}"}
         payload = {**payload, "route": route}
+        try:
+            reading = readiness_reading(state, checks if isinstance(checks, dict) and "unknown" not in checks
+                                        else None)
+        except Exception as exc:
+            reading = {"unknown": f"{type(exc).__name__}: {exc}"}
+        if reading is not None:
+            payload = {**payload, "readiness": reading}
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
@@ -11206,12 +11222,14 @@ def _check_conditions(tree: str, capability: str) -> str:
 def compose_check_dispatch(stage: str, inputs: dict[str, object]) -> bytes:
     """The one composer of a builder-mode use or criterion dispatch; the same inputs give the same bytes."""
     head, tree = str(inputs["head"]), str(inputs["tree"])
+    # Each ends its conditions with the fixed return tail its findings are counted from.
     if stage == "use":
         return (bytes(inputs["job"]) + f"\n\nHead: {head}\nTree: {tree}\n\n"
-                f"{_check_conditions(tree, 'execute')}".encode("utf-8"))
+                f"{_check_conditions(tree, 'execute')}{readiness.RETURN_TAILS['use']}\n".encode("utf-8"))
     if stage == "acceptance-criterion":
         return (CRITERION_PREAMBLE + f"\nCapability: {inputs['capability']}\nHead: {head}\n"
-                f"Tree: {tree}\n{_check_conditions(tree, str(inputs['capability']))}\n"
+                f"Tree: {tree}\n{_check_conditions(tree, str(inputs['capability']))}"
+                f"{readiness.RETURN_TAILS['acceptance-criterion']}\n\n"
                 f"Criterion:\n\n{inputs['criterion']}").encode("utf-8")
     raise WorkError(f"compose_check_dispatch: {stage} is composed elsewhere")
 
@@ -11682,6 +11700,7 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
         status = "composed" if composed is not None and actual == composed else "differs"
         recomposed[dispatch_id] = (composed, head, status)
         dispatches.append({"bundle": str(run_path), "stage": request.get("stage"), "status": status,
+                           "dispatch": dispatch_id, "outcome": (_run or {}).get("outcome"),
                            **({"reason": problem} if problem else {})})
     reports = []
     config = getattr(state, "config", None)
@@ -11721,8 +11740,15 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
                 reasons.append("return too large to post")
             elif stored != posted_text:
                 reasons.append("store-and-posted-differ")
-        reports.append({"comment": comment.get("id"), "dispatch": attributes.get("dispatch"),
-                        "counts": not reasons, "invalid": reasons})
+        entry = {"comment": comment.get("id"), "dispatch": attributes.get("dispatch"),
+                 "counts": not reasons, "invalid": reasons}
+        if not reasons:
+            # A counting report's findings, read from the return tail its composed dispatch fixed.
+            stage = bundle[1].get("stage")
+            entry.update({"stage": stage, "builder": bundle[1]["launched_by"].get("dispatch_id"),
+                          "findings": [item["finding"] for item in readiness.report_findings(stage, posted_text)]
+                          if stage in readiness.RETURN_TAILS else []})
+        reports.append(entry)
     return {"check_dispatches": dispatches, "check_reports": reports, "quotations": quotations}
 
 
@@ -11741,6 +11767,52 @@ def _report_quotation(state: WorkState, comment: dict[str, object]) -> dict[str,
     return {"name": "check-report", "source": {
         "kind": "issue-comment", "repository": state.repo, "id": identity, "url": url,
         "author": _author(comment), "timestamp": timestamp}}
+
+
+def readiness_reading(state: WorkState, checks: dict[str, object] | None) -> dict[str, object] | None:
+    """The governing readiness record, read against the check reports its builder launched.
+
+    It reads only; no gate reads it yet. Whether a fixed finding's commit is reachable from the
+    head is not checked here. Design: lib/DESIGN.md#the-builder-route
+    """
+    posted = [marker for marker in state.issue_markers if marker.name == "readiness"
+              and marker.surface == "issue-comment" and _attribute_error(marker) is None]
+    if not posted:
+        return None
+    lawful = [marker for marker in posted if _marker_value_error(marker) is None]
+    invalid = [{"comment": marker.source_id, "reason": _marker_value_error(marker)}
+               for marker in posted if _marker_value_error(marker) is not None]
+    if not lawful:
+        return {"record": None, "invalid": invalid}
+    record = max(lawful, key=_source_order)
+    values = record.attributes
+    payload = readiness.payload(record.body, values["status"])
+    dispatch = values["dispatch"]
+    store = state.record_root or records.default_record_root()
+    stretches = {request.get("dispatch_id") for _o, _p, request, _r in lifecycle.launch_bundles(
+        store, f"{state.repo}#{state.issue_number}", {"stretch"})}
+    checks = checks or {}
+    named = {entry.get("report") for entry in payload["checks"]}
+    reports = [{"report": int(entry["comment"]) if str(entry["comment"]).isdigit() else entry["comment"],
+                "stage": entry["stage"], "findings": entry["findings"],
+                "named": entry["comment"] in named or str(entry["comment"]) in {str(n) for n in named}}
+               for entry in checks.get("check_reports", [])
+               if entry.get("counts") and entry.get("builder") == dispatch]
+    reconciled = readiness.reconcile(payload, reports, lambda _commit: True)
+    bundles = {entry.get("dispatch"): entry for entry in checks.get("check_dispatches", [])}
+    launched = all(entry.get("dispatch") in bundles and bundles[entry["dispatch"]]["status"] == "composed"
+                   for entry in payload["checks"] if entry.get("dispatch"))
+    outcomes = {key: entry.get("outcome") for key, entry in bundles.items()}
+    return {"record": record.source_id, "head": values["head"], "status": values["status"],
+            "at_head": values["head"] == _head_sha(state), "dispatch": dispatch,
+            "dispatch_is_this_works_stretch": dispatch in stretches,
+            "reconciled": reconciled["reconciled"], "unreconciled": reconciled["unreconciled"],
+            "reachability": "unchecked", "launched_by_builder": launched,
+            "relaunches": readiness.relaunches(payload["checks"], outcomes),
+            "stop": payload["stop"], "declines": [entry for entry in payload["findings"]
+                                                  if entry["disposition"] == "declined"],
+            "decisions": payload["decisions"], "refusals": payload["refusals"],
+            "builder": payload["builder"], "invalid": invalid}
 
 
 # The launches whose first one fixes a change's route for good; seats and readers decide nothing.

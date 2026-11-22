@@ -433,6 +433,9 @@ def test_a_check_dispatch_is_composed_from_its_inputs_alone():
         "criterion": criterion, "capability": "execute", "head": "abc", "tree": "T"}).decode("utf-8")
     assert composed.startswith(work.CRITERION_PREAMBLE) and composed.endswith(criterion)
     assert "Head: abc" in composed and "Capability: execute" in composed
+    # Each ends its conditions with the return tail its findings are counted from.
+    assert work.readiness.RETURN_TAILS["acceptance-criterion"] in composed
+    assert work.readiness.RETURN_TAILS["use"].encode("utf-8") in use
 
 
 @pytest.mark.parametrize("extra, code", [
@@ -675,8 +678,12 @@ def test_a_report_the_entrance_posted_for_a_recomposed_check_counts(counted):
     state, _output, _body = counted
     checks = work.builder_checks(state)
     assert checks["check_dispatches"][0]["status"] == "composed"
-    assert checks["check_reports"] == [{"comment": 1, "dispatch": checks["check_reports"][0]["dispatch"],
-                                        "counts": True, "invalid": []}]
+    report = checks["check_reports"][0]
+    # A counting report carries its stage, its builder and the findings its return tail gives; this
+    # stand-in return has no `Findings:` tail, so it counts as the one unreadable finding.
+    assert report == {"comment": 1, "dispatch": report["dispatch"], "counts": True, "invalid": [],
+                      "stage": "use", "builder": report["builder"], "findings": ["F0"]}
+    assert report["builder"]
 
 
 def test_a_store_copy_rewritten_after_the_post_stops_the_report_counting(counted):
