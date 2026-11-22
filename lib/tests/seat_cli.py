@@ -60,6 +60,9 @@ capture = {"argv": flags, "cwd": str(Path.cwd()), "stdin": base64.b64encode(prom
 capture["pytest_addopts"] = os.environ.get("PYTEST_ADDOPTS")
 capture["background_switch"] = os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
 capture["command_ceiling"] = os.environ.get("BASH_MAX_TIMEOUT_MS")
+# A builder's launch names itself to its recipient; no other launch may (#1011).
+capture["stretch_variables"] = {name: value for name, value in os.environ.items()
+                                if name.startswith("TRADECRAFT_STRETCH_")}
 if vendor == "claude":
     capture["additional_claude_md"] = os.environ.get("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD")
     capture["add_dirs"] = {flags[i + 1]: (Path(flags[i + 1], "CLAUDE.md").read_text(encoding="utf-8")

@@ -39,6 +39,7 @@ from dispatch_lifecycle import (CLAUDE_DISALLOWED_ARGUMENT, CLAUDE_DISALLOWED_TO
                                 claude_stream_check, claude_terminal, claude_write_bound_notice,
                                 stream_check_reason, stream_check_record)
 import github_allowance
+import launch_tree
 import launch_bound
 import launch_settings
 import preflight
@@ -254,7 +255,14 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
                                 artifact=getattr(args, "stage", None) == "artifact")
 
 
-def _claude_result(raw: bytes, check: dict | None = None) -> tuple[bool, bytes, str | None, str]:
+def _claude_result(raw: bytes, check: dict | None = None, *, refusals_stand: bool = False
+                   ) -> tuple[bool, bytes, str | None, str]:
+    """(complete, final message, session, failure reason) of a Claude result.
+
+    A reported permission denial fails the result unless ``refusals_stand``, which only a stretch
+    builder's launch passes: a builder that recovered from a refusal and finished keeps its return,
+    and its run record lists the refusal. Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
+    """
     check = claude_stream_check(raw) if check is None else check
     value = check["return"] or claude_terminal(raw)
     if value is None:
@@ -266,7 +274,7 @@ def _claude_result(raw: bytes, check: dict | None = None) -> tuple[bool, bytes, 
         session = None
     if check["status"] == "work_outlived_return":
         return False, b"", session, stream_check_reason(check)
-    if value.get("permission_denials"):
+    if value.get("permission_denials") and not refusals_stand:
         return False, b"", session, "Claude reported a tool permission denial; see its stdout log"
     if value.get("is_error") is not False or value.get("subtype") != "success":
         return False, b"", session, str(value.get("result") or "claude reported an error")
@@ -457,6 +465,65 @@ def _cloud_route(args: argparse.Namespace) -> tuple[dict | None, str, str | None
     return cloud_build.launch_route(args.stage, args.resume, args.work)
 
 
+STRETCH = "stretch"
+STRETCH_DISPATCH = launch_tree.DISPATCH_VARIABLE
+STRETCH_WORK = launch_tree.WORK_VARIABLE
+
+
+def _refuse_inside_a_stretch(args: argparse.Namespace) -> None:
+    """A builder launches no implementer: that would be a second writer at its stage.
+
+    Checked before any worktree, branch or bundle exists. A tree check that could not be made
+    refuses only where the variable says a stretch is running; otherwise the launch goes on as
+    before and its request record names the bundle whose check failed.
+    Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    holding = launch_tree.stretch_holding(records.default_record_root())
+    args.stretch_tree_unknown = None
+    if holding.state == "held" or os.environ.get(STRETCH_DISPATCH):
+        raise ImplementerError("a builder launches no implementer")
+    if holding.state == "unknown":
+        args.stretch_tree_unknown = holding.record()
+
+
+def _validate_stretch(args: argparse.Namespace) -> None:
+    """A stretch launch carries one change from handoff to ready: Claude, local, and named whole.
+
+    Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    if args.vendor != "claude":
+        raise ImplementerError("a Codex builder is started by hand on the builder route")
+    if not args.holder_session_id:
+        raise ImplementerError("a stretch launch requires --holder-session-id")
+    if not args.lineage_branch:
+        raise ImplementerError("a stretch launch requires --lineage-branch")
+    if github_allowance.issue_of(args.work) is None:
+        raise ImplementerError("a stretch launch requires --work owner/name#n")
+    if not args.resume and cloud_build.launch_route("build", None, args.work) is not None:
+        raise ImplementerError("cloud builds keep the relay route")
+
+
+def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> None:
+    """One list, in stream order, of every refusal a stretch builder met; the run stands after them."""
+    found: list[dict[str, object]] = []
+    for denial in attempt.get("permission_denials") or ():
+        found.append({"source": "permission-denial",
+                      "tool": denial.get("tool_name") if isinstance(denial, dict) else None,
+                      "reason": "Claude reported a tool permission denial", "denial": denial})
+    for refusal in record.get("github_write_refusals") or ():
+        found.append({"source": "github-write-bound", "tool": refusal.get("tool"),
+                      "command": refusal.get("command"), "reason": refusal.get("reason"),
+                      "at": refusal.get("at")})
+    for refusal in (record.get("write_guard") or {}).get("refusals") or ():
+        found.append({"source": "file-write-guard", "tool": refusal.get("tool"),
+                      "command": refusal.get("canonical") or refusal.get("raw"),
+                      "reason": refusal.get("reason")})
+    record["refusals"] = found
+    log = getattr(args, "stretch_guard_log", None)
+    if record.get("github_write_refusals_unknown") or (log is not None and not Path(log).is_file()):
+        record["refusals_unknown"] = True
+
+
 def _spawned_nothing(attempt, deadline, args) -> None:
     """An attempt that started nothing opens no window and names no spawn; the cap runs on.
 
@@ -470,7 +537,8 @@ def _spawned_nothing(attempt, deadline, args) -> None:
 
 def run_implementer(args: argparse.Namespace) -> int:
     if args.timeout_seconds is None:
-        args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
+        args.timeout_seconds = (lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage in ("build", STRETCH)
+                                else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS)
     cap_seconds = getattr(args, "preflight_cap_seconds", None)
     cap_reason = getattr(args, "preflight_cap_reason", None)
     try:
@@ -528,6 +596,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         args.vendor_source = f"explicit --vendor {args.vendor}"
     if args.vendor not in ("codex", "claude"):
         raise ImplementerError(f"unknown implementer vendor: {args.vendor}")
+    _refuse_inside_a_stretch(args)
+    if args.stage == STRETCH:
+        _validate_stretch(args)
     if args.model is not None and not args.model.strip():
         raise ImplementerError("--model must be nonempty when supplied")
     if args.effort is not None and not args.effort.strip():
@@ -739,7 +810,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             allowance = github_allowance.allowance_for(
                 args.stage, repository=github_allowance.repository_of(args.work),
                 branch=args.lineage_branch, pull_request=args.lineage_pull_request,
-                grants=metadata.get("github_write_grants") or ())
+                grants=metadata.get("github_write_grants") or (),
+                issue=github_allowance.issue_of(args.work))
             # Read once, before preparation, so the Codex bound record names the same version.
             with preflight.part("vendor"):
                 runtime_version = records.runtime_version(executable) if executable is not None else None
@@ -830,6 +902,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 },
             )
             request["implementer_role"] = role
+            if getattr(args, "stretch_tree_unknown", None):
+                request["stretch_tree_check"] = args.stretch_tree_unknown
             # The bound's record holds this launch's temporary paths, so it lives in the run
             # record; the request stays comparable across launches of the same work.
             request["environment_request"] = {key: value for key, value in intent.items()
@@ -866,6 +940,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 effective_prompt = effective_prompt + b"\n\n" + notice
                 composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
                 child_env = claude_launch_env(child_env, allocation)
+                if args.stage == STRETCH:
+                    # The builder's shell children inherit both; the worker names its job from the
+                    # third and drops it. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+                    child_env.update({STRETCH_DISPATCH: dispatch_id, STRETCH_WORK: args.work,
+                                      launch_tree.JOB_VARIABLE: dispatch_id})
                 guard = intent["write_guard"]["config"]
                 bound_notice = claude_write_bound_notice(guard["root"], launch_bound.allowed_scratchpad(guard))
                 # A Claude launch already carries a write-bound notice recorded in launch_controls,
@@ -877,6 +956,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     allocation, notice, disallowed=CLAUDE_DISALLOWED_TOOLS,
                     write_bound_notice=bound_notice)
                 write_guard_log = Path(intent["write_guard"]["log"])
+                args.stretch_guard_log = write_guard_log
                 comparison_error = None
                 try:
                     comparison = launch_bound.Comparison(
@@ -1095,6 +1175,13 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = scope.since(mark)
                     args.preparation_timer.close()
                     process_started = True
+                    if args.stage == STRETCH:
+                        # Where the tree check reads which stretch launches may hold a process.
+                        launch_tree.write_pointer(
+                            records.default_record_root(), dispatch_id=dispatch_id, work=args.work,
+                            request=request_path, run=record_path,
+                            session_id=args.resume or args.session_id,
+                            launcher=lifecycle.process_identity(), root=root)
                     result = run_process(command, input=native.input if native else effective_prompt, cwd=root, timeout=allocation,
                                          env=child_env,
                                          on_output=capture, on_tick=checkpoint,
@@ -1156,11 +1243,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     if attempt["launched"]:
                         attempt["stream_check"] = stream_check_record(check)
                     outlived = check["status"] == "work_outlived_return"
-                    complete, message, session_id, failure_reason = _claude_result(result.stdout, check)
+                    complete, message, session_id, failure_reason = _claude_result(
+                        result.stdout, check, refusals_stand=args.stage == STRETCH)
                     session_source = "claude JSON result.session_id" if session_id else ""
                     if "write_bound" in request and attempt["launched"]:
                         record["write_guard"], guard_failure = launch_bound.guard_outcome(
                             result.stdout, write_guard_log)
+                        if args.stage == STRETCH:
+                            # A deny wrote nothing, so it stands; an unproved write still fails.
+                            guard_failure = "; ".join(
+                                f"write bound unproved: {u['tool']} {u['raw']} completed with no guard decision"
+                                for u in record["write_guard"]["unguarded"])
                         if guard_failure:
                             # A refused or unproved write fails the turn like a denial.
                             complete = False
@@ -1269,6 +1362,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if github_bound is not None and github_bound.get("log"):
                     # A refusal is reported, not held: it changes no outcome.
                     github_allowance.record_refusals(record, github_bound["log"])
+                if args.stage == STRETCH:
+                    _stretch_refusals(record, attempt, args)
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)
                     if args.stage != "artifact":

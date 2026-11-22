@@ -1,4 +1,6 @@
+from argparse import Namespace
 import json
+import re
 import base64
 import hashlib
 import math
@@ -2586,3 +2588,123 @@ def test_978_launcher_refusal_split_before_the_request_record(job, capsys):
     assert refusal["preflight"]["total_seconds"] >= 2.0
     assert refusal["preflight"]["parts"]["github_seconds"] == 2.0
     assert not implementer.records.sidecar(args.output, ".request.json").exists()
+
+
+# --- the stretch stage (#1011) -----------------------------------------------------------------
+
+STRETCH_SESSION = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+
+
+def stretch_job(job, monkeypatch, payload):
+    args, scenario = job
+    args.vendor, args.stage, args.work = "claude", "stretch", "o/r#5"
+    args.holder_session_id, args.lineage_branch = "11111111-2222-4333-8444-555555555555", "tradecraft/5-ab"
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    monkeypatch.setattr(implementer, "new_session_id", lambda: STRETCH_SESSION)
+    monkeypatch.setattr(implementer.cloud_build, "launch_route", lambda *_a: None)
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps(payload)}}).encode())
+    return args
+
+
+DENIED_SUCCESS = {"type": "result", "subtype": "success", "is_error": False,
+                  "session_id": STRETCH_SESSION, "result": "Ready, after one refused call.",
+                  "permission_denials": [{"tool_name": "Write", "reason": "denied"}]}
+
+
+def test_a_stretch_turn_that_recovered_from_a_denial_stands_and_lists_it(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    assert implementer.run_implementer(args) == 0
+    logged = record(args)
+    assert logged["outcome"] == "success"
+    assert implementer.records.sidecar(args.output, ".source.bin").read_bytes() == b"Ready, after one refused call."
+    assert [entry["source"] for entry in logged["refusals"]] == ["permission-denial"]
+    assert logged["refusals"][0]["denial"] == {"tool_name": "Write", "reason": "denied"}
+
+
+def test_the_same_denial_still_fails_a_build(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    args.stage, args.work = "build", "issue-592"
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "error" and "refusals" not in logged
+    assert not args.output.exists()
+
+
+def test_stretch_refusals_gather_every_source_in_order(tmp_path):
+    attempt = {"permission_denials": [{"tool_name": "Bash"}]}
+    record_value = {"github_write_refusals": [{"tool": "Bash", "command": "gh issue comment 6",
+                                               "reason": "refused", "at": "t"}],
+                    "write_guard": {"refusals": [{"tool": "Write", "raw": "x", "canonical": "C:/x",
+                                                  "reason": "outside"}], "unguarded": []}}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt, Namespace(stretch_guard_log=log))
+    assert [entry["source"] for entry in record_value["refusals"]] == [
+        "permission-denial", "github-write-bound", "file-write-guard"]
+    assert "refusals_unknown" not in record_value
+
+
+@pytest.mark.parametrize("damage", ["github", "guard"])
+def test_an_unreadable_refusal_log_keeps_the_stretch_run_and_says_so(tmp_path, damage):
+    record_value = {"github_write_refusals": [], "write_guard": {"refusals": [], "unguarded": []}}
+    if damage == "github":
+        record_value["github_write_refusals_unknown"] = "1 line(s) of the refusal log could not be read"
+    log = tmp_path / ("missing.jsonl" if damage == "guard" else "guard.jsonl")
+    if damage == "github":
+        log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, {}, Namespace(stretch_guard_log=log))
+    assert record_value["refusals_unknown"] is True
+
+
+def test_a_stretch_recipient_is_named_and_a_build_is_not(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, {**DENIED_SUCCESS, "permission_denials": []})
+    assert implementer.run_implementer(args) == 0
+    seen_stretch = json.loads((args.root / "seen-claude.json").read_bytes())["stretch_variables"]
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert seen_stretch == {"TRADECRAFT_STRETCH_DISPATCH": request["dispatch_id"],
+                            "TRADECRAFT_STRETCH_WORK": "o/r#5"}
+    pointer = json.loads((Path.home() / ".tradecraft" / "dispatches" / "stretch-launches"
+                          / f"{request['dispatch_id']}.json").read_bytes())
+    assert pointer["work"] == "o/r#5" and pointer["session_id"] == STRETCH_SESSION
+    build = stretch_job(job, monkeypatch, {**DENIED_SUCCESS, "permission_denials": []})
+    build.stage, build.work = "build", "issue-592"
+    build.output = build.output.with_name("build.md")
+    assert implementer.run_implementer(build) == 0
+    assert json.loads((build.root / "seen-claude.json").read_bytes())["stretch_variables"] == {}
+
+
+@pytest.mark.parametrize("change, reason", [
+    ({"vendor": "codex"}, "started by hand"),
+    ({"holder_session_id": None}, "--holder-session-id"),
+    ({"lineage_branch": None}, "--lineage-branch"),
+    ({"work": "issue-592"}, "owner/name#n"),
+])
+def test_a_stretch_launch_that_cannot_run_refuses_before_any_bundle(job, monkeypatch, change, reason):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    for name, value in change.items():
+        setattr(args, name, value)
+    with pytest.raises(implementer.ImplementerError, match=re.escape(reason)):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+def test_a_stretch_launch_for_a_cloud_repository_refuses_before_any_bundle(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    monkeypatch.setattr(implementer.cloud_build, "launch_route",
+                        lambda stage, resume, work: ({"routine": "x"}, "record", None))
+    with pytest.raises(implementer.ImplementerError, match="cloud builds keep the relay route"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+@pytest.mark.parametrize("state, variable", [("held", None), ("none", "a" * 32)])
+def test_a_builder_launches_no_implementer(job, monkeypatch, state, variable):
+    args, _ = job
+    monkeypatch.setattr(implementer.launch_tree, "stretch_holding",
+                        lambda store: implementer.launch_tree.Holding(state, {"dispatch_id": "a" * 32}))
+    if variable:
+        monkeypatch.setenv("TRADECRAFT_STRETCH_DISPATCH", variable)
+    with pytest.raises(implementer.ImplementerError, match="a builder launches no implementer"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
