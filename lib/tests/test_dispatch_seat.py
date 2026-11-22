@@ -1,5 +1,6 @@
 import base64
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -2261,3 +2262,22 @@ def test_978_launcher_refusal_split_before_the_request_record(job, tmp_path, cap
     assert refusal["preflight"]["total_seconds"] >= 2.0
     assert refusal["preflight"]["parts"]["github_seconds"] == 2.0
     assert not seat.sidecar(tmp_path / "refused" / "verdict.md", ".request.json").exists()
+
+
+def test_1011_a_seat_inside_a_stretch_tree_records_the_builder_and_frames_its_return(job, monkeypatch, capfd):
+    import launch_tree
+    args, _ = job
+    launch = {"dispatch_id": "a" * 32, "session_id": "s", "request": "r"}
+    monkeypatch.setattr(launch_tree, "stretch_holding", lambda store: launch_tree.Holding("held", launch))
+    for name in launch_tree.VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    args.return_frame = True
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    assert request["launched_by"] == {"role": "builder", "dispatch_id": "a" * 32, "session_id": "s",
+                                      "identity": "declared"}
+    assert request["dispatch_origin"] == "caller"
+    frame = seat.read_return_frame(capfd.readouterr().out.encode("utf-8"))
+    assert frame["outcome"] == "success"
+    assert frame["return"] == seat.sidecar(args.output, ".source.bin").read_bytes()
+    assert frame["dispatch_sha256"] == hashlib.sha256(args.dispatch.read_bytes()).hexdigest()
