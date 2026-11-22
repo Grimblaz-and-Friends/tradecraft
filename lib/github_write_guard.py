@@ -638,6 +638,11 @@ def judge_simple(words: list[str], ctx: Context) -> list[Finding]:
     first = words[0]
     name = program(first)
     cleared = ctx.cleared or local_cleared
+    if ctx.config["allowance"].get("kind") == "stretch":
+        # Before the inert-program shortcut, which would pass `python <launcher>` unjudged.
+        launcher = _launcher_call(words)
+        if launcher:
+            return [Finding(f"a direct call of {launcher}", LAUNCHER_REFUSED)]
     if appended and name not in INERT_PROGRAMS:
         # xargs adds words read from its input to the command, and the check sees none of them:
         # `printf ':refs/heads/main' | xargs git push origin` deletes a branch it never names.
@@ -1047,7 +1052,7 @@ def judge_push(arguments: list[str], cwd: str | None, config: dict) -> list[Find
         # Each ref counts only on its own repository: a grant's on the grant's, and the step's
         # branch on the step's, so a grant elsewhere never carries the step's branch there.
         allowed = set(_push_grant_refs(allowance, repository))
-        if (repository == target and allowance.get("kind") in ("branch", "review-disposition")
+        if (repository == target and allowance.get("kind") in ("branch", "review-disposition", "stretch")
                 and allowance.get("branch")):
             allowed.add("refs/heads/" + allowance["branch"])
         for ref, problem in destinations:
@@ -1126,7 +1131,7 @@ def _destination_refs(refspecs: list[str], cwd: str | None, remote: str
 
 
 def permits_push(allowance: dict) -> bool:
-    return allowance.get("kind") in ("branch", "review-disposition") or any(
+    return allowance.get("kind") in ("branch", "review-disposition", "stretch") or any(
         grant.get("write") == "push" for grant in allowance.get("grants") or ())
 
 
@@ -1180,6 +1185,8 @@ def judge_gh(arguments: list[str], ctx: Context) -> list[Finding]:
     if (command, sub) in GH_READS:
         return []
     write = "gh " + " ".join(positional[:2])
+    if allowance.get("kind") == "stretch" and command in ("pr", "issue"):
+        return judge_gh_stretch(command, sub, arguments, positional, values, ctx)
     if command in ("pr", "issue") and sub == "comment":
         if "--edit-last" in booleans or "--delete-last" in booleans:
             return [Finding(write, "editing or deleting an earlier comment")]
@@ -1284,6 +1291,8 @@ def judge_gh_api(positional: list[str], values: dict[str, list[str]], ctx: Conte
     write = f"gh api {method} {path}"
     if _api_granted(allowance, method, path):
         return []
+    if allowance.get("kind") == "stretch":
+        return _judge_api_stretch(method, path, fields, values, ctx)
     match = re.match(r"^repos/([^/]+/[^/]+)/issues/(\d+)/comments$", path, re.I)
     if method == "POST" and match and _comment_granted(allowance, match.group(1).lower(), int(match.group(2))):
         return []
@@ -1377,7 +1386,9 @@ def judge_graphql(fields: dict[str, str], ctx: Context) -> list[Finding]:
         return []
     mutations = _mutation_fields(document) or [("unknown", "")]
     write = "gh api graphql mutation " + ", ".join(name for name, _ in mutations)
-    if allowance.get("kind") != "review-disposition":
+    if allowance.get("kind") == "stretch" and _carries_report(" ".join(fields.values()), ctx):
+        return [Finding(write, REPORT_REFUSED)]
+    if allowance.get("kind") not in ("review-disposition", "stretch"):
         return [Finding(write, f"the GraphQL mutation {', '.join(n for n, _ in mutations)}")]
     for name, arguments in mutations:
         if name not in REVIEW_MUTATIONS:
@@ -1390,6 +1401,11 @@ def judge_graphql(fields: dict[str, str], ctx: Context) -> list[Finding]:
                 return [Finding(write, f"a {name} whose thread id could not be read")]
             owner = thread_owner(thread)
             expected = (str(allowance.get("repository") or "").lower(), allowance.get("pull_request"))
+            if allowance.get("kind") == "stretch":
+                if owner is not None and owner[0] == expected[0] and _own_pull(allowance, owner[1]):
+                    continue
+                where = f"{owner[0]}#{owner[1]}" if owner else "an unconfirmed pull request"
+                return [Finding(write, f"a {name} on a thread of {where}")]
             if owner is None or owner != expected:
                 where = f"{owner[0]}#{owner[1]}" if owner else "an unconfirmed pull request"
                 return [Finding(write, f"a {name} on a thread of {where}")]
@@ -1427,6 +1443,214 @@ def thread_owner(thread: str) -> tuple[str, int] | None:
         return pull["repository"]["nameWithOwner"].lower(), int(pull["number"])
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         return None
+
+
+# --- a stretch builder's own change ----------------------------------------------------
+# Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+
+LAUNCHER_FILES = ("dispatch_seat.py", "dispatch_implementer.py", "dispatch_record.py")
+LAUNCHER_REFUSED = ("a builder launches checks through the entrance (work.py run STAGE); a direct "
+                    "launcher call is refused")
+REPORT_MARKER = "tradecraft:check-report"
+REPORT_REFUSED = ("a comment carrying tradecraft:check-report, which only the entrance posts from "
+                  "the run that launched the check")
+EDIT_REFUSED = "editing or deleting a comment, which keeps a posted report as the entrance posted it"
+PYTHON_PROGRAMS = {"python", "py", "python3"}
+PYTHON_VALUE_OPTIONS = {"-X", "-W", "-Q"}
+PR_CREATE_OPTIONS = {"--fill", "-f", "--title", "-t", "--body", "-b", "--body-file", "-F",
+                     "--base", "-B", "--draft", "-d", "--head", "-H", "--repo", "-R"}
+PR_EDIT_OPTIONS = {"--title", "-t", "--body", "-b", "--body-file", "-F", "--repo", "-R"}
+GH_VALUE_OPTIONS = {"--title", "-t", "--body", "-b", "--body-file", "-F", "--base", "-B", "--head",
+                    "-H", "--repo", "-R", "--label", "-l", "--reviewer", "-r", "--assignee", "-a",
+                    "--milestone", "-m", "--project", "-p", "--add-label", "--remove-label",
+                    "--add-reviewer", "--remove-reviewer", "--add-assignee", "--remove-assignee",
+                    "--add-project", "--remove-project", "--template", "-T", "--recover"}
+PULL_LOOKUP_JQ = "[.head.repo.full_name,.head.ref]"
+
+
+def _is_launcher(word: str) -> bool:
+    return re.split(r"[\\/]", word)[-1].lower() in LAUNCHER_FILES
+
+
+def _launcher_call(words: list[str]) -> str | None:
+    """The launcher file a command runs as its program or as its interpreter's script, or None.
+
+    A launcher named only as data, as in `git add lib/dispatch_seat.py`, is not a call.
+    """
+    if not words:
+        return None
+    if _is_launcher(words[0]):
+        return re.split(r"[\\/]", words[0])[-1]
+    name = program(words[0])
+    rest = list(words[1:])
+    if name == "uv":
+        if not rest or rest[0] != "run":
+            return None
+        rest = rest[1:]
+        while rest and rest[0].startswith("-"):
+            rest.pop(0)
+        return _launcher_call(rest)
+    if name not in PYTHON_PROGRAMS:
+        return None
+    while rest:
+        word = rest.pop(0)
+        if word == "-m" and rest:
+            module = rest[0].rsplit(".", 1)[-1] + ".py"
+            return module if module in LAUNCHER_FILES else None
+        if word == "-c" and rest:
+            return next((f for f in LAUNCHER_FILES if f[:-3] in rest[0]), None)
+        if word in PYTHON_VALUE_OPTIONS:
+            if rest:
+                rest.pop(0)
+            continue
+        if word.startswith("-"):
+            continue
+        return re.split(r"[\\/]", word)[-1] if _is_launcher(word) else None
+    return None
+
+
+def _read_text(ctx: Context, name: str) -> str:
+    if name == "-":
+        return ctx.piped + "\n".join(ctx.docs)
+    path = _resolve_dir(ctx.cwd, name)
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace") if path else ""
+    except OSError:
+        return ""
+
+
+def _carries_report(text: str, ctx: Context, files=()) -> bool:
+    """Whether a comment's body, its body file, or text piped or fed into it carries the report marker."""
+    bodies = [text, *ctx.docs, ctx.piped]
+    bodies.extend(_read_text(ctx, name) for name in files)
+    return any(REPORT_MARKER in body for body in bodies)
+
+
+def _options(arguments: list[str]) -> list[str]:
+    """The options a gh pr or issue command uses, skipping each value-taking option's value."""
+    found, rest = [], list(arguments)
+    while rest:
+        word = rest.pop(0)
+        if word == "--":
+            break
+        if word.startswith("-") and len(word) > 1:
+            flag = word.split("=", 1)[0] if word.startswith("--") else word[:2]
+            found.append(flag)
+            if flag in GH_VALUE_OPTIONS and word == flag and rest:
+                rest.pop(0)
+    return found
+
+
+def pull_owner(repository: str, number: int) -> tuple[str, str] | None:
+    """(owner/name, branch) of a pull request's head, read from GitHub; None when unreadable.
+
+    Like thread_owner, this read is the only way to hold a write to the pull request the builder
+    opened after its launch; an unreadable answer leaves it unconfirmed, and refused.
+    """
+    try:
+        result = subprocess.run(["gh", "api", "--method", "GET", f"repos/{repository}/pulls/{number}",
+                                 "--jq", PULL_LOOKUP_JQ], capture_output=True,
+                                timeout=_read_timeout(30), stdin=subprocess.DEVNULL)
+        value = json.loads(result.stdout)
+        return str(value[0]).lower(), str(value[1])
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
+        return None
+
+
+def _own_pull(allowance: dict, number: int | None) -> bool:
+    """Whether pull request ``number`` is the builder's own: the allowance's, or one opened from its branch."""
+    if number is None:
+        return False
+    if number == allowance.get("pull_request"):
+        return True
+    repository = str(allowance.get("repository") or "").lower()
+    return pull_owner(repository, number) == (repository, allowance.get("branch"))
+
+
+def judge_gh_stretch(command: str, sub: str, arguments: list[str], positional: list[str],
+                     values: dict[str, list[str]], ctx: Context) -> list[Finding]:
+    """A stretch builder's gh pr or gh issue command: its own pull request and issue only."""
+    allowance = ctx.config["allowance"]
+    write = f"gh {command} {sub}".strip()
+    if (command, sub) in GH_READS:
+        return []
+    start = arguments.index(sub) + 1 if sub in arguments else len(arguments)
+    options = _options(arguments[start:])
+    if "--edit-last" in options or "--delete-last" in options:
+        return [Finding(write, EDIT_REFUSED)]
+    repository = _gh_repository(values, ctx)
+    own_repository = str(allowance.get("repository") or "").lower()
+    if repository is None or repository != own_repository:
+        return [Finding(write, f"a write in {repository or 'a repository outside this step tree'}")]
+    files = [*values.get("--body-file", ()), *values.get("-F", ())]
+    body = " ".join([*values.get("--body", ()), *values.get("-b", ())])
+    target = positional[2] if len(positional) > 2 else None
+    number = _number_of(target, repository)
+    if command == "issue":
+        if sub == "comment" and number is not None and number == allowance.get("issue"):
+            return [Finding(write, REPORT_REFUSED)] if _carries_report(body, ctx, files) else []
+        where = f" on {repository}#{target}" if target else ""
+        return [Finding(write, f"`{write}`{where}, a write outside this step's own issue")]
+    if sub == "create":
+        unknown = sorted(set(options) - PR_CREATE_OPTIONS)
+        if unknown:
+            return [Finding(write, f"gh pr create with {', '.join(unknown)}")]
+        heads = [*values.get("--head", ()), *values.get("-H", ())]
+        branch = allowance.get("branch")
+        owner = own_repository.partition("/")[0]
+        if heads:
+            head = heads[-1]
+            if head.lower().startswith(owner + ":"):
+                head = head.split(":", 1)[1]
+            if head != branch:
+                return [Finding(write, f"a pull request from {heads[-1]}")]
+        elif _run_git(ctx.cwd, "symbolic-ref", "--short", "-q", "HEAD") != branch:
+            return [Finding(write, "a pull request from a branch other than this step's own")]
+        return []
+    if sub not in ("ready", "comment", "edit"):
+        return [Finding(write, f"`{write}`, a GitHub write")]
+    if sub == "edit" and set(options) - PR_EDIT_OPTIONS:
+        return [Finding(write, f"gh pr edit with {', '.join(sorted(set(options) - PR_EDIT_OPTIONS))}")]
+    if sub == "ready" and set(options) - {"--undo", "--repo", "-R"}:
+        return [Finding(write, "gh pr ready with an option other than --undo")]
+    if number is None and target is None:
+        current = _run_git(ctx.cwd, "symbolic-ref", "--short", "-q", "HEAD")
+        if current and current == allowance.get("branch"):
+            number = allowance.get("pull_request")
+    if not _own_pull(allowance, number):
+        shown = number if number is not None else target
+        return [Finding(write, f"a write on {repository}#{shown}, which is not this step's own "
+                               "pull request")]
+    if sub == "comment" and _carries_report(body, ctx, files):
+        return [Finding(write, REPORT_REFUSED)]
+    return []
+
+
+def _judge_api_stretch(method: str, path: str, fields: dict[str, str],
+                       values: dict[str, list[str]], ctx: Context) -> list[Finding]:
+    """A stretch builder's non-GET REST call: comments on its own issue and pull request, and thread replies."""
+    allowance = ctx.config["allowance"]
+    write = f"gh api {method} {path}"
+    lowered = path.lower()
+    if method in ("PATCH", "DELETE") and re.search(r"/comments(?:/|$)", lowered):
+        return [Finding(write, EDIT_REFUSED)]
+    if method != "POST":
+        return [Finding(write, f"`{write}`")]
+    own = f"repos/{allowance.get('repository')}".lower()
+    files = [value[1:] for value in fields.values() if value.startswith("@")]
+    files.extend(values.get("--input", ()))
+    if _carries_report(" ".join(fields.values()), ctx, files):
+        return [Finding(write, REPORT_REFUSED)]
+    issue = re.fullmatch(re.escape(own) + r"/issues/(\d+)/comments", lowered)
+    if issue:
+        number = int(issue.group(1))
+        if number == allowance.get("issue") or _own_pull(allowance, number):
+            return []
+        return [Finding(write, f"a comment on {allowance.get('repository')}#{number}")]
+    pull = re.fullmatch(re.escape(own) + r"/pulls/(\d+)/comments(/\d+/replies)?", lowered)
+    if pull and (pull.group(2) or "in_reply_to" in fields) and _own_pull(allowance, int(pull.group(1))):
+        return []
+    return [Finding(write, f"`{write}`")]
 
 
 # --- other HTTP clients and session starts ------------------------------------------
@@ -1635,6 +1859,12 @@ def describe(allowance: dict) -> str:
         text = (f"`review-disposition`: a push to refs/heads/{branch} of {repository}, a reply on "
                 f"and a resolve of a review thread of {repository}#{number}, and a conversation "
                 f"comment on {repository}#{number}")
+    elif kind == "stretch":
+        own = f"#{number}" if number is not None else f"the one opened from {branch}"
+        text = (f"`stretch`: a push to refs/heads/{branch} of {repository}; opening, readying and "
+                f"editing the title and body of a pull request from {branch}; a conversation comment "
+                f"on, and a reply on and a resolve of a review thread of, that pull request ({own}); "
+                f"and a comment on issue #{allowance.get('issue')} of {repository}")
     else:
         text = "`none`: no GitHub write"
     grants = [f"{grant.get('write')} {grant.get('target')}" for grant in allowance.get("grants") or ()]
