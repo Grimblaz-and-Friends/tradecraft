@@ -12955,30 +12955,96 @@ def test_1011_a_builders_ready_reviewers_writes_only_to_its_own_change(capsys):
             assert payload == {"id": "PR_fixture"} or "PR_fixture" in json.dumps(payload)
 
 
-@pytest.mark.parametrize("existing", [False, True])
-def test_1011_a_builders_proof_publication_writes_only_to_its_own_change(existing, monkeypatch):
-    fixture = state(AFFIRMED, pr=True, config=work.WorkConfig(marker_producers=frozenset({PRODUCER})))
-    prior = [{"id": 91, "user": {"login": PRODUCER}, "body": "old proof"}] if existing else []
-    writes = []
+class RecordingProofTransport:
+    """GitHub as a builder's whole proof stage meets it: every write is recorded."""
 
-    class Recording:
-        def get(self, endpoint, *, paginate=False):
+    def __init__(self, fixture):
+        self.fixture, self.writes, self.comments = fixture, [], []
+
+    def get(self, endpoint, *, paginate=False):
+        if endpoint == "user":
             return {"login": PRODUCER}
+        if endpoint == f"repos/{self.fixture.repo}/pulls/{self.fixture.pr['number']}":
+            return self.fixture.pr
+        if "/actions/runs/" in endpoint:
+            return {"id": 81, "status": "queued", "conclusion": None}
+        if "/comments" in endpoint:
+            return list(self.comments)
+        return FakeTransport({}).get(endpoint, paginate=paginate)
 
-    def mutation(transport, method, endpoint, payload):
-        writes.append((method, endpoint))
-        return {"id": 91, "html_url": "fixture", "body": payload["body"], "user": {"login": PRODUCER}}
+    def post(self, endpoint, payload):
+        self.writes.append(("POST", endpoint))
+        comment = {"id": 92, "html_url": "fixture", "body": payload.get("body"), "user": {"login": PRODUCER},
+                   "created_at": "2026-09-23T13:00:00Z"}
+        if endpoint.endswith("/comments"):
+            self.comments.append(comment)
+        return comment
 
-    monkeypatch.setattr(work, "_proof_comment_records", lambda state, head: prior)
-    monkeypatch.setattr(work, "_transport_mutation", mutation)
+    def patch(self, endpoint, payload):
+        self.writes.append(("PATCH", endpoint))
+        return {"id": 92, "html_url": "fixture", "body": payload.get("body"), "user": {"login": PRODUCER}}
+
+
+def _builder_proof(tmp_path, monkeypatch):
+    """The whole proof stage of a change whose current-head gate run failed, so its rerun is owed."""
+    root = policy_repository(tmp_path)
+    fixture = state(AFFIRMED, FLOOR, pr=True, paths=["README.md"],
+                    config=work.WorkConfig(marker_producers=frozenset({PRODUCER})))
+    fixture.issue_comments[0].update({"id": 41, "html_url": "https://github.example/issues/12#issuecomment-41",
+                                      "created_at": "2026-09-23T12:00:00Z"})
+    fixture.record_root = tmp_path / "dispatches"
+    fixture.checks = [gate_check(workflow_id=71, conclusion="failure")]
+    work.validate_marker_claims(fixture)
+    monkeypatch.setattr(work, "read_state", lambda *_args, **_kwargs: fixture)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args: None)
+    transport = RecordingProofTransport(fixture)
+
+    def run():
+        return work._execute_proof(transport, fixture, root, RULES, root / ".github" / "change-proof.json",
+                                   None, None)
+    return root, fixture, transport, run
+
+
+def test_1011_a_builders_whole_proof_stage_writes_only_to_its_own_change(tmp_path, monkeypatch, capsys):
+    root, fixture, transport, run = _builder_proof(tmp_path, monkeypatch)
     token = work._BUILDER.set({"role": "builder", "dispatch_id": "a" * 32, "identity": "declared"})
     try:
-        try:
-            work._publish_proof_comment(Recording(), fixture, "new proof", SHA)
-        except (work.WorkError, KeyError):
-            pass  # Only the writes it made are judged here, not its later reads.
+        run()
     finally:
         work._BUILDER.reset(token)
-    own = {f"repos/{fixture.repo}/issues/{fixture.pr['number']}/comments",
-           f"repos/{fixture.repo}/issues/comments/91"}
-    assert writes and all(endpoint in own for _method, endpoint in writes)
+    capsys.readouterr()
+    own = f"repos/{fixture.repo}/"
+    comments = {f"{own}issues/{fixture.pr['number']}/comments", f"{own}issues/comments/92"}
+    reruns = [endpoint for _method, endpoint in transport.writes if endpoint.endswith("/rerun")]
+    assert reruns, transport.writes  # The gate rerun is reached, not only the comment.
+    assert any(endpoint in comments for _method, endpoint in transport.writes)
+    for _method, endpoint in transport.writes:
+        assert endpoint in comments or endpoint in reruns, endpoint
+    # The run it reruns is a run of the own pull request's current head.
+    run_ids = {check["details_url"].rsplit("/runs/", 1)[1].split("/")[0] for check in fixture.checks}
+    assert all(endpoint == f"{own}actions/runs/{run_id}/rerun" for endpoint in reruns for run_id in run_ids)
+    assert all(check["workflow_run"]["head_sha"] == fixture.pr["head"]["sha"] for check in fixture.checks)
+
+
+def test_1011_a_builders_proof_and_ready_reviewers_leave_its_launch_comparison_clean(tmp_path, monkeypatch, capsys):
+    from comparison_window import comparison_window
+    root, fixture, transport, run = _builder_proof(tmp_path, monkeypatch)
+    implementation = tmp_path / "implementation"
+    implementation.mkdir()
+    with comparison_window(root=implementation, tmp_path=tmp_path, checkouts=[root]) as window:
+        run()
+    capsys.readouterr()
+    assert any(item["item"].startswith("checkout:") for item in window["plan"])
+    assert window["unchanged"]["findings"] == [], window["unchanged"]["findings"]
+
+    config = work.WorkConfig(connected_reviewers=frozenset({REVIEWER}),
+                             marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers")
+    ready = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, config=config)
+    ready.pr["node_id"] = "PR_fixture"
+    work.validate_marker_claims(ready)
+    ready_transport = ReadyTransport()
+    with comparison_window(root=implementation, tmp_path=tmp_path, checkouts=[root]) as window:
+        assert work._execute_ready_reviewers(ready_transport, ready, RULES, None, None) == 0
+    capsys.readouterr()
+    assert [operation[0] for operation in ready_transport.operations] == ["label", "ready"]
+    assert window["unchanged"]["findings"] == [], window["unchanged"]["findings"]

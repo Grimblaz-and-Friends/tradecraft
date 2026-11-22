@@ -1446,8 +1446,8 @@ def test_978_a_cold_reader_started_by_the_entrance_gets_the_whole_limit(change, 
     assert run["attempts"][0]["allocation_seconds"] >= 1799
 
 
-@pytest.mark.cold_reading
-def test_1011_a_builders_reading_records_its_builder_and_posts_from_its_frame(change, monkeypatch, capfd):
+def _builder_reading(change, monkeypatch, capfd, *, window=None):
+    """Run a builder's whole `run cold-reader` with its stand-in seat; returns its commands, output and posts."""
     import launch_tree
     import preflight
     import run_lifecycle as lifecycle
@@ -1487,17 +1487,31 @@ def test_1011_a_builders_reading_records_its_builder_and_posts_from_its_frame(ch
             posts.append((endpoint, payload["body"]))
             return {"id": 1}
 
-    token = work._BUILDER.set({"role": "builder", "dispatch_id": "a" * 32, "session_id": "s",
-                               "identity": "declared"})
-    try:
+    def stage():
         with preflight.scope(started=lifecycle.time.monotonic()) as opened:
             deadline = lifecycle.stage_deadline("cold-reader", 1800, started=opened.started, declared=True)
             with lifecycle.deadline_scope(deadline):
-                work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
-                                          dispatch_path=None, tree_metadata=None, timeout_seconds=1800,
-                                          claude_path=None, codex_path=None, transport=Posting())
+                return work._execute_cold_reader(
+                    fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                    dispatch_path=None, tree_metadata=None, timeout_seconds=1800,
+                    claude_path=None, codex_path=None, transport=Posting())
+
+    if window is not None:
+        with window(fixture) as opened_window:
+            code = stage()
+        return commands, output, posts, code, opened_window
+    token = work._BUILDER.set({"role": "builder", "dispatch_id": "a" * 32, "session_id": "s",
+                               "identity": "declared"})
+    try:
+        code = stage()
     finally:
         work._BUILDER.reset(token)
+    return commands, output, posts, code, None
+
+
+@pytest.mark.cold_reading
+def test_1011_a_builders_reading_records_its_builder_and_posts_from_its_frame(change, monkeypatch, capfd):
+    commands, output, posts, _code, _window = _builder_reading(change, monkeypatch, capfd)
     [command] = commands
     assert "--return-frame" in command and command[command.index("--dispatch-origin") + 1] == "entrance"
     request = json.loads(output.with_name("result.md.request.json").read_text("utf-8"))
@@ -1505,3 +1519,18 @@ def test_1011_a_builders_reading_records_its_builder_and_posts_from_its_frame(ch
     (endpoint, body), = posts
     # The stand-in seat writes its capture into its root, so the second check reads the tree changed.
     assert "stage=cold-reader" in body and "tree=changed" in body
+
+
+@pytest.mark.cold_reading
+def test_1011_a_builders_whole_reading_leaves_its_launch_comparison_clean(change, monkeypatch, capfd, tmp_path):
+    from comparison_window import comparison_window
+    implementation = tmp_path / "implementation"
+    implementation.mkdir()
+
+    def window(fixture):
+        return comparison_window(root=implementation, tmp_path=tmp_path, checkouts=[fixture.holder_root])
+
+    commands, _output, posts, _code, opened = _builder_reading(change, monkeypatch, capfd, window=window)
+    assert commands and posts  # The stage ran whole: its seat launched and its report was posted.
+    assert any(item["item"].startswith("checkout:") for item in opened["plan"])
+    assert opened["unchanged"]["findings"] == [], opened["unchanged"]["findings"]

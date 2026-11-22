@@ -701,49 +701,25 @@ import launch_bound  # noqa: E402
 
 
 def test_a_builders_composed_checks_leave_its_launch_comparison_clean(composed, check_source, tmp_path):
-    """Use and criterion checks build trees, records and seat bundles between the stretch's two snapshots."""
+    """Use and criterion checks build trees, records and seat bundles inside the stretch's comparison."""
+    from comparison_window import comparison_window
     state, _behaviour, seen = composed
-    home = Path.home()
-    store = home / ".tradecraft" / "dispatches"
+    store = Path.home() / ".tradecraft" / "dispatches"
     holder = tmp_path / "holder"
     (holder / ".git").mkdir(parents=True)
     (holder / "tracked.txt").write_bytes(b"x")
-    registry = work.registry_path()
-    registry.parent.mkdir(parents=True, exist_ok=True)
-    registry.write_text(json.dumps({"schema_version": 1, "worktrees": [
-        {"root": str(check_source), "holder_root": str(holder), "active": True}]}), encoding="utf-8")
-    own = write_bundle(store, "stretch", {"dispatch_id": "a" * 32, "stage": "stretch"})
-    plugin = tmp_path / "plugin"
-    plugin.mkdir()
-    plan = launch_bound.coverage_plan(root=check_source, home=home, env={}, launcher_plugin=plugin,
-                                      store=store, own_request=work.records.sidecar(own, ".request.json"))
-    before_at = launch_bound.now()
-    before = launch_bound.snapshot(plan, seconds=60, own_output=own)
-    for words in (("use", "--job-from-artifact"), ("acceptance-criterion", "--criterion", "C2")):
-        run_check(state, *words, transport=PostingTransport())
-        # The bundle its seat launcher writes, beside the trees and records the entrance wrote.
-        write_bundle(store, uuid.uuid4().hex, {
-            "dispatch_id": uuid.uuid4().hex, "stage": words[0], "root": str(seen["tree"]),
-            "launched_by": {"dispatch_id": "a" * 32}}, {"outcome": "success", "completed_at": "t"},
-            {".dispatch.bin": seen["dispatch"], ".source.bin": b"x"})
-    # A builder's reading: its tree in the temporary folder, its record and prompt in the entrance's records.
-    base = git_in(check_source, "rev-parse", "HEAD").stdout.decode().strip()
-    (check_source / "job" / "job.md").write_bytes(b"run the consumer twice\n")
-    git_in(check_source, "-c", "user.name=f", "-c", "user.email=f@f", "commit", "-q", "-am", "change")
-    head = git_in(check_source, "rev-parse", "HEAD").stdout.decode().strip()
-    reading = Path(work.tempfile.mkdtemp(prefix="tradecraft-reading-")) / "reading"
-    work.cold_reader.build_tree(source=check_source, output=reading, work="o/r#5", producer_version="0.218.0",
-                                base_tip=base, head=head, covered=None, branch="tradecraft/zz-builder",
-                                numbers=[], records_home=work._records_home(None))
-    (work._records_home(None) / "cold-reader" / "x").mkdir(parents=True)
-    (work._records_home(None) / "cold-reader" / "x" / "prompt.md").write_bytes(b"prompt")
-    state.record_root, state.issue_comments = store, []
-    work.builder_checks(state)
-    after = launch_bound.snapshot(plan, seconds=60, own_output=own, before=before)
-    result = launch_bound.compare(plan, before, after, root=check_source, holder_session_id=None,
-                                  store=store, own_dispatch="a" * 32, before_at=before_at,
-                                  after_at=launch_bound.now(), elapsed_seconds=1.0)
-    assert result["findings"] == [], result["findings"]
+    with comparison_window(root=check_source, tmp_path=tmp_path, checkouts=[holder]) as window:
+        for words in (("use", "--job-from-artifact"), ("acceptance-criterion", "--criterion", "C2")):
+            run_check(state, *words, transport=PostingTransport())
+            # The bundle its seat launcher writes, beside the trees and records the entrance wrote.
+            write_bundle(store, uuid.uuid4().hex, {
+                "dispatch_id": uuid.uuid4().hex, "stage": words[0], "root": str(seen["tree"]),
+                "launched_by": {"dispatch_id": "a" * 32}}, {"outcome": "success", "completed_at": "t"},
+                {".dispatch.bin": seen["dispatch"], ".source.bin": b"x"})
+        state.record_root, state.issue_comments = store, []
+        work.builder_checks(state)
+    assert any(item["item"].startswith("checkout:") for item in window["plan"])
+    assert window["unchanged"]["findings"] == [], window["unchanged"]["findings"]
 
 
 @pytest.mark.parametrize("change", ["removed", "rewritten"])
