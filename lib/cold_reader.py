@@ -367,6 +367,26 @@ def load_metadata(path: Path) -> dict:
     return value
 
 
+def tree_held(metadata: dict, source: Path) -> bool:
+    """Whether a reading tree still stands as built: clean, and every carried file its claimed object.
+
+    Checked again when a builder's reader returns, so an edit made while it read leaves no counting
+    report. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    root = Path(metadata["tree_root"])
+    try:
+        recipient_tree._prove_neutral_repository(root, source)
+        if recipient_tree._text(root, "status", "--porcelain", "--untracked-files=all", "--ignored"):
+            return False
+        for name, claim in (metadata.get("files") or {}).items():
+            content = (root / Path(*PurePosixPath(name).parts)).read_bytes()
+            if recipient_tree._blob_oid(source, content) != claim.get("oid"):
+                return False
+    except (recipient_tree.RecipientTreeError, OSError):
+        return False
+    return True
+
+
 def compose_prompt(metadata: dict, standard: str, diff_text: str | None) -> bytes:
     covered = sorted(metadata["coverage"])
     parts = [

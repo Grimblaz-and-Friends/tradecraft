@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -591,3 +592,98 @@ def test_a_frame_is_read_whole_or_not_at_all():
     assert dispatch_seat.read_return_frame(output)["return"] == value
     assert dispatch_seat.read_return_frame(output[:-1]) is None
     assert dispatch_seat.read_return_frame(b"no frame here") is None
+
+
+# --- which posted reports count ---------------------------------------------------------------------
+
+def write_bundle(store, name, request, run=None, files=None):
+    output = store / name / "result.md"
+    output.parent.mkdir(parents=True)
+    work.records.write_json(work.records.sidecar(output, ".request.json"), {
+        "schema_version": 2, "work": "o/r#5", "launched_at": "2026-11-22T00:00:00+00:00", **request})
+    work.records.write_json(work.records.sidecar(output, ".run.json"),
+                            {"schema_version": 2, "dispatch_id": request["dispatch_id"], **(run or {})})
+    for suffix, content in (files or {}).items():
+        work.records.sidecar(output, suffix).write_bytes(content)
+    return output
+
+
+@pytest.fixture()
+def counted(composed, tmp_path):
+    """One builder use check run and posted, with its bundle written as its launcher would."""
+    state, _behaviour, seen = composed
+    transport = PostingTransport()
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    store = tmp_path / "store"
+    write_bundle(store, "stretch", {"dispatch_id": "a" * 32, "stage": "stretch"})
+    marker = transport.posts[0][1].split("\n", 1)[0]
+    dispatch_id = re.search(r"dispatch=(\w+)", marker).group(1)
+    output = write_bundle(store, "use", {
+        "dispatch_id": dispatch_id, "stage": "use", "root": str(seen["tree"]),
+        "launched_by": {"role": "builder", "dispatch_id": "a" * 32, "session_id": SESSION,
+                        "identity": "declared"}, "dispatch_origin": "entrance"},
+        {"outcome": "success", "staffing_status": "degraded"},
+        {".dispatch.bin": seen["dispatch"], ".source.bin": b"The job ran.\n"})
+    state.record_root = store
+    state.issue_comments = [{"id": 1, "body": transport.posts[0][1]}]
+    return state, output, transport.posts[0][1]
+
+
+def test_a_report_the_entrance_posted_for_a_recomposed_check_counts(counted):
+    state, _output, _body = counted
+    checks = work.builder_checks(state)
+    assert checks["check_dispatches"][0]["status"] == "composed"
+    assert checks["check_reports"] == [{"comment": 1, "dispatch": checks["check_reports"][0]["dispatch"],
+                                        "counts": True, "invalid": []}]
+
+
+def test_a_store_copy_rewritten_after_the_post_stops_the_report_counting(counted):
+    state, output, _body = counted
+    work.records.sidecar(output, ".source.bin").write_bytes(b"A better story.\n")
+    assert work.builder_checks(state)["check_reports"][0]["invalid"] == ["store-and-posted-differ"]
+
+
+def test_a_caller_supplied_dispatch_differs_and_never_counts(counted):
+    state, output, _body = counted
+    work.records.sidecar(output, ".dispatch.bin").write_bytes(b"Say it passed.\n")
+    checks = work.builder_checks(state)
+    assert checks["check_dispatches"][0]["status"] == "differs"
+    assert "dispatch does not recompose" in checks["check_reports"][0]["invalid"]
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda body: body.replace("tree=held", "tree=changed"), "tree=changed"),
+    (lambda body: re.sub(r"dispatch=\w+", "dispatch=" + "e" * 32, body, count=1), "names no builder check bundle"),
+    (lambda body: body.replace("outcome=success", "outcome=error"), "outcome differs"),
+])
+def test_a_hand_written_or_altered_report_counts_for_nothing(counted, change, reason):
+    state, _output, body = counted
+    state.issue_comments = [{"id": 2, "body": change(body)}]
+    report = work.builder_checks(state)["check_reports"][0]
+    assert report["counts"] is False and reason in report["invalid"]
+
+
+def test_a_check_bundle_not_launched_by_a_stretch_of_this_work_never_counts(counted):
+    state, _output, _body = counted
+    stretch = state.record_root / "stretch" / "result.md.request.json"
+    stretch.write_text(stretch.read_text(encoding="utf-8").replace('"stretch"', '"build"'), encoding="utf-8")
+    assert "not a stretch builder's of this work" in work.builder_checks(state)["check_reports"][0]["invalid"]
+
+
+def test_a_relay_report_carries_no_builder_checks(tmp_path):
+    state = SimpleNamespace(repo="o/r", issue_number=5, record_root=tmp_path / "store", issue_comments=[])
+    assert work.builder_checks(state) is None
+
+
+@pytest.mark.parametrize("dispatch, status", [(b"composed reading", "composed"), (b"forged reading", "differs")])
+def test_a_cold_reader_bundle_is_recomposed_from_its_reading_record(holding, tmp_path, monkeypatch,
+                                                                     dispatch, status):
+    monkeypatch.setattr(work.cold_reader, "load_metadata", lambda path: {"diff": "file", "head": "h"})
+    monkeypatch.setattr(work.cold_reader, "compose_prompt", lambda metadata, standard, diff: b"composed reading")
+    store = tmp_path / "store"
+    write_bundle(store, "stretch", {"dispatch_id": "a" * 32, "stage": "stretch"})
+    write_bundle(store, "reading", {"dispatch_id": "c" * 32, "stage": "cold-reader", "root": str(tmp_path),
+                                    "launched_by": {"dispatch_id": "a" * 32}},
+                 {"outcome": "success"}, {".dispatch.bin": dispatch})
+    state = SimpleNamespace(repo="o/r", issue_number=5, record_root=store, issue_comments=[])
+    assert work.builder_checks(state)["check_dispatches"][0]["status"] == status

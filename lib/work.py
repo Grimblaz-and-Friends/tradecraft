@@ -3760,6 +3760,12 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
         payload = {**payload, "implementer_environments": _implementer_environments(state),
                    "launch_findings": _evaluate_launch_findings(state),
                    "github_write_bound": _github_write_report(state)}
+        try:
+            checks = builder_checks(state)
+        except (OSError, ValueError, WorkError) as exc:
+            checks = {"unknown": str(exc)}
+        if checks is not None:
+            payload = {**payload, "builder_checks": checks}
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
@@ -5721,7 +5727,8 @@ def _cold_reading_measures(state: WorkState) -> dict[str, object]:
 
 def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path: Path | None,
                          tree_metadata: Path | None, timeout_seconds: float | None,
-                         claude_path: Path | None, codex_path: Path | None) -> int:
+                         claude_path: Path | None, codex_path: Path | None,
+                         transport: GitHubREST | None = None) -> int:
     # The holder holds the brief, so a dispatch it wrote could aim the reader.
     if dispatch_path is not None or tree_metadata is not None:
         raise WorkError("run cold-reader composes its own prompt and tree; it accepts no "
@@ -5819,18 +5826,33 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         *_seat_launch_arguments(state, "cold-reader", "cold", claude_path=claude_path,
                                 codex_path=codex_path, plan=launch_plan),
     ]
+    builder = builder_mode()
+    if builder is not None:
+        # A builder's reading is framed and posted from this run. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+        command.extend(("--return-frame", "--launched-by-dispatch", builder["dispatch_id"],
+                        "--launched-by-session", str(builder.get("session_id")), "--dispatch-origin", "entrance"))
     setting_resolution.print_plan(launch_plan, label="work")
-    code = _invoke_recipient(command, deadline)
-    try:
-        returned = output.read_text("utf-8")
-    except OSError:
-        returned = None
+    captured = bytearray()
+    code = _invoke_recipient(command, deadline,
+                             **({"runner": _framed_recipient_run(captured)} if builder is not None else {}))
+    frame = dispatch_seat.read_return_frame(bytes(captured)) if builder is not None else None
+    if builder is not None:
+        returned = frame["return"].decode("utf-8", "replace") if frame and frame.get("return") else None
+        held = cold_reader.tree_held(metadata, state.holder_root)
+        posted = _post_check_report(transport or GitHubREST(), state, check_report_body(
+            stage="cold-reader", frame=frame, head=sha, tree="held" if held else "changed", criterion=None))
+    else:
+        try:
+            returned = output.read_text("utf-8")
+        except OSError:
+            returned = None
     errors = (["the seat returned no account"] if returned is None
               else cold_reader.form_errors(returned, cold_reader.flaggable(metadata)))
     _emit_report({
         "schema_version": 1, "work": work, "stage": "cold-reader", "bundle": str(output),
         "head": sha, "covered": covered, "whole": metadata["whole"], "residue": metadata["residue"],
         "form": "fail" if errors else "pass", "form_errors": errors,
+        **({"check_report": posted} if builder is not None else {}),
     }, state)
     return code or (1 if errors else 0)
 
@@ -9830,7 +9852,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
     if decision.stage == "cold-reader":
         return _execute_cold_reader(state, decision, dispatch_path=dispatch_path,
                                     tree_metadata=tree_metadata, timeout_seconds=timeout_seconds,
-                                    claude_path=claude_path, codex_path=codex_path)
+                                    claude_path=claude_path, codex_path=codex_path, transport=transport)
     if decision.stage in {"floor", "use", "review-disposition", "proof", "ready-reviewers"}:
         sync = _synchronization_decision(state)
         if sync is not None:
@@ -11290,6 +11312,117 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
                   "frame": None if frame is None else {k: v for k, v in frame.items() if k != "return"},
                   "check_report": posted}, state)
     return code if posted["status"] != "check-report-unposted" else 1
+
+
+CHECK_STAGES = frozenset({"use", "acceptance-criterion", "cold-reader"})
+REPORT_MARKER_LINE = re.compile(r"\A<!--\s*tradecraft:check-report:v1\s+(.*?)\s*-->\n\n", re.S)
+
+
+def _bundle_file(run_path: Path, suffix: str) -> Path:
+    return run_path.with_name(run_path.name[:-len(".run.json")] + suffix)
+
+
+def recompose_check(state: WorkState, request: dict) -> tuple[bytes | None, str | None, str]:
+    """The dispatch the entrance would compose for a builder's check bundle, its head, and why not when it can't.
+
+    Use and criterion checks are recomposed from the current settled artifact and the tree record the
+    bundle's root names; a reading from its reading record and the entrance's own standard.
+    """
+    root = request.get("root")
+    if not isinstance(root, str):
+        return None, None, "the bundle names no tree"
+    home = _records_home(None)
+    stage = request.get("stage")
+    try:
+        if stage == "cold-reader":
+            metadata = cold_reader.load_metadata(cold_reader.reading_record(Path(root), home))
+            standard = (Path(__file__).resolve().parent.parent / "skills" / "authoring" / "references"
+                        / "code-reasons.md").read_text("utf-8")
+            diff = (cold_reader.reading_record(Path(root), home).with_suffix(".diff").read_text(
+                "utf-8", errors="replace") if metadata["diff"] == "inline" else None)
+            return cold_reader.compose_prompt(metadata, standard, diff), metadata.get("head"), ""
+        claim = recipient_tree.load_consumer_tree_metadata(
+            recipient_tree.record_path(Path(root), home), work=f"{state.repo}#{state.issue_number}")
+        head = claim.get("source_revision")
+        artifact, _comment = _settled_artifact_text(state, "artifact-use-job-absent")
+        if stage == "use":
+            return compose_check_dispatch("use", {"job": artifact_use_job(artifact), "head": head,
+                                                  "tree": Path(root)}), head, ""
+        dispatch = _bundle_file(Path(request["_run_path"]), ".dispatch.bin").read_bytes().decode("utf-8", "replace")
+        named = CRITERION_OPENING.search(dispatch.split("\nCriterion:\n\n", 1)[-1])
+        if named is None:
+            return None, head, "the dispatch names no criterion"
+        criterion = artifact_criterion(artifact, named.group(1))
+        capability, _tree = criterion_reader(criterion)
+        return compose_check_dispatch("acceptance-criterion", {
+            "criterion": criterion, "capability": capability, "head": head, "tree": Path(root)}), head, ""
+    except (OSError, ValueError, KeyError, WorkError, recipient_tree.RecipientTreeError,
+            cold_reader.ColdReaderError) as exc:
+        return None, None, str(exc)
+
+
+def builder_checks(state: WorkState) -> dict[str, object] | None:
+    """Each builder check bundle's dispatch against its recomposition, and which posted reports count.
+
+    A report counts only when its digest is the recomposed dispatch's, its bundle is a stretch
+    builder's of this work, its stage, head, staffing and outcome are the bundle's, its tree held,
+    and the store's return equals the posted text. Nothing here gates a stage.
+    Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    store = state.record_root or records.default_record_root()
+    work = f"{state.repo}#{state.issue_number}"
+    comments = [c for c in state.issue_comments if isinstance(c.get("body"), str)
+                and REPORT_MARKER in c["body"]]
+    rows = lifecycle.launch_bundles(store, work, CHECK_STAGES | {"stretch"})
+    stretches = {request.get("dispatch_id") for _o, _p, request, _r in rows if request.get("stage") == "stretch"}
+    bundles = {}
+    for _order, run_path, request, run in rows:
+        if request.get("stage") in CHECK_STAGES and isinstance(request.get("launched_by"), dict):
+            bundles[request.get("dispatch_id")] = (Path(run_path), {**request, "_run_path": str(run_path)}, run or {})
+    if not bundles and not comments:
+        return None
+    dispatches, recomposed = [], {}
+    for dispatch_id, (run_path, request, _run) in bundles.items():
+        composed, head, problem = recompose_check(state, request)
+        try:
+            actual = _bundle_file(run_path, ".dispatch.bin").read_bytes()
+        except OSError:
+            actual = None
+        status = "composed" if composed is not None and actual == composed else "differs"
+        recomposed[dispatch_id] = (composed, head, status)
+        dispatches.append({"bundle": str(run_path), "stage": request.get("stage"), "status": status,
+                           **({"reason": problem} if problem else {})})
+    reports = []
+    for comment in comments:
+        found = REPORT_MARKER_LINE.match(comment["body"])
+        attributes = dict(part.split("=", 1) for part in found.group(1).split() if "=" in part) if found else {}
+        reasons = []
+        bundle = bundles.get(attributes.get("dispatch"))
+        if found is None:
+            reasons.append("malformed")
+        elif bundle is None:
+            reasons.append("names no builder check bundle")
+        else:
+            run_path, request, run = bundle
+            composed, head, status = recomposed[attributes["dispatch"]]
+            if status != "composed" or attributes.get("dispatch_sha256") != hashlib.sha256(composed).hexdigest():
+                reasons.append("dispatch does not recompose")
+            if request["launched_by"].get("dispatch_id") not in stretches:
+                reasons.append("not a stretch builder's of this work")
+            expected = {"stage": request.get("stage"), "head": head, "outcome": run.get("outcome"),
+                        "staffing_status": run.get("staffing_status")}
+            reasons.extend(f"{key} differs" for key, value in expected.items() if attributes.get(key) != value)
+            if attributes.get("tree") != "held":
+                reasons.append("tree=changed")
+            try:
+                stored = _bundle_file(run_path, ".source.bin").read_bytes().decode("utf-8", "replace")
+            except OSError:
+                stored = NO_RETURN_LINE
+            if stored != comment["body"][found.end():]:
+                reasons.append("store-and-posted-differ")
+        reports.append({"comment": comment.get("id"), "dispatch": attributes.get("dispatch"),
+                        "counts": not reasons, "invalid": reasons})
+    return {"check_dispatches": dispatches, "check_reports": reports}
 
 
 def run(
