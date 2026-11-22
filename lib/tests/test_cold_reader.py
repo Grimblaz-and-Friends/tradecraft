@@ -1446,7 +1446,7 @@ def test_978_a_cold_reader_started_by_the_entrance_gets_the_whole_limit(change, 
     assert run["attempts"][0]["allocation_seconds"] >= 1799
 
 
-def _builder_reading(change, monkeypatch, capfd, *, window=None):
+def _builder_reading(change, monkeypatch, capfd, *, window=None, failing_posts=False):
     """Run a builder's whole `run cold-reader` with its stand-in seat; returns its commands, output and posts."""
     import launch_tree
     import preflight
@@ -1484,6 +1484,8 @@ def _builder_reading(change, monkeypatch, capfd, *, window=None):
 
     class Posting:
         def post(self, endpoint, payload):
+            if failing_posts:
+                raise OSError("the post failed")
             posts.append((endpoint, payload["body"]))
             return {"id": 1}
 
@@ -1534,3 +1536,9 @@ def test_1011_a_builders_whole_reading_leaves_its_launch_comparison_clean(change
     assert commands and posts  # The stage ran whole: its seat launched and its report was posted.
     assert any(item["item"].startswith("checkout:") for item in opened["plan"])
     assert opened["unchanged"]["findings"] == [], opened["unchanged"]["findings"]
+
+
+@pytest.mark.cold_reading
+def test_1011_a_builders_reading_whose_report_never_lands_exits_nonzero(change, monkeypatch, capfd):
+    commands, _output, posts, code, _window = _builder_reading(change, monkeypatch, capfd, failing_posts=True)
+    assert commands and posts == [] and code == 1

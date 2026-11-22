@@ -1243,6 +1243,9 @@ def _mutation(name, arguments):
     "gh api -X POST repos/o/r/issues/12/comments -f body=x",
     "git add lib/dispatch_seat.py",
     "git diff -- lib/dispatch_seat.py lib/dispatch_record.py",
+    "uv run ruff check lib/dispatch_seat.py",
+    "uv run git add lib/dispatch_seat.py",
+    "uv run --with pkg ruff check lib/dispatch_seat.py",
     "python lib/work.py run use --repo o/r --issue 5",
     "cat lib/dispatch_implementer.py",
 ])

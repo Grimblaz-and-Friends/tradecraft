@@ -1,4 +1,7 @@
-"""Builder mode: which stretch launch holds a process, and what the entrance does inside one."""
+"""Builder mode: which stretch launch holds a process, and what the entrance does inside one.
+
+Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+"""
 from __future__ import annotations
 
 import json

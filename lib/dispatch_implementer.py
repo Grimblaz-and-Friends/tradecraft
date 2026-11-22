@@ -565,7 +565,8 @@ def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> 
         if position not in merged:
             merged[position] = {**entry, "sources": [entry["source"]]}
             continue
-        # The bound that refused names the entry; Claude's denial of the same call joins it.
+        # The first report of a call names the entry: the bound's, which says what was refused and
+        # why, comes before Claude's denial, which says only that a call was denied.
         held = merged[position]
         held["sources"].append(entry["source"])
         if "denial" in entry:
@@ -1024,7 +1025,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         root=root, env=child_env, launcher_plugin=Path(__file__).resolve().parent.parent,
                         own_output=output, own_request=request_path,
                         holder_session_id=args.holder_session_id, dispatch_id=dispatch_id, refs=True,
-                        own_pointer=pointer)
+                        own_pointer=pointer, own_row_resnapshot=args.stage == STRETCH)
                 except (OSError, ValueError, TypeError) as exc:
                     comparison, comparison_error = None, f"coverage could not be planned: {exc}"
                 request["write_bound"] = {
@@ -1218,6 +1219,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if native:
                     native.refresh()
                 growing.tick()
+            # Bound before the turn, so the record's last steps can read it whether or not it ran.
+            result = None
             try:
                 try:
                     if args.handover_state:
@@ -1418,7 +1421,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     # A refusal is reported, not held: it changes no outcome.
                     github_allowance.record_refusals(record, github_bound["log"])
                 if args.stage == STRETCH:
-                    args.stretch_stream = result.stdout if "result" in locals() and result is not None else b""
+                    args.stretch_stream = result.stdout if result is not None else b""
                     _stretch_refusals(record, attempt, args)
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)

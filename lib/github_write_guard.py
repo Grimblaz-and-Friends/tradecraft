@@ -1486,10 +1486,7 @@ def _launcher_call(words: list[str]) -> str | None:
     if name == "uv":
         if not rest or rest[0] != "run":
             return None
-        # uv run's options take values (`--with pkg`), so any word naming a launcher, after them or
-        # behind an interpreter, is the call; no option of uv's names one of these files.
-        named = next((re.split(r"[\\/]", word)[-1] for word in rest[1:] if _is_launcher(word)), None)
-        return named or _module_launcher(rest[1:])
+        return _uv_run_launcher(rest[1:])
     if name not in PYTHON_PROGRAMS:
         return None
     while rest:
@@ -1509,13 +1506,30 @@ def _launcher_call(words: list[str]) -> str | None:
     return None
 
 
-def _module_launcher(words: list[str]) -> str | None:
-    """A launcher named as a module, `-m dispatch_seat`, anywhere in a command's words."""
-    for index, word in enumerate(words[:-1]):
-        if word == "-m":
+def _uv_run_launcher(words: list[str]) -> str | None:
+    """The launcher the command after `uv run`'s own options calls, or None.
+
+    Some of uv's options take a value (`--with pkg`) and the check cannot tell which, so each word
+    after an option is read both ways: as that option's value, and as the program. Either reading
+    that is a launcher call refuses. The first word that follows no option is the program, and
+    what comes after it is judged as that program's own command, so a launcher named as data there
+    (`uv run git add lib/dispatch_seat.py`) passes.
+    """
+    previous_is_option = True
+    for index, word in enumerate(words):
+        if word == "--":
+            return _launcher_call(words[index + 1:])
+        if word in ("-m", "--module") and index + 1 < len(words):
             module = words[index + 1].rsplit(".", 1)[-1] + ".py"
             if module in LAUNCHER_FILES:
                 return module
+        if word.startswith("-"):
+            previous_is_option = True
+            continue
+        found = _launcher_call(words[index:])
+        if found or not previous_is_option:
+            return found
+        previous_is_option = False
     return None
 
 

@@ -1284,12 +1284,13 @@ class Comparison:
     def __init__(self, *, root: Path, env: dict[str, str] | None, launcher_plugin: Path,
                  own_output: Path, own_request: Path, holder_session_id: str | None,
                  dispatch_id: str, home: Path | None = None, store: Path | None = None,
-                 refs: bool = False, own_pointer: Path | None = None):
+                 refs: bool = False, own_pointer: Path | None = None,
+                 own_row_resnapshot: bool = False):
         import dispatch_record as records
         self.root, self.own_output, self.dispatch_id = Path(root), Path(own_output), dispatch_id
         self.holder_session_id = holder_session_id
         # Only a stretch launch, which runs catch-up itself, credits its own row's re-snapshot.
-        self.own_row_resnapshot = own_pointer is not None
+        self.own_row_resnapshot = own_row_resnapshot
         self.home = home or Path.home()
         self.store = store or records.default_record_root()
         self.plan = coverage_plan(root=self.root, home=self.home,

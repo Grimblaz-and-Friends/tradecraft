@@ -5845,6 +5845,9 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         held = cold_reader.tree_held(metadata, state.holder_root)
         posted = _post_check_report(transport or GitHubREST(), state, check_report_body(
             stage="cold-reader", frame=frame, head=sha, tree="held" if held else "changed", criterion=None))
+        if posted["status"] == "check-report-unposted":
+            # A reading whose report never landed counts for nothing, so its run says so, as a composed check's does.
+            code = code or 1
     else:
         try:
             returned = output.read_text("utf-8")
@@ -11811,6 +11814,7 @@ def _run(
         return 0
     if getattr(args, "job_from_artifact", False) and (args.stage != "use" or builder_mode() is None):
         raise WorkError("--job-from-artifact applies only to a builder's run use")
+    # A stand-in executor is handed the named decision as every stage's is; only the real one composes.
     if executor is execute_stage and (
             args.stage == "acceptance-criterion" or (args.stage == "use" and builder_mode() is not None)):
         # A check composed from the settled artifact: the caller supplies neither its dispatch nor its tree.
