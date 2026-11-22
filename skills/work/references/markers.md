@@ -240,7 +240,7 @@ The line names a flag in that reading's account by its path, the `:lines` it giv
 - that bundle carries `launched_by` naming a `stretch` launch of this work;
 - its stage, head, staffing and outcome are the bundle's;
 - it says `tree=held`;
-- the store's copy of the return equals the posted text, byte for byte;
+- the store's copy of the return, read as UTF-8 text, equals the posted text;
 - its author is a configured marker producer.
 
 Every other comment carrying the marker counts for nothing, and the entrance's `builder_checks` report lists it with its reasons (`store-and-posted-differ` where the two copies differ). A failed seat posts `outcome=error`, and a second launch posts a second report beside the first. The marker is informational: no gate reads it yet.

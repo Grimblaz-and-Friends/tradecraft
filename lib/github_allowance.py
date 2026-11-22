@@ -70,7 +70,8 @@ def repository_of(work: str) -> str:
 def issue_of(work: str) -> int | None:
     """The issue number of an ``owner/name#n`` work value, or None when it names none."""
     number = work.partition("#")[2]
-    return int(number) if number.isdigit() else None
+    # ASCII digits only: str.isdigit() also takes digits such as "²", which int() then rejects.
+    return int(number) if re.fullmatch(r"[0-9]+", number) and int(number) > 0 else None
 
 
 def allowance_for(stage: str, *, repository: str, branch: str | None,
@@ -152,7 +153,10 @@ def _writes(allowance: dict) -> str:
 STRETCH_HOW = ("Reply on a review thread with the comment's numeric id written as digits in the "
                "command (`gh api repos/{repository}/pulls/N/comments/<id>/replies -f body=...`), or "
                "with `-F in_reply_to=<id>` on `repos/{repository}/pulls/N/comments`; resolve a thread "
-               "with its node id written literally. An id held in a shell variable is refused. Launch "
+               "with its node id written literally. An id held in a shell variable is refused. Give a "
+               "comment body as a file (`--body-file FILE`, or `-F body=@FILE` with gh api); a body "
+               "holding `$` or a command substitution, or piped in, is refused. Name the pull request "
+               "number unless the current branch is {branch} with one open pull request. Launch "
                "checks only through the entrance (`work.py run STAGE`); a direct call of a dispatch "
                "launcher is refused. ")
 
@@ -166,7 +170,7 @@ def sentence(allowance: dict) -> str:
     start = (f"Start a Claude session only as `{CHILD_START} ...`, without `--safe-mode` or "
              f"`--bare` and without changing `{CONNECTORS}`; it may make no GitHub write. "
              "Start no Codex session.")
-    how = (STRETCH_HOW.format(repository=allowance.get("repository"))
+    how = (STRETCH_HOW.format(repository=allowance.get("repository"), branch=allowance.get("branch"))
            if allowance.get("kind") == "stretch" else "")
     return (f"GitHub writes this step may make: {_writes(allowance)}. Make no other GitHub write "
             "- no comment, pull request, branch, branch deletion, tag, release, workflow run or "

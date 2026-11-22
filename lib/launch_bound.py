@@ -491,6 +491,8 @@ def snapshot(plan: list[dict], *, seconds: float, own_output: Path,
                         if rows is None:
                             raise ValueError("registry has an unsupported shape")
                         state["rows"] = {str(row.get("root", "")).casefold(): row for row in rows}
+                        # Unfolded, because roots differing only in case share one key above.
+                        state["row_list"] = rows
             elif item["method"] == "records":
                 if before is not None:
                     bundles = (before.get(item["item"]) or {}).get("bundles") or []
@@ -625,6 +627,8 @@ def _diff_entries(item: str, top: str, before: dict, after: dict, method: str) -
 # The owner's limit on everything between the after-walk and the final record.
 COMPARING_SECONDS = 120.0
 OWN_WORK, FOUND = "own", "found"
+# The registry and the launch's own records: a change to one is never the run's own work, wherever its path lies.
+HELD_WHEREVER = frozenset({"registry", "own-request", "own-pointer"})
 
 
 def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_session_id: str | None,
@@ -679,12 +683,18 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
                 rows_before, rows_after = first.get("rows") or {}, second.get("rows") or {}
                 row_changes = [key for key in sorted(set(rows_before) | set(rows_after))
                                if rows_before.get(key) != rows_after.get(key)]
-                for key in row_changes:
-                    row = rows_after.get(key) or rows_before.get(key)
+                pairs = [(rows_before.get(key), rows_after.get(key)) for key in row_changes]
+                for key, pair in zip(row_changes, pairs):
+                    row = pair[1] or pair[0]
+                    # Alone: every other row, compared unfolded, is the same after as before.
                     changes.append({"item": name, "path": str(row.get("root") or key),
-                                    "change": "row-changed",
-                                    "rows": (rows_before.get(key), rows_after.get(key))})
-                if not row_changes and first.get("digest") != second.get("digest") and \
+                                    "change": "row-changed", "rows": pair,
+                                    "alone": not _rows_left_differ(first, second, [pair])})
+                if _rows_left_differ(first, second, pairs):
+                    # A row whose root differs only in case from another's changed behind the folded key.
+                    changes.append({"item": name, "path": top, "change": "modified",
+                                    "reason": "a registry row changed that its folded root hides"})
+                elif not row_changes and first.get("digest") != second.get("digest") and \
                         "absent" not in statuses:
                     changes.append({"item": name, "path": top, "change": "modified"})
             continue
@@ -703,12 +713,12 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         for index, change in enumerate(changes):
             if outcome[index] is not None:
                 continue
-            if change["item"] not in {"registry", "own-request"} and contains(own_root, Path(change["path"])):
+            if change["item"] not in HELD_WHEREVER and contains(own_root, Path(change["path"])):
                 outcome[index] = OWN_WORK  # This run's own edits are its own work.
-            elif own_row_resnapshot and _own_row_resnapshot(change, own_root):
+            elif own_row_resnapshot and change.get("alone") and _own_row_resnapshot(change, own_root):
                 # A stretch builder's catch-up re-snapshots its own root's row after the landing it made.
                 outcome[index] = OWN_WORK
-            elif not (started and ended) or (change["item"] in {"registry", "own-request", "dispatch-records"}
+            elif not (started and ended) or (change["item"] in {*HELD_WHEREVER, "dispatch-records"}
                                               and change["change"] != "row-changed"):
                 outcome[index] = FOUND  # No other run could account for it.
             else:
@@ -757,6 +767,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             continue
         counts[0] += 1
         rows = change.pop("rows", None)
+        change.pop("alone", None)
         if result == OWN_WORK:
             continue
         if result != FOUND:
@@ -819,8 +830,26 @@ def _own_row_resnapshot(change: dict, own_root: Path) -> bool:
         return False
     if path_key(Path(str(after_row.get("root") or ""))) != path_key(own_root):
         return False
-    differing = {key for key in set(before_row) | set(after_row) if before_row.get(key) != after_row.get(key)}
+    # A field on one side only differs, even where the other side's value is None.
+    differing = {key for key in set(before_row) | set(after_row)
+                 if (key in before_row) != (key in after_row) or before_row.get(key) != after_row.get(key)}
     return bool(differing) and differing <= RESNAPSHOT_FIELDS
+
+
+def _rows_left_differ(first: dict, second: dict, pairs: list[tuple]) -> bool:
+    """Whether the registry's exact rows still differ once each pair's before and after rows are taken out."""
+    sides = []
+    for state, side in ((first, 0), (second, 1)):
+        rows = state.get("row_list")
+        if rows is None:
+            rows = list((state.get("rows") or {}).values())
+        left = [json.dumps(row, sort_keys=True) for row in rows]
+        for pair in pairs:
+            text = None if pair[side] is None else json.dumps(pair[side], sort_keys=True)
+            if text in left:
+                left.remove(text)
+        sides.append(sorted(left))
+    return sides[0] != sides[1]
 
 
 def _attribute(change: dict, live: list[dict], holder_session_id: str | None) -> dict | None:
@@ -844,7 +873,7 @@ def _attribute(change: dict, live: list[dict], holder_session_id: str | None) ->
                 if same_work or same_root:
                     return {"dispatch_id": run["dispatch_id"], "holder_session_id": holder}
         return None
-    if change["item"] in {"registry", "own-request", "dispatch-records"}:
+    if change["item"] in {*HELD_WHEREVER, "dispatch-records"}:
         return None
     for run in live:
         if isinstance(run["root"], str) and run["root"] and contains(Path(run["root"]), Path(change["path"])):

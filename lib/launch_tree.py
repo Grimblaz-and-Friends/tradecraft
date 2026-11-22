@@ -204,7 +204,8 @@ def attribution(store: Path, *, dispatch: str | None = None, session: str | None
 
     Inside a live stretch launch's tree the seat is the builder's whatever its variable says, and a
     flag that disagrees with the holding launch is ignored and noted. Outside every tree it is the
-    holder's, as before, and the entrance's builder flags are refused there. ``dispatch_origin``
+    holder's, and the entrance's builder flags are refused there. An empty session variable is an
+    absent one. ``dispatch_origin``
     is declared and proves nothing; recomposing the dispatch decides whether it was the entrance's.
     """
     holding = stretch_holding(store)
@@ -225,7 +226,7 @@ def attribution(store: Path, *, dispatch: str | None = None, session: str | None
                                 "outside every stretch launch's tree")
         return {}
     launch = holding.launch
-    present = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    present = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
     if present and present != launch.get("session_id"):
         # One session rule everywhere: a present session that is not the launch's is refused, as the
         # entrance refuses it; `declared` is for an absent session variable only.

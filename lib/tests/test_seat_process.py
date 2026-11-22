@@ -258,6 +258,32 @@ def test_checkpoint_cannot_renew_the_process_wait(tmp_path, monkeypatch):
     assert current[0] == 0.1
 
 
+@pytest.mark.parametrize("extends", [True, False])
+def test_a_window_moved_at_its_last_moment_is_read_before_the_launch_stops(tmp_path, extends):
+    # The child outlives the first deadline; the move is visible only once that deadline is reached.
+    start = time.monotonic()
+    first_end = start + 0.5
+    asked = []
+
+    def window():
+        current = time.monotonic()
+        asked.append(current)
+        if extends and current >= first_end and len([moment for moment in asked if moment >= first_end]) == 1:
+            return current + 10, current + 11
+        return None
+
+    command = [sys.executable, "-c", "import time; time.sleep(1.5); print('returned')"]
+    if extends:
+        result = process.run_process(command, input=b"", cwd=tmp_path, timeout=first_end - start,
+                                     cleanup_deadline=start + 0.75, on_window=window)
+        assert result.returncode == 0 and result.stdout.strip() == b"returned"
+    else:
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.run_process(command, input=b"", cwd=tmp_path, timeout=first_end - start,
+                                cleanup_deadline=start + 0.75, on_window=window)
+    assert any(moment >= first_end for moment in asked)
+
+
 def test_expired_drain_does_not_close_a_pipe_owned_by_a_reader(tmp_path, monkeypatch):
     # Model a Windows synchronous read whose close waits for its pipe owner.
     # EOF deliberately arrives only after the caller has finished cleanup.

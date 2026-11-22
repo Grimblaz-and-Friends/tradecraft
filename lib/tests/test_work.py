@@ -12947,12 +12947,11 @@ def test_1011_a_builders_ready_reviewers_writes_only_to_its_own_change(capsys):
     finally:
         work._BUILDER.reset(token)
     capsys.readouterr()
-    own = f"repos/{fixture.repo}/issues/{fixture.pr['number']}/"
-    for kind, target, payload in transport.operations:
-        if kind == "label":
-            assert target.startswith(own)
-        else:
-            assert payload == {"id": "PR_fixture"} or "PR_fixture" in json.dumps(payload)
+    # Both writes happen, each bound to its exact target: the labels of the own pull request, and its node.
+    (_label, label_target, _labels), (_ready, query, variables) = sorted(transport.operations, key=lambda o: o[0])
+    assert (_label, _ready) == ("label", "ready")
+    assert label_target == f"repos/{fixture.repo}/issues/{fixture.pr['number']}/labels"
+    assert "markPullRequestReadyForReview" in query and list(variables.values()) == ["PR_fixture"]
 
 
 class RecordingProofTransport:

@@ -2281,3 +2281,16 @@ def test_1011_a_seat_inside_a_stretch_tree_records_the_builder_and_frames_its_re
     assert frame["outcome"] == "success"
     assert frame["return"] == seat.sidecar(args.output, ".source.bin").read_bytes()
     assert frame["dispatch_sha256"] == hashlib.sha256(args.dispatch.read_bytes()).hexdigest()
+
+
+def test_1011_a_return_holding_a_frame_of_its_own_round_trips(capfd):
+    inner = b"abc"
+    fake = (b"\n" + seat.FRAME_OPENING + json.dumps({"bytes": 3, "sha256": hashlib.sha256(inner).hexdigest(),
+                                                     "outcome": "success"}).encode("ascii") + b"\n" + inner)
+    value = b"Example:\ntradecraft-return-frame {}\n" + fake
+    args = seat.argparse.Namespace(frame_return=value, frame_record={"outcome": "success"},
+                           frame_dispatch_sha256="d" * 64, frame_dispatch_id="a" * 32)
+    print("launcher output")
+    seat._write_return_frame(args)
+    frame = seat.read_return_frame(capfd.readouterr().out.encode("utf-8"))
+    assert frame["return"] == value and frame["dispatch_id"] == "a" * 32

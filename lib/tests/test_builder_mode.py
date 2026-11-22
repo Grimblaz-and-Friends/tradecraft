@@ -514,10 +514,16 @@ def composed(holding, check_source, tmp_path, monkeypatch):
     (tmp_path / "temp").mkdir()
     monkeypatch.setattr(work.tempfile, "tempdir", str(tmp_path / "temp"))
     state = SimpleNamespace(
-        repo="o/r", issue_number=5, pr={"number": 12}, instalment=None,
-        artifact_phase=SimpleNamespace(settled_artifact=SimpleNamespace(body=CHECK_ARTIFACT, source_id="77")))
+        repo="o/r", issue_number=5, pr={"number": 12}, instalment=None, raw_output="", validated_markers=[],
+        artifact_phase=SimpleNamespace(settled_artifact=SimpleNamespace(body=CHECK_ARTIFACT, source_id="77"),
+                                       source_error=None))
     monkeypatch.setattr(work, "resolve_implementation_root", lambda *a, **k: (check_source, "tradecraft/zz-builder", False))
-    monkeypatch.setattr(work, "_producer_vendor", lambda *a, **k: ("claude", "fixture"))
+    # A builder's first check: no completed producer bundle exists, so this lookup must not be reached.
+    monkeypatch.setattr(work, "_producer_vendor", lambda *a, **k: pytest.fail("read a completed producer bundle"))
+    monkeypatch.setattr(work, "_launch_account_refusal", lambda state, stage: seen.get("account"))
+    monkeypatch.setattr(work, "_version_refusal", lambda state, decision, *a: seen.get("version"))
+    request = tmp_path / "stretch.request.json"
+    request.write_text(json.dumps({"stage": "stretch", "vendor": "claude"}), encoding="utf-8")
     monkeypatch.setattr(work, "_seat_launch_arguments", lambda *a, **k: [])
     monkeypatch.setattr(work, "_held_by_cold_reading", lambda *a, **k: False)
     monkeypatch.setattr(work, "_synchronization_decision", lambda state: seen.get("sync"))
@@ -535,11 +541,17 @@ def composed(holding, check_source, tmp_path, monkeypatch):
         if behaviour["edit"]:
             (tree / "job" / "job.md").write_bytes(b"edited while the seat ran\n")
         digest = __import__("hashlib").sha256(seen["dispatch"]).hexdigest()
+        # The store copy the seat launcher keeps, at the output it resolves for this check.
+        output = work.records.resolved_output(None, "o/r#5", command[command.index("--stage") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        seen["store_copy"] = work.records.sidecar(output, ".source.bin")
+        seen["store_copy"].write_bytes(behaviour["return"].encode())
         return runner([sys.executable, "-c", FRAME_SCRIPT, str(LIB), behaviour["return"],
                        behaviour["outcome"], digest], timeout=60, cleanup_deadline=None).returncode
 
     monkeypatch.setattr(work, "_invoke_recipient", recipient)
-    work._BUILDER.set({"dispatch_id": "a" * 32, "session_id": SESSION, "identity": "declared"})
+    work._BUILDER.set({"dispatch_id": "a" * 32, "session_id": SESSION, "identity": "declared",
+                       "root": str(check_source), "request": str(request)})
     yield state, behaviour, seen
     work._BUILDER.set(None)
 
@@ -648,7 +660,8 @@ def counted(composed, tmp_path):
         "dispatch_id": dispatch_id, "stage": "use", "root": str(seen["tree"]),
         "launched_by": {"role": "builder", "dispatch_id": "a" * 32, "session_id": SESSION,
                         "identity": "declared"}, "dispatch_origin": "entrance"},
-        {"outcome": "success", "staffing_status": "degraded"},
+        {"outcome": "success", "staffing_status": "degraded",
+         "staffing_qualification": {"same_vendor_reason": "owner-selected-claude-implementer"}},
         {".dispatch.bin": seen["dispatch"], ".source.bin": b"The job ran.\n"})
     state.record_root = store
     state.config = work.WorkConfig(marker_producers=frozenset({"producer"}))
@@ -682,6 +695,10 @@ def test_a_caller_supplied_dispatch_differs_and_never_counts(counted):
     (lambda body: body.replace("tree=held", "tree=changed"), "tree=changed"),
     (lambda body: re.sub(r"dispatch=\w+", "dispatch=" + "e" * 32, body, count=1), "names no builder check bundle"),
     (lambda body: body.replace("outcome=success", "outcome=error"), "outcome differs"),
+    (lambda body: body.replace(" same_vendor_reason=owner-selected-claude-implementer", ""),
+     "same_vendor_reason differs"),
+    (lambda body: body.replace("same_vendor_reason=owner-selected-claude-implementer",
+                               "same_vendor_reason=other"), "same_vendor_reason differs"),
 ])
 def test_a_hand_written_or_altered_report_counts_for_nothing(counted, change, reason):
     state, _output, body = counted
@@ -720,8 +737,9 @@ def test_a_cold_reader_bundle_is_recomposed_from_its_reading_record(holding, tmp
 import launch_bound  # noqa: E402
 
 
-def test_a_builders_composed_checks_leave_its_launch_comparison_clean(composed, check_source, tmp_path):
-    """Use and criterion checks build trees, records and seat bundles inside the stretch's comparison."""
+@pytest.mark.parametrize("words", [("use", "--job-from-artifact"), ("acceptance-criterion", "--criterion", "C2")])
+def test_a_builders_composed_checks_leave_its_launch_comparison_clean(composed, check_source, tmp_path, words):
+    """Each check builds trees, records and seat bundles inside a stretch comparison of its own."""
     from comparison_window import comparison_window
     state, _behaviour, seen = composed
     store = Path.home() / ".tradecraft" / "dispatches"
@@ -729,7 +747,7 @@ def test_a_builders_composed_checks_leave_its_launch_comparison_clean(composed, 
     (holder / ".git").mkdir(parents=True)
     (holder / "tracked.txt").write_bytes(b"x")
     with comparison_window(root=check_source, tmp_path=tmp_path, checkouts=[holder]) as window:
-        for words in (("use", "--job-from-artifact"), ("acceptance-criterion", "--criterion", "C2")):
+        for words in (words,):
             run_check(state, *words, transport=PostingTransport())
             # The bundle its seat launcher writes, beside the trees and records the entrance wrote.
             write_bundle(store, uuid.uuid4().hex, {
@@ -895,18 +913,19 @@ def test_a_keep_warm_ping_carries_no_stretch_variable():
 
 
 def test_a_store_return_rewritten_before_the_post_is_never_posted(composed, tmp_path, monkeypatch):
-    state, _behaviour, _seen = composed
-    store_copy = tmp_path / "result.md.source.bin"
+    state, _behaviour, seen = composed
     original = dispatch_seat.read_return_frame
 
     def rewritten_after_frame(output):
         frame = original(output)
-        store_copy.write_bytes(b"A better story.\n")  # The builder's shell, between the frame and the post.
+        # The builder's shell, between the frame and the post, rewrites the launched check's store copy.
+        seen["store_copy"].write_bytes(b"A better story.\n")
         return frame
 
     monkeypatch.setattr(dispatch_seat, "read_return_frame", rewritten_after_frame)
     transport = PostingTransport()
     run_check(state, "use", "--job-from-artifact", transport=transport)
+    assert seen["store_copy"].read_bytes() == b"A better story.\n"
     assert transport.posts[0][1].endswith("\n\nThe job ran.\n") and "better story" not in transport.posts[0][1]
 
 
@@ -950,3 +969,86 @@ def test_a_builders_check_follows_its_launchers_window():
                                                   cleanup_deadline=lifecycle.time.monotonic() + 0.75,
                                                   on_tick=follower)
     assert result.returncode == 0 and moved and captured.strip() == b"returned"
+
+
+def test_a_builders_first_check_takes_its_vendor_from_its_own_launch(composed):
+    state, _behaviour, seen = composed
+    run_check(state, "use", "--job-from-artifact", transport=PostingTransport())
+    command = seen["command"]
+    assert command[command.index("--own-vendor") + 1] == "claude"
+    assert command[command.index("--own-vendor-source") + 1].startswith("holding stretch launch request")
+
+
+@pytest.mark.parametrize("hold", ["account", "version"])
+@pytest.mark.parametrize("words", [("use", "--job-from-artifact"), ("acceptance-criterion", "--criterion", "C2")])
+def test_a_composed_check_passes_the_holds_a_named_stage_passes(composed, hold, words):
+    state, _behaviour, seen = composed
+    seen[hold] = work.Decision("launch-account", False, None, f"{hold}-hold", "", status="holder-owned")
+    transport = PostingTransport()
+    assert run_check(state, *words, transport=transport) == 0
+    assert "dispatch" not in seen and transport.posts == []
+    assert seen["reports"][-1]["reason"] == f"{hold}-hold"
+
+
+def test_a_failed_settlement_supplies_no_artifact(composed):
+    state, _behaviour, seen = composed
+    state.artifact_phase.source_error = "artifact settlement: the latest marker is invalid"
+    with pytest.raises(work.BuilderRefused) as caught:
+        run_check(state, "use", "--job-from-artifact", transport=PostingTransport())
+    assert caught.value.code == "artifact-source-unusable" and "dispatch" not in seen
+
+
+def test_a_builders_check_runs_only_on_its_own_launchs_root(composed, tmp_path, monkeypatch):
+    state, _behaviour, seen = composed
+    monkeypatch.setattr(work, "resolve_implementation_root",
+                        lambda *a, **k: (tmp_path / "another", "tradecraft/zz-other", False))
+    with pytest.raises(work.BuilderRefused) as caught:
+        run_check(state, "use", "--job-from-artifact", transport=PostingTransport())
+    assert caught.value.code == "builder-root-mismatch" and "dispatch" not in seen
+
+
+def test_a_builders_instalment_is_its_own_registration(holding, tmp_path, monkeypatch):
+    registry = work.registry_path()
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps({"schema_version": 1, "worktrees": [
+        {"root": str(tmp_path / "implementation"), "holder_root": str(tmp_path / "holder"), "instalment": "1"}]}),
+        encoding="utf-8")
+    holder = str(tmp_path / "holder")
+    assert refused(arguments("run", "proof", "--instalment", "2", root=holder)) == "builder-root-mismatch"
+    seen = {}
+    monkeypatch.setattr(work, "_run_entry", lambda args, transport, executor: seen.setdefault("args", args) and 0)
+    args = arguments("run", "proof", root=holder)
+    assert work.run(args, transport=NoTransport()) == 0
+    assert seen["args"].instalment == "1"
+
+
+def test_a_tree_built_from_an_earlier_declaration_does_not_recompose(counted):
+    state, _output, _body = counted
+    phase = state.artifact_phase
+    phase.settled_artifact = SimpleNamespace(body=phase.settled_artifact.body.replace(
+        '"paths": ["job"]', '"paths": ["job", "skill"]'), source_id="78")
+    checks = work.builder_checks(state)
+    assert checks["check_dispatches"][0]["status"] == "differs"
+    assert "earlier declaration use" in checks["check_dispatches"][0]["reason"]
+    assert checks["check_reports"][0]["counts"] is False
+
+
+def test_a_heading_or_opening_inside_a_fenced_example_is_not_the_plans_own():
+    example = "~~~markdown\n## Use session job\n\n```text\nnot this\n```\n~~~\n\n"
+    artifact = "## How a plan reads\n\n" + example + ARTIFACT.replace("\r\n", "\n")
+    assert work.artifact_use_job(artifact) == b"Use the tree as an adopter would.\nReport what broke.\n"
+    criterion = ("**C3.** The command works:\n\n```bash\n# set up\n**C4.** quoted\npython x.py\n```\n"
+                 "Fresh reader: execute tree\n\n## After\n")
+    text = work.artifact_criterion(criterion, "C3")
+    assert "python x.py" in text and work.criterion_reader(text) == ("execute", None)
+
+
+@pytest.mark.parametrize("session", ["", None])
+def test_an_empty_session_variable_is_an_absent_one(holding, tree_state, monkeypatch, session):
+    tree_state["value"] = launch_tree.Holding("held", dict(LAUNCH))
+    if session is not None:
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
+    # The seat launcher and a record begin read who launched them through attribution.
+    assert launch_tree.attribution(Path("store"))["launched_by"]["identity"] == "declared"
+    holding["value"] = launch_tree.Holding("held", {**dict(LAUNCH), "root": None})
+    assert work._builder_identity(arguments("run", "use"))["identity"] == "declared"

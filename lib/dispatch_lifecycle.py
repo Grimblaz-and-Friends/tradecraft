@@ -104,13 +104,20 @@ def claude_launch_notice(allocation_seconds):
     ).encode("utf-8")
 
 
-def claude_write_bound_notice(root, scratchpad):
+# A stretch builder's refused call is recorded and its turn goes on; an unproved write still fails it.
+# Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+STRETCH_REFUSAL = ("a write anywhere else is refused and names the path; in this stretch launch the "
+                   "refusal is recorded and the turn goes on, but a file-tool call that completed with no "
+                   "guard decision still fails this turn")
+
+
+def claude_write_bound_notice(root, scratchpad, *, stretch=False):
     """What a Claude author or builder is told of its write bound (#906)."""
+    refusal = STRETCH_REFUSAL if stretch else "a write anywhere else is refused, names the path and fails this turn"
     return (
         f"Launcher write bound: your file-editing tools write only inside {root} and your session "
-        f"scratchpad {scratchpad}; a write anywhere else is refused, names the path and fails this "
-        "turn. A helper given its own working copy, or a move into another working copy, is "
-        "refused the same way; run helpers inside the tree. You have no memory store in this "
+        f"scratchpad {scratchpad}; {refusal}. A helper given its own working copy, or a move into "
+        "another working copy, is refused the same way; run helpers inside the tree. You have no memory store in this "
         "session. Shell commands are not fenced, but the launcher compares the owner's settings, "
         "plugins, records, other checkouts, and each covered repository's working copies and "
         "branches before and after this run; any change it cannot attribute holds the change for "

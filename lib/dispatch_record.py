@@ -29,6 +29,7 @@ from dispatch_lifecycle import GrowingRun, claude_terminal
 from seat_process import run_read
 import run_lifecycle as lifecycle
 import cold_draft
+import launch_tree
 
 SCHEMA_VERSION = 2
 CONTINUITIES = ("fresh", "resume")
@@ -674,7 +675,6 @@ def attach_file(output: Path, source: Path, kind: str) -> Path:
 def begin_native(args: argparse.Namespace) -> Path:
     # A record begun inside a stretch launch's tree is the builder's, whatever its flags say.
     # Design: lib/DESIGN.md#a-builders-own-checks-and-writes
-    import launch_tree
     try:
         attribution = launch_tree.attribution(
             default_record_root(), dispatch=getattr(args, "launched_by_dispatch", None),

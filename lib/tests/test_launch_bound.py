@@ -213,6 +213,94 @@ def test_absent_items_are_recorded_without_findings(machine):
     assert entry["status"] == "absent" and result["status"] == "clean"
 
 
+# --- A stretch launch's own pointer and own row ----------------------------------
+
+
+def stretch_comparison(machine, pointer):
+    (machine["plugin"]).mkdir(exist_ok=True)
+    value = launch_bound.Comparison(root=machine["own"], env={}, launcher_plugin=machine["plugin"],
+                                    own_output=machine["own_request"].with_name("own.md"),
+                                    own_request=machine["own_request"], holder_session_id=HOLDER,
+                                    dispatch_id=OWN, own_pointer=pointer, own_row_resnapshot=True)
+    value.take_before(60)
+    return value
+
+
+@pytest.mark.parametrize("case", ["rewritten-inside-own-root", "removed-inside-a-live-runs-root", "unchanged"])
+def test_the_own_pointer_is_held_wherever_its_path_lies(machine, case):
+    # A live run of the other holder whose root holds the pointer in the second case.
+    bundle(machine, "live", dispatch="d" * 32, root=machine["registered"], holder=OTHER_HOLDER,
+           opened=-60, closed=None, elapsed=3600)
+    top = machine["registered"] if case == "removed-inside-a-live-runs-root" else machine["own"]
+    pointer = top / "pointer.json"
+    pointer.write_bytes(b'{"dispatch_id": "a"}')
+    before = stretch_comparison(machine, pointer)
+    (machine["own"] / "tracked.txt").write_bytes(b"own edit")
+    if case == "rewritten-inside-own-root":
+        pointer.write_bytes(b"{}")
+    elif case == "removed-inside-a-live-runs-root":
+        pointer.unlink()
+    result = before.finish(60)
+    if case == "unchanged":
+        assert result["status"] == "clean", result["findings"]
+    else:
+        change = "modified" if case.startswith("rewritten") else "removed"
+        assert changes(result) == {("own-pointer", "pointer.json", change)}
+        # The live run's checkout walk may credit the same file as its own; the pointer item never is.
+        assert all(entry["item"] != "own-pointer" for entry in result["attributed"])
+
+
+@pytest.mark.parametrize("change, credited", [
+    (lambda row: row.update(revision_before="b", status_before="s2"), True),
+    # A field dropped on one side is a difference even where its value was null.
+    (lambda row: (row.pop("lease"), row.update(revision_before="b")), False),
+])
+def test_the_own_rows_fields_are_compared_as_well_as_their_values(machine, change, credited):
+    rewrite_rows(machine, lambda rows: rows[1].update(revision_before="a", status_before="s1", lease=None))
+    before = stretch_comparison(machine, machine["own"] / "pointer.json")
+    rewrite_rows(machine, lambda rows: change(rows[1]))
+    result = before.finish(60)
+    if credited:
+        assert result["status"] == "clean", result["findings"]
+    else:
+        assert changes(result) == {("registry", "own", "row-changed")}
+
+
+@pytest.mark.parametrize("foreign_first", [True, False])
+def test_a_foreign_rows_change_withholds_the_own_rows_credit_even_behind_a_folded_root(machine, foreign_first):
+    # On a case-sensitive file system the second root is another directory, whose row folds onto the own row's key.
+    foreign = {"root": str(machine["own"].with_name("OWN")), "repository": "acme/widget", "issue": 7,
+               "active": True, "holder_session_id": None}
+
+    def place(rows):
+        rows[1].update(revision_before="a")
+        rows.insert(1 if foreign_first else 2, dict(foreign))
+    rewrite_rows(machine, place)
+    before = stretch_comparison(machine, machine["own"] / "pointer.json")
+
+    def both(rows):
+        for row in rows:
+            if row["root"] == foreign["root"]:
+                row["active"] = False
+            elif row["root"] == str(machine["own"]):
+                row["revision_before"] = "b"
+    rewrite_rows(machine, both)
+    result = before.finish(60)
+    assert result["status"] == "findings"
+    assert {item for item, _name, _change in changes(result)} == {"registry"}
+
+
+def test_a_visible_foreign_rows_change_withholds_the_own_rows_credit(machine):
+    before = stretch_comparison(machine, machine["own"] / "pointer.json")
+
+    def both(rows):
+        rows[0].update(active=False)
+        rows[1].update(revision_before="b")
+    rewrite_rows(machine, both)
+    result = before.finish(60)
+    assert {("registry", "registered", "row-changed"), ("registry", "own", "row-changed")} <= changes(result)
+
+
 # --- One overlap list and one allowance ---------------------------------------
 
 BEFORE_AT, AFTER_AT = "2026-11-11T10:00:00+00:00", "2026-11-11T11:00:00+00:00"

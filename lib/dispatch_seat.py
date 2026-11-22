@@ -607,21 +607,26 @@ def _write_return_frame(args) -> None:
 
 
 def read_return_frame(output: bytes) -> dict | None:
-    """The last return frame in a launcher's stdout, its bytes checked against its header; None if absent or broken."""
-    start = output.rfind(b"\n" + FRAME_OPENING)
-    if start < 0:
-        return None
-    line_end = output.find(b"\n", start + 1)
-    if line_end < 0:
-        return None
-    try:
-        header = json.loads(output[start + 1 + len(FRAME_OPENING):line_end])
-        value = output[line_end + 1:line_end + 1 + int(header["bytes"])]
-    except (ValueError, KeyError, TypeError):
-        return None
-    if len(value) != header["bytes"] or hashlib.sha256(value).hexdigest() != header.get("sha256"):
-        return None
-    return {**header, "return": value}
+    """The return frame that ends a launcher's stdout, its bytes checked against its header; None if absent or broken.
+
+    The frame is the launcher's last output, so its header's byte count reaches exactly the end. The
+    first opening that does so is the frame: a return holding the opening text, even a whole frame of
+    its own, is read as return bytes.
+    """
+    start = -1
+    while (start := output.find(b"\n" + FRAME_OPENING, start + 1)) >= 0:
+        line_end = output.find(b"\n", start + 1)
+        if line_end < 0:
+            return None
+        try:
+            header = json.loads(output[start + 1 + len(FRAME_OPENING):line_end])
+            size = int(header["bytes"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        value = output[line_end + 1:]
+        if len(value) == size and hashlib.sha256(value).hexdigest() == header.get("sha256"):
+            return {**header, "return": value}
+    return None
 
 
 def _launch_dispatch(args, deadline, now) -> int:

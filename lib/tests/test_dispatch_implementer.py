@@ -2599,6 +2599,8 @@ def stretch_job(job, monkeypatch, payload):
     args, scenario = job
     args.vendor, args.stage, args.work = "claude", "stretch", "o/r#5"
     args.holder_session_id, args.lineage_branch = "11111111-2222-4333-8444-555555555555", "tradecraft/5-ab"
+    subprocess.run(["git", "init", "-q", "-b", args.lineage_branch, str(args.root)], check=True,
+                   capture_output=True, stdin=subprocess.DEVNULL)
     monkeypatch.setattr(implementer, "resolve_command",
                         lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
     monkeypatch.setattr(implementer, "new_session_id", lambda: STRETCH_SESSION)
@@ -2811,3 +2813,54 @@ def test_1011_a_refusal_placed_by_its_text_goes_to_the_denied_call(tmp_path):
     [entry] = record_value["refusals"]
     assert entry["sources"] == ["file-write-guard", "permission-denial"]
     assert entry["denial"]["tool_use_id"] == "toolu_2"
+
+
+def _placed(tmp_path, calls, guard, denied):
+    stream = "\n".join(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": f"toolu_{n}", "name": name, "input": value}]}})
+        for n, (name, value) in enumerate(calls, 1))
+    record_value = {"github_write_refusals": [], "write_guard": {"refusals": guard, "unguarded": []}}
+    attempt = {"permission_denials": [{"tool_name": "Write", "tool_use_id": f"toolu_{n}"} for n in denied]}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt,
+                                  Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
+    return [(entry["sources"], (entry.get("denial") or {}).get("tool_use_id"))
+            for entry in record_value["refusals"]]
+
+
+def test_1011_a_refusal_placed_by_its_text_prefers_the_call_it_names_exactly(tmp_path):
+    calls = [("Write", {"file_path": "D:/w/a.py", "content": "x"}),
+             ("Write", {"file_path": "D:/w/a.py.bak", "content": "x"})]
+    guard = [{"tool": "Write", "raw": "D:/w/a.py", "canonical": "D:\\w\\a.py", "reason": "outside"}]
+    # Claude denied only the second call; the guard's refusal is the first call's, so two entries.
+    assert _placed(tmp_path, calls, guard, [2]) == [(["file-write-guard"], None),
+                                                    (["permission-denial"], "toolu_2")]
+
+
+def test_1011_a_refusal_whose_text_ties_two_different_calls_stays_unplaced(tmp_path):
+    calls = [("Bash", {"command": "cat D:/w/a.py one"}), ("Bash", {"command": "cat D:/w/a.py two"})]
+    guard = [{"tool": "Bash", "raw": "D:/w/a.py", "canonical": "D:\\w\\a.py", "reason": "outside"}]
+    assert _placed(tmp_path, calls, guard, []) == [(["file-write-guard"], None)]
+
+
+def test_1011_a_stretch_launch_refuses_a_branch_its_root_has_not_checked_out(job, monkeypatch):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    args.lineage_branch = "tradecraft/6-other"
+    with pytest.raises(implementer.ImplementerError, match="is not the branch checked out"):
+        implementer.run_implementer(args)
+    assert not implementer.records.sidecar(args.output, ".request.json").exists()
+
+
+def test_1011_a_stretch_launch_is_told_its_refusals_are_recorded_and_others_keep_their_text():
+    from dispatch_lifecycle import claude_write_bound_notice
+    other = claude_write_bound_notice("R", "S").decode()
+    stretch = claude_write_bound_notice("R", "S", stretch=True).decode()
+    assert "a write anywhere else is refused, names the path and fails this turn." in other
+    assert "the refusal is recorded and the turn goes on" in stretch and "fails this turn" in stretch
+    assert "completed with no guard decision" in stretch
+    assert other.replace("a write anywhere else is refused, names the path and fails this turn",
+                         __import__("dispatch_lifecycle").STRETCH_REFUSAL) == stretch
+    assert "a refused call fails this turn" in implementer.LAUNCH_HELPER_RULE
+    assert "a refused call fails this turn" not in implementer.STRETCH_HELPER_RULE
+    assert "in this stretch launch the turn goes on" in implementer.STRETCH_HELPER_RULE

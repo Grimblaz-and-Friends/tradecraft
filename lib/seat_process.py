@@ -468,6 +468,13 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 current = time.monotonic()
                 if stopped and descendants is not None:
                     descendants.kill()
+                if on_window and not stopped and (current >= deadline or current >= next_window):
+                    # Read before the old end stops the launch, so a window moved at its last moment holds.
+                    next_window = current + _INHERITED_TICK_SECONDS
+                    moved = notify(on_window)
+                    if moved is not None:
+                        deadline, cleanup_deadline = moved
+                    current = time.monotonic()
                 if current >= deadline and not stopped:
                     stopped = True
                     stop_tree()
@@ -480,11 +487,6 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                     break
                 if on_tick and not stopped:
                     notify(on_tick)
-                if on_window and not stopped and time.monotonic() >= next_window:
-                    next_window = time.monotonic() + _INHERITED_TICK_SECONDS
-                    moved = notify(on_window)
-                    if moved is not None:
-                        deadline, cleanup_deadline = moved
                 # A checkpoint can consume the remaining allowance. Recheck
                 # after it instead of renewing a wait using the earlier clock.
                 current = time.monotonic()
