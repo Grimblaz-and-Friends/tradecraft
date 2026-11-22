@@ -896,3 +896,29 @@ def test_a_keep_warm_ping_carries_no_stretch_variable():
     assert env_set == {} and other == []
     assert keep_warm.ping_environment({"env_set": env_set, "env_unset": env_unset}, {"PATH": "p"}) == {
         "PATH": "p", "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def test_a_store_return_rewritten_before_the_post_is_never_posted(composed, tmp_path, monkeypatch):
+    state, _behaviour, _seen = composed
+    store_copy = tmp_path / "result.md.source.bin"
+    original = dispatch_seat.read_return_frame
+
+    def rewritten_after_frame(output):
+        frame = original(output)
+        store_copy.write_bytes(b"A better story.\n")  # The builder's shell, between the frame and the post.
+        return frame
+
+    monkeypatch.setattr(dispatch_seat, "read_return_frame", rewritten_after_frame)
+    transport = PostingTransport()
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    assert transport.posts[0][1].endswith("\n\nThe job ran.\n") and "better story" not in transport.posts[0][1]
+
+
+def test_a_second_launch_keeps_the_first_launchs_tree_and_report(composed):
+    state, _behaviour, seen = composed
+    transport = PostingTransport()
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    first = seen["reports"][-1]["tree_metadata"]
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    assert seen["reports"][-1]["tree_metadata"] != first and Path(first).is_file()
+    assert len(transport.posts) == 2

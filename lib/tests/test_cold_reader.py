@@ -1444,3 +1444,64 @@ def test_978_a_cold_reader_started_by_the_entrance_gets_the_whole_limit(change, 
     assert request["recipient_allocation_seconds"] == 1800
     run = json.loads(output.with_name("result.md.run.json").read_text("utf-8"))
     assert run["attempts"][0]["allocation_seconds"] >= 1799
+
+
+@pytest.mark.cold_reading
+def test_1011_a_builders_reading_records_its_builder_and_posts_from_its_frame(change, monkeypatch, capfd):
+    import launch_tree
+    import preflight
+    import run_lifecycle as lifecycle
+    scenario = change.tmp / "scenario.json"
+    scenario.write_text(json.dumps({"claude": {"message": clean()}}), encoding="utf-8")
+    output = change.store / "seat-reading" / "result.md"
+    stand_in = Path(__file__).resolve().parent / "seat_cli.py"
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, _explicit=None: [f"--{vendor}", str(stand_in)])
+    monkeypatch.setattr(dispatch_seat, "resolve_command", lambda vendor, _explicit: [
+        sys.executable, str(stand_in), vendor, str(scenario)])
+    monkeypatch.setattr(dispatch_seat.records, "runtime_version", lambda *_: "fixture-cli 1.0")
+    monkeypatch.setattr(dispatch_seat, "is_windows", lambda: False)
+    launch = {"dispatch_id": "a" * 32, "session_id": "s", "request": "r"}
+    monkeypatch.setattr(launch_tree, "stretch_holding", lambda store: launch_tree.Holding("held", launch))
+    commands = []
+
+    def invoke(command, deadline, runner=None):
+        # The seat runs in this process; its stdout reaches the entrance as the framed runner keeps it.
+        commands.append(command)
+        args = dispatch_seat.parser().parse_args(
+            [*command[2:], "--invocation-started-monotonic", str(deadline.started)])
+        code = dispatch_seat.run_dispatch(args)
+        runner.extend(capfd.readouterr().out.encode("utf-8"))
+        return code
+
+    # The runner the entrance makes is its captured buffer here, which invoke fills.
+    monkeypatch.setattr(work, "_framed_recipient_run", lambda captured: captured)
+    monkeypatch.setattr(work, "_invoke_recipient", invoke)
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "fixture build bundle"))
+    monkeypatch.setattr(work.records, "resolved_output", lambda *_a: output)
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    posts = []
+
+    class Posting:
+        def post(self, endpoint, payload):
+            posts.append((endpoint, payload["body"]))
+            return {"id": 1}
+
+    token = work._BUILDER.set({"role": "builder", "dispatch_id": "a" * 32, "session_id": "s",
+                               "identity": "declared"})
+    try:
+        with preflight.scope(started=lifecycle.time.monotonic()) as opened:
+            deadline = lifecycle.stage_deadline("cold-reader", 1800, started=opened.started, declared=True)
+            with lifecycle.deadline_scope(deadline):
+                work._execute_cold_reader(fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                                          dispatch_path=None, tree_metadata=None, timeout_seconds=1800,
+                                          claude_path=None, codex_path=None, transport=Posting())
+    finally:
+        work._BUILDER.reset(token)
+    [command] = commands
+    assert "--return-frame" in command and command[command.index("--dispatch-origin") + 1] == "entrance"
+    request = json.loads(output.with_name("result.md.request.json").read_text("utf-8"))
+    assert request["launched_by"]["dispatch_id"] == "a" * 32 and request["dispatch_origin"] == "entrance"
+    (endpoint, body), = posts
+    # The stand-in seat writes its capture into its root, so the second check reads the tree changed.
+    assert "stage=cold-reader" in body and "tree=changed" in body
