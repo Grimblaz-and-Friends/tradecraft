@@ -11473,8 +11473,7 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
         found = REPORT_MARKER_LINE.match(comment["body"])
         attributes = dict(part.split("=", 1) for part in found.group(1).split() if "=" in part) if found else {}
         reasons = []
-        author = (comment.get("user") or {}).get("login") if isinstance(comment.get("user"), dict) else None
-        if author not in producers:
+        if _author(comment) not in {producer.lower() for producer in producers}:
             # The entrance posts under a configured marker-producer login; any other author is a claim.
             reasons.append("not from a configured marker producer")
         bundle = bundles.get(attributes.get("dispatch"))

@@ -12934,7 +12934,7 @@ def test_983_a_launch_that_raises_discards_its_pending_keep_warm(tmp_path, monke
 
 
 
-def test_1011_C16_a_builders_ready_reviewers_writes_only_to_its_own_change(capsys):
+def test_1011_a_builders_ready_reviewers_writes_only_to_its_own_change(capsys):
     config = work.WorkConfig(connected_reviewers=frozenset({REVIEWER}),
                              marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers")
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, config=config)
@@ -12953,3 +12953,32 @@ def test_1011_C16_a_builders_ready_reviewers_writes_only_to_its_own_change(capsy
             assert target.startswith(own)
         else:
             assert payload == {"id": "PR_fixture"} or "PR_fixture" in json.dumps(payload)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_1011_a_builders_proof_publication_writes_only_to_its_own_change(existing, monkeypatch):
+    fixture = state(AFFIRMED, pr=True, config=work.WorkConfig(marker_producers=frozenset({PRODUCER})))
+    prior = [{"id": 91, "user": {"login": PRODUCER}, "body": "old proof"}] if existing else []
+    writes = []
+
+    class Recording:
+        def get(self, endpoint, *, paginate=False):
+            return {"login": PRODUCER}
+
+    def mutation(transport, method, endpoint, payload):
+        writes.append((method, endpoint))
+        return {"id": 91, "html_url": "fixture", "body": payload["body"], "user": {"login": PRODUCER}}
+
+    monkeypatch.setattr(work, "_proof_comment_records", lambda state, head: prior)
+    monkeypatch.setattr(work, "_transport_mutation", mutation)
+    token = work._BUILDER.set({"role": "builder", "dispatch_id": "a" * 32, "identity": "declared"})
+    try:
+        try:
+            work._publish_proof_comment(Recording(), fixture, "new proof", SHA)
+        except (work.WorkError, KeyError):
+            pass  # Only the writes it made are judged here, not its later reads.
+    finally:
+        work._BUILDER.reset(token)
+    own = {f"repos/{fixture.repo}/issues/{fixture.pr['number']}/comments",
+           f"repos/{fixture.repo}/issues/comments/91"}
+    assert writes and all(endpoint in own for _method, endpoint in writes)

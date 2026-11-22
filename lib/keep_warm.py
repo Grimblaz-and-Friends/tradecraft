@@ -88,8 +88,12 @@ LAUNCH_ENV_NAMES = ("CLAUDE_CODE_ENABLE_FUNCTION_HOOKS",
 # The GitHub write bound's removal of git's push credential guards only commands, and a ping
 # refuses every tool, so these are neither carried nor a foreign change; leaving them out also
 # keeps an inherited GIT_CONFIG_PARAMETERS, which may hold a credential, out of the spec file.
+# A stretch builder's names travel to its own session only, so no ping carries them either.
+# Design: lib/DESIGN.md#a-builders-own-checks-and-writes
 COMMAND_ONLY_ENV_NAMES = ("GIT_CONFIG_PARAMETERS", "GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE",
-                          "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK")
+                          "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK",
+                          "TRADECRAFT_STRETCH_DISPATCH", "TRADECRAFT_STRETCH_WORK",
+                          "TRADECRAFT_STRETCH_JOB")
 # The launch strips these inherited plugin directories from its child, so their
 # absence is the launch's own change, not a foreign one.
 REMOVABLE_ENV_NAMES = ("CLAUDE_CODE_PLUGIN_DIR", "CLAUDE_CODE_PLUGIN_DIRS")

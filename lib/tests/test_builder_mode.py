@@ -886,3 +886,13 @@ def test_a_seat_or_record_begun_in_another_session_inside_the_tree_is_refused(tr
 def test_the_launch_worker_names_its_job_as_the_tree_check_opens_it():
     assert seat_process.STRETCH_JOB_VARIABLE == launch_tree.JOB_VARIABLE
     assert launch_tree.job_name("a" * 32) == "Local\\tradecraft-stretch-" + "a" * 32
+
+
+def test_a_keep_warm_ping_carries_no_stretch_variable():
+    import keep_warm
+    assert set(launch_tree.VARIABLES) <= set(keep_warm.COMMAND_ONLY_ENV_NAMES)
+    child = {"PATH": "p", **{name: "a" * 32 for name in launch_tree.VARIABLES}}
+    env_set, env_unset, other = keep_warm.launch_env_changes({"PATH": "p"}, child)
+    assert env_set == {} and other == []
+    assert keep_warm.ping_environment({"env_set": env_set, "env_unset": env_unset}, {"PATH": "p"}) == {
+        "PATH": "p", "PYTHONDONTWRITEBYTECODE": "1"}
