@@ -228,7 +228,10 @@ def test_outside_every_tree_the_run_is_the_holders(holding, monkeypatch):
     assert work.run(arguments("run", "build"), transport=NoTransport()) == 0
 
 
-def test_a_live_builder_process_is_refused_a_holder_stage_whatever_its_variable(tmp_path):
+@pytest.mark.parametrize("words", [*(["run", stage] for stage in HOLDER_STAGES), ["tree"],
+                                   ["tree", "--mode", "adopter", "--path", "x"],
+                                   ["allowance", "build", "--grant", "1"]])
+def test_a_live_builder_process_is_refused_a_holder_stage_whatever_its_variable(tmp_path, words):
     """A real child inside a stretch launch's tree: its job on Windows, below its launcher on POSIX."""
     store = tmp_path / "home" / ".tradecraft" / "dispatches"
     dispatch_id = pointer(store)
@@ -237,7 +240,7 @@ def test_a_live_builder_process_is_refused_a_holder_stage_whatever_its_variable(
     env.pop("CLAUDE_CODE_SESSION_ID", None)
     if os.name == "nt":
         env[launch_tree.JOB_VARIABLE] = dispatch_id
-    command = [sys.executable, str(LIB / "work.py"), "run", "build", "--repo", "o/r", "--issue", "5",
+    command = [sys.executable, str(LIB / "work.py"), *words, "--repo", "o/r", "--issue", "5",
                "--root", str(tmp_path)]
     for variable in (dispatch_id, None):
         child = dict(env)
@@ -754,3 +757,14 @@ def test_a_stretch_pointer_removed_or_rewritten_during_its_launch_is_a_finding(t
         pointer_path.write_text("{}", encoding="utf-8")
     result = comparison.finish(60)
     assert [finding["item"] for finding in result["findings"]] == ["own-pointer"]
+
+
+def test_a_seat_launcher_names_no_stretch_to_anything_it_starts(monkeypatch):
+    monkeypatch.setattr(launch_tree, "attribution", lambda *a, **k: {})
+    for name in launch_tree.VARIABLES:
+        monkeypatch.setenv(name, "a" * 32)
+    args = SimpleNamespace(preflight_cap_seconds=None, preflight_cap_reason=None, stage="use",
+                           timeout_seconds=0.0)
+    with pytest.raises(dispatch_seat.DispatchError):
+        dispatch_seat.run_dispatch(args)  # A zero limit stops it before any launch.
+    assert [name for name in launch_tree.VARIABLES if name in os.environ] == []

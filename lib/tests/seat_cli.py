@@ -84,6 +84,16 @@ if vendor == "claude":
         with Path(config["log"]).open("ab") as stream:
             for entry in scenario["guard_decisions"]:
                 stream.write((json.dumps(entry) + "\n").encode("utf-8"))
+    if "github_decisions" in scenario:
+        # Stand in for the launch's GitHub command check (#1011): its refusals land in its own log.
+        import re
+        settings = json.loads(Path(flags[flags.index("--settings") + 1]).read_bytes())
+        command = next(hook["command"] for entry in settings["hooks"]["PreToolUse"]
+                       for hook in entry["hooks"] if "github_write_guard" in hook["command"])
+        config = json.loads(Path(re.search(r'--config "([^"]+)"', command)[1]).read_bytes())
+        with Path(config["log"]).open("ab") as stream:
+            for entry in scenario["github_decisions"]:
+                stream.write((json.dumps(entry) + "\n").encode("utf-8"))
     transcript = scenario.get("transcript")
     if transcript:
         # The runtime appends its session transcript; resumes extend the same file.

@@ -503,6 +503,23 @@ def _validate_stretch(args: argparse.Namespace) -> None:
         raise ImplementerError("cloud builds keep the relay route")
 
 
+def _stream_position(entry: dict, stream: bytes) -> int:
+    """Where a refusal's call stands in the run's stream: by its tool-use id, else by its command text."""
+    denial = entry.get("denial") if isinstance(entry.get("denial"), dict) else {}
+    wanted_id = entry.get("tool_use_id") or denial.get("tool_use_id")
+    command = entry.get("command")
+    position = 0
+    for event in launch_bound._stream_events(stream):
+        for block in launch_bound._blocks(event):
+            if block.get("type") != "tool_use":
+                continue
+            if (wanted_id and block.get("id") == wanted_id) or (
+                    not wanted_id and command and any(command in leaf for leaf in launch_bound._leaves(block.get("input")))):
+                return position
+            position += 1
+    return position
+
+
 def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> None:
     """One list, in stream order, of every refusal a stretch builder met; the run stands after them."""
     found: list[dict[str, object]] = []
@@ -518,7 +535,7 @@ def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> 
         found.append({"source": "file-write-guard", "tool": refusal.get("tool"),
                       "command": refusal.get("canonical") or refusal.get("raw"),
                       "reason": refusal.get("reason")})
-    record["refusals"] = found
+    record["refusals"] = sorted(found, key=lambda entry: _stream_position(entry, getattr(args, "stretch_stream", b"")))
     log = getattr(args, "stretch_guard_log", None)
     if record.get("github_write_refusals_unknown") or (log is not None and not Path(log).is_file()):
         record["refusals_unknown"] = True
@@ -1366,6 +1383,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     # A refusal is reported, not held: it changes no outcome.
                     github_allowance.record_refusals(record, github_bound["log"])
                 if args.stage == STRETCH:
+                    args.stretch_stream = result.stdout if "result" in locals() and result is not None else b""
                     _stretch_refusals(record, attempt, args)
                 with lifecycle.cleanup_scope():
                     record["revision_after"] = records.git_revision(root)

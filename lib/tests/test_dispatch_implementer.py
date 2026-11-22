@@ -2708,3 +2708,58 @@ def test_a_builder_launches_no_implementer(job, monkeypatch, state, variable):
     with pytest.raises(implementer.ImplementerError, match="a builder launches no implementer"):
         implementer.run_implementer(args)
     assert not args.output.parent.exists()
+
+
+def refused_stream(outside, *, unguarded=False):
+    """A stretch turn refused a GitHub write, then a file write, then a tool, and finished anyway."""
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "gh issue comment 6 --body x"}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": True}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_2", "name": "Write", "input": {"file_path": outside}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_2", "is_error": not unguarded}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_3", "name": "WebFetch", "input": {"url": "https://example.com"}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_3", "is_error": True}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": STRETCH_SESSION,
+         "result": "Ready, after three refusals.",
+         "permission_denials": [{"tool_name": "WebFetch", "tool_use_id": "toolu_3"}]},
+    ]
+    return "\n".join(json.dumps(event) for event in events)
+
+
+@pytest.mark.parametrize("stage", ["stretch", "build"])
+def test_1011_C3_one_stream_with_all_three_refusals(job, tmp_path, monkeypatch, stage):
+    args = stretch_job(job, monkeypatch, {})
+    outside = str(tmp_path / "home" / ".claude" / "settings.json")
+    if stage == "build":
+        args.stage, args.work = "build", "issue-592"
+    args.scenario = job[1]
+    job[1].write_bytes(json.dumps({"claude": {
+        "stdout": refused_stream(outside),
+        "guard_decisions": [{"tool": "Write", "tool_use_id": "toolu_2", "raw": outside, "canonical": outside,
+                             "decision": "deny", "reason": "launch write bound: outside"}],
+        "github_decisions": [{"tool": "Bash", "command": "gh issue comment 6 --body x", "decision": "deny",
+                              "reason": "a comment on o/r#6"}]}}).encode())
+    code = implementer.run_implementer(args)
+    logged = record(args)
+    if stage == "build":
+        assert code == 1 and logged["outcome"] == "error" and not args.output.exists()
+        return
+    assert code == 0 and logged["outcome"] == "success"
+    assert implementer.records.sidecar(args.output, ".source.bin").read_bytes() == b"Ready, after three refusals."
+    assert [entry["source"] for entry in logged["refusals"]] == [
+        "github-write-bound", "file-write-guard", "permission-denial"]
+
+
+def test_1011_C3_an_unguarded_completed_call_still_fails_a_stretch(job, tmp_path, monkeypatch):
+    args = stretch_job(job, monkeypatch, {})
+    outside = str(tmp_path / "home" / ".claude" / "settings.json")
+    job[1].write_bytes(json.dumps({"claude": {"stdout": refused_stream(outside, unguarded=True),
+                                              "guard_decisions": []}}).encode())
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert "write bound unproved: Write" in logged["attempts"][0]["reason"]
