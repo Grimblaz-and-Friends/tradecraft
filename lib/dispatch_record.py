@@ -672,6 +672,15 @@ def attach_file(output: Path, source: Path, kind: str) -> Path:
 
 
 def begin_native(args: argparse.Namespace) -> Path:
+    # A record begun inside a stretch launch's tree is the builder's, whatever its flags say.
+    # Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    import launch_tree
+    try:
+        attribution = launch_tree.attribution(
+            default_record_root(), dispatch=getattr(args, "launched_by_dispatch", None),
+            session=getattr(args, "launched_by_session", None), origin=getattr(args, "dispatch_origin", None))
+    except launch_tree.LaunchRefused as exc:
+        raise RecordError(str(exc)) from exc
     same_vendor_reason = getattr(args, "same_vendor_reason", None)
     if same_vendor_reason is not None and re.fullmatch(
             r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", same_vendor_reason) is None:
@@ -725,6 +734,7 @@ def begin_native(args: argparse.Namespace) -> Path:
     if same_vendor_reason is not None:
         request["same_vendor_reason"] = same_vendor_reason
     request["recorded_at"] = recorded_at
+    request.update(attribution)
     launched_at = getattr(args, "launched_at", None)
     launched_at_unavailable_reason = getattr(args, "launched_at_unavailable_reason", None)
     if launched_at is not None and launched_at_unavailable_reason is not None:
@@ -923,6 +933,9 @@ def parser() -> argparse.ArgumentParser:
     )
     begin.add_argument("--runtime-version")
     begin.add_argument("--permission-boundary", required=True)
+    begin.add_argument("--launched-by-dispatch", help=argparse.SUPPRESS)
+    begin.add_argument("--launched-by-session", help=argparse.SUPPRESS)
+    begin.add_argument("--dispatch-origin", choices=("entrance",), help=argparse.SUPPRESS)
     begin.add_argument(
         "--permission-boundary-source", required=True,
         help="where the actual tool and permission boundary came from",

@@ -185,3 +185,51 @@ def stretch_holding(store: Path) -> Holding:
         if held:
             return Holding("held", launch)
     return unknown or Holding("none")
+
+
+class LaunchRefused(ValueError):
+    """A seat or record launch that cannot say truthfully who launched it, refused before any bundle."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+
+
+def attribution(store: Path, *, dispatch: str | None = None, session: str | None = None,
+                origin: str | None = None) -> dict[str, object]:
+    """The request-record fields that say who started a seat, read from the tree rather than the flags.
+
+    Inside a live stretch launch's tree the seat is the builder's whatever its variable says, and a
+    flag that disagrees with the holding launch is ignored and noted. Outside every tree it is the
+    holder's, as before, and the entrance's builder flags are refused there. ``dispatch_origin``
+    is declared and proves nothing; recomposing the dispatch decides whether it was the entrance's.
+    """
+    holding = stretch_holding(store)
+    variable = os.environ.get(DISPATCH_VARIABLE)
+    flagged = dispatch is not None or session is not None or origin is not None
+    if holding.state == "unknown":
+        if variable:
+            raise LaunchRefused("launch-tree-unknown", f"the tree check of the stretch launch whose "
+                                f"request is {holding.launch.get('request')} could not be made: {holding.reason}")
+        return {"stretch_tree_check": holding.record()}
+    if holding.state == "none":
+        if variable:
+            raise LaunchRefused("builder-identity-unproved", f"{DISPATCH_VARIABLE} names {variable}, but "
+                                "no live stretch launch's tree holds this process")
+        if flagged:
+            raise LaunchRefused("launched-by-outside-a-stretch", "the entrance's builder flags were given "
+                                "outside every stretch launch's tree")
+        return {}
+    launch = holding.launch
+    present = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    fields: dict[str, object] = {
+        "launched_by": {"role": "builder", "dispatch_id": launch["dispatch_id"],
+                        "session_id": launch.get("session_id"),
+                        "identity": "proved" if present and present == launch.get("session_id") else "declared"},
+        "dispatch_origin": "entrance" if origin == "entrance" else "caller"}
+    ignored = {name: value for name, value in (("dispatch", dispatch), ("session", session))
+               if value is not None and value != {"dispatch": launch["dispatch_id"],
+                                                  "session": launch.get("session_id")}[name]}
+    if ignored:
+        fields["launched_by_ignored"] = ignored
+    return fields

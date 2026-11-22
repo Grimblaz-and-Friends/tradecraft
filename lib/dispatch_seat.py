@@ -37,6 +37,7 @@ from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claud
                                 claude_stream_check, claude_terminal, stream_check_reason,
                                 stream_check_record)
 import github_allowance
+import launch_tree
 import launch_bound
 import launch_settings
 import preflight
@@ -554,6 +555,16 @@ def _steps_before_spawn(args, vendor, comparison):
 
 
 def run_dispatch(args, *, now=None) -> int:
+    # Who launched this seat is read from the launch tree, before any bundle exists, and no
+    # process this seat starts names a stretch launch. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    try:
+        args.launch_attribution = launch_tree.attribution(
+            records.default_record_root(), dispatch=getattr(args, "launched_by_dispatch", None),
+            session=getattr(args, "launched_by_session", None), origin=getattr(args, "dispatch_origin", None))
+    except launch_tree.LaunchRefused as exc:
+        raise DispatchError(str(exc)) from exc
+    for name in launch_tree.VARIABLES:
+        os.environ.pop(name, None)
     cap_seconds = getattr(args, "preflight_cap_seconds", None)
     cap_reason = getattr(args, "preflight_cap_reason", None)
     try:
@@ -673,6 +684,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
             setting_sources=setting_sources(args, args.vendor, codex_sandbox),
         )
         request["requested"]["required_capability"] = args.requires
+        request.update(getattr(args, "launch_attribution", None) or {})
         comparison = None
         process_started = False
         if "claude" in vendors and compared_launch(args, "claude"):
@@ -1154,6 +1166,10 @@ def parser() -> argparse.ArgumentParser:
                      help="a cap larger than 900 seconds on the work before the recipient starts")
     cli.add_argument("--preflight-cap-reason", help="why this run declares a larger preflight cap")
     cli.add_argument("--launch-notice", type=Path, help=argparse.SUPPRESS)
+    # The entrance's own, in builder mode; recorded, never trusted over the launch tree.
+    cli.add_argument("--launched-by-dispatch", help=argparse.SUPPRESS)
+    cli.add_argument("--launched-by-session", help=argparse.SUPPRESS)
+    cli.add_argument("--dispatch-origin", choices=("entrance",), help=argparse.SUPPRESS)
     cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
     cli.add_argument("--preflight-input", type=Path, help=argparse.SUPPRESS)
     for vendor, model in DEFAULT_MODELS.items():

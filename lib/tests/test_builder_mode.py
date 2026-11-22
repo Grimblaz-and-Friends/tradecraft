@@ -46,7 +46,8 @@ def held_probe(store, dispatch_id, *, inside):
     else:
         # On POSIX this test process is the pointer's recorded launcher, so its child is below it;
         # on Windows a plain child is in no job of the launch's name.
-        result = subprocess.run(command, capture_output=True, env=env, timeout=60)
+        result = subprocess.run(command, capture_output=True, env=env, timeout=60,
+                                stdin=subprocess.DEVNULL)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout.decode().strip().splitlines()[-1])
 
@@ -249,5 +250,92 @@ def test_a_live_builder_process_is_refused_a_holder_stage_whatever_its_variable(
     outside = dict(env, **{launch_tree.DISPATCH_VARIABLE: dispatch_id})
     outside.pop(launch_tree.JOB_VARIABLE, None)
     if os.name == "nt":
-        result = subprocess.run(command, capture_output=True, env=outside, timeout=120)
+        result = subprocess.run(command, capture_output=True, env=outside, timeout=120,
+                                stdin=subprocess.DEVNULL)
         assert result.returncode == 1 and b"builder-identity-unproved" in result.stderr
+
+
+# --- who launched a seat ------------------------------------------------------------------------
+
+LAUNCH = {"dispatch_id": "a" * 32, "work": "o/r#5", "session_id": SESSION, "request": "r"}
+
+
+@pytest.fixture()
+def tree_state(monkeypatch):
+    state = {"value": launch_tree.Holding("held", dict(LAUNCH))}
+    monkeypatch.setattr(launch_tree, "stretch_holding", lambda store: state["value"])
+    for name in (*launch_tree.VARIABLES, "CLAUDE_CODE_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
+    return state
+
+
+@pytest.mark.parametrize("variable", [None, "a" * 32])
+@pytest.mark.parametrize("session, identity", [(SESSION, "proved"), (None, "declared")])
+def test_a_seat_inside_a_stretch_tree_is_the_builders_whatever_its_variable(tree_state, monkeypatch,
+                                                                            variable, session, identity):
+    if variable:
+        monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, variable)
+    if session:
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
+    fields = launch_tree.attribution(Path("store"))
+    assert fields == {"launched_by": {"role": "builder", "dispatch_id": "a" * 32, "session_id": SESSION,
+                                      "identity": identity}, "dispatch_origin": "caller"}
+    entrance = launch_tree.attribution(Path("store"), dispatch="a" * 32, session=SESSION, origin="entrance")
+    assert entrance["dispatch_origin"] == "entrance" and "launched_by_ignored" not in entrance
+
+
+def test_forged_builder_flags_are_ignored_and_noted(tree_state):
+    fields = launch_tree.attribution(Path("store"), dispatch="b" * 32, session="forged", origin="entrance")
+    assert fields["launched_by"]["dispatch_id"] == "a" * 32
+    assert fields["launched_by_ignored"] == {"dispatch": "b" * 32, "session": "forged"}
+
+
+def test_outside_every_tree_a_seat_is_the_holders_and_builder_flags_are_refused(tree_state, monkeypatch):
+    tree_state["value"] = launch_tree.Holding("none")
+    assert launch_tree.attribution(Path("store")) == {}
+    with pytest.raises(launch_tree.LaunchRefused, match="launched-by-outside-a-stretch"):
+        launch_tree.attribution(Path("store"), dispatch="a" * 32, origin="entrance")
+    monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, "a" * 32)
+    with pytest.raises(launch_tree.LaunchRefused, match="builder-identity-unproved"):
+        launch_tree.attribution(Path("store"))
+
+
+def test_an_unknown_tree_refuses_a_seat_only_with_the_variable_set(tree_state, monkeypatch):
+    tree_state["value"] = launch_tree.Holding("unknown", dict(LAUNCH), "job unreadable")
+    assert launch_tree.attribution(Path("store"))["stretch_tree_check"]["request"] == "r"
+    monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, "a" * 32)
+    with pytest.raises(launch_tree.LaunchRefused, match="launch-tree-unknown"):
+        launch_tree.attribution(Path("store"))
+
+
+BEGIN = ("import sys; sys.path.insert(0, sys.argv[1]); import dispatch_record as r; "
+         "raise SystemExit(r.main(sys.argv[2:]))")
+
+
+def test_a_record_begun_from_inside_a_stretch_tree_with_the_variable_cleared_is_the_builders(tmp_path):
+    home = tmp_path / "home"
+    store = home / ".tradecraft" / "dispatches"
+    dispatch_id = pointer(store)
+    (tmp_path / "dispatch.md").write_bytes(b"Judge the built result.\n")
+    env = launch_tree.without_variables(dict(os.environ))
+    env.update(HOME=str(home), USERPROFILE=str(home))
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
+    if os.name == "nt":
+        env[launch_tree.JOB_VARIABLE] = dispatch_id
+    output = tmp_path / "records" / "seat.md"
+    command = [sys.executable, "-c", BEGIN, str(LIB), "begin", "--work", "o/r#5", "--stage", "use",
+               "--settings-source", "fixture", "--settings-scope", "this seat",
+               "--vendor", "claude", "--vendor-source", "fixture", "--model", "opus",
+               "--model-source", "fixture", "--effort", "max", "--effort-source", "fixture",
+               "--classification", "cold", "--classification-source", "fixture",
+               "--continuity-source", "fixture", "--permission-boundary", "native tool",
+               "--permission-boundary-source", "fixture", "--input-file", str(tmp_path / "dispatch.md"),
+               "--output", str(output), "--launched-by-dispatch", "b" * 32, "--dispatch-origin", "entrance"]
+    result = seat_process.run_process(command, input=b"", cwd=str(tmp_path), timeout=120, env=env,
+                                      on_tick=lambda *_: None)
+    assert result.returncode == 0, result.stderr
+    request = json.loads(output.with_name("seat.md.request.json").read_bytes())
+    assert request["launched_by"] == {"role": "builder", "dispatch_id": dispatch_id, "session_id": "s",
+                                      "identity": "declared"}
+    assert request["dispatch_origin"] == "entrance"
+    assert request["launched_by_ignored"] == {"dispatch": "b" * 32}
