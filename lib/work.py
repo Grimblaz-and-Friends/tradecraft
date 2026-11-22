@@ -3762,8 +3762,9 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
                    "github_write_bound": _github_write_report(state)}
         try:
             checks = builder_checks(state)
-        except (OSError, ValueError, WorkError) as exc:
-            checks = {"unknown": str(exc)}
+        except Exception as exc:
+            # The accounting informs the report and gates nothing, so its failure never costs the report.
+            checks = {"unknown": f"{type(exc).__name__}: {exc}"}
         if checks is not None:
             payload = {**payload, "builder_checks": checks}
     if payload.get("raw_output") is None:

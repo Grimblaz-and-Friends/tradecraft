@@ -197,6 +197,8 @@ KEPT_ROUTES = {
     ("cloud_build", "Transport.cli", "run"),
     # The recipient's own launch, with its callbacks.
     ("dispatch_seat", "_run_dispatch", "run_process"),
+    # A builder's check: the seat launcher's own launch, its stdout kept for its return frame (#1011).
+    ("work", "_framed_recipient_run.runner", "run_process"),
 }
 
 
