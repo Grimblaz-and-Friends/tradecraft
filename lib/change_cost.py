@@ -1823,7 +1823,7 @@ def holder_close(repo: str, issue: int, vendor: str, model: str | None,
 
 # The route split: what the holder spent before and after a stretch launch began, and what its
 # builder spent, each at list price; and the ledger that says when a comparison is due.
-# Design: lib/DESIGN.md#pricing-a-run
+# Design: lib/DESIGN.md#the-builder-route
 def _route_figure(values: list[dict], **extra) -> dict[str, object]:
     """Priced values summed into one USD figure; one unknown value makes the whole figure unknown."""
     reasons, floors, total = [], [], Decimal(0)

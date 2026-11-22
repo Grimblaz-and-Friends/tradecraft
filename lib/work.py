@@ -165,7 +165,7 @@ def _session_shaped(session: object, request: object = None, *, vendor: object =
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
-    "builder-session", "model-override", "proof", "reach-reading", "launch-account",
+    "builder-session", "model-override", "proof", "reach-reading", "launch-account", "route",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
@@ -285,7 +285,9 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
         },
         "surfaces": {"issue-comment"},
     },
+    "route": {"required": {"route"}, "optional": set(), "surfaces": {"issue-comment"}},
 }
+ROUTES = frozenset({"relay", "builder"})
 MODEL_OVERRIDE_ROLES = {
     "artifact_author": "artifact_author",
     "implementer": "implementer",
@@ -1758,6 +1760,12 @@ def _marker_value_error(marker: Marker) -> str | None:
             if (len(parts) != 3 or parts[0] not in {"codex", "claude"}
                     or any(not part or re.search(r"[\s:]", part) for part in parts[1:])):
                 return "model override value is invalid"
+    if marker.name == "route":
+        if values.get("route") not in ROUTES:
+            return "route must be relay or builder"
+        if not any(re.match(r"^ {0,3}>", line) for line in marker.body.splitlines()):
+            # The marker carries the owner's own words, so a bare marker is no owner's ask.
+            return "route marker quotes no owner's words"
     return None
 
 
@@ -3770,6 +3778,12 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
             checks = {"unknown": f"{type(exc).__name__}: {exc}"}
         if checks is not None:
             payload = {**payload, "builder_checks": checks}
+        try:
+            route = _route(state)
+        except Exception as exc:
+            # Like the check accounting, the route reading informs the report and never costs it.
+            route = {"name": None, "reason": "unknown", "error": f"{type(exc).__name__}: {exc}"}
+        payload = {**payload, "route": route}
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
@@ -11586,15 +11600,18 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
     """
     store = state.record_root or records.default_record_root()
     work = f"{state.repo}#{state.issue_number}"
-    comments = [c for c in state.issue_comments if isinstance(c.get("body"), str)
+    mentions = [c for c in state.issue_comments if isinstance(c.get("body"), str)
                 and REPORT_MARKER in c["body"]]
+    # Only a comment that opens on the unquoted marker posts a report; one that quotes it is set aside.
+    comments = [c for c in mentions if _posts_check_report(c["body"])]
+    quotations = [_report_quotation(state, c) for c in mentions if not _posts_check_report(c["body"])]
     rows = lifecycle.launch_bundles(store, work, CHECK_STAGES | {"stretch"})
     stretches = {request.get("dispatch_id") for _o, _p, request, _r in rows if request.get("stage") == "stretch"}
     bundles = {}
     for _order, run_path, request, run in rows:
         if request.get("stage") in CHECK_STAGES and isinstance(request.get("launched_by"), dict):
             bundles[request.get("dispatch_id")] = (Path(run_path), {**request, "_run_path": str(run_path)}, run or {})
-    if not bundles and not comments:
+    if not bundles and not mentions:
         return None
     dispatches, recomposed = [], {}
     for dispatch_id, (run_path, request, _run) in bundles.items():
@@ -11647,7 +11664,61 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
                 reasons.append("store-and-posted-differ")
         reports.append({"comment": comment.get("id"), "dispatch": attributes.get("dispatch"),
                         "counts": not reasons, "invalid": reasons})
-    return {"check_dispatches": dispatches, "check_reports": reports}
+    return {"check_dispatches": dispatches, "check_reports": reports, "quotations": quotations}
+
+
+def _posts_check_report(body: str) -> bool:
+    """Whether a comment's first content is the unquoted check-report marker, as the entrance posts it."""
+    span = _first_content_span(body)
+    if span is None:
+        return False
+    masked = _mask_markdown_quotations(body)
+    return any((found.start(), found.end()) == span and found.group(1).lower() == "check-report"
+               for found in MARKER.finditer(masked))
+
+
+def _report_quotation(state: WorkState, comment: dict[str, object]) -> dict[str, object]:
+    identity, timestamp, url = comment.get("id"), comment.get("created_at"), comment.get("html_url")
+    return {"name": "check-report", "source": {
+        "kind": "issue-comment", "repository": state.repo, "id": identity, "url": url,
+        "author": _author(comment), "timestamp": timestamp}}
+
+
+# The launches whose first one fixes a change's route for good; seats and readers decide nothing.
+ROUTE_STAGES = {"stretch": "builder", "artifact": "relay", "build": "relay"}
+
+
+def _route(state: WorkState) -> dict[str, object]:
+    """The route a change takes, by the first rule that applies: a cloud build keeps the relay,
+    the work's first launch decides for good, the owner's latest route marker, else the builder.
+
+    It reads only; no stage is decided by it. Design: lib/DESIGN.md#the-builder-route
+    """
+    work = f"{state.repo}#{state.issue_number}"
+    asks = [marker for marker in state.issue_markers if marker.name == "route"
+            and marker.surface == "issue-comment" and _attribute_error(marker) is None
+            and _marker_value_error(marker) is None]
+    ask = max(asks, key=_source_order) if asks else None
+    ask_id = (int(ask.source_id) if ask.source_id and ask.source_id.isdigit() else ask.source_id
+              ) if ask is not None else None
+    name = reason = None
+    cloud = cloud_build.launch_route("build", None, work)
+    if cloud is not None:
+        refusal = cloud[2]
+        if refusal is not None:
+            raise WorkError(refusal)  # a broken switch never quietly reads as either route
+        name, reason = "relay", "cloud"
+    else:
+        rows = lifecycle.launch_bundles(state.record_root or records.default_record_root(), work,
+                                        set(ROUTE_STAGES))
+        if rows:
+            name, reason = ROUTE_STAGES[rows[0][2]["stage"]], "in-flight"
+    if name is None:
+        name, reason = (ask.attributes["route"], "owner-asked") if ask is not None else ("builder", "default")
+    overruled = ({"asked": ask.attributes["route"], "marker": ask_id}
+                 if ask is not None and reason != "owner-asked" and ask.attributes["route"] != name else None)
+    return {"name": name, "reason": reason, "marker": ask_id if reason == "owner-asked" else None,
+            "overruled": overruled}
 
 
 def run(

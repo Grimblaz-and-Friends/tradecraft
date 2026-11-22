@@ -1119,3 +1119,21 @@ def test_a_check_whose_tree_cant_be_built_leaves_no_folder_behind(composed, tmp_
     with pytest.raises(work.WorkError, match="could not be built"):
         run_check(state, "use", "--job-from-artifact", transport=PostingTransport())
     assert "dispatch" not in seen and not list((tmp_path / "temp").iterdir())
+
+
+def test_1011_a_comment_that_quotes_the_report_marker_is_set_aside_not_counted(counted):
+    state, _output, body = counted
+    marker = body.split("\n", 1)[0]
+    quoting = {
+        2: f"The entrance posted `{marker}` above.\n",
+        3: f"```text\n{marker}\n```\n",
+        4: f"An example:\n\n    {marker}\n",
+        5: f"> {marker}\n>\n> The job ran.\n",
+    }
+    state.issue_comments = [{"id": 1, "body": body, "user": {"login": "producer"}}] + [
+        {"id": identity, "body": text, "user": {"login": "producer"}} for identity, text in quoting.items()]
+    checks = work.builder_checks(state)
+    assert [report["comment"] for report in checks["check_reports"]] == [1]
+    assert checks["check_reports"][0]["counts"] is True
+    assert [quotation["source"]["id"] for quotation in checks["quotations"]] == [2, 3, 4, 5]
+    assert {quotation["name"] for quotation in checks["quotations"]} == {"check-report"}
