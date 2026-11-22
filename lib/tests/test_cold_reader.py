@@ -1502,8 +1502,12 @@ def _builder_reading(change, monkeypatch, capfd, *, window=None, failing_posts=F
         with window(fixture) as opened_window:
             code = stage()
         return commands, output, posts, code, opened_window
+    # A builder's reading takes its comparison vendor from its own launch's request record.
+    request = change.tmp / "stretch.request.json"
+    request.write_text(json.dumps({"stage": "stretch", "vendor": "codex"}), encoding="utf-8")
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: pytest.fail("read a completed producer bundle"))
     token = work._BUILDER.set({"role": "builder", "dispatch_id": "a" * 32, "session_id": "s",
-                               "identity": "declared"})
+                               "identity": "declared", "request": str(request)})
     try:
         code = stage()
     finally:

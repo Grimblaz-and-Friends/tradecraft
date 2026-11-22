@@ -5669,7 +5669,13 @@ def _held_by_cold_reading(state: WorkState, stage: str) -> bool:
 
 
 def _cold_reading_builder_vendor(state: WorkState, sha: str) -> tuple[str, str]:
-    """The builder's vendor from its bundle, else from the latest lawful `builder-session` marker."""
+    """The builder's vendor from its bundle, else from the latest lawful `builder-session` marker.
+
+    A stretch builder's is its own launch's, so a reading runs in a change's first launch.
+    """
+    builder = builder_mode()
+    if builder is not None:
+        return _holding_launch_vendor(builder)
     try:
         return _producer_vendor(state, RESUME_SOURCE_STAGES["build"], revision=sha,
                                 source_root=state.holder_root)
@@ -5845,7 +5851,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         held = cold_reader.tree_held(metadata, state.holder_root)
         posted = _post_check_report(transport or GitHubREST(), state, check_report_body(
             stage="cold-reader", frame=frame, head=sha, tree="held" if held else "changed", criterion=None))
-        if posted["status"] == "check-report-unposted":
+        if posted["status"] in REPORT_NOT_COUNTED:
             # A reading whose report never landed counts for nothing, so its run says so, as a composed check's does.
             code = code or 1
     else:
@@ -11167,14 +11173,26 @@ def artifact_tree_declaration(artifact: str, name: str) -> dict[str, object]:
     return {"block_sha256": hashlib.sha256(block.encode("utf-8")).hexdigest(), **value}
 
 
+def _check_conditions(tree: str, capability: str) -> str:
+    """What a check's reader is told of its tree and its return; the folder around the tree is its working space."""
+    lines = [f"Return at most {CHECK_RETURN_BYTES:,} UTF-8 bytes."]
+    if capability == "execute":
+        lines.insert(0, f"The tree must stay as built: write anything you make in {Path(tree).parent}, the folder "
+                        "around it, run Python with -B, and know that a tree found changed when you return "
+                        "doesn't count.")
+    return "\n".join(lines) + "\n"
+
+
 def compose_check_dispatch(stage: str, inputs: dict[str, object]) -> bytes:
     """The one composer of a builder-mode use or criterion dispatch; the same inputs give the same bytes."""
     head, tree = str(inputs["head"]), str(inputs["tree"])
     if stage == "use":
-        return (bytes(inputs["job"]) + f"\n\nHead: {head}\nTree: {tree}\n".encode("utf-8"))
+        return (bytes(inputs["job"]) + f"\n\nHead: {head}\nTree: {tree}\n\n"
+                f"{_check_conditions(tree, 'execute')}".encode("utf-8"))
     if stage == "acceptance-criterion":
         return (CRITERION_PREAMBLE + f"\nCapability: {inputs['capability']}\nHead: {head}\n"
-                f"Tree: {tree}\n\nCriterion:\n\n{inputs['criterion']}").encode("utf-8")
+                f"Tree: {tree}\n{_check_conditions(tree, str(inputs['capability']))}\n"
+                f"Criterion:\n\n{inputs['criterion']}").encode("utf-8")
     raise WorkError(f"compose_check_dispatch: {stage} is composed elsewhere")
 
 
@@ -11196,6 +11214,11 @@ TREE_NAME_LETTERS = str.maketrans("0123456789", "ghijklmnop")
 REPORT_MARKER = "tradecraft:check-report:v1"
 NO_RETURN_LINE = "No return was retained; see the bundle."
 REPORT_POST_ATTEMPTS = 3
+# GitHub refuses a comment over 262,144 bytes of UTF-8; a check's return is bounded below it, as the
+# artifact stage's is, leaving room for the marker.
+COMMENT_LIMIT_BYTES = 262_144
+CHECK_RETURN_BYTES = 240_000
+OVERSIZED_LINE = "The return was too large to post: {size} bytes."
 
 
 def _settled_artifact_text(state: WorkState, missing: str) -> tuple[str, str | None]:
@@ -11213,10 +11236,14 @@ def _check_tree(state: WorkState, source: Path, artifact: str, artifact_comment:
                 name: str, built_by: str | None) -> tuple[Path, Path, dict]:
     """Build a check's consumer tree from the settled artifact's declaration, in a directory the entrance names."""
     declared = artifact_tree_declaration(artifact, name)
-    # No digits, so the name can never carry the change's issue or pull-request number.
-    output = Path(tempfile.gettempdir()) / f"tradecraft-tree-{secrets.token_hex(8).translate(TREE_NAME_LETTERS)}"
+    # No digits, so the name can never carry the change's issue or pull-request number. The tree sits in a
+    # folder of its own, the reader's working space, so a reader that runs commands can write without
+    # changing the tree its report is judged on.
+    letters = lambda: secrets.token_hex(8).translate(TREE_NAME_LETTERS)  # noqa: E731
+    output = Path(tempfile.gettempdir()) / f"tradecraft-check-{letters()}" / f"tradecraft-tree-{letters()}"
     numbers = [state.issue_number, *([state.pr["number"]] if state.pr and state.pr.get("number") else [])]
     _refuse_tree_path_naming(output, numbers)
+    output.parent.mkdir()
     work = f"{state.repo}#{state.issue_number}"
     try:
         metadata = recipient_tree.create_consumer_tree(
@@ -11321,11 +11348,17 @@ def _post_check_report(github, state: WorkState, body: str) -> dict[str, object]
     is posted again: the two comments are byte-identical and name one bundle, so both count or
     neither does, and counting a bundle's findings once is for the gates that read the reports."""
     endpoint = f"repos/{state.repo}/issues/{state.issue_number}/comments"
+    status = "posted"
+    if len(body.encode("utf-8")) > COMMENT_LIMIT_BYTES:
+        # GitHub would refuse it on every attempt, so the marker goes up with the return's size, and doesn't count.
+        marker, _, returned = body.partition("\n\n")
+        body = f"{marker}\n\n{OVERSIZED_LINE.format(size=len(returned.encode('utf-8')))}"
+        status = "check-report-oversized"
     errors = []
     for _attempt in range(REPORT_POST_ATTEMPTS):
         try:
             posted = github.post(endpoint, {"body": body})
-            return {"status": "posted", "comment": posted.get("id") if isinstance(posted, dict) else None}
+            return {"status": status, "comment": posted.get("id") if isinstance(posted, dict) else None}
         except (OSError, ValueError, WorkError) as exc:
             errors.append(str(exc))
     return {"status": "check-report-unposted", "errors": errors}
@@ -11389,6 +11422,19 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
         artifact, comment = _settled_artifact_text(state, "artifact-criterion-unresolved")
         criterion = artifact_criterion(artifact, criterion_id)
         capability, tree_name = criterion_reader(criterion)
+    # Every refusal comes before the tree is built, so a refused check leaves no tree or origin behind.
+    own_vendor, own_vendor_source = (_holding_launch_vendor(builder) if builder is not None else
+                                     _producer_vendor(state, RESUME_SOURCE_STAGES["build"] | {"stretch"},
+                                                      revision=head, source_root=source))
+    # The use consumer's staffing plan, with its fallback against the builder's vendor, as the use
+    # stage prints it; a criterion reader is staffed the same way.
+    launch_plan = _launch_plan(state, Decision("use", True, None, "holder-named-stage", ""),
+                               resolve_comparison=False)
+    launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+                               **dispatch_seat.fallback_plan("claude", own_vendor, capability),
+                               "comparison_vendor_source": own_vendor_source}
+    if tree_name is not None:
+        artifact_tree_declaration(artifact, tree_name)
     if tree_name is None:
         consumer_root, metadata, reading = _change_tree(state, source, head, resolved[1])
         held_now = lambda: cold_reader.tree_held(reading, source)  # noqa: E731
@@ -11402,16 +11448,6 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
     with tempfile.TemporaryDirectory(prefix="tradecraft-check-") as temporary:
         dispatch = Path(temporary) / "dispatch.md"
         dispatch.write_bytes(dispatch_bytes)
-        own_vendor, own_vendor_source = (_holding_launch_vendor(builder) if builder is not None else
-                                         _producer_vendor(state, RESUME_SOURCE_STAGES["build"] | {"stretch"},
-                                                          revision=head, source_root=source))
-        # The use consumer's staffing plan, with its fallback against the builder's vendor, as the use
-        # stage prints it; a criterion reader is staffed the same way.
-        launch_plan = _launch_plan(state, Decision("use", True, None, "holder-named-stage", ""),
-                                   resolve_comparison=False)
-        launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
-                                   **dispatch_seat.fallback_plan("claude", own_vendor, capability),
-                                   "comparison_vendor_source": own_vendor_source}
         setting_resolution.print_plan(launch_plan, label="work")
         here = Path(__file__).resolve().parent
         command = [
@@ -11440,10 +11476,12 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
                   "tree": "held" if held else "changed", "tree_metadata": str(metadata),
                   "frame": None if frame is None else {k: v for k, v in frame.items() if k != "return"},
                   "check_report": posted}, state)
-    return code if posted["status"] != "check-report-unposted" else 1
+    return code if posted["status"] not in REPORT_NOT_COUNTED else 1
 
 
 CHECK_STAGES = frozenset({"use", "acceptance-criterion", "cold-reader"})
+# A launch whose report never landed, or landed without its return, counts for nothing, and its run exits nonzero.
+REPORT_NOT_COUNTED = frozenset({"check-report-unposted", "check-report-oversized"})
 REPORT_MARKER_LINE = re.compile(r"\A<!--\s*tradecraft:check-report:v1\s+(.*?)\s*-->\n\n", re.S)
 
 
@@ -11601,7 +11639,10 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
                 stored = _bundle_file(run_path, ".source.bin").read_bytes().decode("utf-8", "replace")
             except OSError:
                 stored = NO_RETURN_LINE
-            if stored != comment["body"][found.end():]:
+            posted_text = comment["body"][found.end():]
+            if re.fullmatch(re.escape(OVERSIZED_LINE).replace(r"\{size\}", "[0-9]+"), posted_text):
+                reasons.append("return too large to post")
+            elif stored != posted_text:
                 reasons.append("store-and-posted-differ")
         reports.append({"comment": comment.get("id"), "dispatch": attributes.get("dispatch"),
                         "counts": not reasons, "invalid": reasons})

@@ -540,6 +540,9 @@ def composed(holding, check_source, tmp_path, monkeypatch):
         seen["tree"] = tree
         if behaviour["edit"]:
             (tree / "job" / "job.md").write_bytes(b"edited while the seat ran\n")
+        if behaviour.get("beside"):
+            # A reader that runs commands writes in the folder around its tree, its working space.
+            (tree.parent / "probe-evidence.txt").write_bytes(b"what the job printed\n")
         digest = __import__("hashlib").sha256(seen["dispatch"]).hexdigest()
         # The store copy the seat launcher keeps, at the output it resolves for this check.
         output = work.records.resolved_output(None, "o/r#5", command[command.index("--stage") + 1])
@@ -1052,3 +1055,55 @@ def test_an_empty_session_variable_is_an_absent_one(holding, tree_state, monkeyp
     assert launch_tree.attribution(Path("store"))["launched_by"]["identity"] == "declared"
     holding["value"] = launch_tree.Holding("held", {**dict(LAUNCH), "root": None})
     assert work._builder_identity(arguments("run", "use"))["identity"] == "declared"
+
+
+def test_a_reader_that_writes_beside_its_tree_holds_and_inside_it_reads_changed(composed):
+    state, behaviour, seen = composed
+    behaviour["beside"] = True
+    transport = PostingTransport()
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    assert "tree=held" in transport.posts[0][1]
+    assert (seen["tree"].parent / "probe-evidence.txt").is_file()
+    told = seen["dispatch"].decode()
+    assert f"write anything you make in {seen['tree'].parent}" in told and "-B" in told
+    assert seen["tree"].parent.name.startswith("tradecraft-check-")
+    behaviour["edit"] = True
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    assert "tree=changed" in transport.posts[1][1]
+
+
+def test_a_read_only_criterion_is_told_its_return_bound_and_not_the_working_space(composed):
+    told = work.compose_check_dispatch("acceptance-criterion", {
+        "criterion": "**C9.** x\nFresh reader: read tree\n", "capability": "read", "head": "h", "tree": "/t/tree"})
+    assert b"Return at most 240,000 UTF-8 bytes." in told and b"must stay as built" not in told
+
+
+def test_a_return_too_large_to_post_posts_its_size_and_never_counts(composed, monkeypatch):
+    state, _behaviour, _seen = composed
+    original = work.check_report_body
+    size = work.COMMENT_LIMIT_BYTES + 10
+    # The frame's return, grown past GitHub's limit (a command line can't carry one that large).
+    monkeypatch.setattr(work, "check_report_body", lambda **k: original(**k).partition("\n\n")[0]
+                        + "\n\n" + "x" * size)
+    transport = PostingTransport()
+    assert run_check(state, "use", "--job-from-artifact", transport=transport) == 1
+    (endpoint, body), = transport.posts
+    marker, text = body.split("\n\n", 1)
+    assert "tradecraft:check-report:v1" in marker
+    assert text == f"The return was too large to post: {size} bytes."
+    assert len(body.encode("utf-8")) < work.COMMENT_LIMIT_BYTES
+    assert _seen["reports"][-1]["check_report"]["status"] == "check-report-oversized"
+
+
+def test_a_refused_check_leaves_no_tree_behind(composed, tmp_path):
+    state, _behaviour, seen = composed
+    Path(work.builder_mode()["request"]).unlink()  # The holding launch's vendor can't be read.
+    with pytest.raises(work.WorkError, match="could not be read"):
+        run_check(state, "use", "--job-from-artifact", transport=PostingTransport())
+    assert "dispatch" not in seen and not list((tmp_path / "temp").iterdir())
+
+
+def test_a_builders_reading_takes_its_vendor_from_its_own_launch(composed, monkeypatch):
+    monkeypatch.setattr(work, "_producer_vendor", lambda *a, **k: pytest.fail("read a completed producer bundle"))
+    vendor, source = work._cold_reading_builder_vendor(SimpleNamespace(), "h")
+    assert vendor == "claude" and source.startswith("holding stretch launch request")
