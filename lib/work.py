@@ -56,6 +56,7 @@ from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
 import github_allowance
 import launch_bound
+import launch_tree
 import run_lifecycle as lifecycle
 import work_recovery
 import cloud_build
@@ -10903,9 +10904,126 @@ def _refuse_tree_path_naming(output: Path, numbers: list[int]) -> None:
                 )
 
 
+# --- builder mode: the entrance run from inside a stretch launch's process tree ------------
+# Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+
+# The checks and own-change writes rows 1 and 5 of #1011 give a builder; every other stage is the
+# holder's. The read-only decision is open to anyone.
+BUILDER_STAGES = frozenset({"cold-reader", "use", "acceptance-criterion", "proof", "ready-reviewers",
+                            "catch-up"})
+_BUILDER: ContextVar[dict | None] = ContextVar("tradecraft_builder_mode", default=None)
+
+
+class BuilderRefused(WorkError):
+    """Builder mode refused this run before any other read or write."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+
+
+def builder_mode() -> dict | None:
+    """This run's builder: the holding launch's dispatch and session and how its identity stands."""
+    return _BUILDER.get()
+
+
+def _builder_identity(args: argparse.Namespace) -> dict | None:
+    """The stretch launch whose tree holds this process, checked against the variable, the work and the session.
+
+    The tree, not the variable, decides whether a run is a builder's. With the variable unset, a
+    check that could not be made leaves the run as the holder's, as before this mode existed, and
+    its report names the bundle; with it set, the run refuses.
+    """
+    holding = launch_tree.stretch_holding(records.default_record_root())
+    variable = os.environ.get(launch_tree.DISPATCH_VARIABLE)
+    if holding.state == "unknown":
+        if variable:
+            raise BuilderRefused("launch-tree-unknown", f"the tree check of the stretch launch whose "
+                                 f"request is {holding.launch.get('request')} could not be made: {holding.reason}")
+        args.stretch_tree_check = holding.record()
+        print("work: stretch tree check " + json.dumps(args.stretch_tree_check, ensure_ascii=True), flush=True)
+        return None
+    if holding.state == "none":
+        if variable:
+            raise BuilderRefused("builder-identity-unproved", f"{launch_tree.DISPATCH_VARIABLE} names "
+                                 f"{variable}, but no live stretch launch's tree holds this process")
+        return None
+    launch = holding.launch
+    if variable and variable != launch["dispatch_id"]:
+        raise BuilderRefused("builder-identity-unproved", f"{launch_tree.DISPATCH_VARIABLE} names {variable}, "
+                             f"but the launch whose tree holds this process is {launch['dispatch_id']}")
+    work = f"{args.repo}#{args.issue}"
+    if str(launch.get("work", "")).lower() != work.lower():
+        raise BuilderRefused("builder-identity-unproved", f"the launch holding this process carries "
+                             f"{launch.get('work')}, not {work}")
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if session and session != launch.get("session_id"):
+        raise BuilderRefused("builder-identity-unproved", f"this session {session} is not the launch's "
+                             f"session {launch.get('session_id')}")
+    return {"role": "builder", "dispatch_id": launch["dispatch_id"], "session_id": launch.get("session_id"),
+            "identity": "proved" if session else "declared", "root": launch.get("root"),
+            "request": launch.get("request"), "work": launch.get("work")}
+
+
+def _builder_stage(args: argparse.Namespace) -> None:
+    """Refuse every command a builder may not run, before it reads or writes anything."""
+    named = args.stage if args.command in ("run", "allowance") else args.command
+    if getattr(args, "grant", None):
+        raise BuilderRefused("stage-not-the-builders", "a builder uses no write grant")
+    if args.command is None or (args.command == "allowance" and not args.grant):
+        return
+    if args.command == "run" and args.stage in BUILDER_STAGES:
+        return
+    raise BuilderRefused("stage-not-the-builders", f"{named or args.command} is the holder's; a builder runs "
+                         f"only {', '.join(sorted(BUILDER_STAGES))} and the read-only decision")
+
+
+def _builder_root(args: argparse.Namespace, builder: dict) -> None:
+    """--root must be the holder checkout under which the launch's implementation root is registered."""
+    root = args.root.expanduser().resolve()
+    target = os.path.normcase(str(Path(builder["root"]).resolve())) if builder.get("root") else None
+    for row in read_registry()["worktrees"]:
+        if target and os.path.normcase(str(Path(row.get("root", "")).resolve())) == target:
+            if os.path.normcase(str(Path(row.get("holder_root", "")).resolve())) == os.path.normcase(str(root)):
+                return
+            raise BuilderRefused("builder-root-mismatch", f"--root {root} is not the holder checkout "
+                                 f"{row.get('holder_root')} of the launch's implementation root")
+    raise BuilderRefused("builder-root-mismatch", f"the launch's implementation root {builder.get('root')} "
+                         "is not registered")
+
+
+def _enter_builder_mode(args: argparse.Namespace):
+    """Identity, then the stage table, then the root; on success the run's builder, with the variables removed.
+
+    Removing them from this process's environment means nothing the entrance starts names the launch.
+    """
+    builder = _builder_identity(args)
+    if builder is None:
+        return None
+    _builder_stage(args)
+    if args.command == "run":
+        _builder_root(args, builder)
+    for name in launch_tree.VARIABLES:
+        os.environ.pop(name, None)
+    return _BUILDER.set(builder)
+
+
 def run(
     args: argparse.Namespace, *, transport: GitHubREST | None = None,
     executor: Callable[..., int] = execute_stage,
+) -> int:
+    # Before any other read or write: a run inside a stretch launch's tree is the builder's.
+    token = _enter_builder_mode(args)
+    try:
+        return _run_entry(args, transport=transport, executor=executor)
+    finally:
+        if token is not None:
+            _BUILDER.reset(token)
+
+
+def _run_entry(
+    args: argparse.Namespace, *, transport: GitHubREST | None,
+    executor: Callable[..., int],
 ) -> int:
     if getattr(args, "draft_comment", None) is not None and (args.command != "run" or args.stage != "cold-seat"):
         raise WorkError("--draft-comment requires run cold-seat")
