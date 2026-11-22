@@ -55,6 +55,7 @@ import cap_declaration
 from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
 import github_allowance
+import handoff
 import launch_bound
 import launch_tree
 import run_lifecycle as lifecycle
@@ -10923,13 +10924,17 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState,
         return 0
     branch = None
     if args.stage not in ("artifact", "use"):
-        if args.implementation_root is None:
+        if args.implementation_root is None and args.stage != "stretch":
             raise WorkError(f"allowance {args.stage} requires --implementation-root, the tree whose "
                             "branch the step may push")
         registered = resolve_implementation_root(root, args.repo, args.issue, args.instalment,
                                                  migrate=False)
-        if registered is None or not _same_path(registered[0],
-                                                args.implementation_root.expanduser().resolve()):
+        if registered is None and args.implementation_root is None:
+            raise WorkError("allowance stretch: this change has no registered implementation tree yet")
+        # A stretch's tree may be left to the registration, so a holder's shell never names the
+        # tree its guard protects.
+        if registered is None or args.implementation_root is not None and not _same_path(
+                registered[0], args.implementation_root.expanduser().resolve()):
             raise WorkError(f"allowance {args.stage}: --implementation-root is not this change's "
                             "registered implementation tree, which the launch pushes from")
         branch = registered[1]
@@ -11209,6 +11214,60 @@ def compose_check_dispatch(stage: str, inputs: dict[str, object]) -> bytes:
                 f"Tree: {tree}\n{_check_conditions(tree, str(inputs['capability']))}\n"
                 f"Criterion:\n\n{inputs['criterion']}").encode("utf-8")
     raise WorkError(f"compose_check_dispatch: {stage} is composed elsewhere")
+
+
+MECHANICAL_HANDOFF_REASON = (
+    "The owner affirmed this change's risk and lane as ordinary / mechanical, so the brief records a "
+    "determinate correction and no plan is owed; build from the brief's rows."
+)
+
+
+def fresh_reader_criteria(artifact: str) -> list[str]:
+    """The ids, in order, of the settled artifact's criteria whose text names a `Fresh reader:` line."""
+    lines = artifact.splitlines(keepends=True)
+    fenced = _fenced_lines(lines)
+    starts, offset = [], 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+    outside = {start for index, start in enumerate(starts) if index not in fenced}
+    found = []
+    for match in CRITERION_OPENING.finditer(artifact):
+        identifier = match.group(1)
+        if match.start() in outside and identifier not in found and FRESH_READER.search(
+                artifact_criterion(artifact, identifier)):
+            found.append(identifier)
+    return found
+
+
+def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plugin_root: Path,
+                        notify: str | None, floor_owed: bool, hand: dict | None = None) -> bytes:
+    """The handoff a builder of this change receives, composed from the issue's own records alone.
+
+    The same records give the same bytes, so a handoff the builder received can be recomposed and
+    compared. Design: lib/DESIGN.md#the-builder-route
+    """
+    brief, lane = _affirmed_review(state)
+    if brief is None:
+        raise BuilderRefused("brief-absent", "the change has no affirmed brief")
+    mechanical = lane == ("ordinary", "mechanical")
+    artifact = None if mechanical else _settled_artifact_text(state, "plan-unsettled")[0]
+    use_owed = False
+    if artifact is not None:
+        try:
+            artifact_use_job(artifact)
+            use_owed = True
+        except BuilderRefused:
+            use_owed = False
+    checks = handoff.owed_checks(criteria=[] if mechanical else fresh_reader_criteria(artifact),
+                                 mechanical=mechanical, use_owed=use_owed, floor_owed=floor_owed)
+    allowance = github_allowance.sentence(github_allowance.allowance_for(
+        "stretch", repository=state.repo, branch=branch,
+        pull_request=state.pr.get("number") if state.pr else None, issue=state.issue_number))
+    return handoff.compose_handoff(
+        brief=brief.body, artifact=artifact, lane_reason=MECHANICAL_HANDOFF_REASON if mechanical else None,
+        checks=checks, allowance=allowance, repo=state.repo, issue=state.issue_number,
+        holder_root=str(holder_root), plugin_root=str(plugin_root), notify=notify, hand=hand)
 
 
 def _builder_check_inputs(args: argparse.Namespace) -> None:

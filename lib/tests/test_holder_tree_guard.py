@@ -971,3 +971,15 @@ def test_configured_hook_process_denies_without_changing_revision_or_status(tmp_
         ["git", "-C", str(protected), "status", "--porcelain"], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
     ).stdout == before_status
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+def test_1011_the_stretch_allowance_by_repository_passes_where_naming_the_tree_is_refused(roots, tool):
+    protected, outside, registered = roots
+    entrance = "python -B lib/work.py allowance stretch"
+    by_root = f"{entrance} --repo o/r --issue 5 --root '{outside}'"
+    by_tree = f"{entrance} --implementation-root '{protected}'"
+    assert guard.decision({"tool_name": tool, "cwd": str(outside),
+                           "tool_input": {"command": by_root}}, registered) is None
+    assert guard.decision({"tool_name": tool, "cwd": str(outside),
+                           "tool_input": {"command": by_tree}}, registered)

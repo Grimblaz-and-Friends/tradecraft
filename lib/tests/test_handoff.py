@@ -175,3 +175,63 @@ def test_1011_without_notify_the_builder_ends():
     finish = compose(notify=None)
     finish = finish[finish.index("## How to finish"):]
     assert "holder session named" not in finish and "the owner tells the holder" in finish
+
+
+# The entrance's composition from an issue's own records.
+from types import SimpleNamespace  # noqa: E402
+
+import work  # noqa: E402
+
+ENTRANCE_ARTIFACT = (
+    "## Use session job\n\n```text\nUse it.\n```\n\n"
+    "## Criteria\n\n"
+    "**B1.** Reads the route. *Check:* tests.\n\n"
+    "**B2.** The doctrine tells it.\nFresh reader: read tree\n\n"
+    "```text\n**B9.** An example inside a fence.\nFresh reader: read tree\n```\n\n"
+    "**B3.** The handoff text is whole.\nFresh reader: execute consumer tree use\n"
+)
+
+
+def _entrance_state(lane="Review risk: elevated\nReview lane: routine-panel\n", artifact=ENTRANCE_ARTIFACT):
+    brief = SimpleNamespace(name="affirmed-brief", body="<!-- tradecraft:affirmed-brief:v1 -->\n\nRows.\n\n" + lane)
+    return SimpleNamespace(
+        repo="o/r", issue_number=5, pr=None, issue_markers=[brief],
+        artifact_phase=SimpleNamespace(settled_artifact=SimpleNamespace(body=artifact, source_id="77"),
+                                       source_error=None))
+
+
+def _entrance_text(state, **extra):
+    return work.compose_handoff_for(state, branch="tradecraft/5-ab", holder_root=Path("H"),
+                                    plugin_root=Path("P"), notify="Start 5", floor_owed=True, **extra)
+
+
+def test_1011_the_entrance_composes_one_text_from_the_brief_and_the_settled_plan():
+    state = _entrance_state()
+    assert work.fresh_reader_criteria(ENTRANCE_ARTIFACT) == ["B2", "B3"]
+    text = _entrance_text(state)
+    assert text == _entrance_text(state)
+    decoded = text.decode("utf-8")
+    assert state.issue_markers[0].body in decoded and ENTRANCE_ARTIFACT in decoded
+    assert "--criterion B2" in decoded and "--criterion B3" in decoded
+    assert "--criterion B1" not in decoded and "--criterion B9" not in decoded
+    assert "--job-from-artifact" in decoded and "holder-session" not in decoded
+    sentence = work.github_allowance.sentence(work.github_allowance.allowance_for(
+        "stretch", repository="o/r", branch="tradecraft/5-ab", pull_request=None, issue=5))
+    assert sentence in decoded
+
+
+def test_1011_the_mechanical_lane_hands_off_the_brief_and_the_lane_reason():
+    state = _entrance_state(lane="Review risk: ordinary\nReview lane: mechanical\n", artifact=None)
+    decoded = _entrance_text(state).decode("utf-8")
+    assert work.MECHANICAL_HANDOFF_REASON in decoded and "--criterion" not in decoded
+    assert decoded.count("--row") == 1 and "--job-from-artifact" not in decoded
+
+
+def test_1011_a_plan_without_a_use_job_owes_no_use_and_an_unsettled_plan_is_refused():
+    no_use = ENTRANCE_ARTIFACT.replace("## Use session job\n\n```text\nUse it.\n```\n\n", "")
+    assert "--job-from-artifact" not in _entrance_text(_entrance_state(artifact=no_use)).decode("utf-8")
+    unsettled = _entrance_state()
+    unsettled.artifact_phase.settled_artifact = None
+    with pytest.raises(work.BuilderRefused) as refused:
+        _entrance_text(unsettled)
+    assert refused.value.code == "plan-unsettled"
