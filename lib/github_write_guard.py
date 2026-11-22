@@ -1462,7 +1462,8 @@ PYTHON_NAME = re.compile(r"pythonw?(?:\d+(?:\.\d+)*)?|pyw?")
 
 def _is_python(name: str) -> bool:
     return name in PYTHON_PROGRAMS or PYTHON_NAME.fullmatch(name) is not None
-PYTHON_VALUE_OPTIONS = {"-X", "-W", "-Q"}
+PYTHON_VALUE_OPTIONS = {"-X", "-W", "-Q", "--check-hash-based-pycs"}
+# No label, reviewer or assignee: the reviewer label is `ready-reviewers`' write, not the builder's.
 PR_CREATE_OPTIONS = {"--fill", "-f", "--title", "-t", "--body", "-b", "--body-file", "-F",
                      "--base", "-B", "--draft", "-d", "--head", "-H", "--repo", "-R"}
 PR_EDIT_OPTIONS = {"--title", "-t", "--body", "-b", "--body-file", "-F", "--repo", "-R"}
@@ -1501,6 +1502,7 @@ def _launcher_call(words: list[str]) -> str | None:
             module = rest[0].rsplit(".", 1)[-1] + ".py"
             return module if module in LAUNCHER_FILES else None
         if word == "-c" and rest:
+            # Code can't be told from data, so a launcher named anywhere in it is a call.
             return next((f for f in LAUNCHER_FILES if f[:-3] in rest[0]), None)
         if word in PYTHON_VALUE_OPTIONS:
             if rest:

@@ -211,7 +211,8 @@ def attribution(store: Path, *, dispatch: str | None = None, session: str | None
     variable = os.environ.get(DISPATCH_VARIABLE)
     flagged = dispatch is not None or session is not None or origin is not None
     if holding.state == "unknown":
-        if variable:
+        # The entrance's flags claim a builder's check; with no tree to vouch for it, it would read as the holder's.
+        if variable or flagged:
             raise LaunchRefused("launch-tree-unknown", f"the tree check of the stretch launch whose "
                                 f"request is {holding.launch.get('request')} could not be made: {holding.reason}")
         return {"stretch_tree_check": holding.record()}

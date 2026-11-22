@@ -337,14 +337,16 @@ class DuplexInput:
 
 
 def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
-                on_launch=None, env=None, cleanup_deadline=None):
+                on_launch=None, env=None, cleanup_deadline=None, on_window=None):
     """Drain both pipes while input is supplied independently of the deadline.
 
     Callbacks run serially on the calling thread. A blocked stdin or silent
     descendant therefore cannot prevent capture or elapsed checkpoints.
+    `on_window`, when given, is asked as `run_inherited_process`'s `on_tick` is, and moves
+    the wait and cleanup ends the same way, so a captured launch follows its window too.
     """
     if (not isinstance(input, DuplexInput) and on_output is None and on_tick is None
-            and on_launch is None and cleanup_deadline is None):
+            and on_launch is None and cleanup_deadline is None and on_window is None):
         return _buffered_process(command, input=input, cwd=cwd, timeout=timeout, env=env)
     deadline = time.monotonic() + timeout
     if os.name != "nt" and env is not None and STRETCH_JOB_VARIABLE in env:
@@ -405,6 +407,7 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
         stopped = False
         notified = False
         drain_deadline = None
+        next_window = time.monotonic() + _INHERITED_TICK_SECONDS
 
         def drain_end(current):
             end = current + 0.25
@@ -477,6 +480,11 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                     break
                 if on_tick and not stopped:
                     notify(on_tick)
+                if on_window and not stopped and time.monotonic() >= next_window:
+                    next_window = time.monotonic() + _INHERITED_TICK_SECONDS
+                    moved = notify(on_window)
+                    if moved is not None:
+                        deadline, cleanup_deadline = moved
                 # A checkpoint can consume the remaining allowance. Recheck
                 # after it instead of renewing a wait using the earlier clock.
                 current = time.monotonic()

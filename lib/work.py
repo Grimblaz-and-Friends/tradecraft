@@ -11036,6 +11036,8 @@ def _enter_builder_mode(args: argparse.Namespace):
     """Identity, then the stage table, then the root; on success the run's builder, with the variables removed.
 
     Removing them from this process's environment means nothing the entrance starts names the launch.
+    A seat is not the builder, and a process carrying the builder's variable would be judged as the
+    builder wherever it is read: refused once the launch ends, or where its tree can't be checked.
     """
     builder = _builder_identity(args)
     if builder is None:
@@ -11245,8 +11247,10 @@ def _framed_recipient_run(captured: bytearray):
             else:
                 sys.stderr.buffer.write(chunk)
                 sys.stderr.buffer.flush()
+        # The wait follows the launcher's window, as the inherited wait does, so the recipient keeps its whole limit.
         return seat_process.run_process(command, input=b"", cwd=str(Path.cwd()), timeout=timeout,
-                                        on_output=forward, cleanup_deadline=cleanup_deadline)
+                                        on_output=forward, cleanup_deadline=cleanup_deadline,
+                                        on_window=on_tick)
     return runner
 
 
@@ -11821,7 +11825,6 @@ def _run(
     # A stand-in executor is handed the named decision as every stage's is; only the real one composes.
     if executor is execute_stage and (
             args.stage == "acceptance-criterion" or (args.stage == "use" and builder_mode() is not None)):
-        # A check composed from the settled artifact: the caller supplies neither its dispatch nor its tree.
         limit = args.timeout_seconds if args.timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
         return _builder_check(state, args, root, github, f"{limit:g}")
     decision = _reported_decision(state, Decision(

@@ -24,6 +24,9 @@ DISPATCH = "a" * 32
 def comparison_window(*, root: Path, tmp_path: Path, checkouts=()):
     """Snapshot before and after the block; ``window["result"]`` holds the comparison.
 
+    ``window["unchanged"]`` is the same comparison without the own-row credit (D-1012 C13), so a
+    test can show what that credit alone absolves: what the stage wrote, held by the unchanged rule.
+
     ``root`` is the stretch's own implementation root. ``checkouts`` are the holder checkouts the
     stage reads, registered so the comparison covers them as a live launch's would.
     """

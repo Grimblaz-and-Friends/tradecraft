@@ -512,23 +512,25 @@ def _spelling(text: str) -> str:
 
 
 def _stream_position(entry: dict, calls: list[tuple[str | None, list[str]]],
-                     taken: set[tuple[int, str]] = frozenset()) -> int:
+                     taken: set[tuple[int, str]] = frozenset(), denied: set[int] = frozenset()) -> int:
     """Where a refusal's call stands among the run's tool calls: by tool-use id, else by its text.
 
-    A call takes one report from each source, so a refusal placed by its text skips a call that
-    source has already reported, and one command refused twice is two entries. Unplaced refusals
-    sort after every call.
+    A call takes one report from each source, so one command refused twice is two entries. A
+    refusal placed by its text goes to a call Claude denied that its source hasn't reported, so an
+    earlier allowed call naming the same path never takes it, and to the first call containing its
+    text only when there is none. Unplaced refusals sort after every call.
     """
     denial = entry.get("denial") if isinstance(entry.get("denial"), dict) else {}
     wanted_id = entry.get("tool_use_id") or denial.get("tool_use_id")
+    if wanted_id:
+        return next((position for position, (call_id, _) in enumerate(calls) if call_id == wanted_id),
+                    len(calls))
     texts = [_spelling(text) for text in entry.get("texts") or () if text]
-    for position, (call_id, leaves) in enumerate(calls):
-        if wanted_id and call_id == wanted_id:
-            return position
-        if (not wanted_id and (position, entry["source"]) not in taken
-                and any(text in leaf for text in texts for leaf in leaves)):
-            return position
-    return len(calls)
+    matching = [position for position, (_, leaves) in enumerate(calls)
+                if (position, entry["source"]) not in taken
+                and any(text in leaf for text in texts for leaf in leaves)]
+    return next((position for position in matching if position in denied),
+                matching[0] if matching else len(calls))
 
 
 def _stream_calls(stream: bytes) -> list[tuple[str | None, list[str]]]:
@@ -561,9 +563,14 @@ def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> 
     merged: dict[int, dict[str, object]] = {}
     unplaced: list[dict[str, object]] = []
     taken: set[tuple[int, str]] = set()
-    for entry in found:
-        position = _stream_position(entry, calls, taken)
-        taken.add((position, entry["source"]))
+    positions: dict[int, int] = {}
+    # Reports that carry a tool-use id are placed first, so one placed by its text knows the denied calls.
+    for index, entry in sorted(enumerate(found), key=lambda item: "denial" not in item[1]):
+        denied = {positions[i] for i in positions if "denial" in found[i]}
+        positions[index] = _stream_position(entry, calls, taken, denied)
+        taken.add((positions[index], entry["source"]))
+    for index, entry in enumerate(found):
+        position = positions[index]
         entry.pop("texts", None)
         if position == len(calls):
             unplaced.append({**entry, "sources": [entry["source"]]})

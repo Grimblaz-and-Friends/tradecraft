@@ -315,6 +315,23 @@ def test_an_unknown_tree_refuses_a_seat_only_with_the_variable_set(tree_state, m
         launch_tree.attribution(Path("store"))
 
 
+
+def test_an_unknown_tree_refuses_a_seat_or_record_given_the_entrances_flags(tree_state):
+    import dispatch_record
+    import dispatch_seat as seat
+    tree_state["value"] = launch_tree.Holding("unknown", dict(LAUNCH), "job unreadable")
+    for dispatch, origin in (("a" * 32, None), (None, "entrance")):
+        with pytest.raises(launch_tree.LaunchRefused, match="launch-tree-unknown"):
+            launch_tree.attribution(Path("store"), dispatch=dispatch, origin=origin)
+    # Both refuse before any bundle: neither reads a field past the flags.
+    flags = {"launched_by_dispatch": "a" * 32, "launched_by_session": SESSION, "dispatch_origin": "entrance"}
+    with pytest.raises(seat.DispatchError, match="launch-tree-unknown"):
+        seat.run_dispatch(SimpleNamespace(**flags))
+    with pytest.raises(dispatch_record.RecordError, match="launch-tree-unknown"):
+        dispatch_record.begin_native(SimpleNamespace(**flags))
+    assert launch_tree.attribution(Path("store"))["stretch_tree_check"]["state"] == "unknown"
+
+
 BEGIN = ("import sys; sys.path.insert(0, sys.argv[1]); import dispatch_record as r; "
          "raise SystemExit(r.main(sys.argv[2:]))")
 
@@ -915,3 +932,21 @@ def test_only_the_own_rows_re_snapshot_is_credited(tmp_path, change, credited):
     assert launch_bound._own_row_resnapshot(entry, own) is credited
     elsewhere = {**entry, "rows": ({**before, "root": "x"}, {**before, **change, "root": "x"})}
     assert launch_bound._own_row_resnapshot(elsewhere, own) is False
+
+
+def test_a_builders_check_follows_its_launchers_window():
+    # The child outlives the first bound; the window the launcher opens keeps the wait for it.
+    captured = bytearray()
+    moved = []
+
+    def follower():
+        if not moved:
+            moved.append(lifecycle.time.monotonic())
+            return moved[0] + 30, moved[0] + 31
+        return None
+
+    command = [sys.executable, "-c", "import time; time.sleep(1.5); print('returned')"]
+    result = work._framed_recipient_run(captured)(command, timeout=0.5,
+                                                  cleanup_deadline=lifecycle.time.monotonic() + 0.75,
+                                                  on_tick=follower)
+    assert result.returncode == 0 and moved and captured.strip() == b"returned"

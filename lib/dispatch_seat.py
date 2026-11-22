@@ -557,7 +557,9 @@ def _steps_before_spawn(args, vendor, comparison):
 
 def run_dispatch(args, *, now=None) -> int:
     # Who launched this seat is read from the launch tree, before any bundle exists, and no
-    # process this seat starts names a stretch launch. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    # process this seat starts names a stretch launch: it is not the builder, and with the builder's
+    # variable it would be judged as one, refused once the launch ends or where its tree can't be
+    # checked. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
     try:
         args.launch_attribution = launch_tree.attribution(
             records.default_record_root(), dispatch=getattr(args, "launched_by_dispatch", None),

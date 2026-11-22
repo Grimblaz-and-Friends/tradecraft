@@ -2790,3 +2790,24 @@ def test_1011_one_command_refused_twice_is_two_entries(tmp_path):
                                   Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
     assert [entry["sources"] for entry in record_value["refusals"]] == [
         ["github-write-bound", "permission-denial"], ["github-write-bound", "permission-denial"]]
+
+
+def test_1011_a_refusal_placed_by_its_text_goes_to_the_denied_call(tmp_path):
+    path = "D:/outside/notes.txt"
+    stream = "\n".join(json.dumps(event) for event in [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": f"cat {path}"}}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_2", "name": "Write",
+             "input": {"file_path": path, "content": "x"}}]}}])
+    record_value = {"github_write_refusals": [], "write_guard": {"refusals": [
+        {"tool": "Write", "raw": path, "canonical": "D:\\outside\\notes.txt", "reason": "outside"}],
+        "unguarded": []}}
+    attempt = {"permission_denials": [{"tool_name": "Write", "tool_use_id": "toolu_2"}]}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt,
+                                  Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
+    [entry] = record_value["refusals"]
+    assert entry["sources"] == ["file-write-guard", "permission-denial"]
+    assert entry["denial"]["tool_use_id"] == "toolu_2"

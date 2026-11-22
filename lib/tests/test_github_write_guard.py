@@ -1249,6 +1249,7 @@ def _mutation(name, arguments):
     "uv run mypy lib/dispatch_seat.py",
     "uv run cat lib/dispatch_seat.py",
     "uv run black lib/dispatch_seat.py",
+    "python -u lint.py lib/dispatch_seat.py",
     "python lib/work.py run use --repo o/r --issue 5",
     "cat lib/dispatch_implementer.py",
 ])
@@ -1331,6 +1332,7 @@ def test_a_stretch_builder_is_refused_every_other_write(stretch, command):
     "python -X utf8 lib/dispatch_seat.py",
     "python3.12 lib/dispatch_seat.py --help",
     "pythonw lib/dispatch_seat.py --help",
+    "python --check-hash-based-pycs always lib/dispatch_seat.py",
     "cd lib && python dispatch_seat.py",
     "bash -c 'python lib/dispatch_seat.py'",
 ])
