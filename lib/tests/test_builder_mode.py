@@ -339,3 +339,87 @@ def test_a_record_begun_from_inside_a_stretch_tree_with_the_variable_cleared_is_
                                       "identity": "declared"}
     assert request["dispatch_origin"] == "entrance"
     assert request["launched_by_ignored"] == {"dispatch": "b" * 32}
+
+
+# --- what a builder's checks are told and read ---------------------------------------------------
+
+ARTIFACT = (
+    "# Plan\r\n\r\n"
+    "## Use session job\r\n\r\n"
+    "```text\r\nUse the tree as an adopter would.\r\nReport what broke.\r\n```\r\n\r\n"
+    "## Consumer tree declaration use\r\n\r\n"
+    "```json\n{\"mode\": \"adopter\", \"paths\": [\"skills\"]}\n```\n\n"
+    "## Criteria\n\n"
+    "**C1.** The allowance names its writes. *Check:* a test.\n\n"
+    "- **C2.** A builder's report is posted by the entrance.\n"
+    "  Fresh reader: execute consumer tree use\n\n"
+    "**C2.1** is prose, not an opening.\n\n"
+    "## After\n"
+)
+
+
+def test_the_use_job_is_the_fenced_block_under_its_heading_with_its_line_endings():
+    assert work.artifact_use_job(ARTIFACT) == b"Use the tree as an adopter would.\r\nReport what broke.\r\n"
+
+
+@pytest.mark.parametrize("artifact", [ARTIFACT.replace("## Use session job", "## Use job"),
+                                      ARTIFACT + "\n## Use session job\n\n```\nagain\n```\n",
+                                      ARTIFACT.replace("```text\r\nUse", "Prose first.\r\n```text\r\nUse")])
+def test_a_missing_duplicated_or_unfenced_use_job_refuses(artifact):
+    with pytest.raises(work.BuilderRefused) as caught:
+        work.artifact_use_job(artifact)
+    assert caught.value.code == "artifact-use-job-absent"
+
+
+def test_a_criterion_runs_from_its_opening_to_the_next_opening_or_heading():
+    assert work.artifact_criterion(ARTIFACT, "C1") == "**C1.** The allowance names its writes. *Check:* a test.\n"
+    second = work.artifact_criterion(ARTIFACT, "C2")
+    assert second.startswith("- **C2.** A builder's") and "C2.1" in second and "## After" not in second
+    assert work.criterion_reader(second) == ("execute", "use")
+    with pytest.raises(work.BuilderRefused) as caught:
+        work.criterion_reader(work.artifact_criterion(ARTIFACT, "C1"))
+    assert caught.value.code == "criterion-owes-no-fresh-reader"
+
+
+@pytest.mark.parametrize("identifier, artifact", [("C9", ARTIFACT), ("C1", ARTIFACT + "\n**C1.** again\n")])
+def test_a_criterion_found_zero_times_or_twice_refuses(identifier, artifact):
+    with pytest.raises(work.BuilderRefused) as caught:
+        work.artifact_criterion(artifact, identifier)
+    assert caught.value.code == "artifact-criterion-unresolved"
+
+
+def test_a_tree_declaration_carries_only_the_callers_parameters():
+    declared = work.artifact_tree_declaration(ARTIFACT, "use")
+    assert declared["mode"] == "adopter" and declared["paths"] == ["skills"]
+    assert len(declared["block_sha256"]) == 64
+    for artifact in (ARTIFACT.replace('"paths"', '"output"'), ARTIFACT.replace('"mode": "adopter", ', "")):
+        with pytest.raises(work.BuilderRefused) as caught:
+            work.artifact_tree_declaration(artifact, "use")
+        assert caught.value.code == "artifact-tree-declaration-unresolved"
+    with pytest.raises(work.BuilderRefused):
+        work.artifact_tree_declaration(ARTIFACT, "other")
+
+
+def test_a_check_dispatch_is_composed_from_its_inputs_alone():
+    job = work.artifact_use_job(ARTIFACT)
+    use = work.compose_check_dispatch("use", {"job": job, "head": "abc", "tree": "T"})
+    assert use.startswith(job) and use == work.compose_check_dispatch("use", {"job": job, "head": "abc", "tree": "T"})
+    criterion = work.artifact_criterion(ARTIFACT, "C2")
+    composed = work.compose_check_dispatch("acceptance-criterion", {
+        "criterion": criterion, "capability": "execute", "head": "abc", "tree": "T"}).decode("utf-8")
+    assert composed.startswith(work.CRITERION_PREAMBLE) and composed.endswith(criterion)
+    assert "Head: abc" in composed and "Capability: execute" in composed
+
+
+@pytest.mark.parametrize("extra, code", [
+    (["--dispatch", "job.md"], "builder-may-not-write-a-check's-instructions"),
+    (["--tree-metadata", "tree.json"], "stage-composes-its-own-tree"),
+    ([], "check-composition-not-built"),
+])
+def test_a_builder_supplies_no_use_dispatch_or_tree(holding, tmp_path, extra, code):
+    registry = work.registry_path()
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps({"schema_version": 1, "worktrees": [
+        {"root": str(tmp_path / "implementation"), "holder_root": str(tmp_path / "holder")}]}),
+        encoding="utf-8")
+    assert refused(arguments("run", "use", *extra, root=str(tmp_path / "holder"))) == code

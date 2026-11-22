@@ -11003,9 +11003,117 @@ def _enter_builder_mode(args: argparse.Namespace):
     _builder_stage(args)
     if args.command == "run":
         _builder_root(args, builder)
+        _builder_check_inputs(args)
     for name in launch_tree.VARIABLES:
         os.environ.pop(name, None)
     return _BUILDER.set(builder)
+
+
+# What a builder's checks read and are told comes from the settled artifact and the entrance, never
+# from the builder. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+CRITERION_PREAMBLE = (
+    "You are a fresh reader judging one acceptance criterion of a built change. Judge whether the "
+    "criterion below holds of the built result in the tree named here. Return pass, fail or unable, "
+    "with the evidence you read or ran. Change nothing.\n"
+)
+CRITERION_OPENING = re.compile(r"^[ 	]*(?:[-*+][ 	]+)?\*\*([A-Z][A-Za-z]*[0-9]+(?:\.[0-9]+)?)\.\*\*", re.M)
+HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
+FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
+FRESH_READER = re.compile(r"Fresh reader:\s*(read|execute)\s+(?:(tree)\b|consumer tree\s+([a-z0-9-]+))")
+TREE_DECLARATION_KEYS = {"mode", "paths", "loading_surfaces", "front_page", "root_instructions",
+                         "directed_paths", "exclusions", "deny_texts"}
+
+
+def _fenced_under(text: str, heading: str, code: str) -> str:
+    """The first fenced block directly under the one heading whose text is exactly ``heading``."""
+    lines = text.splitlines(keepends=True)
+    found = [index for index, line in enumerate(lines)
+             if (match := HEADING.match(line.rstrip("\r\n"))) and match.group(1) == heading]
+    if len(found) != 1:
+        raise BuilderRefused(code, f"the settled artifact carries {len(found)} headings {heading!r}; it must carry one")
+    index = found[0] + 1
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    opening = FENCE.match(lines[index]) if index < len(lines) else None
+    if opening is None:
+        raise BuilderRefused(code, f"no fenced block stands directly under the heading {heading!r}")
+    fence = opening.group(2)
+    body = []
+    for line in lines[index + 1:]:
+        if line.strip().startswith(fence[0] * len(fence)) and not line.strip().strip(fence[0]):
+            return "".join(body)
+        body.append(line)
+    raise BuilderRefused(code, f"the fenced block under {heading!r} never closes")
+
+
+def artifact_use_job(artifact: str) -> bytes:
+    """The use consumer's job: the fenced block under the settled artifact's `Use session job` heading."""
+    return _fenced_under(artifact, "Use session job", "artifact-use-job-absent").encode("utf-8")
+
+
+def artifact_criterion(artifact: str, identifier: str) -> str:
+    """A criterion's verbatim text: from its `**ID.**` opening to the next opening or heading."""
+    openings = list(CRITERION_OPENING.finditer(artifact))
+    own = [match for match in openings if match.group(1) == identifier]
+    if len(own) != 1:
+        raise BuilderRefused("artifact-criterion-unresolved",
+                             f"the settled artifact opens criterion {identifier} {len(own)} times")
+    start = own[0].start()
+    following = [match.start() for match in openings if match.start() > start]
+    following.extend(match.start() for match in re.finditer(r"^#{1,6}\s", artifact, re.M)
+                     if match.start() > start)
+    return artifact[start:min(following, default=len(artifact))].rstrip() + "\n"
+
+
+def criterion_reader(criterion: str) -> tuple[str, str | None]:
+    """(capability, consumer tree name or None for the change's own tree) a criterion's fresh reader needs."""
+    match = FRESH_READER.search(criterion)
+    if match is None:
+        raise BuilderRefused("criterion-owes-no-fresh-reader", "the criterion names no `Fresh reader:` line")
+    return match.group(1), match.group(3)
+
+
+def artifact_tree_declaration(artifact: str, name: str) -> dict[str, object]:
+    """A consumer tree declaration: one JSON object of create_consumer_tree's caller parameters."""
+    if not re.fullmatch(r"[a-z0-9-]+", name):
+        raise BuilderRefused("artifact-tree-declaration-unresolved", f"{name!r} is not a declaration name")
+    code = "artifact-tree-declaration-unresolved"
+    block = _fenced_under(artifact, f"Consumer tree declaration {name}", code)
+    try:
+        value = json.loads(block)
+    except ValueError as exc:
+        raise BuilderRefused(code, f"declaration {name} is not JSON: {exc}") from exc
+    if not isinstance(value, dict) or "mode" not in value or set(value) - TREE_DECLARATION_KEYS:
+        raise BuilderRefused(code, f"declaration {name} must be one object with `mode` and only "
+                             f"{', '.join(sorted(TREE_DECLARATION_KEYS))}")
+    return {"block_sha256": hashlib.sha256(block.encode("utf-8")).hexdigest(), **value}
+
+
+def compose_check_dispatch(stage: str, inputs: dict[str, object]) -> bytes:
+    """The one composer of a builder-mode use or criterion dispatch; the same inputs give the same bytes."""
+    head, tree = str(inputs["head"]), str(inputs["tree"])
+    if stage == "use":
+        return (bytes(inputs["job"]) + f"\n\nHead: {head}\nTree: {tree}\n".encode("utf-8"))
+    if stage == "acceptance-criterion":
+        return (CRITERION_PREAMBLE + f"\nCapability: {inputs['capability']}\nHead: {head}\n"
+                f"Tree: {tree}\n\nCriterion:\n\n{inputs['criterion']}").encode("utf-8")
+    raise WorkError(f"compose_check_dispatch: {stage} is composed elsewhere")
+
+
+def _builder_check_inputs(args: argparse.Namespace) -> None:
+    """In builder mode a check's instructions and tree are never the caller's."""
+    if args.command != "run" or args.stage not in ("use", "acceptance-criterion"):
+        return
+    if args.dispatch is not None:
+        raise BuilderRefused("builder-may-not-write-a-check's-instructions",
+                             f"run {args.stage} composes its dispatch from the settled artifact")
+    if args.tree_metadata is not None:
+        raise BuilderRefused("stage-composes-its-own-tree",
+                             f"run {args.stage} builds its tree from the settled artifact's declaration")
+    # Instalment 1 of #1011 has not built the in-run tree and report yet, so nothing launches.
+    raise BuilderRefused("check-composition-not-built",
+                         f"builder-mode run {args.stage} composes from the settled artifact, which this "
+                         "release does not yet do")
 
 
 def run(
