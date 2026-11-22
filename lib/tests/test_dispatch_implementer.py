@@ -2590,7 +2590,7 @@ def test_978_launcher_refusal_split_before_the_request_record(job, capsys):
     assert not implementer.records.sidecar(args.output, ".request.json").exists()
 
 
-# --- the stretch stage (#1011) -----------------------------------------------------------------
+# --- the stretch stage ------------------------------------------------------------------------
 
 STRETCH_SESSION = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
 

@@ -1,4 +1,4 @@
-"""Builder mode: which stretch launch holds a process, and what the entrance does inside one (#1011)."""
+"""Builder mode: which stretch launch holds a process, and what the entrance does inside one."""
 from __future__ import annotations
 
 import json
@@ -695,7 +695,7 @@ def test_a_cold_reader_bundle_is_recomposed_from_its_reading_record(holding, tmp
     assert work.builder_checks(state)["check_dispatches"][0]["status"] == status
 
 
-# --- D8: the checks a builder runs through the entrance, against its own launch comparison --------
+# --- the checks a builder runs through the entrance, against its own launch comparison ------------
 
 import launch_bound  # noqa: E402
 

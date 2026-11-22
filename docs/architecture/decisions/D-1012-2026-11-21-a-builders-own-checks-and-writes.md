@@ -16,12 +16,14 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **C2. The tree check reads a pointer directory, `stretch-launches/` in the store, rather than every request record.** Every entrance run, seat launch and record begin makes this check, and a working store holds thousands of bundles; reading them all would slow today's route, which this change must leave as it is. The pointer is written before the stretch's first comparison snapshot, and the comparison covers it as `own-pointer`, so removing or rewriting it is a launch finding, as the request record's would be. A pointer outlives its launch and reads as not live once its run record completes.
 - **C3. The root check alone reads the registry, and only reads it.** The plan's root rule names the registration, and the launcher isn't told the holder checkout. Identity and the stage table read no registry, so a refused stage still makes no registry or GitHub read.
 - **C4. `release` and `adopt` are refused to a builder; the read-only decision and `allowance` without a grant are open.** Both refused commands write the registration, which is the holder's.
-- **C5. A third variable, `TRADECRAFT_STRETCH_JOB`, names the job to the launch worker,** which drops it before the recipient starts. A seat launched directly with the stretch's other variables still set would otherwise find the stretch's job name taken.
+- **C5. A third variable, `TRADECRAFT_STRETCH_JOB`, names the job to the launch worker,** which drops it before the recipient starts. A seat launched directly with the stretch's other variables still set would otherwise find the stretch's job name taken. No keep-warm ping carries any of the three.
 - **C6. A check's tree origin is kept beside its sealed record, in `tree-origins/`,** rather than inside it, because the tree record's digest seals its fields.
 - **C7. The return frame travels on the seat launcher's stdout,** captured and forwarded by the entrance for builder-mode checks only. Today's route keeps the inherited-stream wait.
-- **C8. Refusals are ordered by their calls' places in the run's stream,** by tool-use id where a refusal carries one and by its command text otherwise.
-- **C9. A criterion whose fresh reader reads the change's own tree is not built here.** Its artifact declares a consumer tree for it instead, which every criterion this pull request's plan carries does.
-- **C10. A reading is recomposed from its reading record and the diff the record keeps beside it.** Regenerating the diff from the source is left for the second pull request; a builder that rewrote both the dispatch and the kept diff together is one of the routes the record and the holder's final pass catch.
+- **C8. One refused call is one entry in `refusals`, naming every source that reported it,** in its call's place in the run's stream. A call a bound refuses is also reported by Claude as a permission denial, and two entries for one call would count it twice. A refusal is placed by its tool-use id, or by its command or path read with either slash and in any case, because the file guard logs the resolved path and the call carries it as written.
+- **C9. The composed check takes today's use route's hold and synchronization, and prints its staffing plan,** but writes its own report rather than a stage decision's, because it launches one composed seat and has no recommendation to report.
+- **C10. A seat launch and a record begin follow the entrance's one session rule:** a present session that is not the launch's is refused, and `declared` is for an absent session variable only.
+- **C11. A posted report counts only from a configured marker producer,** because the entrance posts under that login and any other author's comment is a claim.
+- **C12. `work.py allowance stretch` prints the stretch sentence a holder-written dispatch carries,** though the entrance runs no `stretch` stage, because the launcher refuses a dispatch stating any other allowance.
 
 ## Rejected
 
@@ -30,6 +32,7 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **A tree stage the builder runs.** A tree the builder declares or names is something the seat reads.
 - **A check stage with no recomposition.** A dispatch the caller supplied, with every declared field forged, would count.
 - **Reading every request record for the tree check** (C2's reason).
+- **Recomposing a reading from the diff kept beside its record.** The kept diff sits in the store, which the builder's shell can write, so a dispatch and a kept diff rewritten together would recompose; the diff is regenerated from the source instead.
 
 ## Not this
 

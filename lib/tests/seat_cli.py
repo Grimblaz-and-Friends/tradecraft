@@ -60,7 +60,7 @@ capture = {"argv": flags, "cwd": str(Path.cwd()), "stdin": base64.b64encode(prom
 capture["pytest_addopts"] = os.environ.get("PYTEST_ADDOPTS")
 capture["background_switch"] = os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
 capture["command_ceiling"] = os.environ.get("BASH_MAX_TIMEOUT_MS")
-# A builder's launch names itself to its recipient; no other launch may (#1011).
+# A builder's launch names itself to its recipient; no other launch may.
 capture["stretch_variables"] = {name: value for name, value in os.environ.items()
                                 if name.startswith("TRADECRAFT_STRETCH_")}
 if vendor == "claude":
@@ -85,7 +85,7 @@ if vendor == "claude":
             for entry in scenario["guard_decisions"]:
                 stream.write((json.dumps(entry) + "\n").encode("utf-8"))
     if "github_decisions" in scenario:
-        # Stand in for the launch's GitHub command check (#1011): its refusals land in its own log.
+        # Stand in for the launch's GitHub command check: its refusals land in its own log.
         import re
         settings = json.loads(Path(flags[flags.index("--settings") + 1]).read_bytes())
         command = next(hook["command"] for entry in settings["hooks"]["PreToolUse"]

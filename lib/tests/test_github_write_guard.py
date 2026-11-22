@@ -1194,7 +1194,7 @@ def test_a_variable_assigned_on_the_line_is_judged_as_the_program_it_names(tree,
     assert decision(command, tree, "branch") == expected
 
 
-# --- a stretch builder's own change (#1011) -------------------------------------------------
+# --- a stretch builder's own change --------------------------------------------------------
 
 def stretch_config(root, pull_request=None):
     allowance = allowance_module.allowance_for(

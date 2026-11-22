@@ -78,7 +78,7 @@ def isolated_machine_home(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))
     # Automatic holder capture must never read a test runner's parent session.
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    # A builder's floor runs inside its own stretch launch; no test may be read as that builder's (#1011).
+    # A builder's floor runs inside its own stretch launch; no test may be read as that builder's.
     for variable in ("TRADECRAFT_STRETCH_DISPATCH", "TRADECRAFT_STRETCH_WORK", "TRADECRAFT_STRETCH_JOB"):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
