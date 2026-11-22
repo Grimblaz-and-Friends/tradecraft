@@ -11730,7 +11730,8 @@ def _run(
         return 0
     if getattr(args, "job_from_artifact", False) and (args.stage != "use" or builder_mode() is None):
         raise WorkError("--job-from-artifact applies only to a builder's run use")
-    if args.stage == "acceptance-criterion" or (args.stage == "use" and builder_mode() is not None):
+    if executor is execute_stage and (
+            args.stage == "acceptance-criterion" or (args.stage == "use" and builder_mode() is not None)):
         # A check composed from the settled artifact: the caller supplies neither its dispatch nor its tree.
         limit = args.timeout_seconds if args.timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
         return _builder_check(state, args, root, github, f"{limit:g}")

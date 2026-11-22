@@ -226,6 +226,24 @@ The line names a flag in that reading's account by its path, the `:lines` it giv
 
 **`clean`** counts only when a builder turn launched after the latest `open`, completed, and carried that comment in its frozen prompt, or when the holder's acceptances leave nothing standing or owed, in which case it need only be posted after that `open`; its head is the current head; every current change-set path's latest reading is current by its own blob and its dependencies' blobs and lists no unaccepted flag on that path or its dependencies; and no `Can tell: no` stands. A `Can tell: no` stands until a later reading covering the whole current change set says `Can tell: yes`. A `clean` failing any of these is listed as invalid, and the change stays held.
 
+## `check-report`
+
+```text
+<!-- tradecraft:check-report:v1 stage=STAGE dispatch=ID head=SHA dispatch_sha256=HEX tree=held|changed staffing_status=qualified|degraded [same_vendor_reason=R] [criterion=ID] outcome=OUTCOME -->
+```
+
+**Producer, surface and moment:** the entrance in builder mode, on the change's issue, inside the run that launched the check (`use`, `acceptance-criterion` or `cold-reader`) and before that run returns. The comment is the marker, a blank line, and the return taken from the seat launcher's own frame, or `No return was retained; see the bundle.` A builder's own shell is refused any comment carrying this marker.
+
+**What counts.** A report counts only when every one of these holds:
+
+- its `dispatch_sha256` is the digest of the dispatch the entrance recomposes for the bundle it names;
+- that bundle carries `launched_by` naming a `stretch` launch of this work;
+- its stage, head, staffing and outcome are the bundle's;
+- it says `tree=held`;
+- the store's copy of the return equals the posted text, byte for byte.
+
+Every other comment carrying the marker counts for nothing, and the entrance's `builder_checks` report lists it with its reasons (`store-and-posted-differ` where the two copies differ). A failed seat posts `outcome=error`, and a second launch posts a second report beside the first. The marker is informational: no gate reads it yet.
+
 ## `proof`
 
 - **Exact form:** `<!-- tradecraft:proof:v1 head=SHA -->` followed by the fenced version-one JSON object and its readable rendering.

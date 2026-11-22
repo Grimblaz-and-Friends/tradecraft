@@ -97,7 +97,7 @@ The comparison of a Claude launch (`launch_bound.py`) also reads, before and aft
 - Nearly every record names the default branch and other sessions move it, so it never holds, even when the record can't be read.
 - A copy can hold the only record of a helper's work and a branch can belong to another session, so cleanup is the owner's decision.
 
-**Decisions in force:** D-996, the comparison's allowance, inside which the record is read and matched; D-987, a launched Claude author or builder is told to keep helpers in its tree and refused any helper copy, and its comparison holds only on the working copies and branches its record names; D-939, the launch's file-tool guard and before-and-after comparison, which this section extends; D-911, the launch's instruction loading through `--add-dir`, which this section widens to every Claude launch.
+**Decisions in force:** D-1012, a stretch launch's run stands after a refusal it recovered from; D-996, the comparison's allowance, inside which the record is read and matched; D-987, a launched Claude author or builder is told to keep helpers in its tree and refused any helper copy, and its comparison holds only on the working copies and branches its record names; D-939, the launch's file-tool guard and before-and-after comparison, which this section extends; D-911, the launch's instruction loading through `--add-dir`, which this section widens to every Claude launch.
 
 ## The launch comparison's crediting and allowance
 
@@ -190,7 +190,7 @@ A builder in a stretch launch's tree is refused `tree` with or without options: 
 - Every record is written to a temporary file and then moved into place, so a partial record never stands.
 - This keeps the record out of the consumer's folder only. A consumer whose shell reaches the rest of the machine can still find the entrance's records, which is a separate exposure.
 
-**Decisions in force:** D-726, the entrance is the holder's instrument, which builds neutral, mode-declared, history-free consumer trees; D-736, a landed commit is a lawful consumer-tree source; D-968, a consumer tree keeps its record elsewhere.
+**Decisions in force:** D-726, the entrance is the holder's instrument, which builds neutral, mode-declared, history-free consumer trees; D-736, a landed commit is a lawful consumer-tree source; D-968, a consumer tree keeps its record elsewhere; D-1012, a builder's check tree is declared by the settled artifact and built in the run.
 
 ## The GitHub write bound
 
@@ -230,7 +230,7 @@ A builder in a stretch launch's tree is refused `tree` with or without options: 
 - A grant writes only to the work's own repository, because it answers a write the change's own step needs; nothing in the affirmed work provides for a grant to write anywhere else.
 - A use consumer with no shell, or in Codex's read-only sandbox, carries no check because it has no route to run a GitHub write; the shell-prefix check exists for the one that does.
 
-**Decisions in force:** D-986, dispatched sessions make only their step's GitHub writes.
+**Decisions in force:** D-986, dispatched sessions make only their step's GitHub writes; D-1012, a stretch builder's allowance and its tripwires.
 
 ## A builder's own checks and writes
 
@@ -247,8 +247,8 @@ A builder in a stretch launch's tree is refused `tree` with or without options: 
   - a command whose program, or whose `python`, `py`, `python3` or `uv run` script or module, is `dispatch_seat.py`, `dispatch_implementer.py` or `dispatch_record.py`. A command naming one only as data, such as `git add`, passes;
   - a comment or reply whose body, body file or fed text carries `tradecraft:check-report`;
   - every edit or deletion of a comment.
-- **A refusal leaves the run standing.** `_claude_result(…, refusals_stand=True)` lets a reported permission denial pass, and the file guard's denies no longer fail the turn. A completed call with no guard decision still fails it, and so does every other test. The run record's `refusals` lists the denials, the GitHub refusals and the file-guard denies, each with its `source`; `refusals_unknown` says a refusal log could not be read. Every other stage, every seat (`dispatch_seat.interpret`) and every Codex path still fails on a refusal.
-- **Its tree.** The launch exports `TRADECRAFT_STRETCH_DISPATCH` and `TRADECRAFT_STRETCH_WORK` to its recipient. It writes a pointer under the store's `stretch-launches/` naming the bundle, the work, the reserved session, the launcher's identity and the implementation root. On Windows the launch worker (`seat_process._worker`) names its kill-on-close job `Local\tradecraft-stretch-<dispatch id>` from `TRADECRAFT_STRETCH_JOB`, refuses a name that already exists, and drops the variable before the recipient starts. `launch_tree.stretch_holding` reads only those pointers, keeps the launches whose run isn't complete and whose launcher or recipient lives, and asks whether the current process is inside one:
+- **A refusal leaves the run standing.** `_claude_result(…, refusals_stand=True)` lets a reported permission denial pass, and the file guard's denies no longer fail the turn. A completed call with no guard decision still fails it, and so does every other test. The run record's `refusals` lists the denials, the GitHub refusals and the file-guard denies, each with its `source`, in the order their calls stand in the run's stream; `refusals_unknown` says a refusal log could not be read. Every other stage, every seat (`dispatch_seat.interpret`) and every Codex path still fails on a refusal.
+- **Its tree.** The launch exports `TRADECRAFT_STRETCH_DISPATCH` and `TRADECRAFT_STRETCH_WORK` to its recipient. Before its comparison's first snapshot it writes a pointer under the store's `stretch-launches/` naming the bundle, the work, the reserved session, the launcher's identity and the implementation root. The comparison covers the pointer as `own-pointer`, so a pointer removed or rewritten during the launch is a finding. A pointer outlives its launch and reads as not live once its run record completes. On Windows the launch worker (`seat_process._worker`) names its kill-on-close job `Local\tradecraft-stretch-<dispatch id>` from `TRADECRAFT_STRETCH_JOB`, refuses a name that already exists, and drops the variable before the recipient starts. `launch_tree.stretch_holding` reads only those pointers, keeps the launches whose run isn't complete and whose launcher or recipient lives, and asks whether the current process is inside one:
   - on Windows, by opening the named job and calling `IsProcessInJob`, which counts nested jobs;
   - on Linux, by walking `/proc` parents to the recipient or launcher, each matched with its start time;
   - on other POSIX systems, the same walk through `ps`.
@@ -257,7 +257,12 @@ A builder in a stretch launch's tree is refused `tree` with or without options: 
 - **Builder mode.** `work.py run` checks first, before any other read or write:
   1. **Identity.** A holding launch makes the run a builder's, whatever the variable says. The run is refused `builder-identity-unproved` when the variable is set but no launch holds it, when the holding launch isn't the one it names or is for other work, or when a present `CLAUDE_CODE_SESSION_ID` isn't the launch's session. `unknown` refuses `launch-tree-unknown` only with the variable set. With it unset the run is the holder's, and its first output names the bundle whose check failed.
   2. **The stage table.** A builder runs only `cold-reader`, `use`, `acceptance-criterion`, `proof`, `ready-reviewers` and `catch-up`, the read-only decision, and `allowance` without a grant. Everything else, `tree` with or without options and any grant included, is refused `stage-not-the-builders`.
-  3. **The root.** `--root` must be the holder checkout the registry names for the launch's implementation root, or the run is refused `builder-root-mismatch`.
+  3. **The root.** `--root` must be the holder checkout the registry names for the launch's implementation root, or the run is refused `builder-root-mismatch`. This check alone reads the registry, and only reads it; identity and the stage table read no registry and no GitHub.
+
+  | A builder may run | A builder is refused |
+  |---|---|
+  | `run cold-reader`, `run use --job-from-artifact`, `run acceptance-criterion --criterion ID`, `run proof`, `run ready-reviewers`, `run catch-up`, the read-only decision, `allowance` without a grant | `run artifact`, `cold-seat`, `build`, `floor`, `review-disposition`, `release-report`; `tree`; `release` and `adopt`, which write the holder's registration; any grant |
+
 
   The run then removes the stretch variables from its own environment, so nothing it starts names the launch.
 - **Who launched a seat.** `dispatch_seat.py` and `dispatch_record.py begin` call `launch_tree.attribution` before any bundle exists. Inside a holding launch's tree the request records `launched_by` (role, dispatch, session, and `identity` `proved` or `declared`) and `dispatch_origin`, which is `entrance` only when the entrance's flags say so and proves nothing. A flag that disagrees with the holding launch is ignored and recorded in `launched_by_ignored`. Outside every tree the record carries neither field, and the entrance's flags are refused there. `dispatch_implementer.py` refuses `a builder launches no implementer` inside a tree, or with the variable set.
@@ -266,7 +271,10 @@ A builder in a stretch launch's tree is refused `tree` with or without options: 
   - each criterion, from its `**ID.**` opening to the next opening or heading (`artifact_criterion`), with its `Fresh reader:` line (`criterion_reader`);
   - each consumer tree declaration, one JSON object of `create_consumer_tree`'s caller parameters under `Consumer tree declaration NAME` (`artifact_tree_declaration`).
 
-  `compose_check_dispatch` is their one composer. The in-run tree and the report the entrance posts from its own process are not built, so a builder-mode `use` or `acceptance-criterion` run refuses `check-composition-not-built` and launches nothing.
+  `compose_check_dispatch` is their one composer. A criterion read on the change's own tree, rather than a declared consumer tree, is not built yet.
+- **The check's tree, built in the run.** `run use --job-from-artifact` and `run acceptance-criterion` build their consumer tree from the settled artifact's declaration at the registered root's head, into `tradecraft-tree-<letters>` under the system temporary folder, a name with no digits, so no change number can appear in it. The tree's own record is sealed by its digest, so what declared it (the declaration's name, artifact comment and block digest) and which launch built it (`built_by`) are kept beside it, in the records' `tree-origins/`. When the seat returns, the tree is validated again; an edit, or a commit that moved the registered root, reads `tree=changed`. A reading tree gets the same second check (`cold_reader.tree_held`).
+- **The report, from the seat's own frame.** A builder-mode check runs `dispatch_seat.py --return-frame`, whose last stdout output is a header line (byte count and digest of the return, digest of the dispatch it gave the seat, outcome, staffing) and the return's bytes. The entrance captures and forwards that stdout, takes the return from the frame, never from the store, and posts one comment on the change's issue, `<!-- tradecraft:check-report:v1 … -->`, a blank line and the return (or `No return was retained; see the bundle.`), retrying up to three times. A run whose post never lands reports `check-report-unposted` and exits nonzero. `run cold-reader` frames and posts the same way in builder mode, and reads the account it checks from the frame.
+- **What counts.** Every entrance report that finds a builder's check bundle or a posted report carries `builder_checks`. `check_dispatches` says, for each check bundle carrying `launched_by`, whether its `.dispatch.bin` equals the dispatch recomposed from the current settled artifact and its tree record (`use` and criteria), or from its reading record, the entrance's standard and the diff the record keeps (`cold-reader`): `composed` or `differs`. `check_reports` says whether each posted report counts: its digest is the recomposed dispatch's, its bundle is a stretch builder's of this work, its stage, head, staffing and outcome are the bundle's, its tree held, and the store's return equals the posted text (`store-and-posted-differ` otherwise). No gate reads either yet.
 
 **Why.**
 
@@ -274,15 +282,18 @@ A builder in a stretch launch's tree is refused `tree` with or without options: 
 - A builder that carries the whole run will meet refusals, and failing its launch on one would throw away its ready report. A seat keeps the old rule, because a seat refused its commands that still reported success would pass a check it never ran.
 - A builder can clear a variable but cannot leave the tree its launcher holds, so the tree decides whose a process is. Today's route gains no refusal from a check that couldn't be made, because nothing on it is a stretch launch.
 - A check is independent only while the party it checks can't aim it or edit it. So the builder never writes a check's instructions or chooses what it reads, and a report it could post by hand would stand in for the entrance's.
+- The report is posted from the frame inside the run that launched the seat, because a post made later would read the return from the store, which the builder can write; comparing the store with the posted copy afterwards then shows an edit instead of letting it stand in for the report.
+- The tree check reads a pointer directory rather than every request record, because every entrance run and seat launch makes it, and reading thousands of bundles would slow today's route; the comparison's `own-pointer` item keeps the pointer as hard to remove unseen as the request record.
 - Everything here is a tripwire and a record, not a fence. The builder's shell runs as the same user as the entrance, the launchers and the store, so a script can do what the command check never sees:
   - call a launcher, or write a bundle and a comment;
-  - remove its stretch pointer, or point a run at another home;
+  - remove or rewrite its stretch pointer, which its launch comparison then reports, or point a run at another home;
+  - write a bundle, its kept diff and a matching comment together, or edit a check's tree and restore it before the seat returns;
   - ask a process already outside the tree to start one (Task Scheduler, WMI, `systemd-run`, `at`, a running `tmux` server);
   - on a POSIX system without a Linux subreaper, double-fork out of the tree.
 
   A process that leaves reads as the holder's. A judging seat's own processes are inside the tree: one whose session differs is refused, and one with no session variable reads `declared`, bounded by the seat's own sandbox and `--safe-mode`. The record (`launched_by`, `refusals`, the launch comparison) and the holder's final pass catch what is left.
 
-**Decisions in force:** D-986, dispatched sessions make only their step's GitHub writes, which this section widens for a stretch builder; D-987, a launched builder keeps its helpers in its tree; D-939, the launch's file-tool guard and comparison.
+**Decisions in force:** D-1012, a builder's own checks and writes; D-986, dispatched sessions make only their step's GitHub writes, which this section widens for a stretch builder; D-987, a launched builder keeps its helpers in its tree; D-939, the launch's file-tool guard and comparison.
 
 ## Pricing a run
 
