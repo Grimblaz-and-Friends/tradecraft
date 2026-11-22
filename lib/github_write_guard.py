@@ -167,7 +167,7 @@ class Context:
     piped: str = ""
     # A variable's value is being judged in program position, which is followed only once.
     expanding: bool = False
-    # The (redirection, target) pairs feeding this command's standard input.
+    # Kept so a comment body given on standard input is read as the comment GitHub will post.
     inputs: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -183,7 +183,7 @@ HEREDOC_WORD = "__tradecraft_heredoc_{}__"
 HEREDOC = re.compile(r"__tradecraft_heredoc_(\d+)__")
 # What a command substitution leaves in its word: its output, which the check never sees.
 SUBSTITUTION_WORD = "__tradecraft_substitution__"
-# Each redirection that feeds a command's standard input, whose target is its next word.
+# Their targets are read as a comment's body, which reaches gh on standard input.
 STDIN_REDIRECTS = {"<", "<>", "<<<", "<&"}
 DELIMITER = re.compile(r"[ \t]*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\?([^\s;&|<>()'\"]+))")
 
@@ -1483,20 +1483,20 @@ REPORT_MARKER = "tradecraft:check-report"
 REPORT_REFUSED = ("a comment carrying tradecraft:check-report, which only the entrance posts from "
                   "the run that launched the check")
 EDIT_REFUSED = "editing or deleting a comment, which keeps a posted report as the entrance posted it"
-PYTHON_PROGRAMS = {"python", "py", "python3"}
-# A versioned or windowless interpreter (`python3.12`, `pythonw`, `pyw`) runs a script the same way.
+# Every name Python runs a script under: a versioned or windowless interpreter (`python3.12`,
+# `pythonw`, `pyw`) runs one as `python` and `py` do.
 PYTHON_NAME = re.compile(r"pythonw?(?:\d+(?:\.\d+)*)?|pyw?")
 
 
 def _is_python(name: str) -> bool:
-    return name in PYTHON_PROGRAMS or PYTHON_NAME.fullmatch(name) is not None
+    return PYTHON_NAME.fullmatch(name) is not None
 
 
 # Python's long options that take the next word as their value; any other long option takes none.
 PYTHON_VALUE_OPTIONS = {"--check-hash-based-pycs"}
 # Python's short options that take a value, from the rest of their word or else the next word.
 PYTHON_VALUE_LETTERS = set("XWQ")
-# Modules that run a script or module named among their own arguments.
+# A launcher given to one of these runs as it would under its own name.
 MODULE_RUNNERS = {"cProfile", "profile", "pdb", "trace", "runpy", "coverage"}
 # No label, reviewer or assignee: the reviewer label is `ready-reviewers`' write, not the builder's.
 PR_CREATE_OPTIONS = {"--fill", "-f", "--title", "-t", "--body", "-b", "--body-file", "-F",

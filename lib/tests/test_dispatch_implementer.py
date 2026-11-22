@@ -2864,3 +2864,23 @@ def test_1011_a_stretch_launch_is_told_its_refusals_are_recorded_and_others_keep
     assert "a refused call fails this turn" in implementer.LAUNCH_HELPER_RULE
     assert "a refused call fails this turn" not in implementer.STRETCH_HELPER_RULE
     assert "in this stretch launch the turn goes on" in implementer.STRETCH_HELPER_RULE
+
+
+@pytest.mark.parametrize("registered, refused", [
+    ({"repository": "o/r", "issue": 6, "branch": "tradecraft/5-ab"}, True),
+    ({"repository": "o/r", "issue": 5, "branch": "tradecraft/5-other"}, True),
+    ({"repository": "o/elsewhere", "issue": 5, "branch": "tradecraft/5-ab"}, True),
+    ({"repository": "O/R", "issue": 5, "branch": "tradecraft/5-ab"}, False),
+])
+def test_1011_a_registered_root_launches_a_stretch_only_for_its_own_work(job, monkeypatch, registered, refused):
+    args = stretch_job(job, monkeypatch, DENIED_SUCCESS)
+    registry = implementer.launch_bound.registry_path(Path.home())
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(json.dumps({"schema_version": 1, "worktrees": [
+        {"root": str(args.root), "active": True, **registered}]}), encoding="utf-8")
+    if refused:
+        with pytest.raises(implementer.ImplementerError, match="is registered to"):
+            implementer.run_implementer(args)
+        assert not implementer.records.sidecar(args.output, ".request.json").exists()
+    else:
+        implementer._require_own_registration(Path(args.root).resolve(), args.work, args.lineage_branch)

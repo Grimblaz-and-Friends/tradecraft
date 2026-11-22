@@ -522,8 +522,8 @@ def composed(holding, check_source, tmp_path, monkeypatch):
     monkeypatch.setattr(work, "_producer_vendor", lambda *a, **k: pytest.fail("read a completed producer bundle"))
     monkeypatch.setattr(work, "_launch_account_refusal", lambda state, stage: seen.get("account"))
     monkeypatch.setattr(work, "_version_refusal", lambda state, decision, *a: seen.get("version"))
-    request = tmp_path / "stretch.request.json"
-    request.write_text(json.dumps({"stage": "stretch", "vendor": "claude"}), encoding="utf-8")
+    from comparison_window import held_builder, stretch_launch
+    launch = stretch_launch(tmp_path / "launch-store", root=check_source, session_id=SESSION)
     monkeypatch.setattr(work, "_seat_launch_arguments", lambda *a, **k: [])
     monkeypatch.setattr(work, "_held_by_cold_reading", lambda *a, **k: False)
     monkeypatch.setattr(work, "_synchronization_decision", lambda state: seen.get("sync"))
@@ -553,8 +553,7 @@ def composed(holding, check_source, tmp_path, monkeypatch):
                        behaviour["outcome"], digest], timeout=60, cleanup_deadline=None).returncode
 
     monkeypatch.setattr(work, "_invoke_recipient", recipient)
-    work._BUILDER.set({"dispatch_id": "a" * 32, "session_id": SESSION, "identity": "declared",
-                       "root": str(check_source), "request": str(request)})
+    work._BUILDER.set(held_builder(launch))
     yield state, behaviour, seen
     work._BUILDER.set(None)
 
@@ -1065,7 +1064,8 @@ def test_a_reader_that_writes_beside_its_tree_holds_and_inside_it_reads_changed(
     assert "tree=held" in transport.posts[0][1]
     assert (seen["tree"].parent / "probe-evidence.txt").is_file()
     told = seen["dispatch"].decode()
-    assert f"write anything you make in {seen['tree'].parent}" in told and "-B" in told
+    assert f"Write what you make in {seen['tree'].parent}" in told and "with shell commands" in told
+    assert "session scratchpad for file-tool writes" in told and "write nothing in it" in told and "-B" in told
     assert seen["tree"].parent.name.startswith("tradecraft-check-")
     behaviour["edit"] = True
     run_check(state, "use", "--job-from-artifact", transport=transport)

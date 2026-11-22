@@ -36,6 +36,7 @@ The brief has seven rows. This pull request carries rows 1, 3 and 5, the builder
 - **C20. The return frame is the first one whose byte count reaches the end of the launcher's output,** so a return holding a frame of its own is read as return bytes.
 - **C21. A check's tree sits in a folder of its own, which is its reader's working space,** and the second check stays whole: a reader that runs commands writes beside its tree, so an honest execute check can keep the tree it is judged on, and one that writes into it reads `tree=changed`.
 - **C22. A report too large for a GitHub comment is posted as its marker and its size, and doesn't count,** rather than retried, because GitHub would refuse every attempt; the composed dispatch bounds the return so an honest reader stays under the limit.
+- **C23. A stretch launch on a registered root is for that root's own work:** the root's active registration must name the launch's repository, issue and branch, because the allowance is armed from `--work` and would otherwise name another change. A root with no registration launches as it is, which the plan's throwaway live launch needs.
 
 ## Rejected
 

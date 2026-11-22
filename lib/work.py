@@ -11177,9 +11177,10 @@ def _check_conditions(tree: str, capability: str) -> str:
     """What a check's reader is told of its tree and its return; the folder around the tree is its working space."""
     lines = [f"Return at most {CHECK_RETURN_BYTES:,} UTF-8 bytes."]
     if capability == "execute":
-        lines.insert(0, f"The tree must stay as built: write anything you make in {Path(tree).parent}, the folder "
-                        "around it, run Python with -B, and know that a tree found changed when you return "
-                        "doesn't count.")
+        lines.insert(0, f"The tree must stay as built: write nothing in it. Write what you make in "
+                        f"{Path(tree).parent}, the folder around it, with shell commands, use your session "
+                        "scratchpad for file-tool writes, and run Python with -B. A tree found changed when "
+                        "you return doesn't count.")
     return "\n".join(lines) + "\n"
 
 
@@ -11214,7 +11215,7 @@ TREE_NAME_LETTERS = str.maketrans("0123456789", "ghijklmnop")
 REPORT_MARKER = "tradecraft:check-report:v1"
 NO_RETURN_LINE = "No return was retained; see the bundle."
 REPORT_POST_ATTEMPTS = 3
-# GitHub refuses a comment over 262,144 bytes of UTF-8; a check's return is bounded below it, as the
+# GitHub refuses a larger comment, counted in UTF-8 bytes; a check's return is bounded below it, as the
 # artifact stage's is, leaving room for the marker.
 COMMENT_LIMIT_BYTES = 262_144
 CHECK_RETURN_BYTES = 240_000
@@ -11368,7 +11369,7 @@ def _holding_launch_vendor(builder: dict) -> tuple[str, str]:
     """The builder's vendor, from its own launch's request record: a first launch has no completed bundle."""
     request = builder.get("request")
     try:
-        vendor = json.loads(Path(str(request)).read_bytes()).get("vendor")
+        vendor = (json.loads(Path(str(request)).read_bytes()).get("requested") or {}).get("vendor")
     except (OSError, ValueError, AttributeError) as exc:
         raise WorkError(f"the holding stretch launch's request {request} could not be read: {exc}") from exc
     if vendor not in ("claude", "codex"):
@@ -11433,8 +11434,6 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
     launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
                                **dispatch_seat.fallback_plan("claude", own_vendor, capability),
                                "comparison_vendor_source": own_vendor_source}
-    if tree_name is not None:
-        artifact_tree_declaration(artifact, tree_name)
     if tree_name is None:
         consumer_root, metadata, reading = _change_tree(state, source, head, resolved[1])
         held_now = lambda: cold_reader.tree_held(reading, source)  # noqa: E731

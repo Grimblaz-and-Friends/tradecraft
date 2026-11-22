@@ -159,7 +159,7 @@ def instruction_shim_plan(tree: Path, git_dir: Path | None) -> list[tuple[Path |
     return candidates
 
 
-# A stretch builder's refused call is recorded and its turn goes on (lib/dispatch_lifecycle.py STRETCH_REFUSAL).
+# A stretch builder's turn stands after a refusal it recovered from, so its instruction file says so.
 STRETCH_HELPER_RULE = LAUNCH_HELPER_RULE.replace(
     "and a refused call fails this turn.",
     "and the refusal is recorded; in this stretch launch the turn goes on.")
@@ -526,6 +526,27 @@ def _require_lineage_branch(root: Path, branch: str) -> None:
                                f"({current or 'none'})")
 
 
+def _require_own_registration(root: Path, work: str, branch: str) -> None:
+    """A root registered to one change launches a stretch only for that change, so its allowance names no other.
+
+    A root with no active registration launches as it is, as a throwaway repository does.
+    """
+    path = launch_bound.registry_path(Path.home())
+    rows = launch_bound._registry_rows(path)
+    if rows is None:
+        raise ImplementerError(f"the implementation registry {path} could not be read")
+    target = os.path.normcase(str(root.resolve()))
+    for row in rows:
+        if row.get("active") is not True or not isinstance(row.get("root"), str):
+            continue
+        if os.path.normcase(str(Path(row["root"]).resolve())) != target:
+            continue
+        registered = (str(row.get("repository") or "").casefold(), row.get("issue"), row.get("branch"))
+        if registered != (github_allowance.repository_of(work).casefold(), github_allowance.issue_of(work), branch):
+            raise ImplementerError(f"{root} is registered to {row.get('repository')}#{row.get('issue')} on "
+                                   f"{row.get('branch')}, not {work} on {branch}")
+
+
 def _spelling(text: str) -> str:
     """A path or command as a match reads it: a guard logs the resolved path, the call the written one."""
     return text.replace("\\", "/").casefold()
@@ -724,6 +745,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         raise ImplementerError(f"root is not a directory: {root}")
     if args.stage == STRETCH:
         _require_lineage_branch(root, args.lineage_branch)
+        _require_own_registration(root, args.work, args.lineage_branch)
     prompt = dispatch.read_bytes()
     if not prompt.decode("utf-8").strip():
         raise ImplementerError(f"dispatch is empty: {dispatch}")
