@@ -687,3 +687,70 @@ def test_a_cold_reader_bundle_is_recomposed_from_its_reading_record(holding, tmp
                  {"outcome": "success"}, {".dispatch.bin": dispatch})
     state = SimpleNamespace(repo="o/r", issue_number=5, record_root=store, issue_comments=[])
     assert work.builder_checks(state)["check_dispatches"][0]["status"] == status
+
+
+# --- D8: the checks a builder runs through the entrance, against its own launch comparison --------
+
+import launch_bound  # noqa: E402
+
+
+def test_a_builders_composed_checks_leave_its_launch_comparison_clean(composed, check_source, tmp_path):
+    """Use and criterion checks build trees, records and seat bundles between the stretch's two snapshots."""
+    state, _behaviour, seen = composed
+    home = Path.home()
+    store = home / ".tradecraft" / "dispatches"
+    holder = tmp_path / "holder"
+    (holder / ".git").mkdir(parents=True)
+    (holder / "tracked.txt").write_bytes(b"x")
+    registry = work.registry_path()
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(json.dumps({"schema_version": 1, "worktrees": [
+        {"root": str(check_source), "holder_root": str(holder), "active": True}]}), encoding="utf-8")
+    own = write_bundle(store, "stretch", {"dispatch_id": "a" * 32, "stage": "stretch"})
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    plan = launch_bound.coverage_plan(root=check_source, home=home, env={}, launcher_plugin=plugin,
+                                      store=store, own_request=work.records.sidecar(own, ".request.json"))
+    before_at = launch_bound.now()
+    before = launch_bound.snapshot(plan, seconds=60, own_output=own)
+    for words in (("use", "--job-from-artifact"), ("acceptance-criterion", "--criterion", "C2")):
+        run_check(state, *words, transport=PostingTransport())
+        # The bundle its seat launcher writes, beside the trees and records the entrance wrote.
+        write_bundle(store, uuid.uuid4().hex, {
+            "dispatch_id": uuid.uuid4().hex, "stage": words[0], "root": str(seen["tree"]),
+            "launched_by": {"dispatch_id": "a" * 32}}, {"outcome": "success", "completed_at": "t"},
+            {".dispatch.bin": seen["dispatch"], ".source.bin": b"x"})
+    state.record_root, state.issue_comments = store, []
+    work.builder_checks(state)
+    after = launch_bound.snapshot(plan, seconds=60, own_output=own, before=before)
+    result = launch_bound.compare(plan, before, after, root=check_source, holder_session_id=None,
+                                  store=store, own_dispatch="a" * 32, before_at=before_at,
+                                  after_at=launch_bound.now(), elapsed_seconds=1.0)
+    assert result["findings"] == [], result["findings"]
+
+
+@pytest.mark.parametrize("change", ["removed", "rewritten"])
+def test_a_stretch_pointer_removed_or_rewritten_during_its_launch_is_a_finding(tmp_path, monkeypatch, change):
+    home = tmp_path / "home"
+    store = home / ".tradecraft" / "dispatches"
+    store.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    root = tmp_path / "root"
+    root.mkdir()
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    dispatch_id = uuid.uuid4().hex
+    pointer_path = launch_tree.write_pointer(store, dispatch_id=dispatch_id, work="o/r#5",
+                                             request=store / "x.request.json", run=store / "x.run.json",
+                                             session_id="s", launcher=lifecycle.process_identity(), root=root)
+    comparison = launch_bound.Comparison(root=root, env={}, launcher_plugin=plugin,
+                                         own_output=store / "x", own_request=store / "x.request.json",
+                                         holder_session_id=None, dispatch_id=dispatch_id,
+                                         own_pointer=pointer_path)
+    comparison.take_before(60)
+    if change == "removed":
+        pointer_path.unlink()
+    else:
+        pointer_path.write_text("{}", encoding="utf-8")
+    result = comparison.finish(60)
+    assert [finding["item"] for finding in result["findings"]] == ["own-pointer"]

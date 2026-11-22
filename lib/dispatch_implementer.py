@@ -958,11 +958,21 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 write_guard_log = Path(intent["write_guard"]["log"])
                 args.stretch_guard_log = write_guard_log
                 comparison_error = None
+                pointer = None
+                if args.stage == STRETCH:
+                    # Where the tree check reads which stretch launches may hold a process; written
+                    # before the comparison's first snapshot, so its removal or rewrite is held.
+                    pointer = launch_tree.write_pointer(
+                        records.default_record_root(), dispatch_id=dispatch_id, work=args.work,
+                        request=request_path, run=record_path,
+                        session_id=args.resume or args.session_id,
+                        launcher=lifecycle.process_identity(), root=root)
                 try:
                     comparison = launch_bound.Comparison(
                         root=root, env=child_env, launcher_plugin=Path(__file__).resolve().parent.parent,
                         own_output=output, own_request=request_path,
-                        holder_session_id=args.holder_session_id, dispatch_id=dispatch_id, refs=True)
+                        holder_session_id=args.holder_session_id, dispatch_id=dispatch_id, refs=True,
+                        own_pointer=pointer)
                 except (OSError, ValueError, TypeError) as exc:
                     comparison, comparison_error = None, f"coverage could not be planned: {exc}"
                 request["write_bound"] = {
@@ -1175,13 +1185,6 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     attempt["pre_spawn_seconds"], attempt["pre_spawn_parts"] = scope.since(mark)
                     args.preparation_timer.close()
                     process_started = True
-                    if args.stage == STRETCH:
-                        # Where the tree check reads which stretch launches may hold a process.
-                        launch_tree.write_pointer(
-                            records.default_record_root(), dispatch_id=dispatch_id, work=args.work,
-                            request=request_path, run=record_path,
-                            session_id=args.resume or args.session_id,
-                            launcher=lifecycle.process_identity(), root=root)
                     result = run_process(command, input=native.input if native else effective_prompt, cwd=root, timeout=allocation,
                                          env=child_env,
                                          on_output=capture, on_tick=checkpoint,

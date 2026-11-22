@@ -12932,3 +12932,24 @@ def test_983_a_launch_that_raises_discards_its_pending_keep_warm(tmp_path, monke
     (command, _present), = launches
     assert started == ["discard:" + command[command.index("--keep-warm-token") + 1]]
 
+
+
+def test_1011_C16_a_builders_ready_reviewers_writes_only_to_its_own_change(capsys):
+    config = work.WorkConfig(connected_reviewers=frozenset({REVIEWER}),
+                             marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers")
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, config=config)
+    fixture.pr["node_id"] = "PR_fixture"
+    work.validate_marker_claims(fixture)
+    transport = ReadyTransport()
+    token = work._BUILDER.set({"role": "builder", "dispatch_id": "a" * 32, "identity": "declared"})
+    try:
+        assert work._execute_ready_reviewers(transport, fixture, RULES, None, None) == 0
+    finally:
+        work._BUILDER.reset(token)
+    capsys.readouterr()
+    own = f"repos/{fixture.repo}/issues/{fixture.pr['number']}/"
+    for kind, target, payload in transport.operations:
+        if kind == "label":
+            assert target.startswith(own)
+        else:
+            assert payload == {"id": "PR_fixture"} or "PR_fixture" in json.dumps(payload)

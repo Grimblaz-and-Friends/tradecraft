@@ -1265,7 +1265,7 @@ class Comparison:
     def __init__(self, *, root: Path, env: dict[str, str] | None, launcher_plugin: Path,
                  own_output: Path, own_request: Path, holder_session_id: str | None,
                  dispatch_id: str, home: Path | None = None, store: Path | None = None,
-                 refs: bool = False):
+                 refs: bool = False, own_pointer: Path | None = None):
         import dispatch_record as records
         self.root, self.own_output, self.dispatch_id = Path(root), Path(own_output), dispatch_id
         self.holder_session_id = holder_session_id
@@ -1275,6 +1275,10 @@ class Comparison:
                                   env=dict(os.environ if env is None else env),
                                   launcher_plugin=launcher_plugin, store=self.store,
                                   own_request=own_request, refs=refs)
+        if own_pointer is not None:
+            # A stretch launch's pointer is what its tree check reads, so removing or rewriting it is
+            # held as the request record's would be. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+            self.plan.append({"item": "own-pointer", "path": str(own_pointer), "method": "sha256"})
         self.before = None
         self.before_at = None
         self.started = None
