@@ -9,6 +9,7 @@ A Claude author or builder can write, and so can a use consumer given a shell. E
 - the machine implementer switch and the model rulings file;
 - the owner's Claude settings, the owner's always-loaded `CLAUDE.md` and the installed plugins;
 - the implementation worktree registry, the dispatch store's completed run records and the run's own request record;
+- a `stretch` launch's own pointer under the store's `stretch-launches/`, as `own-pointer`, so a pointer removed or rewritten during the launch is a finding;
 - every checkout an active registration names, holder checkouts included, each registered repository's main clone, and the launcher's own plugin root when no covered checkout is that root.
 - each covered repository's working copies and local branches, with each one's tip: the run's own repository and every covered checkout's.
 

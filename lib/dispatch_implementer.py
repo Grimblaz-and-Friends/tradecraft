@@ -593,11 +593,25 @@ def _stream_calls(stream: bytes) -> list[tuple[str | None, list[str]]]:
             if block.get("type") == "tool_use"]
 
 
+def _earliest(*times: object) -> str | None:
+    """The earliest of ISO-8601 times as written; a report with no readable time adds none."""
+    read = []
+    for text in times:
+        try:
+            moment = datetime.fromisoformat(text) if isinstance(text, str) else None
+        except ValueError:
+            moment = None
+        if moment is not None:
+            read.append((moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc), text))
+    return min(read)[1] if read else None
+
+
 def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> None:
     """One entry per refused call, in stream order, naming every source that reported it.
 
     A call the GitHub bound or the file guard refuses is also reported by Claude as a permission
-    denial, so the two reports of one call are one entry. The run stands after them.
+    denial, so the two reports of one call are one entry, at the earliest time any of them gives;
+    Claude's denial gives none. The run stands after them.
     """
     found: list[dict[str, object]] = []
     for refusal in record.get("github_write_refusals") or ():
@@ -607,12 +621,13 @@ def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> 
     for refusal in (record.get("write_guard") or {}).get("refusals") or ():
         found.append({"source": "file-write-guard", "tool": refusal.get("tool"),
                       "command": refusal.get("canonical") or refusal.get("raw"),
-                      "reason": refusal.get("reason"),
+                      "reason": refusal.get("reason"), "at": refusal.get("at"),
                       "texts": [refusal.get("raw"), refusal.get("canonical")]})
     for denial in attempt.get("permission_denials") or ():
         found.append({"source": "permission-denial",
                       "tool": denial.get("tool_name") if isinstance(denial, dict) else None,
-                      "reason": "Claude reported a tool permission denial", "denial": denial})
+                      "reason": "Claude reported a tool permission denial",
+                      "at": denial.get("at") if isinstance(denial, dict) else None, "denial": denial})
     calls = _stream_calls(getattr(args, "stretch_stream", b"") or b"")
     merged: dict[int, dict[str, object]] = {}
     unplaced: list[dict[str, object]] = []
@@ -626,6 +641,7 @@ def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> 
     for index, entry in enumerate(found):
         position = positions[index]
         entry.pop("texts", None)
+        entry["at"] = _earliest(entry["at"])
         if position == len(calls):
             unplaced.append({**entry, "sources": [entry["source"]]})
             continue
@@ -636,6 +652,7 @@ def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> 
         # why, comes before Claude's denial, which says only that a call was denied.
         held = merged[position]
         held["sources"].append(entry["source"])
+        held["at"] = _earliest(held["at"], entry["at"])
         if "denial" in entry:
             held["denial"] = entry["denial"]
     record["refusals"] = [merged[position] for position in sorted(merged)] + unplaced

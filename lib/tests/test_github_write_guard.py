@@ -1458,6 +1458,53 @@ def test_a_stretch_builder_may_post_a_body_the_check_can_read(bodies, command):
     assert verdict["decision"] == "allow", verdict["reason"]
 
 
+def _reply_document(body):
+    return ('mutation{addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:"T12",body:"%s"})'
+            '{clientMutationId}}' % body)
+
+
+@pytest.mark.parametrize("document, reason", [
+    (_reply_document("<!-- tradecraft:check-report:v1 stage=use -->"), "tradecraft:check-report"),
+    (_reply_document("<!-- \\u0074radecraft:check-report:v1 -->"), "tradecraft:check-report"),
+    (_reply_document("<!-- tradecraft:send-back:v1 -->"), "tradecraft:send-back"),
+    ('mutation{updateIssueComment(input:{id:"C",body:"x"}){clientMutationId}}', "updateIssueComment"),
+    ('mutation{deleteIssueComment(input:{id:"C"}){clientMutationId}}', "deleteIssueComment"),
+    ('mutation{deletePullRequestReviewComment(input:{id:"C"}){clientMutationId}}',
+     "deletePullRequestReviewComment"),
+])
+def test_1011_a_stretch_builders_graphql_query_file_is_read_as_its_inline_query_is(stretch, document, reason):
+    (stretch / "q.graphql").write_text(document, encoding="utf-8")
+    verdict = stretch_decision("gh api graphql -F query=@q.graphql", stretch)
+    assert verdict["decision"] == "deny"
+    assert reason in verdict["reason"]
+
+
+@pytest.mark.parametrize("name", ["folder", "missing.graphql"])
+def test_1011_a_graphql_query_file_that_is_not_a_readable_regular_file_is_refused(stretch, name):
+    (stretch / "folder").mkdir()
+    assert stretch_decision(f"gh api graphql -F query=@{name}", stretch)["decision"] == "deny"
+
+
+def test_1011_a_stretch_builders_graphql_query_file_holding_its_own_thread_reply_passes(stretch):
+    (stretch / "q.graphql").write_text(_reply_document("plain"), encoding="utf-8")
+    verdict = stretch_decision("gh api graphql -F query=@q.graphql", stretch)
+    assert verdict["decision"] == "allow", verdict["reason"]
+
+
+@pytest.mark.parametrize("command", [
+    "gh issue comment 5 --body-file send-back.md",
+    "gh pr comment 12 --body '<!-- tradecraft:send-back:v1 -->'",
+    "gh api -X POST repos/o/r/issues/5/comments -F body=@send-back.md",
+    _mutation("addPullRequestReviewThreadReply",
+              'pullRequestReviewThreadId:"T12",body:"<!-- tradecraft:send-back:v1 -->"'),
+])
+def test_1011_a_stretch_builder_is_refused_a_send_back_marker(stretch, command):
+    (stretch / "send-back.md").write_text("<!-- tradecraft:send-back:v1 -->\nx\n", encoding="utf-8")
+    verdict = stretch_decision(command, stretch)
+    assert verdict["decision"] == "deny"
+    assert "tradecraft:send-back" in verdict["reason"]
+
+
 # Digits str.isdigit() takes but int() or a path pattern refuses, built here so the file stays ASCII.
 SUPERSCRIPT_TWO = chr(0xB2)
 ARABIC_INDIC_THREE = chr(0x663)

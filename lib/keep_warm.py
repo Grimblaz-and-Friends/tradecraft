@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import holder_transcript as transcripts  # noqa: E402
 import implementer_environment as environments  # noqa: E402
 import change_cost  # noqa: E402
+import detached  # noqa: E402
 import run_lifecycle as lifecycle  # noqa: E402
 import launch_tree  # noqa: E402
 from winio import utf8_stdio  # noqa: E402
@@ -97,7 +98,6 @@ STRETCH_ENV_NAMES = launch_tree.VARIABLES
 # The launch strips these inherited plugin directories from its child, so their
 # absence is the launch's own change, not a foreign one.
 REMOVABLE_ENV_NAMES = ("CLAUDE_CODE_PLUGIN_DIR", "CLAUDE_CODE_PLUGIN_DIRS")
-STARTER_SECONDS = 30
 GH_SECONDS = 30
 UNREADABLE_RETRY_SECONDS = 60
 # A starter that never produced a runner process is gone after this long.
@@ -493,57 +493,17 @@ def runner_command(directory: Path, python: str | None = None) -> list[str]:
             "--state", str(directory)]
 
 
-def _windows_spawn(argv: list[str], cwd: Path, env: dict[str, str]) -> int:
-    """Create the runner through WMI, outside every job; the environment goes in memory.
-
-    WMI's Win32_Process.Create makes a process no caller's kill-on-close job
-    holds, where a breakaway from the launcher's job is refused. The
-    environment travels on PowerShell's stdin, never a command line or file.
-    """
-    script = (
-        "$ErrorActionPreference='Stop';"
-        "$in=[Console]::In.ReadToEnd()|ConvertFrom-Json;"
-        "$vars=[string[]]@($in.env.PSObject.Properties|ForEach-Object{$_.Name+'='+$_.Value});"
-        "$startup=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly "
-        "-Property @{ShowWindow=[uint16]0;EnvironmentVariables=$vars};"
-        "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
-        "@{CommandLine=$in.cmd;CurrentDirectory=$in.dir;ProcessStartupInformation=$startup};"
-        "if($r.ReturnValue -ne 0){[Console]::Error.WriteLine('Win32_Process.Create returned '+$r.ReturnValue);exit 1};"
-        "[Console]::Out.WriteLine($r.ProcessId)"
-    )
-    payload = json.dumps({"cmd": subprocess.list2cmdline(argv), "dir": str(cwd), "env": env},
-                         ensure_ascii=True).encode("ascii")
-    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                            input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            timeout=STARTER_SECONDS, creationflags=CREATE_NO_WINDOW)
-    if result.returncode != 0:
-        raise KeepWarmError("WMI start failed: " + result.stderr.decode("utf-8", "replace").strip()[:1000])
-    return int(result.stdout.decode("ascii", "replace").strip().splitlines()[-1])
-
-
-DETACH = ("import subprocess,sys;"
-          "subprocess.Popen(sys.argv[2:],cwd=sys.argv[1],stdin=subprocess.DEVNULL,"
-          "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)")
-
-
-def _posix_spawn(argv: list[str], cwd: Path, env: dict[str, str]) -> int:
-    """The standard double fork: an intermediate child in a new session starts the runner and exits.
-
-    The runner is then reparented to the nearest subreaper, the entrance
-    itself once its own cleanup has run, so a later cleanup's baseline holds it.
-    """
-    intermediate = subprocess.Popen([sys.executable, "-B", "-c", DETACH, str(cwd), *argv],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, close_fds=True, env=env,
-                                    start_new_session=True)
-    code = intermediate.wait(timeout=STARTER_SECONDS)
-    if code != 0:
-        raise KeepWarmError(f"runner starter exited {code}")
-    return 0
+# The detached starters are shared with the builder route; keep-warm keeps its own names.
+_windows_spawn = detached.windows_spawn
+_posix_spawn = detached.posix_spawn
+DETACH = detached.DETACH
 
 
 def spawn(argv: list[str], cwd: Path, env: dict[str, str]) -> int:
-    return (_windows_spawn if WINDOWS else _posix_spawn)(argv, cwd, env)
+    try:
+        return (_windows_spawn if WINDOWS else _posix_spawn)(argv, cwd, env)
+    except detached.DetachError as exc:
+        raise KeepWarmError(str(exc)) from exc
 
 
 def start_runner(directory: Path, env: dict[str, str] | None = None, *, spawner=None) -> bool:

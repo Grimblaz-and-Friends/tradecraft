@@ -5,8 +5,9 @@ Usage (a PreToolUse command hook the launcher supplies in its own settings):
     python <plugin-root>/lib/tree_write_guard.py --config FILE
 
 The config names the canonical tree, the session scratchpad and the decision
-log. Every decision, allow or deny, is appended to that log so the launcher can
-prove afterwards that each completed file-tool call was checked (#906).
+log. Every decision, allow or deny, is appended to that log with its UTC time
+in `at`, so the launcher can prove afterwards that each completed file-tool
+call was checked and say when a refusal happened (#906).
 
 It also refuses a helper or a session move into a separate working copy, which
 the runtime places outside the tree.
@@ -15,6 +16,7 @@ Design: lib/DESIGN.md#the-launchs-working-copies-and-branches
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -288,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         # Fail closed, as the holder guard does: an unevaluated call is refused.
         entry = {**entry, "decision": "deny",
                  "reason": f"launch write bound could not evaluate this tool call: {exc}"}
+    entry["at"] = datetime.now(timezone.utc).isoformat()
     log = config.get("log") if isinstance(config, dict) else None
     if isinstance(log, str) and (entry.get("tool") in FILE_TOOLS
                                  or entry.get("tool") in WORKTREE_TOOLS):

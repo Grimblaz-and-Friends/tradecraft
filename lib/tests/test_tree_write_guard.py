@@ -244,3 +244,17 @@ def test_ac4_outcome_cross_check_covers_every_route(tmp_path):
                                 "decision": "deny", "reason": "r"}).encode() + b"\n")
     record, reason = launch_bound.guard_outcome(stream(use("b", "/o"), answer("b", True)), log)
     assert reason == "launch bound refused Write /o" and record["rejected_before_run"] == []
+
+
+def test_1011_every_logged_decision_carries_its_utc_time_and_a_refusal_keeps_it(bound, tmp_path):
+    from datetime import datetime, timedelta
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(bound["config"]), encoding="utf-8")
+    outside = {"tool_name": "Write", "tool_use_id": "t1",
+               "tool_input": {"file_path": str(bound["other"] / "x")}, "cwd": str(bound["root"])}
+    run_hook(config_path, outside)
+    run_hook(config_path, {**outside, "tool_use_id": "t2", "tool_input": {"file_path": str(bound["root"] / "y")}})
+    lines = [json.loads(line) for line in Path(bound["config"]["log"]).read_bytes().splitlines()]
+    assert all(datetime.fromisoformat(line["at"]).utcoffset() == timedelta(0) for line in lines)
+    record, _ = launch_bound.guard_outcome(stream(use("t1", str(bound["other"] / "x"))), bound["config"]["log"])
+    assert [refusal["at"] for refusal in record["refusals"]] == [lines[0]["at"]]

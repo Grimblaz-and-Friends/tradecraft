@@ -2107,3 +2107,185 @@ def test_the_reload_lists_first_call_takes_the_last_event_of_its_message():
         first, problem = cost._first_call(str(log))
     assert problem is None and first == {"input": 3, "cache_read": 0, "cache_creation": 40}
 
+
+# The route split and the comparison ledger. Every figure below is worked by hand from the shipped
+# card's list prices per million tokens: claude-opus-5-5 input 4, cache read 0.2, one-hour write 8,
+# output 20; claude-sonnet-5-5 input 2, output 10; gpt-6-sol input 2, cached input 0.2, output 10.
+def route_moment(second):
+    return datetime(2026, 10, 10, 12, 0, second, tzinfo=timezone.utc)
+
+
+def route_holder_replies(tmp_path):
+    from test_holder_transcript import reply, write_lines
+    projects = tmp_path / "projects"
+    write_lines(projects / "slug" / "holder.jsonl", [
+        # 1000 input, 100 output: 0.004 + 0.002 = 0.006, a second before the launch.
+        reply("early", second=4, input=1000, output=100, read=0, five=0, hour=0),
+        # 1000 output: 0.02, exactly at the launch's start.
+        reply("edge", second=5, input=0, output=1000, read=0, five=0, hour=0),
+        # 100000 cache reads and 1000 one-hour writes: 0.02 + 0.008 = 0.028.
+        reply("late", second=8, input=0, output=0, read=100000, five=0, hour=1000)])
+    row = cost.holder_close("acme/widget", 12, "claude", None, None, None, tmp_path / "holder.jsonl",
+                            now=route_moment(50), session_id="holder", claude_projects=projects,
+                            state_root=tmp_path / "holder-state")
+    return row["holder"]["replies"]
+
+
+def codex_stream(thread, input, cached, output, model=None):
+    started = {"type": "thread.started", "thread_id": thread, **({"model": model} if model else {})}
+    completed = {"type": "turn.completed", "usage": {"input_tokens": input, "cached_input_tokens": cached,
+                                                     "output_tokens": output, "reasoning_output_tokens": 0}}
+    return b"".join((json.dumps(event) + "\n").encode() for event in (started, completed))
+
+
+def route_bundle(store, name, stage, vendor, model, stdout, *, launched, completed, session=None,
+                 launched_by=None):
+    output = store / name / "answer.v2.txt"
+    request = records.request_record(
+        dispatch_id=name, work="acme/widget#12", stage=stage, settings_source="fixture",
+        settings_scope=stage, vendor=vendor, model=model, effort="high",
+        continuity="resume" if session else "fresh", requested_session_id=session,
+        permission_boundary="fixture", root=None, now=route_moment(launched))
+    if launched_by:
+        request["launched_by"] = {"role": "builder", "dispatch_id": launched_by, "session_id": "s",
+                                  "identity": "proved"}
+    attempt = {"vendor": vendor, "model": model, "stdout": str(output) + ".stdout.log"}
+    records.add_runtime_evidence(attempt, vendor, stdout, request["requested"]["continuity"], 1.0)
+    records.add_usage_record(attempt, request, completed_at=route_moment(completed).isoformat(),
+                             staffing_status="qualified")
+    write_json(records.sidecar(output, ".request.json"), request)
+    write_json(records.sidecar(output, ".run.json"), {
+        "schema_version": 2, "dispatch_id": name, "completed_at": route_moment(completed).isoformat(),
+        "attempts": [attempt]})
+
+
+def claude_result(model, input, output):
+    return json.dumps({"type": "result", "modelUsage": {model: {
+        "inputTokens": input, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
+        "outputTokens": output}}}).encode()
+
+
+@pytest.fixture
+def route_store(tmp_path):
+    import run_lifecycle
+    store = tmp_path / "dispatches"
+    stretch = "a" * 32
+    # 100000 input of which 40000 cached, 10000 output: 0.12 + 0.008 + 0.1 = 0.228.
+    route_bundle(store, stretch, "stretch", "codex", "gpt-6-sol", codex_stream("t1", 100000, 40000, 10000),
+                 launched=5, completed=20)
+    # The send-back resumes the session; its share is 50000 input, 20000 cached, 5000 output: 0.114.
+    route_bundle(store, "b" * 32, "stretch", "codex", "gpt-6-sol", codex_stream("t1", 150000, 60000, 15000),
+                 launched=30, completed=40, session="t1")
+    # The builder's seat: 1000 input, 1000 output on Sonnet 5.5: 0.002 + 0.01 = 0.012.
+    route_bundle(store, "c" * 32, "cold-reader", "claude", "claude-sonnet-5-5",
+                 claude_result("claude-sonnet-5-5", 1000, 1000), launched=21, completed=25, launched_by=stretch)
+    # Seats another launch began, or the holder's own, are no part of the builder's cost.
+    route_bundle(store, "d" * 32, "cold-reader", "claude", "claude-sonnet-5-5",
+                 claude_result("claude-sonnet-5-5", 10 ** 6, 10 ** 6), launched=21, completed=25,
+                 launched_by="e" * 32)
+    route_bundle(store, "f" * 32, "cold-reader", "claude", "claude-sonnet-5-5",
+                 claude_result("claude-sonnet-5-5", 10 ** 6, 10 ** 6), launched=21, completed=25)
+    rows = run_lifecycle.launch_bundles(store, "acme/widget#12", None, exact_work=True)
+    return ([row for row in rows if row[2]["stage"] == "stretch"],
+            [row for row in rows if row[2]["stage"] != "stretch"])
+
+
+def test_route_split_prices_holder_before_after_and_the_builder_with_its_own_seats(tmp_path, route_store):
+    builders, seats = route_store
+    split = cost.route_split(holder_replies=route_holder_replies(tmp_path), start=route_moment(5),
+                             builder_bundles=builders, seat_bundles=seats)
+    assert split["holder_before"]["status"] == "priced"
+    assert Decimal(split["holder_before"]["amount"]) == Decimal("0.006")
+    # The reply exactly at the start falls after it.
+    assert split["holder_before"]["replies"] == 1 and split["holder_after"]["replies"] == 2
+    assert Decimal(split["holder_after"]["amount"]) == Decimal("0.048")
+    builder = split["builder"]
+    assert builder["status"] == "priced", builder
+    assert Decimal(builder["amount"]) == Decimal("0.354") and builder["usd"] == pytest.approx(0.354)
+    assert sorted(builder["dispatch_ids"]) == ["a" * 32, "b" * 32, "c" * 32]
+
+
+def test_route_split_takes_bundles_by_their_run_record_paths(route_store):
+    builders, seats = route_store
+    split = cost.route_split(holder_replies=[], start=route_moment(5),
+                             builder_bundles=[Path(row[1]) for row in builders],
+                             seat_bundles=[Path(row[1]) for row in seats])
+    assert Decimal(split["builder"]["amount"]) == Decimal("0.354")
+    assert split["holder_before"]["usd"] == split["holder_after"]["usd"] == 0
+
+
+def test_route_split_prices_a_hand_started_codex_builder_from_its_own_log(tmp_path):
+    log = tmp_path / "hand.jsonl"
+    log.write_bytes(codex_stream("h1", 100000, 40000, 10000, model="gpt-6-sol"))
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
+                               hand_usage_log=log, hand_vendor="codex")["builder"]
+    assert builder["status"] == "priced" and Decimal(builder["amount"]) == Decimal("0.228")
+    assert (builder["vendor"], builder["model"]) == ("codex", "gpt-6-sol")
+
+
+def test_route_split_prices_a_hand_started_claude_builder_from_its_transcript(tmp_path):
+    from test_holder_transcript import reply, write_lines
+    log = tmp_path / "projects" / "slug" / "builder.jsonl"
+    write_lines(log, [reply("b1", second=9, session="builder", input=0, output=1000, read=0, five=0, hour=0)])
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
+                               hand_usage_log=log, hand_vendor="claude")["builder"]
+    assert builder["status"] == "priced" and Decimal(builder["amount"]) == Decimal("0.02")
+    assert (builder["vendor"], builder["model"]) == ("claude", "claude-opus-5-5")
+
+
+@pytest.mark.parametrize("content,vendor,reason", [
+    (None, "codex", "cannot read the hand-started builder's Codex log"),
+    (b"not json\n", "codex", "is not a Codex JSON event stream"),
+    (None, "claude", "cannot read the hand-started builder's Claude transcript"),
+    (b"{}\n", "gemini", "no usage reader for vendor gemini"),
+])
+def test_route_split_names_why_a_hand_started_builder_is_unknown(tmp_path, content, vendor, reason):
+    log = tmp_path / "projects" / "slug" / "hand.jsonl"
+    if content is not None:
+        log.parent.mkdir(parents=True)
+        log.write_bytes(content)
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
+                               hand_usage_log=log, hand_vendor=vendor)["builder"]
+    assert builder["status"] == "unknown" and reason in builder["reason"]
+    assert "usd" not in builder and "vendor" not in builder
+
+
+def test_route_split_without_any_builder_evidence_is_unknown():
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[],
+                               seat_bundles=[])["builder"]
+    assert builder["status"] == "unknown" and "no launched builder bundle" in builder["reason"]
+
+
+def comparison_file(home, value):
+    path = home / ".tradecraft" / "route-comparison.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
+
+
+def test_route_comparison_is_absent_without_its_file_and_writes_nothing(tmp_path):
+    assert cost.route_comparison("acme/widget#1", home=tmp_path) is None
+    assert not (tmp_path / ".tradecraft").exists()
+
+
+def test_route_comparison_is_due_once_on_the_counted_work(tmp_path):
+    comparison_file(tmp_path, {"issue": "acme/lab#7", "count": 5})
+    answers = [cost.route_comparison(f"acme/widget#{n}", home=tmp_path) for n in range(1, 5)]
+    assert [answer["ordinal"] for answer in answers] == [1, 2, 3, 4]
+    assert not any(answer["due"] for answer in answers)
+    assert cost.route_comparison("acme/widget#2", home=tmp_path) == {
+        "ordinal": 2, "count": 5, "issue": "acme/lab#7", "due": False}
+    fifth = cost.route_comparison("acme/widget#5", home=tmp_path)
+    assert fifth == {"ordinal": 5, "count": 5, "issue": "acme/lab#7", "due": True}
+    assert cost.route_comparison("acme/widget#5", home=tmp_path)["due"] is False
+    ledger = tmp_path / ".tradecraft" / "route-comparison" / "ledger.jsonl"
+    assert len(ledger.read_bytes().splitlines()) == 5
+
+
+@pytest.mark.parametrize("value", [b"{not json", [], {"issue": "acme/lab#7"}, {"issue": "", "count": 5},
+                                   {"issue": "acme/lab#7", "count": 0}, {"issue": "acme/lab#7", "count": True}])
+def test_a_malformed_route_comparison_file_is_unknown_and_writes_nothing(tmp_path, value):
+    comparison_file(tmp_path, value)
+    answer = cost.route_comparison("acme/widget#1", home=tmp_path)
+    assert answer["status"] == "unknown" and answer["reason"]
+    assert not (tmp_path / ".tradecraft" / "route-comparison").exists()
+

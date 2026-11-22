@@ -403,3 +403,149 @@ def test_lock_released_on_process_death_and_timeout_has_no_row(tmp_path):
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=15)
+
+
+def said(identity, second, *blocks, stop="end_turn", session="holder"):
+    content = [{"type": "tool_use", "id": f"{identity}-{index}", "name": name, "input": tool_input}
+               for index, (name, tool_input) in enumerate(blocks)] or [{"type": "text", "text": "fixture"}]
+    return {"type": "assistant", "sessionId": session, "timestamp": at(second).isoformat(),
+            "message": {"id": identity, "model": "claude-opus-5-5", "stop_reason": "tool_use" if blocks else stop,
+                        "content": content}}
+
+
+def shell(command):
+    return "Bash", {"command": command}
+
+
+def heard(second, origin=None, text="fixture prompt", result=None):
+    record = {"type": "user", "sessionId": "holder", "timestamp": at(second).isoformat(),
+              "message": {"role": "user", "content": text}}
+    if result is not None:
+        record["message"]["content"] = [{"type": "tool_result", "tool_use_id": result, "content": "ok"}]
+        record["toolUseResult"] = {"stdout": "ok"}
+    if origin is not None:
+        record["origin"] = origin
+    return record
+
+
+def transcript(tmp_path, records):
+    projects = tmp_path / "projects"
+    write_lines(projects / "slug" / "holder.jsonl", records)
+    return projects
+
+
+def test_1011_handoff_quiet_lists_stage_launcher_message_write_and_unprompted_reply(tmp_path):
+    projects = transcript(tmp_path, [
+        heard(1, {"kind": "human"}),
+        said("a", 2, shell(r'python -B "C:\plugin\lib\work.py" run use 12')),
+        heard(3, result="a-0"),
+        said("b", 4, shell("python -B lib/dispatch_seat.py --stage review"), ("SendMessage", {"to": "builder-12"})),
+        heard(5, result="b-0"),
+        said("c", 6, shell("gh pr comment 12 --repo acme/widget --body done"), shell("gh issue comment 99 -b x"),
+             ("SendMessage", {"to": "someone-else"})),
+        heard(7, result="c-0"),
+        said("d", 8),
+        heard(9, {"kind": "task-notification"}, "<task-notification>done</task-notification>"),
+        said("e", 10),
+    ])
+    found = ht.handoff_quiet("holder", at(0), at(20), builder="builder-12", change=("acme/widget", 12), home=projects)
+    assert found["status"] == "not-quiet" and found["reason"] is None
+    assert [(call["timestamp"], call["kinds"]) for call in found["calls"]] == [
+        (at(2).isoformat(), ["work-run"]), (at(4).isoformat(), ["launcher"]),
+        (at(4).isoformat(), ["message"]), (at(6).isoformat(), ["github-write"])]
+    assert found["calls"][2]["description"] == "SendMessage to builder-12"
+    assert found["calls"][0]["description"].endswith('work.py" run use 12')
+    assert [item["timestamp"] for item in found["unprompted"]] == [at(10).isoformat()]
+
+
+def test_1011_owner_and_peer_answers_and_the_decision_are_quiet(tmp_path):
+    peer = "Another Claude session sent a message:\n<cross-session-message from=\"x\">go</cross-session-message>"
+    projects = transcript(tmp_path, [
+        heard(1, {"kind": "human"}),
+        said("a", 2, shell("python -B lib/work.py 12; cat lib/dispatch_seat.py; gh pr view 12")),
+        heard(3, result="a-0"),
+        said("a2", 4),
+        heard(5, {"kind": "peer", "name": "Steward"}, peer) | {"isMeta": True},
+        said("b", 6, ("Read", {"file_path": "x"})),
+        heard(7, result="b-0"),
+        said("c", 8),
+        # An earlier runtime records no origin; the tag still names another session.
+        heard(9, text=peer),
+        said("d", 10),
+    ])
+    found = ht.handoff_quiet("holder", at(0), at(20), builder="builder-12", change=("acme/widget", 12), home=projects)
+    assert found == {"status": "quiet", "calls": [], "unprompted": [], "reason": None}
+    assert ht.launch_calls("holder", at(0), at(20), home=projects)["status"] == "none"
+
+
+@pytest.mark.parametrize("problem", ["missing", "unreadable", "malformed"])
+def test_1011_unreadable_transcript_is_unknown_with_reason(tmp_path, problem):
+    projects = transcript(tmp_path, [heard(1, {"kind": "human"}), said("a", 2)])
+    main = projects / "slug" / "holder.jsonl"
+    if problem == "missing":
+        main.unlink()
+    elif problem == "unreadable":
+        main.write_bytes(b"\xff\n")
+    else:
+        with main.open("ab") as stream:
+            stream.write(b'{"type":"assistant"')
+    found = ht.handoff_quiet("holder", at(0), at(20), home=projects)
+    assert found["status"] == "unknown" and found["reason"]
+    assert {"missing": "not found", "unreadable": "cannot read", "malformed": "malformed"}[problem] in found["reason"]
+    assert ht.launch_calls("holder", at(0), at(20), home=projects)["status"] == "unknown"
+
+
+def test_1011_window_is_start_inclusive_end_exclusive(tmp_path):
+    projects = transcript(tmp_path, [
+        said("before", 1, shell("python lib/dispatch_implementer.py")),
+        heard(2, result="before-0"),
+        said("done", 3),
+        said("first", 5),
+        said("edge", 10, shell("python lib/work.py run build 12")),
+        heard(11, result="edge-0"),
+        said("after", 12),
+    ])
+    found = ht.handoff_quiet("holder", at(5), at(10), home=projects)
+    assert found["calls"] == [] and [item["timestamp"] for item in found["unprompted"]] == [at(5).isoformat()]
+    assert ht.handoff_quiet("holder", at(6), at(10), home=projects)["status"] == "quiet"
+    later = ht.handoff_quiet("holder", at(10), at(13), home=projects)
+    assert [call["timestamp"] for call in later["calls"]] == [at(10).isoformat()]
+    assert later["unprompted"] == [{"timestamp": at(10).isoformat(), "message_id": "edge",
+                                    "description": "assistant reply with no owner or peer message before it"}]
+
+
+def test_1011_launch_calls_finds_agent_and_launcher_and_nothing_in_a_quiet_window(tmp_path):
+    projects = transcript(tmp_path, [
+        heard(1, {"kind": "human"}),
+        said("a", 2, ("Agent", {"description": "probe", "prompt": "x"})),
+        heard(3, result="a-0"),
+        said("b", 4, shell("python -B lib/dispatch_record.py --work acme/widget#12"), ("SendMessage", {"to": "x"})),
+        heard(5, result="b-0"),
+        said("c", 6),
+        heard(10, {"kind": "human"}),
+        said("d", 11, shell("python -B lib/work.py 12")),
+        heard(12, result="d-0"),
+        said("e", 13),
+    ])
+    found = ht.launch_calls("holder", at(0), at(10), home=projects)
+    assert found["status"] == "found" and found["reason"] is None
+    assert [(call["tool"], call["kinds"]) for call in found["calls"]] == [("Agent", ["agent"]), ("Bash", ["launcher"])]
+    assert found["calls"][0]["description"] == "Agent: probe"
+    assert ht.launch_calls("holder", at(10), at(20), home=projects) == {"status": "none", "calls": [], "reason": None}
+
+
+@pytest.mark.parametrize("command,writes", [
+    ("gh api repos/acme/widget/issues/12/comments -f body=x", True),
+    ("gh api -X PATCH repos/acme/widget/issues/12", True),
+    ("gh api repos/acme/widget/issues/12/comments", False),
+    ("gh api -X GET repos/acme/widget/issues/12 -f per_page=1", False),
+    ("gh api repos/other/repo/issues/12/comments -f body=x", False),
+    ("gh api graphql -f query='query { x }' -F number=12", False),
+    ("gh api graphql -f query='mutation { x }' -F number=12", True),
+    ("gh pr edit '#12' --add-label x", True),
+    ("gh pr comment 13 --body x", False),
+])
+def test_1011_github_write_must_write_and_name_the_change(tmp_path, command, writes):
+    projects = transcript(tmp_path, [heard(1, {"kind": "human"}), said("a", 2, shell(command))])
+    found = ht.handoff_quiet("holder", at(0), at(20), change=("acme/widget", 12), home=projects)
+    assert bool(found["calls"]) is writes
