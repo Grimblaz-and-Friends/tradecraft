@@ -529,7 +529,8 @@ def _require_lineage_branch(root: Path, branch: str) -> None:
 def _require_own_registration(root: Path, work: str, branch: str) -> None:
     """A root registered to one change launches a stretch only for that change, so its allowance names no other.
 
-    A root with no active registration launches as it is, as a throwaway repository does.
+    A root nobody registered has no registration to disagree with, and launching one is how the stage
+    is tried on a throwaway repository, so it launches as it is.
     """
     path = launch_bound.registry_path(Path.home())
     rows = launch_bound._registry_rows(path)
@@ -557,10 +558,11 @@ def _stream_position(entry: dict, calls: list[tuple[str | None, list[str]]],
     """Where a refusal's call stands among the run's tool calls: by tool-use id, else by its text.
 
     A call takes one report from each source, so one command refused twice is two entries. A
-    refusal placed by its text goes to a call whose input is that text before one that only contains
-    it, so `a.py` never lands on `a.py.bak`, and among those to a call Claude denied, so an earlier
-    allowed call naming the same path never takes it. Calls that tie and differ leave it unplaced
-    rather than merge two refusals. Unplaced refusals sort after every call.
+    refusal placed by its text goes to the first call open to its source whose input holds that text
+    exactly, so `a.py` never lands on `a.py.bak`, denied calls first, so an earlier allowed call naming
+    the same path never takes it. Where no call holds it exactly, calls that only contain it and tie
+    while they differ leave it unplaced rather than merge two refusals. Unplaced refusals sort after
+    every call.
     """
     wanted_id = _tool_use_id(entry)
     if wanted_id:
@@ -571,8 +573,10 @@ def _stream_position(entry: dict, calls: list[tuple[str | None, list[str]]],
                   if (position, entry["source"]) not in taken]
     exact = [call for call in open_calls if any(text == leaf for text in texts for leaf in call[1])]
     partial = [call for call in open_calls if any(text in leaf for text in texts for leaf in call[1])]
-    tier = exact or partial
-    preferred = [call for call in tier if call[0] in denied] or tier
+    if exact:
+        # Calls of one command differ only in fields such as `description`, so an exact match is no tie.
+        return ([call for call in exact if call[0] in denied] or exact)[0][0]
+    preferred = [call for call in partial if call[0] in denied] or partial
     if preferred and all(leaves == preferred[0][1] for _, leaves in preferred):
         return preferred[0][0]
     return len(calls)

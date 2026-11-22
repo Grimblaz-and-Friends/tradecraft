@@ -2884,3 +2884,26 @@ def test_1011_a_registered_root_launches_a_stretch_only_for_its_own_work(job, mo
         assert not implementer.records.sidecar(args.output, ".request.json").exists()
     else:
         implementer._require_own_registration(Path(args.root).resolve(), args.work, args.lineage_branch)
+
+
+def test_1011_one_command_refused_twice_with_different_descriptions_is_two_placed_entries(tmp_path):
+    command = "gh issue comment 1 --repo o/elsewhere --body x"
+    stream = "\n".join(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": f"toolu_{n}", "name": "Bash",
+         "input": {"command": command, "description": description}}]}})
+        for n, description in ((1, "Comment on another repository"), (2, "Allowed read"),
+                               (3, "Try the comment again")))
+    stream = stream.replace('"command": "gh issue comment 1 --repo o/elsewhere --body x", '
+                            '"description": "Allowed read"', '"command": "git status", "description": "Allowed read"')
+    refusal = {"tool": "Bash", "command": command, "reason": "a comment on o/elsewhere#1", "at": "t"}
+    record_value = {"github_write_refusals": [refusal, dict(refusal)],
+                    "write_guard": {"refusals": [], "unguarded": []}}
+    attempt = {"permission_denials": [{"tool_name": "Bash", "tool_use_id": "toolu_1"},
+                                      {"tool_name": "Bash", "tool_use_id": "toolu_3"}]}
+    log = tmp_path / "guard.jsonl"
+    log.write_bytes(b"")
+    implementer._stretch_refusals(record_value, attempt,
+                                  Namespace(stretch_guard_log=log, stretch_stream=stream.encode()))
+    assert [(entry["sources"], entry["denial"]["tool_use_id"]) for entry in record_value["refusals"]] == [
+        (["github-write-bound", "permission-denial"], "toolu_1"),
+        (["github-write-bound", "permission-denial"], "toolu_3")]

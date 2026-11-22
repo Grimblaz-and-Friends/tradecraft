@@ -1107,3 +1107,15 @@ def test_a_builders_reading_takes_its_vendor_from_its_own_launch(composed, monke
     monkeypatch.setattr(work, "_producer_vendor", lambda *a, **k: pytest.fail("read a completed producer bundle"))
     vendor, source = work._cold_reading_builder_vendor(SimpleNamespace(), "h")
     assert vendor == "claude" and source.startswith("holding stretch launch request")
+
+
+def test_a_check_whose_tree_cant_be_built_leaves_no_folder_behind(composed, tmp_path, monkeypatch):
+    state, _behaviour, seen = composed
+
+    def unbuildable(**_kwargs):
+        raise work.recipient_tree.RecipientTreeError("fixture: the declaration names no file")
+
+    monkeypatch.setattr(work.recipient_tree, "create_consumer_tree", unbuildable)
+    with pytest.raises(work.WorkError, match="could not be built"):
+        run_check(state, "use", "--job-from-artifact", transport=PostingTransport())
+    assert "dispatch" not in seen and not list((tmp_path / "temp").iterdir())

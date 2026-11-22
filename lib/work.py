@@ -11260,6 +11260,8 @@ def _check_tree(state: WorkState, source: Path, artifact: str, artifact_comment:
         root = recipient_tree.validate_consumer_tree(metadata, work=work, source=source,
                                                     records_home=_records_home(None), claim=claim)
     except recipient_tree.RecipientTreeError as exc:
+        # A check whose tree can't be built leaves no folder behind, as a refused check leaves no tree.
+        recipient_tree.remove_tree(output.parent)
         raise WorkError(f"the check's consumer tree could not be built: {exc}") from exc
     # Beside the tree's own record, which its digest seals: what declared it and which launch built it.
     origin = {"declaration": {"name": name, "artifact_comment": artifact_comment,

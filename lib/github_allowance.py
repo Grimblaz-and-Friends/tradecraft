@@ -151,7 +151,7 @@ def _writes(allowance: dict) -> str:
 
 
 STRETCH_HOW = ("Reply on a review thread with the comment's numeric id written as digits in the "
-               "command (`gh api repos/{repository}/pulls/N/comments/<id>/replies -f body=...`), or "
+               "command (`gh api repos/{repository}/pulls/N/comments/<id>/replies -F body=@FILE`), or "
                "with `-F in_reply_to=<id>` on `repos/{repository}/pulls/N/comments`; resolve a thread "
                "with its node id written literally. An id held in a shell variable is refused. Give a "
                "comment body as a file (`--body-file FILE`, or `-F body=@FILE` with gh api); a body "

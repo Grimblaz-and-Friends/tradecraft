@@ -686,10 +686,9 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
                 pairs = [(rows_before.get(key), rows_after.get(key)) for key in row_changes]
                 for key, pair in zip(row_changes, pairs):
                     row = pair[1] or pair[0]
-                    # Alone: every other row, compared unfolded, is the same after as before.
                     changes.append({"item": name, "path": str(row.get("root") or key),
                                     "change": "row-changed", "rows": pair,
-                                    "alone": not _rows_left_differ(first, second, [pair])})
+                                    "others_unchanged": not _rows_left_differ(first, second, [pair])})
                 if _rows_left_differ(first, second, pairs):
                     # A row whose root differs only in case from another's changed behind the folded key.
                     changes.append({"item": name, "path": top, "change": "modified",
@@ -715,7 +714,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
                 continue
             if change["item"] not in HELD_WHEREVER and contains(own_root, Path(change["path"])):
                 outcome[index] = OWN_WORK  # This run's own edits are its own work.
-            elif own_row_resnapshot and change.get("alone") and _own_row_resnapshot(change, own_root):
+            elif own_row_resnapshot and change.get("others_unchanged") and _own_row_resnapshot(change, own_root):
                 # A stretch builder's catch-up re-snapshots its own root's row after the landing it made.
                 outcome[index] = OWN_WORK
             elif not (started and ended) or (change["item"] in {*HELD_WHEREVER, "dispatch-records"}
@@ -767,7 +766,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             continue
         counts[0] += 1
         rows = change.pop("rows", None)
-        change.pop("alone", None)
+        change.pop("others_unchanged", None)
         if result == OWN_WORK:
             continue
         if result != FOUND:
