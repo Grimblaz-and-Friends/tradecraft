@@ -23,6 +23,7 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **C9. The composed check takes today's use route's hold and synchronization, and prints its staffing plan,** but writes its own report rather than a stage decision's, because it launches one composed seat and has no recommendation to report.
 - **C10. A seat launch and a record begin follow the entrance's one session rule:** a present session that is not the launch's is refused, and `declared` is for an absent session variable only.
 - **C11. A posted report counts only from a configured marker producer,** because the entrance posts under that login and any other author's comment is a claim.
+- **C13. A stretch launch's comparison credits its own root's registry row re-snapshotting `revision_before` and `status_before`,** and nothing more. Its catch-up writes that row after the landing it made, and the unchanged comparison held on it; crediting by `launched_by` or `built_by`, as the plan anticipated, would not reach it, because the entrance writes the row in the builder's own run. Every other launch still holds on it.
 - **C12. `work.py allowance stretch` prints the stretch sentence a holder-written dispatch carries,** though the entrance runs no `stretch` stage, because the launcher refuses a dispatch stating any other allowance.
 
 ## Rejected

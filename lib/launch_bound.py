@@ -631,7 +631,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             store: Path, own_dispatch: str, before_at: str, after_at: str,
             elapsed_seconds: float, record: Path | None = None,
             home: Path | None = None, end: float | None = None,
-            allowance: str | None = None) -> dict[str, object]:
+            allowance: str | None = None, own_row_resnapshot: bool = False) -> dict[str, object]:
     """Findings are changes no other live recorded run accounts for (row 2).
 
     Working-copy and branch changes are findings only when the run's record
@@ -705,6 +705,9 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
                 continue
             if change["item"] not in {"registry", "own-request"} and contains(own_root, Path(change["path"])):
                 outcome[index] = OWN_WORK  # This run's own edits are its own work.
+            elif own_row_resnapshot and _own_row_resnapshot(change, own_root):
+                # A stretch builder's catch-up re-snapshots its own root's row after the landing it made.
+                outcome[index] = OWN_WORK
             elif not (started and ended) or (change["item"] in {"registry", "own-request", "dispatch-records"}
                                               and change["change"] != "row-changed"):
                 outcome[index] = FOUND  # No other run could account for it.
@@ -802,6 +805,22 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             "before_at": before_at, "after_at": after_at, "elapsed_seconds": elapsed_seconds,
             "coverage": coverage, "findings": findings, "attributed": attributed,
             "listed": listed, **result}
+
+
+RESNAPSHOT_FIELDS = frozenset({"revision_before", "status_before"})
+
+
+def _own_row_resnapshot(change: dict, own_root: Path) -> bool:
+    """Whether a registry change is only the run's own root row re-snapshotting its revision and status."""
+    if change["item"] != "registry" or change["change"] != "row-changed":
+        return False
+    before_row, after_row = change.get("rows") or (None, None)
+    if not isinstance(before_row, dict) or not isinstance(after_row, dict):
+        return False
+    if path_key(Path(str(after_row.get("root") or ""))) != path_key(own_root):
+        return False
+    differing = {key for key in set(before_row) | set(after_row) if before_row.get(key) != after_row.get(key)}
+    return bool(differing) and differing <= RESNAPSHOT_FIELDS
 
 
 def _attribute(change: dict, live: list[dict], holder_session_id: str | None) -> dict | None:
@@ -1269,6 +1288,8 @@ class Comparison:
         import dispatch_record as records
         self.root, self.own_output, self.dispatch_id = Path(root), Path(own_output), dispatch_id
         self.holder_session_id = holder_session_id
+        # Only a stretch launch, which runs catch-up itself, credits its own row's re-snapshot.
+        self.own_row_resnapshot = own_pointer is not None
         self.home = home or Path.home()
         self.store = store or records.default_record_root()
         self.plan = coverage_plan(root=self.root, home=self.home,
@@ -1314,7 +1335,8 @@ class Comparison:
                          own_dispatch=self.dispatch_id, before_at=self.before_at,
                          after_at=after_at, elapsed_seconds=time.monotonic() - self.started,
                          record=record, home=self.home, end=end,
-                         allowance=f"{max(0.0, end - begun):.1f}s, {bound}")
+                         allowance=f"{max(0.0, end - begun):.1f}s, {bound}",
+                         own_row_resnapshot=self.own_row_resnapshot)
         for entry in result["coverage"]:
             state = self.before.get(entry["item"]) or {}
             entries = state.get("entries")

@@ -1084,3 +1084,45 @@ def test_C7_report_and_local_counts_agree(registered, case, expected):
         assert any(item["status"] == "renamed" for item in state.files)
     if case.startswith("mode"):
         assert [item["status"] for item in state.files if item["filename"] == "version.json"] == ["changed"]
+
+
+def test_1011_a_builders_catch_up_leaves_its_launch_comparison_clean(registered, tmp_path, monkeypatch, capsys):
+    """A stretch builder catches its own branch up between its launch comparison's two snapshots."""
+    import launch_bound
+    root, implementation, branch, remote, transport, state = registered
+    commit(root, "src/other", "incoming\n")
+    git(root, "push", "origin", "main")
+    # The comparison reads the same registry the entrance wrote, so the holder checkout is covered.
+    monkeypatch.setattr(launch_bound, "registry_path", lambda home: tmp_path / "registry.json")
+    home = Path.home()
+    store = home / ".tradecraft" / "dispatches"
+    store.mkdir(parents=True, exist_ok=True)
+    own = store / "stretch" / "result.md"
+    own.parent.mkdir()
+    own.with_name("result.md.request.json").write_text("{}", encoding="utf-8")
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    plan = launch_bound.coverage_plan(root=implementation, home=home, env={}, launcher_plugin=plugin,
+                                      store=store, own_request=own.with_name("result.md.request.json"))
+    before_at = launch_bound.now()
+    before = launch_bound.snapshot(plan, seconds=60, own_output=own)
+    token = work._BUILDER.set({"role": "builder", "dispatch_id": "a" * 32, "identity": "declared"})
+    try:
+        assert work._execute_catch_up(transport, state, root, None, "holder-id", RULES) == 0
+    finally:
+        work._BUILDER.reset(token)
+    capsys.readouterr()
+    after = launch_bound.snapshot(plan, seconds=60, own_output=own, before=before)
+    result = launch_bound.compare(plan, before, after, root=implementation, holder_session_id=None,
+                                  store=store, own_dispatch="a" * 32, before_at=before_at,
+                                  after_at=launch_bound.now(), elapsed_seconds=1.0)
+    assert any(item["item"].startswith("checkout:") for item in plan)
+    # Unchanged, the comparison holds on the own root's registry row, which catch-up re-snapshots.
+    assert [finding["item"] for finding in result["findings"]] == ["registry"]
+    credited = launch_bound.compare(plan, before, after, root=implementation, holder_session_id=None,
+                                    store=store, own_dispatch="a" * 32, before_at=before_at,
+                                    after_at=launch_bound.now(), elapsed_seconds=1.0, own_row_resnapshot=True)
+    assert credited["findings"] == [], credited["findings"]
+    # Its push landed on the builder's own branch.
+    assert git(root, "ls-remote", "--heads", str(remote), f"refs/heads/{branch}").split()[0] == git(
+        implementation, "rev-parse", "HEAD")

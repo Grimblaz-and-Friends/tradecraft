@@ -922,3 +922,17 @@ def test_a_second_launch_keeps_the_first_launchs_tree_and_report(composed):
     run_check(state, "use", "--job-from-artifact", transport=transport)
     assert seen["reports"][-1]["tree_metadata"] != first and Path(first).is_file()
     assert len(transport.posts) == 2
+
+
+@pytest.mark.parametrize("change, credited", [
+    ({"revision_before": "b", "status_before": "s2"}, True),
+    ({"revision_before": "b", "branch": "other"}, False),
+    ({"holder_root": "elsewhere"}, False),
+])
+def test_only_the_own_rows_re_snapshot_is_credited(tmp_path, change, credited):
+    own = tmp_path / "implementation"
+    before = {"root": str(own), "revision_before": "a", "status_before": "s1", "branch": "b1", "holder_root": "h"}
+    entry = {"item": "registry", "change": "row-changed", "path": str(own), "rows": (before, {**before, **change})}
+    assert launch_bound._own_row_resnapshot(entry, own) is credited
+    elsewhere = {**entry, "rows": ({**before, "root": "x"}, {**before, **change, "root": "x"})}
+    assert launch_bound._own_row_resnapshot(elsewhere, own) is False
