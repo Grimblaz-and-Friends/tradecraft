@@ -245,6 +245,14 @@ def _digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()
 
 
+def reading_diff(source: Path, base: str, head: str, selected: list[str]) -> bytes:
+    """The diff a reading carries for its covered paths, regenerated the same way wherever it is needed."""
+    # A rename's old path joins the pathspec so the diff shows the edit as a rename, removed lines and all.
+    moved = renames(source, base, head)
+    pathspec = sorted(set(selected) | {moved[path] for path in selected if path in moved})
+    return _git(source, "diff", "--no-color", "--no-ext-diff", "-M", base, head, "--", *pathspec)
+
+
 def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
                base_tip: str, head: str, covered: list[str] | None, branch: str,
                numbers: list[int], records_home: Path) -> Path:
@@ -284,10 +292,7 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
     except recipient_tree.RecipientTreeError as exc:
         # A file the tree can't hold, such as a symlink, refuses the reading rather than escaping the stage.
         raise ColdReaderError(str(exc)) from exc
-    # A rename's old path joins the pathspec so the diff shows the edit as a rename, removed lines and all.
-    moved = renames(source, state["base"], head)
-    pathspec = sorted(set(selected) | {moved[path] for path in selected if path in moved})
-    diff = _git(source, "diff", "--no-color", "--no-ext-diff", "-M", state["base"], head, "--", *pathspec)
+    diff = reading_diff(source, state["base"], head, selected)
     diff_text = diff.decode("utf-8", errors="replace")
     # With nothing else to carry the diff travels as a file, since the neutral commit can't be empty.
     inline = len(diff_text) <= INLINE_DIFF_CHARACTERS and bool(files)

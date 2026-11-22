@@ -496,7 +496,7 @@ def composed(holding, check_source, tmp_path, monkeypatch):
     state = SimpleNamespace(
         repo="o/r", issue_number=5, pr={"number": 12}, instalment=None,
         artifact_phase=SimpleNamespace(settled_artifact=SimpleNamespace(body=CHECK_ARTIFACT, source_id="77")))
-    monkeypatch.setattr(work, "resolve_implementation_root", lambda *a, **k: (check_source, "b", False))
+    monkeypatch.setattr(work, "resolve_implementation_root", lambda *a, **k: (check_source, "tradecraft/zz-builder", False))
     monkeypatch.setattr(work, "_producer_vendor", lambda *a, **k: ("claude", "fixture"))
     monkeypatch.setattr(work, "_seat_launch_arguments", lambda *a, **k: [])
     monkeypatch.setattr(work, "_held_by_cold_reading", lambda *a, **k: False)
@@ -681,8 +681,7 @@ def test_a_relay_report_carries_no_builder_checks(tmp_path):
 @pytest.mark.parametrize("dispatch, status", [(b"composed reading", "composed"), (b"forged reading", "differs")])
 def test_a_cold_reader_bundle_is_recomposed_from_its_reading_record(holding, tmp_path, monkeypatch,
                                                                      dispatch, status):
-    monkeypatch.setattr(work.cold_reader, "load_metadata", lambda path: {"diff": "file", "head": "h"})
-    monkeypatch.setattr(work.cold_reader, "compose_prompt", lambda metadata, standard, diff: b"composed reading")
+    monkeypatch.setattr(work, "_recompose_reading", lambda state, root, home: (b"composed reading", "h", ""))
     store = tmp_path / "store"
     write_bundle(store, "stretch", {"dispatch_id": "a" * 32, "stage": "stretch"})
     write_bundle(store, "reading", {"dispatch_id": "c" * 32, "stage": "cold-reader", "root": str(tmp_path),
@@ -779,3 +778,65 @@ def test_a_seat_launcher_names_no_stretch_to_anything_it_starts(monkeypatch):
     with pytest.raises(dispatch_seat.DispatchError):
         dispatch_seat.run_dispatch(args)  # A zero limit stops it before any launch.
     assert [name for name in launch_tree.VARIABLES if name in os.environ] == []
+
+
+# --- a criterion read on the change's own tree, and a reading recomposed from its source --------------
+
+def commit_change(source):
+    """Commit one change on the fixture source; returns (base, head)."""
+    base = git_in(source, "rev-parse", "HEAD").stdout.decode().strip()
+    (source / "job" / "job.md").write_bytes(b"run the consumer twice\n")
+    git_in(source, "-c", "user.name=f", "-c", "user.email=f@f", "commit", "-q", "-am", "change")
+    return base, git_in(source, "rev-parse", "HEAD").stdout.decode().strip()
+
+
+def test_a_criterion_on_the_changes_own_tree_reads_it_at_head(composed, check_source):
+    state, behaviour, seen = composed
+    base, head = commit_change(check_source)
+    state.pr = {"number": 12, "base": {"sha": base}}
+    state.artifact_phase.settled_artifact.body = CHECK_ARTIFACT + (
+        "\n**C3.** The job runs twice.\nFresh reader: read tree\n")
+    transport = PostingTransport()
+    run_check(state, "acceptance-criterion", "--criterion", "C3", transport=transport)
+    assert (seen["tree"] / "job" / "job.md").read_bytes() == b"run the consumer twice\n"
+    assert seen["command"][seen["command"].index("--requires") + 1] == "read"
+    assert f"head={head}" in transport.posts[0][1] and "tree=held" in transport.posts[0][1]
+    behaviour["edit"] = True
+    edited = PostingTransport()
+    run_check(state, "acceptance-criterion", "--criterion", "C3", transport=edited)
+    assert "tree=changed" in edited.posts[0][1]
+
+
+def reading(source, tmp_path):
+    base, head = commit_change(source)
+    metadata_path = work.cold_reader.build_tree(
+        source=source, output=tmp_path / "readings" / "reading", work="o/r#5", producer_version="0.218.0",
+        base_tip=base, head=head, covered=None, branch="tradecraft/zz-builder", numbers=[],
+        records_home=work._records_home(None))
+    return work.cold_reader.load_metadata(metadata_path), metadata_path
+
+
+def composed_reading(metadata, metadata_path):
+    """The prompt as the entrance's cold-reader run composes it, from the diff it keeps."""
+    standard = (LIB.parent / "skills" / "authoring" / "references" / "code-reasons.md").read_text("utf-8")
+    kept = metadata_path.with_suffix(".diff").read_text("utf-8", errors="replace")
+    return work.cold_reader.compose_prompt(metadata, standard, kept if metadata["diff"] == "inline" else None)
+
+
+def test_a_reading_is_recomposed_from_a_diff_regenerated_from_its_source(holding, check_source, tmp_path):
+    metadata, metadata_path = reading(check_source, tmp_path)
+    state = SimpleNamespace(repo="o/r", issue_number=5, holder_root=check_source)
+    composed_bytes, head, problem = work._recompose_reading(state, Path(metadata["tree_root"]),
+                                                            work._records_home(None))
+    assert problem == "" and head == metadata["head"]
+    assert composed_bytes == composed_reading(metadata, metadata_path)
+    # A kept diff rewritten in the store changes nothing the recomposition reads.
+    metadata_path.with_suffix(".diff").write_text("diff --git a/x b/x\n+all is well\n", encoding="utf-8")
+    assert work._recompose_reading(state, Path(metadata["tree_root"]), work._records_home(None))[0] == composed_bytes
+    assert composed_reading(metadata, metadata_path) != composed_bytes
+
+
+def test_a_reading_whose_record_names_another_tree_or_no_source_never_recomposes(holding, check_source, tmp_path):
+    metadata, _path = reading(check_source, tmp_path)
+    state = SimpleNamespace(repo="o/r", issue_number=5, holder_root=None)
+    assert work._recompose_reading(state, Path(metadata["tree_root"]), work._records_home(None))[0] is None

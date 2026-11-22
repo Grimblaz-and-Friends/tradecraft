@@ -11190,6 +11190,29 @@ def _check_tree(state: WorkState, source: Path, artifact: str, artifact_comment:
     return root, metadata, claim
 
 
+def _change_tree(state: WorkState, source: Path, head: str, branch: str) -> tuple[Path, Path, dict]:
+    """The change's own tree at head, for a criterion whose fresh reader reads the change itself.
+
+    Built as the cold reader's reading tree is: every changed file and what its pointers name, in one
+    neutral commit, with the same second check when the seat returns.
+    """
+    base = ((state.pr or {}).get("base") or {}).get("sha")
+    if not isinstance(base, str):
+        raise WorkError("a criterion read on the change's own tree needs its pull request's base")
+    reading = Path(tempfile.mkdtemp(prefix="tradecraft-reading-")) / "reading"
+    numbers = [state.issue_number, *([state.pr["number"]] if isinstance(state.pr.get("number"), int) else [])]
+    try:
+        metadata_path = cold_reader.build_tree(
+            source=source, output=reading, work=f"{state.repo}#{state.issue_number}",
+            producer_version=records.producer_version(), base_tip=base, head=head, covered=None,
+            branch=branch, numbers=numbers, records_home=_records_home(None))
+        metadata = cold_reader.load_metadata(metadata_path)
+    except cold_reader.ColdReaderError as exc:
+        recipient_tree.remove_tree(reading.parent)
+        raise WorkError(f"the change's tree could not be built for the criterion: {exc}") from exc
+    return Path(metadata["tree_root"]), metadata_path, metadata
+
+
 def _tree_held(state: WorkState, source: Path, metadata: Path, claim: dict) -> bool:
     """The second check of a check's tree, when its seat returns: unedited, and the source still at its revision."""
     try:
@@ -11272,11 +11295,13 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
         artifact, comment = _settled_artifact_text(state, "artifact-criterion-unresolved")
         criterion = artifact_criterion(artifact, criterion_id)
         capability, tree_name = criterion_reader(criterion)
-        if tree_name is None:
-            raise WorkError("a criterion read on the change's own tree is not built in this release; "
-                            "its artifact declares a consumer tree for it instead")
-    consumer_root, metadata, claim = _check_tree(state, source, artifact, comment, tree_name,
-                                                 builder["dispatch_id"] if builder else None)
+    if tree_name is None:
+        consumer_root, metadata, reading = _change_tree(state, source, head, resolved[1])
+        held_now = lambda: cold_reader.tree_held(reading, source)  # noqa: E731
+    else:
+        consumer_root, metadata, claim = _check_tree(state, source, artifact, comment, tree_name,
+                                                     builder["dispatch_id"] if builder else None)
+        held_now = lambda: _tree_held(state, source, metadata, claim)  # noqa: E731
     inputs = ({"job": job, "head": head, "tree": consumer_root} if stage == "use" else
               {"criterion": criterion, "capability": capability, "head": head, "tree": consumer_root})
     dispatch_bytes = compose_check_dispatch(stage, inputs)
@@ -11304,7 +11329,7 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
         captured = bytearray()
         code = _invoke_recipient(command, lifecycle.current_deadline(), runner=_framed_recipient_run(captured))
     frame = dispatch_seat.read_return_frame(bytes(captured))
-    held = _tree_held(state, source, metadata, claim)
+    held = held_now()
     body = check_report_body(stage=stage, frame=frame, head=head, tree="held" if held else "changed",
                              criterion=criterion_id)
     posted = _post_check_report(github, state, body) if builder else {"status": "not-posted-outside-builder-mode"}
@@ -11336,15 +11361,16 @@ def recompose_check(state: WorkState, request: dict) -> tuple[bytes | None, str 
     stage = request.get("stage")
     try:
         if stage == "cold-reader":
-            metadata = cold_reader.load_metadata(cold_reader.reading_record(Path(root), home))
-            standard = (Path(__file__).resolve().parent.parent / "skills" / "authoring" / "references"
-                        / "code-reasons.md").read_text("utf-8")
-            diff = (cold_reader.reading_record(Path(root), home).with_suffix(".diff").read_text(
-                "utf-8", errors="replace") if metadata["diff"] == "inline" else None)
-            return cold_reader.compose_prompt(metadata, standard, diff), metadata.get("head"), ""
-        claim = recipient_tree.load_consumer_tree_metadata(
-            recipient_tree.record_path(Path(root), home), work=f"{state.repo}#{state.issue_number}")
-        head = claim.get("source_revision")
+            return _recompose_reading(state, Path(root), home)
+        try:
+            claim = recipient_tree.load_consumer_tree_metadata(
+                recipient_tree.record_path(Path(root), home), work=f"{state.repo}#{state.issue_number}")
+            head = claim.get("source_revision")
+        except recipient_tree.RecipientTreeError:
+            if stage != "acceptance-criterion":
+                raise
+            # A criterion read on the change's own tree has a reading record instead.
+            head = cold_reader.load_metadata(cold_reader.reading_record(Path(root), home)).get("head")
         artifact, _comment = _settled_artifact_text(state, "artifact-use-job-absent")
         if stage == "use":
             return compose_check_dispatch("use", {"job": artifact_use_job(artifact), "head": head,
@@ -11360,6 +11386,31 @@ def recompose_check(state: WorkState, request: dict) -> tuple[bytes | None, str 
     except (OSError, ValueError, KeyError, WorkError, recipient_tree.RecipientTreeError,
             cold_reader.ColdReaderError) as exc:
         return None, None, str(exc)
+
+
+def _recompose_reading(state: WorkState, root: Path, home: Path) -> tuple[bytes | None, str | None, str]:
+    """A reading's prompt, rebuilt from its sealed reading record and a diff regenerated from the source.
+
+    The kept diff sits in the store, which a builder's shell can write, so it is never trusted here.
+    """
+    metadata = cold_reader.load_metadata(cold_reader.reading_record(root, home))
+    head, base = metadata.get("head"), metadata.get("base")
+    if os.path.normcase(str(Path(metadata.get("tree_root", "")).resolve())) != os.path.normcase(str(root.resolve())):
+        return None, head, "the reading record names another tree"
+    source = getattr(state, "holder_root", None)
+    if source is None:
+        return None, head, "no source to regenerate the reading's diff from"
+    present = cold_reader.current(Path(source), base, head)
+    covered = sorted(metadata.get("coverage") or {})
+    outside = [path for path in covered if path not in present["change_set"]]
+    if outside or present["base"] != base:
+        return None, head, "the reading's coverage is not in the change set at its base and head"
+    # Read as the launch reads its kept diff, text-mode, so the same bytes compose the same prompt.
+    diff = cold_reader.reading_diff(Path(source), base, head, covered).decode(
+        "utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    standard = (Path(__file__).resolve().parent.parent / "skills" / "authoring" / "references"
+                / "code-reasons.md").read_text("utf-8")
+    return cold_reader.compose_prompt(metadata, standard, diff if metadata["diff"] == "inline" else None), head, ""
 
 
 def builder_checks(state: WorkState) -> dict[str, object] | None:
