@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import handoff
 
 
-BRIEF = "Brief line one.\n\n| Row | Outcome |\n|---|---|\n| 1 | The thing — exactly. |\n"
+BRIEF = "Brief line one.\n\n| Row | Outcome |\n|---|---|\n| 1 | The thing - exactly. |\n"
 ARTIFACT = "Plan.\n\nAC1. It holds.\nFresh reader: yes\n\nAC2. Another.\n"
 ALLOWANCE = "You may push the branch and comment on the issue and its pull request."
 DISPATCH = "0123456789abcdef0123456789abcdef"
