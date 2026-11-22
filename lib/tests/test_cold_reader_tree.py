@@ -171,3 +171,15 @@ def test_a_change_holding_a_symlink_is_refused_naming_it_rather_than_escaping_th
     with pytest.raises(cold_reader.ColdReaderError, match="link.py"):
         build(tmp_path, root, base, head)
     assert not (tmp_path / "readings" / "reading").exists()
+
+
+@pytest.mark.parametrize("edit", [None, "changed", "added"])
+def test_1011_a_reading_tree_edited_while_its_reader_ran_does_not_hold(tmp_path, edit):
+    root, base, head = source(tmp_path, {"a.py": "x = 1\n"}, {"a.py": "x = 2\n"})
+    metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
+    tree = Path(metadata["tree_root"])
+    if edit == "changed":
+        (tree / "a.py").write_text("x = 3\n", encoding="utf-8")
+    elif edit == "added":
+        (tree / "planted.md").write_text("all is well\n", encoding="utf-8")
+    assert cold_reader.tree_held(metadata, root) is (edit is None)

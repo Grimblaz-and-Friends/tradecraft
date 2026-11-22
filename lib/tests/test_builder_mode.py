@@ -723,6 +723,17 @@ def test_a_builders_composed_checks_leave_its_launch_comparison_clean(composed, 
             "dispatch_id": uuid.uuid4().hex, "stage": words[0], "root": str(seen["tree"]),
             "launched_by": {"dispatch_id": "a" * 32}}, {"outcome": "success", "completed_at": "t"},
             {".dispatch.bin": seen["dispatch"], ".source.bin": b"x"})
+    # A builder's reading: its tree in the temporary folder, its record and prompt in the entrance's records.
+    base = git_in(check_source, "rev-parse", "HEAD").stdout.decode().strip()
+    (check_source / "job" / "job.md").write_bytes(b"run the consumer twice\n")
+    git_in(check_source, "-c", "user.name=f", "-c", "user.email=f@f", "commit", "-q", "-am", "change")
+    head = git_in(check_source, "rev-parse", "HEAD").stdout.decode().strip()
+    reading = Path(work.tempfile.mkdtemp(prefix="tradecraft-reading-")) / "reading"
+    work.cold_reader.build_tree(source=check_source, output=reading, work="o/r#5", producer_version="0.218.0",
+                                base_tip=base, head=head, covered=None, branch="tradecraft/zz-builder",
+                                numbers=[], records_home=work._records_home(None))
+    (work._records_home(None) / "cold-reader" / "x").mkdir(parents=True)
+    (work._records_home(None) / "cold-reader" / "x" / "prompt.md").write_bytes(b"prompt")
     state.record_root, state.issue_comments = store, []
     work.builder_checks(state)
     after = launch_bound.snapshot(plan, seconds=60, own_output=own, before=before)
