@@ -414,7 +414,6 @@ def test_a_check_dispatch_is_composed_from_its_inputs_alone():
 @pytest.mark.parametrize("extra, code", [
     (["--dispatch", "job.md"], "builder-may-not-write-a-check's-instructions"),
     (["--tree-metadata", "tree.json"], "stage-composes-its-own-tree"),
-    ([], "check-composition-not-built"),
 ])
 def test_a_builder_supplies_no_use_dispatch_or_tree(holding, tmp_path, extra, code):
     registry = work.registry_path()
@@ -423,3 +422,172 @@ def test_a_builder_supplies_no_use_dispatch_or_tree(holding, tmp_path, extra, co
         {"root": str(tmp_path / "implementation"), "holder_root": str(tmp_path / "holder")}]}),
         encoding="utf-8")
     assert refused(arguments("run", "use", *extra, root=str(tmp_path / "holder"))) == code
+
+
+# --- a composed check: its tree, its seat's frame and its posted report ---------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+import dispatch_seat  # noqa: E402
+
+CHECK_ARTIFACT = (
+    "## Use session job\n\n```text\nUse the job as an adopter would.\n```\n\n"
+    "## Consumer tree declaration use\n\n"
+    "```json\n{\"mode\": \"adopter\", \"paths\": [\"job\"], \"loading_surfaces\": [\"skill/SKILL.md\"]}\n```\n\n"
+    "## Criteria\n\n"
+    "**C2.** The job runs.\nFresh reader: execute consumer tree use\n"
+)
+
+
+def git_in(root, *words):
+    return subprocess.run(["git", "-C", str(root), *words], capture_output=True, check=True,
+                          stdin=subprocess.DEVNULL)
+
+
+@pytest.fixture()
+def check_source(tmp_path):
+    root = tmp_path / "source"
+    (root / "job").mkdir(parents=True)
+    (root / "skill").mkdir()
+    (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+    (root / "job" / "job.md").write_bytes(b"run the consumer\n")
+    (root / "skill" / "SKILL.md").write_bytes(b"loading surface\n")
+    git_in(root, "init", "-q")
+    git_in(root, "add", "--all")
+    git_in(root, "-c", "user.name=f", "-c", "user.email=f@f", "commit", "-q", "-m", "fixture")
+    return root.resolve()
+
+
+class PostingTransport:
+    def __init__(self, failures=0):
+        self.posts, self.failures = [], failures
+
+    def post(self, endpoint, payload):
+        if self.failures:
+            self.failures -= 1
+            raise WorkErrorForTests("post failed")
+        self.posts.append((endpoint, payload["body"]))
+        return {"id": len(self.posts)}
+
+
+class WorkErrorForTests(OSError):
+    pass
+
+
+FRAME_SCRIPT = ("import sys, types; sys.path.insert(0, sys.argv[1]); import dispatch_seat as d; "
+                "print('seat: noise'); d._write_return_frame(types.SimpleNamespace("
+                "frame_return=sys.argv[2].encode(), frame_record={'outcome': sys.argv[3], "
+                "'staffing_status': 'degraded', 'staffing_qualification': "
+                "{'same_vendor_reason': 'owner-selected-claude-implementer'}}, "
+                "frame_dispatch_sha256=sys.argv[4], frame_dispatch_id='d' * 32))")
+
+
+@pytest.fixture()
+def composed(holding, check_source, tmp_path, monkeypatch):
+    """A builder's composed check whose seat is a stand-in printing a frame; returns what it saw."""
+    seen = {"reports": []}
+    # The entrance names the tree under the system temporary folder, which must not hold its records.
+    (tmp_path / "temp").mkdir()
+    monkeypatch.setattr(work.tempfile, "tempdir", str(tmp_path / "temp"))
+    state = SimpleNamespace(
+        repo="o/r", issue_number=5, pr={"number": 12}, instalment=None,
+        artifact_phase=SimpleNamespace(settled_artifact=SimpleNamespace(body=CHECK_ARTIFACT, source_id="77")))
+    monkeypatch.setattr(work, "resolve_implementation_root", lambda *a, **k: (check_source, "b", False))
+    monkeypatch.setattr(work, "_producer_vendor", lambda *a, **k: ("claude", "fixture"))
+    monkeypatch.setattr(work, "_seat_launch_arguments", lambda *a, **k: [])
+    monkeypatch.setattr(work, "_held_by_cold_reading", lambda *a, **k: False)
+    monkeypatch.setattr(work, "_emit_report", lambda payload, *a, **k: seen["reports"].append(payload))
+    behaviour = {"outcome": "success", "return": "The job ran.\n", "edit": False}
+
+    def recipient(command, deadline, runner=None):
+        dispatch = Path(command[command.index("--dispatch") + 1])
+        seen["dispatch"] = dispatch.read_bytes()
+        seen["command"] = list(command)
+        tree = Path(command[command.index("--root") + 1])
+        seen["tree"] = tree
+        if behaviour["edit"]:
+            (tree / "job" / "job.md").write_bytes(b"edited while the seat ran\n")
+        digest = __import__("hashlib").sha256(seen["dispatch"]).hexdigest()
+        return runner([sys.executable, "-c", FRAME_SCRIPT, str(LIB), behaviour["return"],
+                       behaviour["outcome"], digest], timeout=60, cleanup_deadline=None).returncode
+
+    monkeypatch.setattr(work, "_invoke_recipient", recipient)
+    work._BUILDER.set({"dispatch_id": "a" * 32, "session_id": SESSION, "identity": "declared"})
+    yield state, behaviour, seen
+    work._BUILDER.set(None)
+
+
+def run_check(state, *words, transport):
+    args = arguments("run", *words)
+    return work._builder_check(state, args, Path("holder"), transport, "60")
+
+
+def test_a_builders_use_check_is_composed_built_and_posted_from_its_frame(composed):
+    state, _behaviour, seen = composed
+    transport = PostingTransport()
+    assert run_check(state, "use", "--job-from-artifact", transport=transport) == 0
+    job = work.artifact_use_job(CHECK_ARTIFACT)
+    head = git_in(work.resolve_implementation_root()[0], "rev-parse", "HEAD").stdout.decode().strip()
+    assert seen["dispatch"] == work.compose_check_dispatch("use", {"job": job, "head": head, "tree": seen["tree"]})
+    assert seen["command"][seen["command"].index("--launched-by-dispatch") + 1] == "a" * 32
+    assert "--return-frame" in seen["command"] and "entrance" in seen["command"]
+    (endpoint, body), = transport.posts
+    assert endpoint == "repos/o/r/issues/5/comments"
+    marker, text = body.split("\n\n", 1)
+    assert text == "The job ran.\n"
+    assert "stage=use" in marker and "tree=held" in marker and "outcome=success" in marker
+    assert f"head={head}" in marker and "dispatch_sha256=" in marker and "staffing_status=degraded" in marker
+    origin = json.loads((seen["reports"][-1] and Path(seen["reports"][-1]["tree_metadata"])).parent.parent
+                        .joinpath("tree-origins", Path(seen["reports"][-1]["tree_metadata"]).name).read_bytes())
+    assert origin["built_by"] == {"dispatch_id": "a" * 32}
+    assert origin["declaration"]["name"] == "use" and origin["declaration"]["artifact_comment"] == "77"
+    assert str(seen["tree"].name).startswith("tradecraft-tree-")
+
+
+def test_a_tree_edited_while_its_seat_ran_is_reported_changed(composed):
+    state, behaviour, _seen = composed
+    behaviour["edit"] = True
+    transport = PostingTransport()
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    assert "tree=changed" in transport.posts[0][1]
+
+
+def test_a_criterion_check_carries_the_criterion_and_a_failed_seat_posts_error(composed):
+    state, behaviour, seen = composed
+    behaviour["outcome"] = "error"
+    behaviour["return"] = ""
+    transport = PostingTransport()
+    run_check(state, "acceptance-criterion", "--criterion", "C2", transport=transport)
+    assert seen["dispatch"].decode().startswith(work.CRITERION_PREAMBLE)
+    assert work.artifact_criterion(CHECK_ARTIFACT, "C2").encode() in seen["dispatch"]
+    assert seen["command"][seen["command"].index("--requires") + 1] == "execute"
+    body = transport.posts[0][1]
+    assert "criterion=C2" in body and "outcome=error" in body
+    assert body.endswith(work.NO_RETURN_LINE)
+
+
+def test_a_second_launch_posts_a_second_report(composed):
+    state, _behaviour, _seen = composed
+    transport = PostingTransport()
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    run_check(state, "use", "--job-from-artifact", transport=transport)
+    assert len(transport.posts) == 2
+
+
+def test_a_report_whose_post_fails_three_times_is_unposted(composed):
+    state, _behaviour, seen = composed
+    transport = PostingTransport(failures=3)
+    assert run_check(state, "use", "--job-from-artifact", transport=transport) == 1
+    assert seen["reports"][-1]["check_report"]["status"] == "check-report-unposted"
+    retried = PostingTransport(failures=2)
+    assert run_check(state, "use", "--job-from-artifact", transport=retried) == 0
+    assert len(retried.posts) == 1
+
+
+def test_a_frame_is_read_whole_or_not_at_all():
+    value = b"line one\nline two\n"
+    header = {"bytes": len(value), "sha256": __import__("hashlib").sha256(value).hexdigest(), "outcome": "success"}
+    output = b"seat: x\n\n" + dispatch_seat.FRAME_OPENING + json.dumps(header).encode() + b"\n" + value
+    assert dispatch_seat.read_return_frame(output)["return"] == value
+    assert dispatch_seat.read_return_frame(output[:-1]) is None
+    assert dispatch_seat.read_return_frame(b"no frame here") is None

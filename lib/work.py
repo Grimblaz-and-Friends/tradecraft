@@ -78,6 +78,7 @@ import holder_transcript
 import keep_warm
 import preflight
 from winio import utf8_stdio
+import seat_process
 from seat_process import run_inherited_process, run_read
 
 
@@ -94,6 +95,7 @@ def _run_probe(command, **kwargs):
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
     "review-disposition", "proof", "ready-reviewers", "release-report", "catch-up", "cold-reader",
+    "acceptance-criterion",
 )
 DIRECT_COMMANDS = ("release", "adopt", "run", "tree", "allowance")
 CLI_COMMANDS = DIRECT_COMMANDS
@@ -234,6 +236,7 @@ STAGE_SAFETY = {
     ),
     "catch-up": (("0.173.0", "holder-owned checked catch-up"),),
     "cold-reader": ((COLD_READER_VERSION, "isolated cold reading of the change"),),
+    "acceptance-criterion": (("0.218.0", "a criterion reader composed from the settled artifact"),),
 }
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "affirmed-brief": {"required": set(), "optional": set(),
@@ -9632,7 +9635,7 @@ def _note_launched_split(command, store, launched_after):
         opened.memo[_LAUNCHED_SPLIT] = split
 
 
-def _invoke_recipient(command, deadline):
+def _invoke_recipient(command, deadline, runner=None):
     deadline.remaining()
     preparation, store = _PREPARATION.get() or (None, None)
     if preparation is not None:
@@ -9656,7 +9659,7 @@ def _invoke_recipient(command, deadline):
             command.extend(("--launch-notice", str(notice)))
         launched_after = datetime.now(timezone.utc).isoformat()
         try:
-            return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
+            return (runner or _recipient_run)(command, timeout=max(0, wait_end - time.monotonic()),
                                   cleanup_deadline=deadline.end - deadline.reserve / 8,
                                   on_tick=_window_follower(notice, deadline)).returncode
         except subprocess.TimeoutExpired:
@@ -10679,6 +10682,9 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--floor-command", help="exact repository command for a composed run floor dispatch")
     cli.add_argument("--tree-metadata", type=Path,
                      help="the record path tree printed; required by run use")
+    cli.add_argument("--job-from-artifact", action="store_true",
+                     help="run use in builder mode: the job is the settled artifact's Use session job")
+    cli.add_argument("--criterion", help="run acceptance-criterion: the settled artifact's criterion id")
     cli.add_argument(
         "--timeout-seconds", type=float,
         help="the time the recipient gets, from its start (default 7200 for build, 3600 otherwise)",
@@ -11110,10 +11116,180 @@ def _builder_check_inputs(args: argparse.Namespace) -> None:
     if args.tree_metadata is not None:
         raise BuilderRefused("stage-composes-its-own-tree",
                              f"run {args.stage} builds its tree from the settled artifact's declaration")
-    # Instalment 1 of #1011 has not built the in-run tree and report yet, so nothing launches.
-    raise BuilderRefused("check-composition-not-built",
-                         f"builder-mode run {args.stage} composes from the settled artifact, which this "
-                         "release does not yet do")
+    if args.stage == "use" and not args.job_from_artifact:
+        raise WorkError("run use in builder mode requires --job-from-artifact")
+
+
+TREE_NAME_LETTERS = str.maketrans("0123456789", "ghijklmnop")
+REPORT_MARKER = "tradecraft:check-report:v1"
+NO_RETURN_LINE = "No return was retained; see the bundle."
+REPORT_POST_ATTEMPTS = 3
+
+
+def _settled_artifact_text(state: WorkState, missing: str) -> tuple[str, str | None]:
+    marker = state.artifact_phase.settled_artifact if state.artifact_phase is not None else None
+    if marker is None:
+        raise BuilderRefused(missing, "the change has no settled artifact")
+    return marker.body, marker.source_id
+
+
+def _check_tree(state: WorkState, source: Path, artifact: str, artifact_comment: str | None,
+                name: str, built_by: str | None) -> tuple[Path, Path, dict]:
+    """Build a check's consumer tree from the settled artifact's declaration, in a directory the entrance names."""
+    declared = artifact_tree_declaration(artifact, name)
+    # No digits, so the name can never carry the change's issue or pull-request number.
+    output = Path(tempfile.gettempdir()) / f"tradecraft-tree-{secrets.token_hex(8).translate(TREE_NAME_LETTERS)}"
+    numbers = [state.issue_number, *([state.pr["number"]] if state.pr and state.pr.get("number") else [])]
+    _refuse_tree_path_naming(output, numbers)
+    work = f"{state.repo}#{state.issue_number}"
+    try:
+        metadata = recipient_tree.create_consumer_tree(
+            source=source, output=output, work=work, producer_version=records.producer_version(),
+            mode=declared["mode"], paths=list(declared.get("paths") or []),
+            loading_surfaces=list(declared.get("loading_surfaces") or []),
+            front_page=declared.get("front_page"), root_instructions=declared.get("root_instructions"),
+            directed_paths=list(declared.get("directed_paths") or []),
+            exclusions=list(declared.get("exclusions") or []),
+            deny_texts=list(declared.get("deny_texts") or []),
+            records_home=_records_home(None))
+        claim = recipient_tree.load_consumer_tree_metadata(metadata, work=work)
+        root = recipient_tree.validate_consumer_tree(metadata, work=work, source=source,
+                                                    records_home=_records_home(None), claim=claim)
+    except recipient_tree.RecipientTreeError as exc:
+        raise WorkError(f"the check's consumer tree could not be built: {exc}") from exc
+    # Beside the tree's own record, which its digest seals: what declared it and which launch built it.
+    origin = {"declaration": {"name": name, "artifact_comment": artifact_comment,
+                              "sha256": declared["block_sha256"]},
+              "built_by": {"dispatch_id": built_by}, "source_revision": claim.get("source_revision")}
+    origins = metadata.parent.parent / "tree-origins"
+    origins.mkdir(parents=True, exist_ok=True)
+    records.write_json(origins / metadata.name, origin)
+    return root, metadata, claim
+
+
+def _tree_held(state: WorkState, source: Path, metadata: Path, claim: dict) -> bool:
+    """The second check of a check's tree, when its seat returns: unedited, and the source still at its revision."""
+    try:
+        recipient_tree.validate_consumer_tree(metadata, work=f"{state.repo}#{state.issue_number}",
+                                              source=source, records_home=_records_home(None), claim=claim)
+    except recipient_tree.RecipientTreeError:
+        return False
+    return True
+
+
+def _framed_recipient_run(captured: bytearray):
+    """A recipient runner that forwards the launcher's stdout and keeps it, so its return frame can be read."""
+    def runner(command, *, timeout, cleanup_deadline, on_tick=None):
+        def forward(name, chunk):
+            if name == "stdout":
+                captured.extend(chunk)
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            else:
+                sys.stderr.buffer.write(chunk)
+                sys.stderr.buffer.flush()
+        return seat_process.run_process(command, input=b"", cwd=str(Path.cwd()), timeout=timeout,
+                                        on_output=forward, cleanup_deadline=cleanup_deadline)
+    return runner
+
+
+def check_report_body(*, stage: str, frame: dict | None, head: str, tree: str,
+                      criterion: str | None) -> str:
+    """The comment the entrance posts: the marker, a blank line, and the frame's return bytes."""
+    frame = frame or {}
+    attributes = [f"stage={stage}", f"dispatch={frame.get('dispatch_id') or 'unknown'}", f"head={head}",
+                  f"dispatch_sha256={frame.get('dispatch_sha256') or 'unknown'}", f"tree={tree}",
+                  f"staffing_status={frame.get('staffing_status') or 'degraded'}"]
+    if frame.get("same_vendor_reason"):
+        attributes.append(f"same_vendor_reason={frame['same_vendor_reason']}")
+    if criterion:
+        attributes.append(f"criterion={criterion}")
+    attributes.append(f"outcome={frame.get('outcome') or 'error'}")
+    returned = frame.get("return") or b""
+    text = returned.decode("utf-8", "replace") if returned else NO_RETURN_LINE
+    return f"<!-- {REPORT_MARKER} {' '.join(attributes)} -->\n\n{text}"
+
+
+def _post_check_report(github, state: WorkState, body: str) -> dict[str, object]:
+    endpoint = f"repos/{state.repo}/issues/{state.issue_number}/comments"
+    errors = []
+    for _attempt in range(REPORT_POST_ATTEMPTS):
+        try:
+            posted = github.post(endpoint, {"body": body})
+            return {"status": "posted", "comment": posted.get("id") if isinstance(posted, dict) else None}
+        except (OSError, ValueError, WorkError) as exc:
+            errors.append(str(exc))
+    return {"status": "check-report-unposted", "errors": errors}
+
+
+def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, github,
+                   timeout_argument: str, launch_plan: dict | None = None) -> int:
+    """A use or criterion check whose dispatch and tree come from the settled artifact, never its caller.
+
+    In builder mode the entrance posts the seat's report from the launcher's frame inside this run.
+    Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+    """
+    stage = args.stage
+    builder = builder_mode()
+    if stage == "use" and _held_by_cold_reading(state, "use"):
+        return 0
+    resolved = resolve_implementation_root(root, state.repo, state.issue_number, state.instalment)
+    if resolved is None:
+        raise WorkError(f"no active implementation registration matches {state.repo}#{state.issue_number}")
+    source = resolved[0]
+    head = _git(["rev-parse", "HEAD"], source).stdout.decode("ascii").strip()
+    if stage == "use":
+        artifact, comment = _settled_artifact_text(state, "artifact-use-job-absent")
+        job = artifact_use_job(artifact)
+        tree_name, capability, criterion_id = "use", "execute", None
+    else:
+        criterion_id = args.criterion
+        if not criterion_id:
+            raise WorkError("run acceptance-criterion requires --criterion ID")
+        artifact, comment = _settled_artifact_text(state, "artifact-criterion-unresolved")
+        criterion = artifact_criterion(artifact, criterion_id)
+        capability, tree_name = criterion_reader(criterion)
+        if tree_name is None:
+            raise WorkError("a criterion read on the change's own tree is not built in this release; "
+                            "its artifact declares a consumer tree for it instead")
+    consumer_root, metadata, claim = _check_tree(state, source, artifact, comment, tree_name,
+                                                 builder["dispatch_id"] if builder else None)
+    inputs = ({"job": job, "head": head, "tree": consumer_root} if stage == "use" else
+              {"criterion": criterion, "capability": capability, "head": head, "tree": consumer_root})
+    dispatch_bytes = compose_check_dispatch(stage, inputs)
+    with tempfile.TemporaryDirectory(prefix="tradecraft-check-") as temporary:
+        dispatch = Path(temporary) / "dispatch.md"
+        dispatch.write_bytes(dispatch_bytes)
+        own_vendor, own_vendor_source = _producer_vendor(
+            state, RESUME_SOURCE_STAGES["build"] | {"stretch"}, revision=head, source_root=source)
+        here = Path(__file__).resolve().parent
+        command = [
+            sys.executable, str(here / "dispatch_seat.py"),
+            "--dispatch", str(dispatch), "--root", str(consumer_root),
+            "--work", f"{state.repo}#{state.issue_number}", "--stage", stage,
+            "--settings-source", f"work entrance {stage} route",
+            "--settings-scope", "use-consumer" if stage == "use" else "criterion-reader",
+            "--vendor", "claude", "--own-vendor", own_vendor, "--own-vendor-source", own_vendor_source,
+            "--classification", "cold", "--requires", capability, "--timeout-seconds", timeout_argument,
+            "--return-frame",
+            *(["--same-vendor-reason", "owner-selected-claude-implementer"] if own_vendor == "claude" else []),
+            *(["--launched-by-dispatch", builder["dispatch_id"], "--launched-by-session",
+               str(builder.get("session_id")), "--dispatch-origin", "entrance"] if builder else []),
+            *_seat_launch_arguments(state, "use-consumer", "cold", claude_path=args.claude,
+                                    codex_path=args.codex, plan=launch_plan),
+        ]
+        captured = bytearray()
+        code = _invoke_recipient(command, lifecycle.current_deadline(), runner=_framed_recipient_run(captured))
+    frame = dispatch_seat.read_return_frame(bytes(captured))
+    held = _tree_held(state, source, metadata, claim)
+    body = check_report_body(stage=stage, frame=frame, head=head, tree="held" if held else "changed",
+                             criterion=criterion_id)
+    posted = _post_check_report(github, state, body) if builder else {"status": "not-posted-outside-builder-mode"}
+    _emit_report({"stage": stage, "recipient_returned": True, "head": head,
+                  "tree": "held" if held else "changed", "tree_metadata": str(metadata),
+                  "frame": None if frame is None else {k: v for k, v in frame.items() if k != "return"},
+                  "check_report": posted}, state)
+    return code if posted["status"] != "check-report-unposted" else 1
 
 
 def run(
@@ -11419,6 +11595,12 @@ def _run(
     if args.command is None:
         _emit_report(recommendation.as_dict(), state)
         return 0
+    if getattr(args, "job_from_artifact", False) and (args.stage != "use" or builder_mode() is None):
+        raise WorkError("--job-from-artifact applies only to a builder's run use")
+    if args.stage == "acceptance-criterion" or (args.stage == "use" and builder_mode() is not None):
+        # A check composed from the settled artifact: the caller supplies neither its dispatch nor its tree.
+        limit = args.timeout_seconds if args.timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
+        return _builder_check(state, args, root, github, f"{limit:g}")
     decision = _reported_decision(state, Decision(
         args.stage, args.stage not in {"proof", "ready-reviewers", "release-report", "catch-up"},
         _named_continuity(state, args.stage, recommendation),
