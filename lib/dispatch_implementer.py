@@ -499,43 +499,78 @@ def _validate_stretch(args: argparse.Namespace) -> None:
         raise ImplementerError("a stretch launch requires --lineage-branch")
     if github_allowance.issue_of(args.work) is None:
         raise ImplementerError("a stretch launch requires --work owner/name#n")
+    # The cloud route is decided per stage, and `stretch` is not one of its stages, so the question is
+    # whether this repository's builds go to the cloud. A resumed session runs where it started, which
+    # for a stretch, refused on the cloud from its first launch, is always here.
     if not args.resume and cloud_build.launch_route("build", None, args.work) is not None:
         raise ImplementerError("cloud builds keep the relay route")
 
 
-def _stream_position(entry: dict, stream: bytes) -> int:
-    """Where a refusal's call stands in the run's stream: by its tool-use id, else by its command text."""
+def _spelling(text: str) -> str:
+    """A path or command as a match reads it: a guard logs the resolved path, the call the written one."""
+    return text.replace("\\", "/").casefold()
+
+
+def _stream_position(entry: dict, calls: list[tuple[str | None, list[str]]]) -> int:
+    """Where a refusal's call stands among the run's tool calls: by tool-use id, else by its text.
+
+    Unplaced refusals sort after every call.
+    """
     denial = entry.get("denial") if isinstance(entry.get("denial"), dict) else {}
     wanted_id = entry.get("tool_use_id") or denial.get("tool_use_id")
-    command = entry.get("command")
-    position = 0
-    for event in launch_bound._stream_events(stream):
-        for block in launch_bound._blocks(event):
-            if block.get("type") != "tool_use":
-                continue
-            if (wanted_id and block.get("id") == wanted_id) or (
-                    not wanted_id and command and any(command in leaf for leaf in launch_bound._leaves(block.get("input")))):
-                return position
-            position += 1
-    return position
+    texts = [_spelling(text) for text in entry.get("texts") or () if text]
+    for position, (call_id, leaves) in enumerate(calls):
+        if wanted_id and call_id == wanted_id:
+            return position
+        if not wanted_id and any(text in leaf for text in texts for leaf in leaves):
+            return position
+    return len(calls)
+
+
+def _stream_calls(stream: bytes) -> list[tuple[str | None, list[str]]]:
+    return [(block.get("id"), [_spelling(leaf) for leaf in launch_bound._leaves(block.get("input"))])
+            for event in launch_bound._stream_events(stream) for block in launch_bound._blocks(event)
+            if block.get("type") == "tool_use"]
 
 
 def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> None:
-    """One list, in stream order, of every refusal a stretch builder met; the run stands after them."""
+    """One entry per refused call, in stream order, naming every source that reported it.
+
+    A call the GitHub bound or the file guard refuses is also reported by Claude as a permission
+    denial, so the two reports of one call are one entry. The run stands after them.
+    """
     found: list[dict[str, object]] = []
+    for refusal in record.get("github_write_refusals") or ():
+        found.append({"source": "github-write-bound", "tool": refusal.get("tool"),
+                      "command": refusal.get("command"), "reason": refusal.get("reason"),
+                      "at": refusal.get("at"), "texts": [refusal.get("command")]})
+    for refusal in (record.get("write_guard") or {}).get("refusals") or ():
+        found.append({"source": "file-write-guard", "tool": refusal.get("tool"),
+                      "command": refusal.get("canonical") or refusal.get("raw"),
+                      "reason": refusal.get("reason"),
+                      "texts": [refusal.get("raw"), refusal.get("canonical")]})
     for denial in attempt.get("permission_denials") or ():
         found.append({"source": "permission-denial",
                       "tool": denial.get("tool_name") if isinstance(denial, dict) else None,
                       "reason": "Claude reported a tool permission denial", "denial": denial})
-    for refusal in record.get("github_write_refusals") or ():
-        found.append({"source": "github-write-bound", "tool": refusal.get("tool"),
-                      "command": refusal.get("command"), "reason": refusal.get("reason"),
-                      "at": refusal.get("at")})
-    for refusal in (record.get("write_guard") or {}).get("refusals") or ():
-        found.append({"source": "file-write-guard", "tool": refusal.get("tool"),
-                      "command": refusal.get("canonical") or refusal.get("raw"),
-                      "reason": refusal.get("reason")})
-    record["refusals"] = sorted(found, key=lambda entry: _stream_position(entry, getattr(args, "stretch_stream", b"")))
+    calls = _stream_calls(getattr(args, "stretch_stream", b"") or b"")
+    merged: dict[int, dict[str, object]] = {}
+    unplaced: list[dict[str, object]] = []
+    for entry in found:
+        position = _stream_position(entry, calls)
+        entry.pop("texts", None)
+        if position == len(calls):
+            unplaced.append({**entry, "sources": [entry["source"]]})
+            continue
+        if position not in merged:
+            merged[position] = {**entry, "sources": [entry["source"]]}
+            continue
+        # The bound that refused names the entry; Claude's denial of the same call joins it.
+        held = merged[position]
+        held["sources"].append(entry["source"])
+        if "denial" in entry:
+            held["denial"] = entry["denial"]
+    record["refusals"] = [merged[position] for position in sorted(merged)] + unplaced
     log = getattr(args, "stretch_guard_log", None)
     if record.get("github_write_refusals_unknown") or (log is not None and not Path(log).is_file()):
         record["refusals_unknown"] = True

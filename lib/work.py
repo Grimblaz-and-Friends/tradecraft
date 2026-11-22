@@ -97,6 +97,9 @@ COMMANDS = (
     "review-disposition", "proof", "ready-reviewers", "release-report", "catch-up", "cold-reader",
     "acceptance-criterion",
 )
+# A stage whose sentence `allowance` prints though the entrance launches no such stage: the holder
+# writes a stretch builder's dispatch, and the sentence it carries must be the launch's own.
+ALLOWANCE_ONLY_STAGES = ("stretch",)
 DIRECT_COMMANDS = ("release", "adopt", "run", "tree", "allowance")
 CLI_COMMANDS = DIRECT_COMMANDS
 USE_HOLDER_DETAIL = (
@@ -10682,7 +10685,7 @@ def parser() -> argparse.ArgumentParser:
             "release and adopt manage a registration without dispatching"
         ),
     )
-    cli.add_argument("stage", nargs="?", choices=COMMANDS,
+    cli.add_argument("stage", nargs="?", choices=COMMANDS + ALLOWANCE_ONLY_STAGES,
                      help="the single stage required after the run command")
     cli.add_argument("--repo", required=True)
     cli.add_argument("--issue", required=True, type=int)
@@ -10879,9 +10882,13 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState,
     issue, as the launcher will, and refuses a tree or pull request other than those: the
     launcher refuses a dispatch stating any other allowance. Design: lib/DESIGN.md#the-github-write-bound
     """
-    if args.stage not in GITHUB_BOUND_STAGES | {"use"}:
-        raise WorkError("allowance requires an implementer stage or use: "
-                        + ", ".join(sorted(GITHUB_BOUND_STAGES | {"use"})))
+    if args.stage not in GITHUB_BOUND_STAGES | {"use", "stretch"}:
+        raise WorkError("allowance requires an implementer stage, use or stretch: "
+                        + ", ".join(sorted(GITHUB_BOUND_STAGES | {"use", "stretch"})))
+    if args.stage == "stretch" and getattr(args, "cloud", False):
+        raise WorkError("allowance stretch --cloud: cloud builds keep the relay route")
+    if args.stage == "stretch" and (grants or getattr(args, "grant", None)):
+        raise WorkError("allowance stretch: a stretch builder's writes are its own change's, and take no grant")
     if getattr(args, "cloud", False):
         # A cloud launch is told its route's sentence, which carries no grant and no branch of
         # this tree; the launcher refuses a grant on that route.
@@ -10915,7 +10922,8 @@ def _allowance_command(args: argparse.Namespace, grants=(), *, state: WorkState,
                         f"request ({number}), which the launch holds")
     pull_request = number
     allowance = github_allowance.allowance_for(
-        args.stage, repository=args.repo, branch=branch, pull_request=pull_request, grants=grants)
+        args.stage, repository=args.repo, branch=branch, pull_request=pull_request, grants=grants,
+        issue=args.issue)
     print(github_allowance.sentence(allowance))
     return 0
 
@@ -10936,7 +10944,7 @@ def _refuse_tree_path_naming(output: Path, numbers: list[int]) -> None:
 # --- builder mode: the entrance run from inside a stretch launch's process tree ------------
 # Design: lib/DESIGN.md#a-builders-own-checks-and-writes
 
-# The checks and own-change writes rows 1 and 5 of #1011 give a builder; every other stage is the
+# The checks a builder runs as its tools, and the writes to its own change; every other stage is the
 # holder's. The read-only decision is open to anyone.
 BUILDER_STAGES = frozenset({"cold-reader", "use", "acceptance-criterion", "proof", "ready-reviewers",
                             "catch-up"})
@@ -11245,6 +11253,7 @@ def check_report_body(*, stage: str, frame: dict | None, head: str, tree: str,
     frame = frame or {}
     attributes = [f"stage={stage}", f"dispatch={frame.get('dispatch_id') or 'unknown'}", f"head={head}",
                   f"dispatch_sha256={frame.get('dispatch_sha256') or 'unknown'}", f"tree={tree}",
+                  # A seat whose launcher left no frame proved no staffing, so it is never `qualified`.
                   f"staffing_status={frame.get('staffing_status') or 'degraded'}"]
     if frame.get("same_vendor_reason"):
         attributes.append(f"same_vendor_reason={frame['same_vendor_reason']}")
@@ -11269,7 +11278,7 @@ def _post_check_report(github, state: WorkState, body: str) -> dict[str, object]
 
 
 def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, github,
-                   timeout_argument: str, launch_plan: dict | None = None) -> int:
+                   timeout_argument: str) -> int:
     """A use or criterion check whose dispatch and tree come from the settled artifact, never its caller.
 
     In builder mode the entrance posts the seat's report from the launcher's frame inside this run.
@@ -11278,6 +11287,11 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
     stage = args.stage
     builder = builder_mode()
     if stage == "use" and _held_by_cold_reading(state, "use"):
+        return 0
+    # As today's use route: a conflicted or behind branch goes to catch-up before any check of it.
+    sync = _synchronization_decision(state)
+    if sync is not None:
+        _emit_report(_reported_decision(state, sync).as_dict(), state)
         return 0
     resolved = resolve_implementation_root(root, state.repo, state.issue_number, state.instalment)
     if resolved is None:
@@ -11310,6 +11324,14 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
         dispatch.write_bytes(dispatch_bytes)
         own_vendor, own_vendor_source = _producer_vendor(
             state, RESUME_SOURCE_STAGES["build"] | {"stretch"}, revision=head, source_root=source)
+        # The use consumer's staffing plan, with its fallback against the builder's vendor, as today's
+        # use route prints it; a criterion reader is staffed the same way.
+        launch_plan = _launch_plan(state, Decision("use", True, None, "holder-named-stage", ""),
+                                   resolve_comparison=False)
+        launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+                                   **dispatch_seat.fallback_plan("claude", own_vendor, capability),
+                                   "comparison_vendor_source": own_vendor_source}
+        setting_resolution.print_plan(launch_plan, label="work")
         here = Path(__file__).resolve().parent
         command = [
             sys.executable, str(here / "dispatch_seat.py"),
@@ -11643,6 +11665,8 @@ def _run(
         raise WorkError("a stage is accepted only after the run or allowance command")
     if args.command == "run" and args.stage is None:
         raise WorkError("run requires a stage")
+    if args.command == "run" and args.stage in ALLOWANCE_ONLY_STAGES:
+        raise WorkError(f"run {args.stage}: the entrance launches no {args.stage}; allowance prints its sentence")
     if args.command == "run" and args.stage == "catch-up" and args.implementation_root is not None:
         raise WorkError("run catch-up accepts no caller-supplied implementation root")
     if args.restart_unresolved_reason is not None and (

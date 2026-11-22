@@ -464,3 +464,18 @@ def test_a_grant_quoting_three_whole_words_of_its_row_is_carried(monkeypatch):
     fixture, brief = _grant_state(body)
     monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "connected")))
     assert work.validated_grants(fixture, [9001], "artifact", "resume")[0]["row"] == 4
+
+
+def test_1011_the_allowance_command_prints_a_stretch_builders_sentence(tmp_path, monkeypatch, capsys):
+    assert _allowance_at(tmp_path, monkeypatch, ["allowance", "stretch", "--implementation-root", "{tree}"]) == 0
+    number = state(pr=True).pr["number"]
+    expected = github_allowance.sentence(github_allowance.allowance_for(
+        "stretch", repository="example/product", branch=BRANCH, pull_request=number, issue=12))
+    printed = capsys.readouterr().out.strip()
+    assert printed == expected and "a comment on issue #12 of example/product" in printed
+    for extra in (["--cloud"], ["--grant", "1"]):
+        with pytest.raises(work.WorkError, match="stretch"):
+            _allowance_at(tmp_path, monkeypatch, ["allowance", "stretch", "--implementation-root", "{tree}", *extra])
+    with pytest.raises(work.WorkError, match="launches no stretch"):
+        work.run(work.parser().parse_args(["run", "stretch", "--repo", "example/product", "--issue", "12",
+                                           "--root", str(tmp_path)]))

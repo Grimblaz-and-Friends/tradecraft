@@ -18,6 +18,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from winio import utf8_stdio
 from posix_tree import Descendants
+import launch_tree
 import preflight
 
 # Tests turn this off to show what an uncontained read leaves behind; production never does.
@@ -107,9 +108,9 @@ def _job_api():
     return _JOB_API
 
 
-# The worker names a stretch launch's job from this, then drops it, so the launch tree check can
-# open the job by name. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
-STRETCH_JOB_VARIABLE = "TRADECRAFT_STRETCH_JOB"
+# The worker names a stretch launch's job from launch_tree's variable, then drops it, so the
+# launch tree check can open the job by the same name. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+STRETCH_JOB_VARIABLE = launch_tree.JOB_VARIABLE
 ERROR_ALREADY_EXISTS = 183
 
 
@@ -149,7 +150,7 @@ def _join_kill_on_close_job(name=None):
 def _worker(command, launched):
     stretch = os.environ.pop(STRETCH_JOB_VARIABLE, None)
     if stretch:
-        _join_kill_on_close_job(f"Local\\tradecraft-stretch-{stretch}")
+        _join_kill_on_close_job(launch_tree.job_name(stretch))
     else:
         _join_kill_on_close_job()
     child = subprocess.Popen(command, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)

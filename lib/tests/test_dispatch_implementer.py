@@ -2640,8 +2640,9 @@ def test_stretch_refusals_gather_every_source_in_order(tmp_path):
     log = tmp_path / "guard.jsonl"
     log.write_bytes(b"")
     implementer._stretch_refusals(record_value, attempt, Namespace(stretch_guard_log=log))
-    assert [entry["source"] for entry in record_value["refusals"]] == [
-        "permission-denial", "github-write-bound", "file-write-guard"]
+    # With no stream to place them, each stays its own entry, the bounds' reports first.
+    assert [entry["sources"] for entry in record_value["refusals"]] == [
+        ["github-write-bound"], ["file-write-guard"], ["permission-denial"]]
     assert "refusals_unknown" not in record_value
 
 
@@ -2711,13 +2712,17 @@ def test_a_builder_launches_no_implementer(job, monkeypatch, state, variable):
 
 
 def refused_stream(outside, *, unguarded=False):
-    """A stretch turn refused a GitHub write, then a file write, then a tool, and finished anyway."""
+    """A stretch turn refused a GitHub write, then a file write, then a tool, and finished anyway.
+
+    The call writes its path with forward slashes, as a session does; the guard logs the resolved one.
+    """
+    written = outside.replace("\\", "/")
     events = [
         {"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "gh issue comment 6 --body x"}}]}},
         {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": True}]}},
         {"type": "assistant", "message": {"content": [
-            {"type": "tool_use", "id": "toolu_2", "name": "Write", "input": {"file_path": outside}}]}},
+            {"type": "tool_use", "id": "toolu_2", "name": "Write", "input": {"file_path": written}}]}},
         {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "toolu_2", "is_error": not unguarded}]}},
         {"type": "assistant", "message": {"content": [
@@ -2725,13 +2730,15 @@ def refused_stream(outside, *, unguarded=False):
         {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_3", "is_error": True}]}},
         {"type": "result", "subtype": "success", "is_error": False, "session_id": STRETCH_SESSION,
          "result": "Ready, after three refusals.",
-         "permission_denials": [{"tool_name": "WebFetch", "tool_use_id": "toolu_3"}]},
+         "permission_denials": [{"tool_name": "Bash", "tool_use_id": "toolu_1"},
+                                {"tool_name": "Write", "tool_use_id": "toolu_2"},
+                                {"tool_name": "WebFetch", "tool_use_id": "toolu_3"}]},
     ]
     return "\n".join(json.dumps(event) for event in events)
 
 
 @pytest.mark.parametrize("stage", ["stretch", "build"])
-def test_1011_C3_one_stream_with_all_three_refusals(job, tmp_path, monkeypatch, stage):
+def test_1011_three_refused_calls_are_three_entries_in_stream_order(job, tmp_path, monkeypatch, stage):
     args = stretch_job(job, monkeypatch, {})
     outside = str(tmp_path / "home" / ".claude" / "settings.json")
     if stage == "build":
@@ -2739,7 +2746,7 @@ def test_1011_C3_one_stream_with_all_three_refusals(job, tmp_path, monkeypatch, 
     args.scenario = job[1]
     job[1].write_bytes(json.dumps({"claude": {
         "stdout": refused_stream(outside),
-        "guard_decisions": [{"tool": "Write", "tool_use_id": "toolu_2", "raw": outside, "canonical": outside,
+        "guard_decisions": [{"tool": "Write", "raw": outside, "canonical": outside,
                              "decision": "deny", "reason": "launch write bound: outside"}],
         "github_decisions": [{"tool": "Bash", "command": "gh issue comment 6 --body x", "decision": "deny",
                               "reason": "a comment on o/r#6"}]}}).encode())
@@ -2750,11 +2757,12 @@ def test_1011_C3_one_stream_with_all_three_refusals(job, tmp_path, monkeypatch, 
         return
     assert code == 0 and logged["outcome"] == "success"
     assert implementer.records.sidecar(args.output, ".source.bin").read_bytes() == b"Ready, after three refusals."
-    assert [entry["source"] for entry in logged["refusals"]] == [
-        "github-write-bound", "file-write-guard", "permission-denial"]
+    assert [entry["sources"] for entry in logged["refusals"]] == [
+        ["github-write-bound", "permission-denial"], ["file-write-guard", "permission-denial"],
+        ["permission-denial"]]
 
 
-def test_1011_C3_an_unguarded_completed_call_still_fails_a_stretch(job, tmp_path, monkeypatch):
+def test_1011_an_unguarded_completed_call_still_fails_a_stretch(job, tmp_path, monkeypatch):
     args = stretch_job(job, monkeypatch, {})
     outside = str(tmp_path / "home" / ".claude" / "settings.json")
     job[1].write_bytes(json.dumps({"claude": {"stdout": refused_stream(outside, unguarded=True),

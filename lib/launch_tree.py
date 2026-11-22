@@ -17,8 +17,11 @@ import subprocess
 
 DISPATCH_VARIABLE = "TRADECRAFT_STRETCH_DISPATCH"
 WORK_VARIABLE = "TRADECRAFT_STRETCH_WORK"
-# Read and dropped by the launch worker, which names its job from it; no recipient sees it.
+# Read and dropped by the launch worker, which names its job from it; no recipient sees it. It is a
+# variable of its own because a seat launched with the other two still set would otherwise name its
+# worker's job after the stretch's, find that name taken, and fail to start.
 JOB_VARIABLE = "TRADECRAFT_STRETCH_JOB"
+JOB_PREFIX = "Local\\tradecraft-stretch-"
 VARIABLES = (DISPATCH_VARIABLE, WORK_VARIABLE, JOB_VARIABLE)
 POINTERS = "stretch-launches"
 DISPATCH_ID = re.compile(r"[0-9a-f]{32}")
@@ -44,7 +47,7 @@ class Holding:
 
 
 def job_name(dispatch_id: str) -> str:
-    return f"Local\\tradecraft-stretch-{dispatch_id}"
+    return JOB_PREFIX + dispatch_id
 
 
 def without_variables(env: dict[str, str]) -> dict[str, str]:
@@ -222,10 +225,15 @@ def attribution(store: Path, *, dispatch: str | None = None, session: str | None
         return {}
     launch = holding.launch
     present = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if present and present != launch.get("session_id"):
+        # One session rule everywhere: a present session that is not the launch's is refused, as the
+        # entrance refuses it; `declared` is for an absent session variable only.
+        raise LaunchRefused("builder-identity-unproved", f"this session {present} is not the launch's "
+                            f"session {launch.get('session_id')}")
     fields: dict[str, object] = {
         "launched_by": {"role": "builder", "dispatch_id": launch["dispatch_id"],
                         "session_id": launch.get("session_id"),
-                        "identity": "proved" if present and present == launch.get("session_id") else "declared"},
+                        "identity": "proved" if present else "declared"},
         "dispatch_origin": "entrance" if origin == "entrance" else "caller"}
     ignored = {name: value for name, value in (("dispatch", dispatch), ("session", session))
                if value is not None and value != {"dispatch": launch["dispatch_id"],

@@ -1486,10 +1486,10 @@ def _launcher_call(words: list[str]) -> str | None:
     if name == "uv":
         if not rest or rest[0] != "run":
             return None
-        rest = rest[1:]
-        while rest and rest[0].startswith("-"):
-            rest.pop(0)
-        return _launcher_call(rest)
+        # uv run's options take values (`--with pkg`), so any word naming a launcher, after them or
+        # behind an interpreter, is the call; no option of uv's names one of these files.
+        named = next((re.split(r"[\\/]", word)[-1] for word in rest[1:] if _is_launcher(word)), None)
+        return named or _module_launcher(rest[1:])
     if name not in PYTHON_PROGRAMS:
         return None
     while rest:
@@ -1506,6 +1506,16 @@ def _launcher_call(words: list[str]) -> str | None:
         if word.startswith("-"):
             continue
         return re.split(r"[\\/]", word)[-1] if _is_launcher(word) else None
+    return None
+
+
+def _module_launcher(words: list[str]) -> str | None:
+    """A launcher named as a module, `-m dispatch_seat`, anywhere in a command's words."""
+    for index, word in enumerate(words[:-1]):
+        if word == "-m":
+            module = words[index + 1].rsplit(".", 1)[-1] + ".py"
+            if module in LAUNCHER_FILES:
+                return module
     return None
 
 

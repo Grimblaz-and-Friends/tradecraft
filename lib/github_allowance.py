@@ -31,7 +31,7 @@ SELF_TEST_SECONDS = 120.0
 CONNECTORS = guard.CONNECTORS
 CHILD_VARIABLE = guard.CHILD_VARIABLE
 SHELL_PREFIX = "CLAUDE_CODE_SHELL_PREFIX"
-PUSH_STAGES = {"build", "floor", "stretch"}
+PUSH_STAGES = {"build", "floor"}
 # The cloud stages that may push the change branch: those that may push it locally.
 CLOUD_CHANGE_STAGES = {"build", "floor", "review-disposition"}
 GRANT_MARKER = re.compile(
@@ -87,7 +87,7 @@ def allowance_for(stage: str, *, repository: str, branch: str | None,
         # pull request and its issue. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
         return {"kind": "stretch", "repository": repository, "branch": branch, "issue": issue,
                 "pull_request": pull_request, "grants": list(grants)}
-    if stage in PUSH_STAGES and branch and stage != "stretch":
+    if stage in PUSH_STAGES and branch:
         kind = "branch"
     elif stage == "review-disposition" and branch:
         kind = "review-disposition"
