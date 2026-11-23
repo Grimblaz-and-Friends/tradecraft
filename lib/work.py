@@ -12262,15 +12262,15 @@ def _live_builders(state: WorkState) -> list[dict]:
 
 
 def _complete_readied_hand_records(state: WorkState) -> None:
-    """A live hand-started record whose dispatch a lawful ready readiness record names is completed.
+    """A live hand-started record whose dispatch a lawful readiness record names is completed.
 
-    The owner's builder has no process whose end would end its record, so its ready record does.
+    The owner's builder has no process whose end would end its record, so its readiness record does.
     """
     hand = [pointer for pointer in _live_builders(state) if pointer.get("hand") is True]
     if not hand:
         return
     reading = readiness_reading(state, builder_checks(state)) or {}
-    if reading.get("status") != "ready":
+    if reading.get("status") not in ("ready", "stopped"):
         return
     store = state.record_root or records.default_record_root()
     for pointer in hand:
@@ -12627,14 +12627,18 @@ SEND_BACK_HEADER = (b"Re-run the checks your changes make stale, answer each poi
                     b"readiness record.\n\n")
 CATCH_UP_LINE = (b"Catch up with the base, re-run what the merge makes stale, post proof and a new "
                  b"readiness record.\n")
-# The holder's launches the final pass refuses; a send-back, the catch-up resume, the release report and
-# a bought panel's seats stay open.
+# The holder repeats no check the record shows was run and launches no review after the ready report; its one
+# further word to the builder is the send-back. The catch-up resume, release report and a bought panel stay open.
 FINAL_PASS_LAUNCHES = frozenset({"cold-seat", "use", "cold-reader", "acceptance-criterion"})
 
 
-def _refuse_final_pass_launch(args: argparse.Namespace, recommendation: Decision) -> None:
+def _refuse_final_pass_launch(state: WorkState, args: argparse.Namespace, recommendation: Decision) -> None:
     fresh_handoff = args.stage == "handoff" and args.resume_reason is None and args.ended_reason is None
-    if recommendation.stage == "final-pass" and (args.stage in FINAL_PASS_LAUNCHES or fresh_handoff):
+    if not (args.stage in FINAL_PASS_LAUNCHES or fresh_handoff):
+        return
+    # The final pass starts at the ready record, whatever the chain after it is waiting for.
+    if recommendation.stage == "final-pass" or (
+            _route(state)["name"] == "builder" and _builder_route_decision(state).stage == "final-pass"):
         raise RouteRefused("final-pass-launches-nothing", f"run {args.stage}: a ready record stands at the "
                            "head, and the final pass launches nothing; send the builder back once instead")
 
@@ -12723,15 +12727,17 @@ def _resume_ready_builder(state: WorkState, args: argparse.Namespace, text: byte
                            holder, record["timeout_seconds"], resume=session, after=after)
 
 
-def _execute_send_back(state: WorkState, args: argparse.Namespace, github, recommendation: Decision) -> int:
+def _execute_send_back(state: WorkState, args: argparse.Namespace, github) -> int:
     """The holder's one send-back of the term: its text, under the fixed header, to the builder that reported
     ready, and posted on the issue with the send-back marker. Design: lib/DESIGN.md#the-builder-route"""
     launched = _send_back_launches(state)
     if launched and _send_back_markers(state):
         raise RouteRefused("send-back-spent", "run send-back: this term's one send-back is spent; what stays "
                            "open goes into the release report for the owner")
-    if not launched and recommendation.stage != "final-pass":
-        raise RouteRefused("not-at-final-pass", f"run send-back: the decision is {recommendation.stage}, "
+    # Read before the gates after ready: a panel's or late reviewer's finding is what a send-back carries.
+    ready = _builder_route_decision(state)
+    if not launched and ready.stage != "final-pass":
+        raise RouteRefused("not-at-final-pass", f"run send-back: the decision is {ready.stage}, "
                            "not final-pass")
     supplied = args.dispatch.expanduser().resolve() if args.dispatch is not None else None
     words = supplied.read_bytes() if supplied is not None and supplied.is_file() else b""
@@ -12782,6 +12788,10 @@ def _handoff_plan_reading(state: WorkState, first: tuple | None) -> dict:
     block = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
     if block.get("holder_written"):
         return {"reading": "differs", "reason": "holder-written"}
+    composed_by = request.get("producer_version")
+    if composed_by != records.producer_version():
+        return {"reading": "unknown", "reason": f"composed-by-another-version: {composed_by} "
+                f"composed it and {records.producer_version()} runs"}
     hand = ({name: block.get(name) for name in ("tree", "branch", "store", "dispatch")}
             if request.get("started_by") == "hand" else None)
     try:
@@ -13193,12 +13203,13 @@ def _run(
         # Only the builder route's catch-up resume carries a limit to raise; a merge has none.
         raise WorkError("--budget-override-reason requires a named build, handoff, send-back or builder-route "
                         "catch-up and nonempty reason")
-    if args.stage == "handoff" or holder_resume or (builder_mode() is None and recommendation.stage == "final-pass"):
+    if args.stage == "handoff" or holder_resume or (builder_mode() is None and (
+            recommendation.stage == "final-pass" or args.stage in FINAL_PASS_LAUNCHES)):
         try:
             if builder_mode() is None:
-                _refuse_final_pass_launch(args, recommendation)
+                _refuse_final_pass_launch(state, args, recommendation)
             if args.stage == "send-back":
-                return _execute_send_back(state, args, github, recommendation)
+                return _execute_send_back(state, args, github)
             if holder_resume:
                 return _catch_up_resume(state, args, recommendation)
             if args.stage == "handoff":

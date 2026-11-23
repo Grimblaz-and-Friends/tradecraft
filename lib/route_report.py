@@ -1,4 +1,4 @@
-"""Assemble the release report's builder-route section, its row-check readings, and where each part is placed.
+"""Assemble the release report's builder-route section and its row-check readings.
 
 Design: lib/DESIGN.md#the-builder-route
 """
@@ -7,13 +7,7 @@ from __future__ import annotations
 
 HOLDS, FAILS, NOT_STATED, NOT_APPLICABLE, NOT_OCCURRED, UNKNOWN = (
     "holds", "fails", "not-stated", "not-applicable", "not-occurred", "unknown")
-# The payload's fields, each given by the entrance as read; the row checks are computed from them.
-FIELDS = ("route", "readiness", "owed_at_ready", "send_back", "catch_up_resumes", "reviewer_declines",
-          "holder_after_ready", "holder_quiet", "handoff_plan", "plan_writer_launches", "limits",
-          "cost_split", "route_comparison", "refusals", "hand_record", "check_dispatches", "check_reports",
-          "stretch_outcome")
 COST_FIGURES = ("holder_before", "holder_after", "builder")
-HOLDER_VIEWS = frozenset({"agrees", "differs", "cannot-judge"})
 
 
 def _entry(check, reading, field, reason=None):
@@ -159,10 +153,6 @@ def _send_back(send_back):
     return _entry("4.2", FAILS, field, f"{count} send-backs")
 
 
-def _refusal_key(entry):
-    return (entry.get("command"), entry.get("reason"))
-
-
 def _stretch_refusals(refusals):
     if not isinstance(refusals, dict) or not _list_of_dicts(refusals.get("stretch")):
         return None
@@ -176,12 +166,13 @@ def _refusals_reported(refusals):
         return _missing("5.2", field)
     if not stretch:
         return _entry("5.2", NOT_OCCURRED, field, "the stretch was refused nothing")
-    reported = {_refusal_key(entry) for entry in refusals["reported"]}
-    absent = [entry for entry in stretch if _refusal_key(entry) not in reported]
-    if absent:
-        return _entry("5.2", FAILS, field, "not reported: " + "; ".join(
-            f"{entry.get('command')} ({entry.get('reason')})" for entry in absent))
-    return _entry("5.2", HOLDS, field)
+    # Paired in order, not by text: the launch logs the refused command whole and the record words it its own way.
+    reported = refusals["reported"]
+    pairs = [{"logged": logged, "reported": reported[index] if index < len(reported) else None}
+             for index, logged in enumerate(stretch)]
+    unpaired = [pair["logged"] for pair in pairs if pair["reported"] is None]
+    reason = "not reported: " + "; ".join(str(entry.get("command")) for entry in unpaired) if unpaired else None
+    return {**_entry("5.2", FAILS if unpaired else HOLDS, field, reason), "pairs": pairs}
 
 
 def _refused_then_ready(refusals, stretch_outcome, readiness):
@@ -285,7 +276,9 @@ def _cost(cost_split, route_comparison):
         f"{name}: {cost_split[name].get('reason') or 'unknown'}" for name in unpriced)), "due": due}
 
 
-# What each row check asks, in row_checks' order.
+# What each row check asks, in row_checks' order. 5.1 is the launcher's own tests, with nothing to read from a
+# change's records, and 6.1 (a fresh Claude session reaching ready unprompted) the holder writes from the run, beside
+# holder_quiet.
 ROW_CHECKS = {
     "1.1": "nothing owed at the ready commit",
     "1.2": "each check named was the builder's launch",
@@ -298,7 +291,7 @@ ROW_CHECKS = {
     "3.3": "each check's instructions were composed",
     "4.1": "no holder launch after ready",
     "4.2": "at most one send-back",
-    "5.2": "the refusals are in the record and the report",
+    "5.2": "each logged refusal pairs with a reported one",
     "5.3": "a run with a refusal still yields its ready record",
     "5.4": "a failed check's relaunch, both recorded",
     "5.5": "a hand-started record names what it ran under",
@@ -359,56 +352,3 @@ def builder_route(*, route: dict | None = None, readiness: dict | None = None, o
                "stretch_outcome": stretch_outcome}
     return {**payload, "row_checks": row_checks(payload)}
 
-
-def decline_key(entry: dict) -> str:
-    """The key a holder's view of one decline is given under: its own ``key``, else report and finding, else comment."""
-    if entry.get("key") is not None:
-        return str(entry["key"])
-    if entry.get("report") is not None and entry.get("finding") is not None:
-        return f"{entry['report']}:{entry['finding']}"
-    return str(entry.get("comment"))
-
-
-def _declines(builder_route):
-    readiness = builder_route.get("readiness")
-    record = readiness.get("declines") if isinstance(readiness, dict) else None
-    reviewers = builder_route.get("reviewer_declines")
-    return ([{**entry, "source": "check-report"} for entry in record or [] if isinstance(entry, dict)]
-            + [{**entry, "source": "connected-reviewer"} for entry in reviewers or [] if isinstance(entry, dict)])
-
-
-def placement(builder_route: dict, holder_views: dict) -> dict:
-    """Where the release report places each part: what needs the owner's decision, every other decline
-    in its own uncollapsed list grouped by reason, and what the checks settled (collapsed).
-
-    A decline the holder gave no view of needs the owner's decision, so no decline is left only collapsed.
-    """
-    views = holder_views if isinstance(holder_views, dict) else {}
-    needs, agreed = [], []
-    for entry in _declines(builder_route):
-        key = decline_key(entry)
-        view = views.get(key) if views.get(key) in HOLDER_VIEWS else "not-given"
-        (agreed if view == "agrees" else needs).append({**entry, "key": key, "holder_view": view})
-    groups: dict = {}
-    for entry in agreed:
-        groups.setdefault(str(entry.get("reason")), []).append(entry)
-    readiness = builder_route.get("readiness")
-    decisions = readiness.get("decisions") if isinstance(readiness, dict) else None
-    handoff = builder_route.get("handoff_plan")
-    differs = handoff if isinstance(handoff, dict) and handoff.get("reading") != "composed" else None
-    return {
-        "needs_decision": {
-            "declines": needs,
-            "decisions": [entry for entry in decisions or [] if isinstance(entry, dict)
-                          and entry.get("row") is not None],
-            "handoff_plan": differs,
-            "remaining_declines": f"{len(agreed)} other decline(s) the holder agrees with, listed under "
-                                  "declined findings.",
-        },
-        "declined_findings": [{"reason": reason, "declines": entries} for reason, entries in groups.items()],
-        "settled_by_checks": {
-            "route": builder_route.get("route"), "cost_split": builder_route.get("cost_split"),
-            "limits": builder_route.get("limits"), "catch_up_resumes": builder_route.get("catch_up_resumes"),
-            "row_checks": builder_route.get("row_checks"),
-        },
-    }

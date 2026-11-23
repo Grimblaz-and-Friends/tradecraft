@@ -3,6 +3,7 @@ and the release report's builder_route payload."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 import json
 from pathlib import Path
@@ -115,6 +116,34 @@ def test_1011_a_send_back_waits_for_the_final_pass(tmp_path, monkeypatch, holder
     assert refused(monkeypatch, holder, state, "send-back", "--dispatch", words(tmp_path)) == "not-at-final-pass"
 
 
+def test_1011_a_send_back_does_not_wait_on_a_connected_reviewer(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn):
+    state, _first = ready_hand(tmp_path, monkeypatch, holder)
+    state.config = replace(state.config, connected_reviewers=frozenset({"reviewer-bot"}))
+    monkeypatch.setattr(work, "_reviewer_ran", lambda _state: False)
+    assert work.decide(state, RULES).reason == "required-connected-reviewer-has-not-run"
+    # The final pass has begun, so the holder still launches nothing while the chain waits.
+    assert refused(monkeypatch, holder, state, "cold-seat") == "final-pass-launches-nothing"
+    transport = Recorder()
+    assert run(monkeypatch, holder, state, "send-back", "--dispatch", words(tmp_path), transport=transport) == 0
+    assert len(transport.posted) == 1 and len(hand_requests()) == 2
+
+
+def test_1011_a_stopped_record_completes_a_hand_started_record(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
+    state = stored(tmp_path, MECHANICAL)
+    assert run(monkeypatch, holder, state, "handoff", "--by-hand", "gemini:any-model") == 0
+    [request] = hand_requests()
+    stop = {"kind": "cannot-launch", "reason": "gh is not signed in", "check": "use"}
+    post(state, readiness_record(request["dispatch_id"], status="stopped", stop=stop), 30)
+    work._complete_readied_hand_records(state)
+    made = work.decide(state, RULES)
+    assert (made.stage, made.reason, json.loads(made.detail)["stop"]) == ("stretch-stopped", "cannot-launch", stop)
+    capsys.readouterr()
+    assert run(monkeypatch, holder, state, "handoff", "--resume-reason", "gh is signed in now") == 0
+    assert "gh is signed in now" in capsys.readouterr().out and len(hand_requests()) == 2
+
+
 def resumable(state, tmp_path):
     """A completed launched stretch whose run observed SESSION, with its ready record at the head."""
     dispatch = launch(state, "stretch", 5, root=str(tmp_path / "implementation"),
@@ -158,12 +187,13 @@ def test_1011_a_launched_builder_is_resumed_in_its_own_session(
         assert transport.posted[0][1].startswith(f"<!-- tradecraft:send-back:v1 dispatch={pointer['dispatch_id']} -->")
 
 
-def received(state, tmp_path, *, holder_written=False, altered=False, **block):
+def received(state, tmp_path, *, holder_written=False, altered=False, version=None, **block):
     """A first stretch whose kept dispatch is the composed handoff, or an altered one."""
     common = {"branch": "tradecraft/5-fixture", "holder_root": tmp_path, "notify": None, "floor_command": None}
     composed = work.compose_handoff_for(state, plugin_root=LIB.parent, **common)
     dispatch = launch(state, "stretch", 5, lineage_branch=common["branch"], handoff={
-        "holder_written": holder_written, "notify": None, "floor_command": None, "pull_request": 7, **block})
+        "holder_written": holder_written, "notify": None, "floor_command": None, "pull_request": 7, **block},
+        **({"producer_version": version} if version else {}))
     output = state.record_root / f"stretch-{dispatch}" / "result.md"
     work.records.sidecar(output, ".dispatch.bin").write_bytes(composed + (b"more\n" if altered else b""))
     return dispatch
@@ -171,7 +201,8 @@ def received(state, tmp_path, *, holder_written=False, altered=False, **block):
 
 @pytest.mark.parametrize("kind, expected", [
     ({}, ("composed", None)), ({"altered": True}, ("differs", "altered")),
-    ({"holder_written": True}, ("differs", "holder-written"))])
+    ({"holder_written": True}, ("differs", "holder-written")), ({"version": "0.0.1"}, (
+        "unknown", f"composed-by-another-version: 0.0.1 composed it and {work.records.producer_version()} runs"))])
 def test_1011_the_release_report_reads_the_handoff_it_received(tmp_path, kind, expected):
     state = with_pull_request(stored(tmp_path, MECHANICAL))
     state.holder_root = tmp_path

@@ -2,6 +2,8 @@
 
 **Purpose:** record why the second of #1011's two pull requests routes a change through one handoff to a builder that answers for readiness, how the route is chosen, what the holder may still do once the builder is live, and how the release report shows the owner what the builder decided, and what was chosen over what. **Audience:** a future session changing the route decision, `run handoff`, the readiness record, the builder-route gates, the send-back or catch-up resume, the release report's builder-route payload, the route's cost split or the five-change comparison. **Success:** that reader can recover what was chosen over what without the issue.
 
+The route exists because every product change paid for the holder relaying each step of the run on the lab's largest context: in the 30 days the brief measured, holders spent 83% of their cost from the first build on, and 71% of the points they sent builders after a first build were process steps or a check's finding passed on, which a builder can take from the source. So the builder takes the checks as its own tools, and the holder returns for one final pass.
+
 The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7071427121) governs, including its Delivery paragraph, which gives this pull request the holder-written plan, the handoff, the readiness record, the final pass and send-back, the release report's additions, the cost split and row 7's default. Its pre-implementation artifact was [settled on the cap route](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7085587515), with the holder's [whole-change reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7085596192) and its readings of the [first](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7087075226) and [second](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7088529044) build turns. The lane is elevated / routine-panel. It builds on [D-1012](D-1012-2026-11-21-a-builders-own-checks-and-writes.md), whose builder tools this route composes, and supersedes none. The plan's decisions are E1 to E12; each call below names the decision it sits in.
 
 ## Calls made inside the rows
@@ -68,6 +70,14 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **A stretch proves delivery of its handoff's terms,** a resume counting with its launch; no answer names `run build`.
 - **The handoff names what the entrance would refuse:** the closing reference alone on a line; the cold reading's `open` before `run use`, `clean` before `run proof`.
 - **`implementing-pr` and `builder-session` stay out of the handoff;** the entrance needs neither.
+
+## From the holder's reading of the final pass
+
+- **`handoff_plan` across a practice update reads `unknown`, `composed-by-another-version`,** naming both, because other code's recomposition proves nothing.
+- **Row check 5.2 pairs logged and reported refusals in order,** failing only on a logged one left unpaired, because the launch logs the command whole and the record words it its own way.
+- **A send-back doesn't wait on the gate, a connected reviewer or a panel,** whose findings are what it carries.
+- **A `stopped` record completes a hand-started record**, so it reads `stretch-stopped`; `builder-live` refuses `--resume-reason`, which is for a stopped builder.
+- **`placement` is removed:** where each decline goes (C26) is the release-report reference's rule, applied by the holder who writes the report.
 
 ## Rejected
 

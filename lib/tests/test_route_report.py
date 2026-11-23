@@ -1,4 +1,4 @@
-"""The release report's builder-route payload: its row-check readings and the placement of its parts."""
+"""The release report's builder-route payload: its row-check readings."""
 from copy import deepcopy
 from pathlib import Path
 import sys
@@ -20,13 +20,7 @@ def inputs(**changes):
             "record": 11, "status": "ready", "launched_by_builder": True, "reconciled": True,
             "relaunches": {"pairs": [], "unpaired": []}, "stop": None,
             "vendor_model": {"source": "observed", "log": "readable"},
-            "builder": {"vendor": "claude", "model": "opus", "started_by": "launch", "usage_log": None},
-            "declines": [{"report": 5, "finding": "F1", "disposition": "declined", "reason": "out of scope"},
-                         {"report": 5, "finding": "F2", "disposition": "declined", "reason": "out of scope"},
-                         {"report": 6, "finding": "F1", "disposition": "declined", "reason": "wrong premise"}],
-            "decisions": [{"text": "which name", "recommendation": "short", "row": 2},
-                          {"text": "a spacing", "recommendation": "two", "row": None}],
-        },
+            "builder": {"vendor": "claude", "model": "opus", "started_by": "launch", "usage_log": None}},
         "owed_at_ready": {"last": []},
         "send_back": {"count": 0},
         "catch_up_resumes": [],
@@ -158,49 +152,16 @@ def test_malformed_inputs_read_unknown():
         assert readings[check] == "unknown", check
 
 
-def test_placement_puts_a_differing_decline_under_needs_decision_and_an_agreed_one_under_declined_findings():
-    payload = route_report.builder_route(**inputs())
-    views = {"5:F1": "agrees", "5:F2": "agrees", "6:F1": "differs", "900": "agrees"}
-    placed = route_report.placement(payload, views)
-    needs = placed["needs_decision"]
-    assert [entry["key"] for entry in needs["declines"]] == ["6:F1"]
-    assert needs["declines"][0]["holder_view"] == "differs"
-    groups = {group["reason"]: [entry["key"] for entry in group["declines"]]
-              for group in placed["declined_findings"]}
-    assert groups == {"out of scope": ["5:F1", "5:F2", "900"]}
-    assert needs["remaining_declines"].startswith("3 other decline(s)")
+
+def test_refusals_pair_in_order_whatever_their_wording():
+    worded = {"command": "a merge", "reason": "the stretch may not merge"}
+    entry = reading("5.2", refusals={"stretch": [REFUSAL], "reported": [worded]})
+    assert entry["reading"] == "holds"
+    assert entry["pairs"] == [{"logged": REFUSAL, "reported": worded}]
 
 
-def test_placement_sends_cannot_judge_and_unviewed_declines_to_needs_decision():
-    payload = route_report.builder_route(**inputs())
-    placed = route_report.placement(payload, {"5:F1": "cannot-judge"})
-    assert {entry["key"]: entry["holder_view"] for entry in placed["needs_decision"]["declines"]} == {
-        "5:F1": "cannot-judge", "5:F2": "not-given", "6:F1": "not-given", "900": "not-given"}
-    assert placed["declined_findings"] == []
-
-
-def test_every_decline_appears_uncollapsed():
-    payload = route_report.builder_route(**inputs())
-    for views in ({}, {"5:F1": "agrees", "900": "differs"}, {key: "agrees" for key in ("5:F1", "5:F2", "6:F1", "900")}):
-        placed = route_report.placement(payload, views)
-        shown = [entry["key"] for entry in placed["needs_decision"]["declines"]]
-        shown += [entry["key"] for group in placed["declined_findings"] for entry in group["declines"]]
-        assert sorted(shown) == ["5:F1", "5:F2", "6:F1", "900"]
-        assert "declines" not in placed["settled_by_checks"]
-
-
-def test_placement_names_row_decisions_and_a_differing_handoff_and_settles_the_rest():
-    differs = {"reading": "differs", "reason": "holder-written"}
-    payload = route_report.builder_route(**inputs(handoff_plan=differs))
-    placed = route_report.placement(payload, {})
-    assert placed["needs_decision"]["decisions"] == [{"text": "which name", "recommendation": "short", "row": 2}]
-    assert placed["needs_decision"]["handoff_plan"] == differs
-    assert route_report.placement(route_report.builder_route(**inputs()), {})["needs_decision"]["handoff_plan"] is None
-    settled = placed["settled_by_checks"]
-    assert set(settled) == {"route", "cost_split", "limits", "catch_up_resumes", "row_checks"}
-    assert settled["row_checks"] == payload["row_checks"]
-
-
-def test_placement_of_an_empty_payload_does_not_raise():
-    placed = route_report.placement(route_report.builder_route(), None)
-    assert placed["needs_decision"]["declines"] == [] and placed["declined_findings"] == []
+def test_a_logged_refusal_with_no_reported_entry_fails():
+    second = {"command": "gh pr close", "reason": "not allowed"}
+    entry = reading("5.2", refusals={"stretch": [REFUSAL, second], "reported": [REFUSAL]})
+    assert entry["reading"] == "fails" and "gh pr close" in entry["reason"]
+    assert entry["pairs"][1] == {"logged": second, "reported": None}

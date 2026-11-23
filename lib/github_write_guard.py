@@ -451,8 +451,9 @@ def decide(command: str, cwd: str | None, config: dict) -> dict[str, object]:
     findings.extend(_variable_findings(ctx))
     if findings:
         first = findings[0]
-        reason = (f"{REFUSED}: {first.reason}. This step's allowance is "
-                  f"{describe(config['allowance'])}; {REQUEST_ROUTE}.")
+        route = ("record this write in your readiness record's `decisions`, with why the work needs it and what it "
+                 "would leave behind" if config["allowance"].get("kind") == "stretch" else REQUEST_ROUTE)
+        reason = f"{REFUSED}: {first.reason}. This step's allowance is {describe(config['allowance'])}; {route}."
         return {"decision": "deny", "reason": reason, "write": first.write}
     return {"decision": "allow", "reason": "no GitHub write outside the allowance", "write": None}
 
