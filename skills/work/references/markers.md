@@ -282,7 +282,7 @@ Every other comment carrying the marker counts for nothing, and the entrance's `
 
 - **Exact form:** `<!-- tradecraft:proof:v1 head=SHA -->` followed by the fenced version-one JSON object and its readable rendering.
 - **Attributes and lawful values:** `head` is the full pull-request head the object describes and equals `identity.head` inside the object.
-- **Producer, surface, moment:** the holder through `run proof`, in the command-owned pull-request comment, after any evidence update whose current state should be presented to the gate.
+- **Producer, surface, moment:** the holder through `run proof`, or on the builder route the builder, in the command-owned pull-request comment, after any evidence update whose current state should be presented to the gate.
 
 ```text
 <!-- tradecraft:proof:v1 head=0123456789abcdef0123456789abcdef01234567 -->

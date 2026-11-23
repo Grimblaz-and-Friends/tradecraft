@@ -68,6 +68,12 @@ def test_1011_an_owners_relay_marker_with_nothing_launched_reads_relay(tmp_path)
         "name": "relay", "reason": "owner-asked", "marker": 101, "overruled": None}
 
 
+def test_1011_an_ask_in_the_issue_body_names_the_body(tmp_path):
+    state = fixture(tmp_path, BRIEF)
+    state.issue["body"] = route_marker("builder")
+    assert reading(state)["marker"] == "issue"
+
+
 def test_1011_the_latest_route_marker_governs(tmp_path):
     state = fixture(tmp_path, BRIEF, route_marker("relay"), route_marker("builder"))
     assert reading(state)["name"] == "builder" and reading(state)["marker"] == 102

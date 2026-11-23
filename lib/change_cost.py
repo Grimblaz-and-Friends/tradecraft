@@ -1936,8 +1936,9 @@ def _claude_builder_replies(items: list[_Attempt], projects: Path) -> tuple[list
             reasons.append(f"{stdout}: the launch does not name exactly one Claude session")
             continue
         found, failure = _stream_reply_ids(stdout)
-        if failure:
-            reasons.append(failure)
+        if failure or not found:
+            # A launch with recorded usage and no reply named is unread, not free.
+            reasons.append(failure or f"{stdout}: the launch's stream names no reply with usage")
             continue
         session = sessions.pop()
         for identity, counts in found.items():

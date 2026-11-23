@@ -1678,7 +1678,9 @@ def _body_file(ctx: Context, name: str) -> tuple[str | None, str | None]:
     if name == "-":
         return _stdin_body(ctx)
     if _expands(name):
-        return None, BODY_EXPANDED
+        # It is the path that would expand, not the body, so the refusal names the path.
+        return None, (f"a comment body file whose path {name} holds `$` or a command substitution, which the "
+                      f"check can't resolve; write the path out: {BODY_ROUTE}")
     path = _resolve_dir(ctx.cwd, name)
     unread = (f"a comment body read from {name}, which the check could not read as a file; pass a "
               "readable file holding the body")

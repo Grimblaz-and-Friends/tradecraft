@@ -12250,7 +12250,8 @@ def _route(state: WorkState) -> dict[str, object]:
             and marker.surface in {"issue", "issue-comment"} and _attribute_error(marker) is None
             and _marker_value_error(marker) is None]
     ask = max(asks, key=_source_order) if asks else None
-    ask_id = (int(ask.source_id) if ask.source_id and ask.source_id.isdigit() else ask.source_id
+    # An ask in the issue body has no comment id, so the reading names the body.
+    ask_id = (int(ask.source_id) if ask.source_id and ask.source_id.isdigit() else ask.source_id or ask.surface
               ) if ask is not None else None
     name = reason = None
     cloud = cloud_build.launch_route("build", None, work)
@@ -12626,7 +12627,7 @@ def _resume_handoff(state, args, store, holder_root, spent) -> int:
     if not spent:
         raise HandoffRefused("nothing-to-resume", "run handoff --resume-reason: no stretch of this work has "
                              "stopped in this term")
-    # A ready builder is resumed only by the one send-back or a catch-up, so row 4's limit holds.
+    # A ready builder is resumed only by the one send-back or a catch-up, so it is sent back at most once.
     stage = _builder_route_decision(state).stage
     if stage != "stretch-stopped":
         way = {"final-pass": "send it back once with run send-back",

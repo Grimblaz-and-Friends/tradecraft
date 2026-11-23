@@ -611,7 +611,7 @@ def _stretch_refusals(record: dict, attempt: dict, args: argparse.Namespace) -> 
 
     A call the GitHub bound or the file guard refuses is also reported by Claude as a permission
     denial, so the two reports of one call are one entry, at the earliest time any of them gives;
-    Claude's denial gives none. The run stands after them.
+    Claude's denial carries one only where its report does. The run stands after them.
     """
     found: list[dict[str, object]] = []
     for refusal in record.get("github_write_refusals") or ():

@@ -1666,3 +1666,8 @@ def test_a_stretch_builder_is_refused_a_launcher_behind_joined_or_runner_options
 def test_a_stretch_builder_may_name_a_launcher_as_data_behind_joined_options(stretch, command):
     verdict = stretch_decision(command, stretch)
     assert verdict["decision"] == "allow", verdict["reason"]
+
+
+def test_1011_a_body_file_path_holding_a_variable_is_named_as_the_cause(stretch):
+    verdict = stretch_decision('gh issue comment 5 --body-file "$BODY"', stretch)
+    assert verdict["decision"] == "deny" and "path $BODY holds `$`" in verdict["reason"]

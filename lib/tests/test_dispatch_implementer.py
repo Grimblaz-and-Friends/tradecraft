@@ -3003,7 +3003,9 @@ def test_1011_a_stretch_that_recovered_from_refusals_reaches_the_final_pass_with
     state = with_pull_request(fixture(tmp_path / "issue", *PLANNED))
     state.record_root, state.pr["draft"] = args.output.parent, False
     state.floor_public = {"outcome": "ci-met", "head": HEAD}
-    monkeypatch.setattr(work, "_cold_reading_decision", lambda *_a: None)  # This test is of the refusals.
+    # This test is of the refusals, so the cold reading and reach, read from Git history, stand clear.
+    monkeypatch.setattr(work, "_cold_reading_decision", lambda *_a: None)
+    monkeypatch.setattr(work, "_evaluate_reach", lambda checked: setattr(checked, "reach", {"state": "not-due"}))
     post(state, readiness_record(dispatch_id), 30)
     made = work.decide(state, RULES)
     assert made.stage == "final-pass" and json.loads(made.detail)["record"] is not None

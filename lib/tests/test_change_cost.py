@@ -2288,11 +2288,14 @@ def test_1011_a_launched_claude_builder_and_its_resumed_send_back_price_from_the
 @pytest.mark.parametrize("fault,reason", [
     ("stream", "cannot read stdout log"),
     ("transcript", "cannot read the builder's Claude transcript for session builder-session"),
+    ("empty", "the launch's stream names no reply with usage"),
 ])
 def test_1011_a_launched_claude_builder_whose_usage_cannot_be_read_is_unknown(claude_builder, fault, reason):
     store, projects, rows = claude_builder
     if fault == "stream":
         (store / ("b" * 32) / "answer.v2.txt.stdout.log").unlink()
+    elif fault == "empty":
+        (store / ("b" * 32) / "answer.v2.txt.stdout.log").write_bytes(b"")
     else:
         shutil.rmtree(projects)
     builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=rows, seat_bundles=[],
