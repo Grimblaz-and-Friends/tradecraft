@@ -295,6 +295,30 @@ def test_1011_a_launcher_that_does_not_start_takes_the_tree_it_was_given_away(
     assert git(holder, "ls-remote", "--heads", "origin", "tradecraft/*") == ""
 
 
+def test_1011_a_handoff_after_the_pull_request_opened_names_it_to_the_launcher(
+        tmp_path, monkeypatch, holder, quiet_report, stub):
+    from test_route import with_pull_request
+    claude_machine()
+    stub()
+    assert run(monkeypatch, holder, with_pull_request(stored(tmp_path, *PLANNED))) == 0
+    [pointer] = [json.loads(path.read_bytes()) for path in
+                 work.launch_tree.pointer_directory(work.records.default_record_root()).glob("*.json")]
+    argv = json.loads((Path(pointer["request"]).parent / "argv.json").read_bytes())
+    assert argv[argv.index("--lineage-pull-request") + 1] == "7"
+
+
+def test_1011_an_error_after_the_launcher_started_keeps_the_builders_tree(
+        tmp_path, monkeypatch, holder, quiet_report, stub):
+    claude_machine()
+    stub()
+    state = stored(tmp_path, *PLANNED)
+    monkeypatch.setattr(work, "_emit_report", lambda *_a, **_k: (_ for _ in ()).throw(BrokenPipeError()))
+    with pytest.raises(BrokenPipeError):
+        run(monkeypatch, holder, state)
+    assert json.loads(work.registry_path().read_bytes())["worktrees"]
+    assert git(holder, "branch", "--list", "tradecraft/*") != ""
+
+
 def test_1011_a_stopped_hand_started_builder_resumes_only_by_the_holders_reason(
         tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
     state = stored(tmp_path, *PLANNED)

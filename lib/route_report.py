@@ -132,14 +132,17 @@ def _stretch_refusals(refusals):
 def _refusals_reported(refusals):
     field = "refusals"
     stretch = _stretch_refusals(refusals)
-    if stretch is None or not _list_of_dicts(refusals.get("reported")):
+    launches = refusals.get("launches") if isinstance(refusals, dict) else None
+    if stretch is None or not _list_of_dicts(launches):
         return _missing("5.2", field)
     if not stretch:
         return _entry("5.2", NOT_OCCURRED, field, "the stretch was refused nothing")
-    # Paired in order, not by text: the launch logs the refused command whole and the record words it its own way.
-    reported = refusals["reported"]
-    pairs = [{"logged": logged, "reported": reported[index] if index < len(reported) else None}
-             for index, logged in enumerate(stretch)]
+    # Each launch's logged refusals pair in order, not by text, with the record that launch posted: the launch
+    # logs the refused command whole and the record words it its own way.
+    pairs = [{"dispatch": launch.get("dispatch"), "logged": logged,
+              "reported": reported[index] if index < len(reported) else None}
+             for launch in launches for reported in [launch.get("reported") or []]
+             for index, logged in enumerate(launch.get("logged") or [])]
     unpaired = [pair["logged"] for pair in pairs if pair["reported"] is None]
     reason = "not reported: " + "; ".join(str(entry.get("command")) for entry in unpaired) if unpaired else None
     return {**_entry("5.2", FAILS if unpaired else HOLDS, field, reason), "pairs": pairs}

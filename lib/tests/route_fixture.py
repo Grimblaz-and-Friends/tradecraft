@@ -244,8 +244,10 @@ class Fixture:
         work.GitHubREST = FixtureGitHub
         work._read_policy_state = lambda *_args, **_kwargs: state
         if self.cold_reading_clean:
-            # The stand-in builder's cold reading stands clean: the fixture keeps no Git history to judge it by.
+            # The stand-in builder's cold reading and reach stand clear: the fixture keeps no Git history to judge
+            # either by.
             work._cold_reading_decision = lambda *_args: None
+            work._evaluate_reach = lambda checked: setattr(checked, "reach", {"state": "not-due"})
         return work.main(["--repo", REPO, "--issue", str(ISSUE), "--root", str(self.holder)])
 
     def stop(self) -> None:

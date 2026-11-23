@@ -84,6 +84,8 @@ BROKEN = {
     "builder empty usage log": mutate(("builder", "usage_log"), ""),
     "checks not list": mutate(("checks",), {}),
     "check stage": mutate(("checks", 0, "stage"), "panel"),
+    "check stage not a string": mutate(("checks", 0, "stage"), ["use"]),
+    "finding disposition not a string": mutate(("findings", 0, "disposition"), ["fixed"]),
     "check criterion missing": mutate(("checks", 0, "criterion"), None),
     "check criterion empty": mutate(("checks", 0, "criterion"), " "),
     "check row": mutate(("checks", 0, "row"), "2"),
@@ -294,11 +296,14 @@ def check(dispatch, relaunch_of=None):
 def test_1011_an_errored_check_pairs_with_its_later_relaunch():
     third = "1" * 32
     checks = [check(DISPATCH), check(OTHER, relaunch_of=DISPATCH), check(third), check(None)]
-    result = readiness.relaunches(checks, {DISPATCH: "error", OTHER: "returned", third: "error"})
+    result = readiness.relaunches(checks, [DISPATCH, third])
     assert result == {"pairs": [[checks[0], checks[1]]], "unpaired": [checks[2]]}
+    # An errored launch the record leaves out is unpaired, and a relaunch must name its launch.
+    assert readiness.relaunches([check(None, relaunch_of=OTHER)], [OTHER]) == {
+        "pairs": [], "unpaired": [{"dispatch": OTHER}]}
 
 
 def test_1011_a_relaunch_must_come_after_the_failure():
     checks = [check(OTHER, relaunch_of=DISPATCH), check(DISPATCH)]
-    assert readiness.relaunches(checks, {DISPATCH: "error"}) == {"pairs": [], "unpaired": [checks[1]]}
+    assert readiness.relaunches(checks, [DISPATCH]) == {"pairs": [], "unpaired": [checks[1]]}
 

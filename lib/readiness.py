@@ -60,6 +60,11 @@ def _nonempty(value):
     return isinstance(value, str) and bool(value.strip())
 
 
+def _one_of(value, choices):
+    # A value that isn't a string can't be looked up, so it is refused as unknown rather than raising.
+    return isinstance(value, str) and value in choices
+
+
 def _row(value):
     return type(value) is int and value > 0
 
@@ -81,7 +86,7 @@ def _shaped(value, name):
 
 def _check(entry):
     _shaped(entry, "checks")
-    if entry["stage"] not in STAGES:
+    if not _one_of(entry["stage"], STAGES):
         raise ReadinessError("unknown check stage")
     criterion = entry["criterion"]
     if criterion is not None and not _nonempty(criterion):
@@ -102,7 +107,7 @@ def _check(entry):
 
 
 def _finding(entry):
-    field = DISPOSITIONS.get(entry.get("disposition")) if isinstance(entry, dict) else None
+    field = DISPOSITIONS.get(entry.get("disposition")) if isinstance(entry, dict) and isinstance(entry.get("disposition"), str) else None
     if field is None or set(entry) != {"report", "finding", "disposition", field}:
         raise ReadinessError("invalid findings entry")
     if not _row(entry["report"]) or not isinstance(entry["finding"], str) or not FINDING.match(entry["finding"]):
@@ -120,7 +125,7 @@ def _stop(value, status):
             raise ReadinessError("a ready record carries no stop")
         return
     _shaped(value, "stop")
-    if value["kind"] not in STOP_KINDS or not _nonempty(value["reason"]):
+    if not _one_of(value["kind"], STOP_KINDS) or not _nonempty(value["reason"]):
         raise ReadinessError("stop needs a known kind and a reason")
     if value["kind"] == "cannot-launch" and not _nonempty(value["check"]):
         raise ReadinessError("a cannot-launch stop names the check it could not launch")
@@ -144,7 +149,7 @@ def payload(body: str, status: str) -> dict:
         raise ReadinessError("invalid readiness record schema")
     builder = _shaped(value["builder"], "builder")
     if (not _nonempty(builder["vendor"]) or not _nonempty(builder["model"])
-            or builder["started_by"] not in STARTED_BY
+            or not _one_of(builder["started_by"], STARTED_BY)
             or builder["usage_log"] is not None and not _nonempty(builder["usage_log"])):
         raise ReadinessError("builder needs vendor, model, how it started, and a usage log or null")
     for name in ("checks", "findings", "rows", "decisions", "refusals"):
@@ -161,7 +166,7 @@ def payload(body: str, status: str) -> dict:
         answered.add(key)
     for entry in value["rows"]:
         _shaped(entry, "rows")
-        if not _row(entry["row"]) or entry["carried_by"] not in CARRIED_BY or not _nonempty(entry["where"]):
+        if not _row(entry["row"]) or not _one_of(entry["carried_by"], CARRIED_BY) or not _nonempty(entry["where"]):
             raise ReadinessError("rows entry needs a row, what carries it, and where")
     for entry in value["decisions"]:
         _shaped(entry, "decisions")
@@ -278,17 +283,17 @@ def reconcile(record: dict, reports: list[dict], reachable) -> dict:
     return {"reconciled": not unreconciled, "unreconciled": unreconciled}
 
 
-def relaunches(checks: list[dict], outcomes: dict[str, str]) -> dict:
-    """Pair each errored check with the later check that names it as relaunched."""
+def relaunches(checks: list[dict], errored: list[str]) -> dict:
+    """Pair each errored launch the store holds with a later record entry naming the launch that relaunched it.
+
+    The errored launches come from the store, so one the record leaves out is still unpaired.
+    """
     pairs, unpaired = [], []
-    for index, check in enumerate(checks):
-        dispatch = check.get("dispatch")
-        if dispatch is None or outcomes.get(dispatch) != "error":
-            continue
-        later = next((item for item in checks[index + 1:] if item.get("relaunch_of") == dispatch), None)
-        if later is None:
-            unpaired.append(check)
-        else:
-            pairs.append([check, later])
+    for dispatch in errored:
+        index = next((i for i, check in enumerate(checks) if check.get("dispatch") == dispatch), -1)
+        failed = checks[index] if index >= 0 else {"dispatch": dispatch}
+        later = next((item for item in checks[index + 1:]
+                      if item.get("relaunch_of") == dispatch and item.get("dispatch")), None)
+        (pairs.append([failed, later]) if later else unpaired.append(failed))
     return {"pairs": pairs, "unpaired": unpaired}
 

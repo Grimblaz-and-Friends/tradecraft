@@ -30,9 +30,9 @@ def check(report, dispatch):
 def accounting(builder, seat, *, findings=("F1", "F2")):
     """builder_checks' output for one counting use report of the builder's."""
     return {"check_dispatches": [{"bundle": "b", "stage": "use", "status": "composed", "dispatch": seat,
-                                  "outcome": "success"}],
-            "check_reports": [{"comment": 900, "dispatch": seat, "counts": True, "invalid": [],
-                               "stage": "use", "builder": builder, "findings": list(findings)}],
+                                  "outcome": "success", "builder": builder}],
+            "check_reports": [{"comment": 900, "dispatch": seat, "counts": True, "invalid": [], "stage": "use",
+                               "builder": builder, "head": HEAD, "criterion": None, "findings": list(findings)}],
             "quotations": []}
 
 
@@ -92,3 +92,15 @@ def test_1011_a_record_reads_its_terms_reports_and_names_one_of_its_stretches(tm
     state, _builder = ended_stretch(tmp_path / "decided")
     post(state, readiness_record(before), 30)
     assert decision(state)[:3] == ("stretch-stopped", "holder-owned", "builder-stopped")
+
+
+def test_1011_each_named_check_is_tied_to_its_own_launch_and_report(tmp_path):
+    state = fixture(tmp_path, BRIEF)
+    builder, seat = launch(state, "stretch", 1), "c" * 32
+    floor = {**check(None, None), "stage": "floor", "report": 901}
+    cases = {"tied": ([check(900, seat), floor], True), "another head": ([{**check(900, seat), "head": COMMIT}], False),
+             "another stage": ([{**check(900, seat), "stage": "cold-reader"}], False),
+             "no launch named": ([check(900, None)], False)}
+    for name, (checks, expected) in cases.items():
+        state = fixture(tmp_path, BRIEF, record(builder, checks=checks))
+        assert work.readiness_reading(state, accounting(builder, seat))["launched_by_builder"] is expected, name

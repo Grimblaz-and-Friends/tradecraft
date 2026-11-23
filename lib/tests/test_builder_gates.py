@@ -295,3 +295,16 @@ def test_1011_a_ready_record_with_a_stale_cold_reading_is_owed_at_ready(tmp_path
     stage, _status, reason, detail = decision(state)
     assert (stage, reason) == ("final-pass", "owed-at-ready")
     assert json.loads(detail)["owed_at_ready"]["reason"] == "cold-reading-stale"
+
+
+def test_1011_a_live_builders_read_back_shows_what_the_final_pass_owes(tmp_path):
+    state = with_pull_request(fixture(tmp_path, *PLANNED))
+    state.pr["draft"] = False
+    hand = work.launch_tree.write_hand_record(
+        state.record_root, work=WORK, vendor="claude", model="m", now=START + timedelta(minutes=5),
+        handoff={"tree": str(tmp_path / "tree"), "branch": "b", "store": str(state.record_root)})
+    post(state, readiness_record(hand["dispatch_id"]), 30)
+    made = work.decide(state, RULES)
+    ended = json.loads(made.detail)["if_ended"]
+    assert made.stage == "with-builder" and (ended["stage"], ended["reason"]) == ("final-pass", "owed-at-ready")
+    assert json.loads(ended["detail"])["owed_at_ready"]["stage"] == "floor"

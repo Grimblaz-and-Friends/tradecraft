@@ -145,18 +145,53 @@ def test_1011_a_stopped_record_completes_a_hand_started_record(
     assert "gh is signed in now" in capsys.readouterr().out and len(hand_requests()) == 2
 
 
-def resumable(state, tmp_path):
+def resumable(state, tmp_path, *, ready=True, session=SESSION, **handoff):
     """A completed launched stretch whose run observed SESSION, with its ready record at the head."""
     dispatch = launch(state, "stretch", 5, root=str(tmp_path / "implementation"),
-                      lineage_branch="tradecraft/5-fixture", holder_session_id=HOLDER_SESSION)
+                      lineage_branch="tradecraft/5-fixture", holder_session_id=HOLDER_SESSION,
+                      **({"handoff": handoff} if handoff else {}))
     run_path = work.records.sidecar(state.record_root / f"stretch-{dispatch}" / "result.md", ".run.json")
     run_path.unlink()
     work.records.write_json(run_path, {
         "schema_version": work.records.SCHEMA_VERSION, "dispatch_id": dispatch, "outcome": "success",
-        "actual_vendor": "claude", "attempts": [{"observed": {"session_id": SESSION}}],
+        "actual_vendor": "claude", "attempts": [{"observed": {"session_id": session}}],
         "completed_at": (START + timedelta(minutes=6)).isoformat()})
-    post(state, readiness_record(dispatch), 30)
+    if ready:
+        post(state, readiness_record(dispatch), 30)
     return dispatch
+
+
+def stub_argv():
+    [pointer] = [json.loads(path.read_bytes()) for path in
+                 work.launch_tree.pointer_directory(work.records.default_record_root()).glob("*.json")]
+    return json.loads((Path(pointer["request"]).parent / "argv.json").read_bytes()), pointer
+
+
+def test_1011_a_stopped_builder_resumes_with_the_limit_its_resume_declares(
+        tmp_path, monkeypatch, holder, quiet_report, stub):
+    claude_machine()
+    stub()
+    state = with_pull_request(stored(tmp_path, *PLANNED))
+    resumable(state, tmp_path, ready=False)
+    assert run(monkeypatch, holder, state, "handoff", "--resume-reason", "go on", "--timeout-seconds", "30000",
+               "--budget-override-reason", "a long change") == 0
+    argv, pointer = stub_argv()
+    assert argv[argv.index("--resume") + 1] == SESSION and argv[argv.index("--timeout-seconds") + 1] == "30000"
+    request = json.loads(Path(pointer["request"]).read_bytes())
+    assert request["handoff"]["resume_limit"] == {"timeout_seconds": 30000.0, "override_reason": "a long change"}
+
+
+def test_1011_a_recovery_restart_composes_from_what_its_handoff_carried(
+        tmp_path, monkeypatch, holder, quiet_report, stub):
+    claude_machine()
+    stub()
+    monkeypatch.setattr(work.work_recovery, "restartable", lambda *_a: True)
+    state = with_pull_request(stored(tmp_path, *PLANNED))
+    resumable(state, tmp_path, ready=False, session=None, floor_command="make check", notify="Start 5")
+    assert run(monkeypatch, holder, state, "handoff", "--resume-reason", "start again") == 0
+    argv, _pointer = stub_argv()
+    sent = Path(argv[argv.index("--dispatch") + 1]).read_text(encoding="utf-8")
+    assert "```text\nmake check\n```" in sent and "named `Start 5`" in sent
 
 
 @pytest.mark.parametrize("stage", ["send-back", "catch-up"])
@@ -241,7 +276,7 @@ def test_1011_the_release_report_carries_the_builder_route(tmp_path, monkeypatch
     assert [entry["dispatch"] for entry in report["catch_up_resumes"]] == [caught]
     assert len(report["plan_writer_launches"]) == 1 and report["stretch_outcome"] == "success"
     assert report["cost_split"]["builder"]["status"] == "unknown"
-    assert report["hand_record"] is None and report["refusals"] == {"stretch": [], "reported": []}
+    assert report["hand_record"] is None and report["refusals"]["stretch"] == []
     rows = {entry["check"]: entry["reading"] for entry in report["row_checks"]}
     assert rows["2.1"] == "holds" and rows["2.3"] == "fails" and rows["4.2"] == "holds"
 
@@ -321,3 +356,12 @@ def test_1011_a_ready_builder_is_resumed_only_by_the_send_back_or_a_catch_up(
         with pytest.raises(work.WorkError, match="^builder-not-stopped: .*" + way):
             run(monkeypatch, holder, state, "handoff", "--resume-reason", "more")
     assert len(hand_requests()) == 1
+
+
+def test_1011_no_holder_usage_record_reads_the_holder_unknown(tmp_path):
+    state = with_pull_request(stored(tmp_path, *PLANNED))
+    state.holder_root = tmp_path
+    received(state, tmp_path)
+    split = work._builder_route_report(state)["cost_split"]
+    assert all(split[name]["status"] == "unknown" and "no holder usage record" in split[name]["reason"]
+               for name in ("holder_before", "holder_after"))

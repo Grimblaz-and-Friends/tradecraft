@@ -682,7 +682,7 @@ def test_a_report_the_entrance_posted_for_a_recomposed_check_counts(counted):
     # A counting report carries its stage, its builder and the findings its return tail gives; this
     # stand-in return has no `Findings:` tail, so it counts as the one unreadable finding.
     assert report == {"comment": 1, "dispatch": report["dispatch"], "counts": True, "invalid": [],
-                      "stage": "use", "builder": report["builder"], "head": report["head"],
+                      "stage": "use", "builder": report["builder"], "head": report["head"], "criterion": None,
                       "outcome": report["outcome"], "findings": ["F0"]}
     assert report["builder"]
 
@@ -690,7 +690,10 @@ def test_a_report_the_entrance_posted_for_a_recomposed_check_counts(counted):
 def test_a_store_copy_rewritten_after_the_post_stops_the_report_counting(counted):
     state, output, _body = counted
     work.records.sidecar(output, ".source.bin").write_bytes(b"A better story.\n")
-    assert work.builder_checks(state)["check_reports"][0]["invalid"] == ["store-and-posted-differ"]
+    report = work.builder_checks(state)["check_reports"][0]
+    assert report["invalid"] == ["store-and-posted-differ"] and report["builder"]
+    # The builder is named, so the release report's row check 3.2 fails on it.
+    assert work.route_report._store_and_posted([report])["reading"] == "fails"
 
 
 def test_a_caller_supplied_dispatch_differs_and_never_counts(counted):

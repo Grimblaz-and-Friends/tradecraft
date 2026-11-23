@@ -2045,8 +2045,9 @@ def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles:
     else:
         # A builder started by hand leaves no launch record to price, and this split reads no other log.
         builder = unknown("no launched builder bundle: a hand-started builder's cost is not read")
+    # The holder's own seats are priced in the change's cost report, as on the relay route, not in this split.
     return {"holder_before": holder_before, "holder_after": holder_after, "builder": builder,
-            "start": start.isoformat()}
+            "start": start.isoformat(), "leaves_out": "seats the holder launched, which the cost report prices"}
 
 
 def route_comparison(work: str, *, home: Path | None = None) -> dict[str, object] | None:

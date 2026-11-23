@@ -27,7 +27,7 @@ def inputs(**changes):
         "limits": ["a limit"],
         "cost_split": {"holder_before": PRICED, "holder_after": PRICED, "builder": PRICED},
         "route_comparison": {"due": True},
-        "refusals": {"stretch": [REFUSAL], "reported": [REFUSAL]},
+        "refusals": {"stretch": [REFUSAL], "launches": [{"logged": [REFUSAL], "reported": [REFUSAL]}]},
         "hand_record": None,
         "check_dispatches": [{"stage": "use", "status": "composed", "dispatch": "d1"},
                              {"stage": "floor", "status": "composed", "dispatch": "d2"}],
@@ -59,8 +59,8 @@ HOLDS_AND_OTHER = [
     ("3.3", {}, {"check_dispatches": [{"stage": "use", "status": "composed", "dispatch": "d1"},
                                       {"stage": "floor", "status": "differs", "dispatch": "d2"}]}, "fails"),
     ("4.2", {"send_back": {"count": 1}}, {"send_back": {"count": 2}}, "fails"),
-    ("5.2", {}, {"refusals": {"stretch": [REFUSAL], "reported": []}}, "fails"),
-    ("5.3", {}, {"refusals": {"stretch": [], "reported": []}}, "not-occurred"),
+    ("5.2", {}, {"refusals": {"stretch": [REFUSAL], "launches": [{"logged": [REFUSAL], "reported": []}]}}, "fails"),
+    ("5.3", {}, {"refusals": {"stretch": [], "launches": []}}, "not-occurred"),
     ("5.4", {}, {"readiness": with_readiness(relaunches={"pairs": [], "unpaired": [{"dispatch": "d"}]})}, "fails"),
     ("5.5", {"hand_record": {"ran_under": "codex"}}, {}, "not-applicable"),
     ("6.2", {"hand_record": {"ran_under": "codex"}}, {}, "not-applicable"),
@@ -131,13 +131,21 @@ def test_malformed_inputs_read_unknown():
 
 def test_refusals_pair_in_order_whatever_their_wording():
     worded = {"command": "a merge", "reason": "the stretch may not merge"}
-    entry = reading("5.2", refusals={"stretch": [REFUSAL], "reported": [worded]})
+    entry = reading("5.2", refusals={"stretch": [REFUSAL], "launches": [{"logged": [REFUSAL], "reported": [worded]}]})
     assert entry["reading"] == "holds"
-    assert entry["pairs"] == [{"logged": REFUSAL, "reported": worded}]
+    assert entry["pairs"] == [{"dispatch": None, "logged": REFUSAL, "reported": worded}]
 
 
 def test_a_logged_refusal_with_no_reported_entry_fails():
     second = {"command": "gh pr close", "reason": "not allowed"}
-    entry = reading("5.2", refusals={"stretch": [REFUSAL, second], "reported": [REFUSAL]})
+    entry = reading("5.2", refusals={"stretch": [REFUSAL, second], "launches": [{"logged": [REFUSAL, second], "reported": [REFUSAL]}]})
     assert entry["reading"] == "fails" and "gh pr close" in entry["reason"]
-    assert entry["pairs"][1] == {"logged": second, "reported": None}
+    assert entry["pairs"][1] == {"dispatch": None, "logged": second, "reported": None}
+
+
+def test_each_launch_pairs_its_refusals_with_its_own_record():
+    sent_back = {"command": "gh pr close", "reason": "not allowed"}
+    entry = reading("5.2", refusals={"stretch": [REFUSAL, sent_back], "launches": [
+        {"dispatch": "a", "logged": [REFUSAL], "reported": [REFUSAL]},
+        {"dispatch": "b", "logged": [sent_back], "reported": [sent_back]}]})
+    assert entry["reading"] == "holds" and [pair["dispatch"] for pair in entry["pairs"]] == ["a", "b"]

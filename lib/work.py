@@ -4121,9 +4121,10 @@ def _evaluate_reach_in_part(state: WorkState) -> None:
         if state.validated_markers is None:
             validate_marker_claims(state)
         branch = (pr.get("head") or {}).get("ref") if pr else None
+        # A stretch carries the builder route's turns, so its removals are measured as a build's are.
         inventory = lifecycle.launch_bundles(
             state.record_root or records.default_record_root(), f"{state.repo}#{state.issue_number}",
-            RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
+            RESUME_SOURCE_STAGES["build"] | {"stretch"}, include_missing_stage=True)
         observed_sessions = [marker for marker in _state_markers(state) if marker.name == "builder-session"
                              and marker.surface in {"issue", "issue-comment"}
                              and _public_marker_valid(state, marker)]
@@ -6293,8 +6294,7 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
         return result("release-report", False, None, reason, merge["detail"])
 
-    if builder_route:
-        builder = _builder_route_decision(state)
+    def final_pass(builder: Decision) -> Decision:
         if builder.stage != "final-pass":
             return result(builder.stage, builder.dispatch, builder.continuity, builder.reason,
                           builder.detail, builder.status)
@@ -6321,6 +6321,16 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
                 "owed_at_ready": {"stage": made.stage, "reason": made.reason, "detail": made.detail}}
         return result("final-pass", False, None, "owed-at-ready", json.dumps(owed, ensure_ascii=True),
                       status="holder-owned")
+
+    if builder_route:
+        builder = _builder_route_decision(state)
+        if builder.stage == "with-builder":
+            # The builder's read-back shows what the final pass will read once it ends, holds and chain included.
+            ended = final_pass(_builder_route_decision(state, as_ended=True))
+            detail = {**json.loads(builder.detail),
+                      "if_ended": {"stage": ended.stage, "reason": ended.reason, "detail": ended.detail}}
+            builder = replace(builder, detail=json.dumps(detail, ensure_ascii=True))
+        return final_pass(builder)
     terms = _governing_terms_decision(state)
     if terms is not None:
         return result(terms.stage, terms.dispatch, terms.continuity, terms.reason, terms.detail, terms.status)
@@ -6374,14 +6384,12 @@ def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Deci
     live = [pointer for pointer in launch_tree.live_launches(store)
             if str(pointer.get("work", "")).lower() == work.lower()]
     if live and not as_ended:
-        # What the decision reads once the builder ends, so it can read its own record back.
-        ended = _builder_route_decision(state, as_ended=True)
+        # The decision adds what it will read once the builder ends, so the builder can read its record back.
         return Decision("with-builder", False, None, "builder-live", json.dumps({"live": "; ".join(
             f"hand-started record {pointer['dispatch_id']} is open, awaiting its readiness record or "
             "run handoff --ended-reason" if pointer.get("hand") is True else
             f"stretch launch {pointer['dispatch_id']} is still running; wait for its readiness record"
-            for pointer in live), "if_ended": {"stage": ended.stage, "reason": ended.reason,
-                                               "detail": ended.detail}}, ensure_ascii=True), status="waiting")
+            for pointer in live)}, ensure_ascii=True), status="waiting")
     term, _lane = _affirmed_review(state)
     if not lifecycle.launch_bundles(store, work, {"stretch"}, after=term.timestamp if term else None):
         return Decision("handoff", False, None, "handoff-due",
@@ -6399,6 +6407,10 @@ def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Deci
         return Decision("open-pull-request", False, None, "builder-returned-without-pull-request",
                         "Open the implementing pull request from the registered implementation branch.",
                         status="holder-owned")
+    if reading.get("status") == "ready" and not reading.get("from_last_launch"):
+        return Decision("stretch-stopped", False, None, "builder-stopped", json.dumps(
+            {"record": reading.get("record"), "detail": "the term's last builder launch ended with no record of "
+             "its own; run handoff --resume-reason"}, ensure_ascii=True), status="holder-owned")
     if reading.get("status") != "ready" or not reading.get("at_head"):
         not_at_head = reading.get("status") == "ready"
         return Decision("stretch-stopped", False, None,
@@ -12036,6 +12048,7 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
         recomposed[dispatch_id] = (composed, head, status)
         dispatches.append({"bundle": str(run_path), "stage": request.get("stage"), "status": status,
                            "dispatch": dispatch_id, "outcome": (_run or {}).get("outcome"),
+                           "builder": request["launched_by"].get("dispatch_id"),
                            **({"reason": problem} if problem else {})})
     reports = []
     config = getattr(state, "config", None)
@@ -12075,13 +12088,14 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
                 reasons.append("return too large to post")
             elif stored != posted_text:
                 reasons.append("store-and-posted-differ")
+        # The builder is named whatever the reasons, so a differing report still reaches row check 3.2.
         entry = {"comment": comment.get("id"), "dispatch": attributes.get("dispatch"),
-                 "counts": not reasons, "invalid": reasons}
+                 "counts": not reasons, "invalid": reasons,
+                 "builder": bundle[1]["launched_by"].get("dispatch_id") if bundle else None}
         if not reasons:
             # A counting report's findings, read from the return tail its composed dispatch fixed.
             stage = bundle[1].get("stage")
-            entry.update({"stage": stage, "builder": bundle[1]["launched_by"].get("dispatch_id"),
-                          "head": attributes.get("head"), "outcome": attributes.get("outcome"),
+            entry.update({"stage": stage, "head": attributes.get("head"), "criterion": attributes.get("criterion"), "outcome": attributes.get("outcome"),
                           "findings": [item["finding"] for item in readiness.report_findings(stage, posted_text)]
                           if stage in readiness.RETURN_TAILS else []})
         reports.append(entry)
@@ -12141,15 +12155,30 @@ def readiness_reading(state: WorkState, checks: dict[str, object] | None) -> dic
                if entry.get("counts") and entry.get("builder") in stretches]
     reconciled = readiness.reconcile(payload, reports, lambda _commit: True)
     bundles = {entry.get("dispatch"): entry for entry in checks.get("check_dispatches", [])}
-    launched = all(entry.get("dispatch") in bundles and bundles[entry["dispatch"]]["status"] == "composed"
-                   for entry in payload["checks"] if entry.get("dispatch"))
-    outcomes = {key: entry.get("outcome") for key, entry in bundles.items()}
+    posted_reports = {str(entry.get("comment")): entry for entry in checks.get("check_reports", [])}
+
+    def launched_by_builder(entry: dict) -> bool:
+        # A named check is tied to its own composed launch and counting report; only the floor and a reach
+        # that flagged nothing have no launch to name.
+        if not entry.get("dispatch"):
+            return entry["stage"] == "floor" or (entry["stage"] == "reach" and entry["report"] is None)
+        bundle, report = bundles.get(entry["dispatch"]) or {}, posted_reports.get(str(entry["report"])) or {}
+        return (bundle.get("status") == "composed" and bundle.get("builder") in stretches
+                and bundle.get("stage") == entry["stage"] and report.get("counts") is True
+                and report.get("dispatch") == entry["dispatch"] and report.get("head") == entry["head"]
+                and report.get("criterion") == entry["criterion"])
+
+    launched = all(launched_by_builder(entry) for entry in payload["checks"])
+    errored = [key for key, entry in bundles.items() if entry.get("outcome") == "error"
+               and entry.get("builder") in stretches]
     return {"record": record.source_id, "head": values["head"], "status": values["status"],
             "at_head": values["head"] == _head_sha(state), "dispatch": dispatch,
             "dispatch_is_this_works_stretch": dispatch in stretches,
+            # A record from an earlier launch doesn't answer a later one, such as a send-back that stopped silent.
+            "from_last_launch": dispatch == (_term_stretches(state) or [{}])[-1].get("dispatch_id"),
             "reconciled": reconciled["reconciled"], "unreconciled": reconciled["unreconciled"],
             "reachability": "unchecked", "launched_by_builder": launched,
-            "relaunches": readiness.relaunches(payload["checks"], outcomes),
+            "relaunches": readiness.relaunches(payload["checks"], errored),
             "stop": payload["stop"], "declines": [entry for entry in payload["findings"]
                                                   if entry["disposition"] == "declined"],
             "decisions": payload["decisions"], "refusals": payload["refusals"],
@@ -12243,7 +12272,7 @@ def _refuse_off_route(state: WorkState, stage: str) -> None:
                            "from its own tree")
     if stage == "release-report":
         reading = readiness_reading(state, builder_checks(state)) or {}
-        if reading.get("status") != "ready" or not reading.get("at_head"):
+        if reading.get("status") != "ready" or not reading.get("at_head") or not reading.get("from_last_launch"):
             raise RouteRefused("no-ready-record-at-head", "run release-report: on the builder route the "
                                "release report waits for a lawful ready readiness record at the current head "
                                f"{_head_sha(state)}")
@@ -12489,8 +12518,10 @@ def _execute_handoff(state: WorkState, args: argparse.Namespace, holder_root: Pa
         block = _handoff_block(state, args, composed, limit, common)
         return _launch_stretch(state, args, store, implementation_root, branch, block,
                                supplied.read_bytes() if supplied else composed, holder_identity, limit)
-    except BaseException:
-        if made is not None:
+    except BaseException as exc:
+        # Once the launcher is spawned the tree may be a builder's; only its exit before its pointer gives it back.
+        spawned = getattr(args, "stretch_spawned", False) and getattr(exc, "code", None) != "launcher-did-not-start"
+        if made is not None and not spawned:
             _discard_handoff_tree(canonical_holder_root(holder_root), made)
         raise
 
@@ -12552,7 +12583,7 @@ def _resume_handoff(state, args, store, holder_root, spent) -> int:
     continuation = (RESUME_LINE + "\n\nThe holder's reason: " + args.resume_reason.strip() + "\n").encode("utf-8")
     handed = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
     if request.get("started_by") == "hand":
-        reopened = dict(handed, dispatch=uuid.uuid4().hex, resume_of=request.get("dispatch_id"),
+        reopened = dict(_handed_block(request), dispatch=uuid.uuid4().hex, resume_of=request.get("dispatch_id"),
                         resume_reason=args.resume_reason)
         written = launch_tree.write_hand_record(
             store, work=f"{state.repo}#{state.issue_number}", vendor=request["requested"]["vendor"],
@@ -12570,20 +12601,25 @@ def _resume_handoff(state, args, store, holder_root, spent) -> int:
     except ValueError:
         session = None
     block = dict(_handed_block(request), resume_reason=args.resume_reason, resume_of=request.get("dispatch_id"))
+    # The limit this call declares governs the new launch; otherwise it keeps the stopped one's.
+    limit = (args.timeout_seconds if args.timeout_seconds is not None
+             else float(request.get("caller_limit_seconds") or DEFAULT_STRETCH_TIMEOUT_SECONDS))
+    if args.timeout_seconds is not None:
+        block["resume_limit"] = {"timeout_seconds": limit, "override_reason": args.budget_override_reason}
     if session and _session_shaped(session, request):
         return _launch_stretch(state, args, store, Path(root), branch, block, continuation,
-                               args.holder_session_id.strip(), float(request.get("caller_limit_seconds")
-                                                                     or DEFAULT_STRETCH_TIMEOUT_SECONDS),
-                               resume=session)
+                               args.holder_session_id.strip(), limit, resume=session)
     if work_recovery.restartable(request, run):
-        # The launch left no session to resume; the recovery route restarts it fresh with the reason.
-        composed = compose_handoff_for(state, branch=branch, holder_root=holder_root,
-                                       plugin_root=Path(__file__).resolve().parent.parent, notify=args.notify,
-                                       floor_command=args.floor_command)
+        # The launch left no session to resume; the recovery route restarts it fresh with the reason, composed
+        # from what its handoff carried, since a resume's own flags name none of it.
+        composed = compose_handoff_for(
+            state, branch=branch, holder_root=handed.get("holder_root") or holder_root,
+            plugin_root=handed.get("plugin_root") or Path(__file__).resolve().parent.parent,
+            notify=handed.get("notify") if args.notify is None else args.notify,
+            floor_command=handed.get("floor_command") if args.floor_command is None else args.floor_command)
         block.update(recovery_restart_reason=args.resume_reason, recovery_restart_bundle=path)
         return _launch_stretch(state, args, store, Path(root), branch, block, composed,
-                               args.holder_session_id.strip(), float(request.get("caller_limit_seconds")
-                                                                     or DEFAULT_STRETCH_TIMEOUT_SECONDS))
+                               args.holder_session_id.strip(), limit)
     raise HandoffRefused("stretch-not-resumable", f"run handoff --resume-reason: the stopped stretch {path} "
                          "has no session to resume and is not one the recovery route restarts")
 
@@ -12613,6 +12649,8 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
                "--holder-session-id", holder_identity, "--lineage-branch", branch, "--output", str(output),
                "--lifecycle-input", str(metadata),
                *(["--limit-declared"] if args.timeout_seconds is not None else []),
+               # The launcher's sentence names the pull request as the composed one does, or it refuses the text.
+               *(["--lineage-pull-request", str(state.pr["number"])] if (state.pr or {}).get("number") else []),
                *(["--claude", str(args.claude)] if args.claude is not None else []),
                *(["--resume", resume] if resume else [])]
     deadline = lifecycle.current_deadline()
@@ -12621,6 +12659,7 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
     environment = launch_tree.without_variables(dict(os.environ))
     detached.spawn([sys.executable, "-B", "-c", LAUNCHER_EXIT_WRAPPER, str(exit_file), *command],
                    cwd=bundle, env=environment, stdout=out, stderr=err)
+    args.stretch_spawned = True
     request_path = records.sidecar(output, ".request.json")
     while True:
         request = _json_object(request_path) if request_path.is_file() else None
@@ -12677,7 +12716,8 @@ def _refuse_final_pass_launch(state: WorkState, args: argparse.Namespace, recomm
 
 
 # What one resume adds to its block; the next copies the handoff without them, so each is counted once.
-RESUME_KEYS = ("send_back", "catch_up_resume", "resume_reason", "recovery_restart_reason", "recovery_restart_bundle")
+RESUME_KEYS = ("send_back", "catch_up_resume", "resume_reason", "resume_limit", "recovery_restart_reason",
+               "recovery_restart_bundle")
 
 
 def _handed_block(request: dict) -> dict:
@@ -12873,15 +12913,22 @@ def _builder_route_report(state: WorkState) -> dict:
                                            ("send-back", block.get("send_back") or {},
                                             DEFAULT_SEND_BACK_TIMEOUT_SECONDS),
                                            ("catch-up", block.get("catch_up_resume") or {},
-                                            DEFAULT_SEND_BACK_TIMEOUT_SECONDS))
+                                            DEFAULT_SEND_BACK_TIMEOUT_SECONDS),
+                                           ("resume", block.get("resume_limit") or {},
+                                            DEFAULT_STRETCH_TIMEOUT_SECONDS))
               if isinstance(part.get("timeout_seconds"), (int, float)) and part["timeout_seconds"] > default]
     try:
-        replies = [reply for row in change_cost._read_jsonl(change_cost.default_holder_usage(
-            state.repo, state.issue_number)) for reply in (row.get("holder") or {}).get("replies") or ()]
+        usage = change_cost.default_holder_usage(state.repo, state.issue_number)
+        replies = [reply for row in change_cost._read_jsonl(usage)
+                   for reply in (row.get("holder") or {}).get("replies") or ()]
         cost = change_cost.route_split(
             holder_replies=replies, start=datetime.fromisoformat(first[1]["launched_at"]) if first else None,
             builder_bundles=[row for row in stretches if row[2].get("started_by") != "hand"],
             seat_bundles=lifecycle.launch_bundles(store, work, None))
+        if not usage.is_file():
+            # No closed holder transcript is not a holder that spent nothing.
+            cost.update({name: {"status": "unknown", "reason": f"no holder usage record: {usage}"}
+                         for name in ("holder_before", "holder_after")})
     except (OSError, ValueError, TypeError, AttributeError, KeyError, change_cost.CostError,
             holder_transcript.TranscriptError) as exc:
         cost = {name: {"status": "unknown", "reason": f"the route's cost could not be read: {exc}"}
@@ -12891,6 +12938,20 @@ def _builder_route_report(state: WorkState) -> dict:
     except (OSError, ValueError, change_cost.CostError) as exc:
         comparison = {"status": "unknown", "reason": str(exc)}
     hand = next((request for request, _block in reversed(blocks) if request.get("started_by") == "hand"), None)
+    records_by_launch = {}
+    for marker in sorted((marker for marker in state.issue_markers if marker.name == "readiness"
+                          and marker.surface == "issue-comment" and _attribute_error(marker) is None
+                          and _marker_value_error(marker) is None), key=_source_order):
+        records_by_launch[marker.attributes["dispatch"]] = marker  # the latest of each launch's records
+    launches = []
+    for _o, _p, request, run in stretches:
+        posted = records_by_launch.get(request.get("dispatch_id"))
+        try:
+            reported = readiness.payload(posted.body, posted.attributes["status"])["refusals"] if posted else []
+        except readiness.ReadinessError:
+            reported = []
+        launches.append({"dispatch": request.get("dispatch_id"), "reported": reported, "logged": [
+            entry for entry in (run or {}).get("refusals") or () if isinstance(entry, dict)]})
     return route_report.builder_route(
         route=_route(state), readiness=reading,
         send_back={"count": len(_send_back_launches(state)), "marker": marks[-1].source_id if marks else None,
@@ -12904,9 +12965,7 @@ def _builder_route_report(state: WorkState) -> dict:
                               for _order, path, request, _run in lifecycle.launch_bundles(
                                   store, work, {"artifact"}, after=after)],
         limits=limits, cost_split=cost, route_comparison=comparison,
-        refusals={"stretch": [entry for _o, _p, _request, run in stretches
-                              for entry in (run or {}).get("refusals") or () if isinstance(entry, dict)],
-                  "reported": (reading or {}).get("refusals") or []},
+        refusals={"stretch": [entry for launch in launches for entry in launch["logged"]], "launches": launches},
         hand_record=None if hand is None else {"dispatch": hand.get("dispatch_id"),
                                                "ran_under": hand.get("ran_under")},
         check_dispatches=(checks or {}).get("check_dispatches"), check_reports=(checks or {}).get("check_reports"),

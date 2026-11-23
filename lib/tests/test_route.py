@@ -261,6 +261,13 @@ def test_1011_a_stopped_record_that_could_not_launch_a_check_is_named(tmp_path):
     assert (stage, reason) == ("stretch-stopped", "cannot-launch") and json.loads(detail)["stop"] == stop
 
 
+def test_1011_a_later_launch_that_stopped_with_no_record_is_stopped(tmp_path):
+    state, builder = ended_stretch(tmp_path)
+    post(state, readiness_record(builder), 30)
+    launch(state, "stretch", 40, handoff={"resume_of": builder, "send_back": {}})
+    assert decision(state)[:3] == ("stretch-stopped", "holder-owned", "builder-stopped")
+
+
 def test_1011_a_ready_record_behind_the_head_is_not_ready(tmp_path):
     state, builder = ended_stretch(tmp_path)
     post(state, readiness_record(builder, head="c" * 40), 30)
@@ -387,3 +394,10 @@ def test_1011_an_unreadable_route_holds_the_decision_and_refuses_each_stage(tmp_
     with pytest.raises(work.RouteRefused) as caught:
         work._refuse_off_route(state, "build")
     assert caught.value.code == "route-unreadable"
+
+
+def test_1011_reach_counts_a_stretch_among_the_turns_it_measures(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *a, **k: seen.append(set(a[2] or ())) or [])
+    work._evaluate_reach(with_pull_request(fixture(tmp_path, BRIEF)))
+    assert any({"build", "stretch"} <= stages for stages in seen)
