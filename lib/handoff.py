@@ -40,8 +40,9 @@ def _check(stage: str, criterion: str | None = None, *extra: str) -> dict:
     return {"stage": stage, "criterion": criterion, "command": ["run", stage, *extra]}
 
 
-def owed_checks(*, criteria: list[str], mechanical: bool, use_owed: bool, floor_owed: bool) -> list[dict]:
-    """The checks the builder owes, in the order it runs them."""
+def owed_checks(*, criteria: list[str], mechanical: bool, use_owed: bool,
+                floor_command: str | None) -> list[dict]:
+    """The checks the builder owes, reach before the two checks held on it."""
     checks = [_check("cold-reader")]
     if mechanical:
         # One form only: the builder launches each row it maps to a fresh reader through it.
@@ -51,12 +52,12 @@ def owed_checks(*, criteria: list[str], mechanical: bool, use_owed: bool, floor_
                       for criterion in criteria)
     if use_owed:
         checks.append(_check("use", None, "--job-from-artifact"))
-    if floor_owed:
-        checks.append(_check("floor"))
+    # The holder supplies the floor command once, at the handoff; the builder never writes or picks one.
+    checks.append({"stage": "floor", "criterion": None, "command": [], "floor_command": floor_command})
+    # No stage runs reach: the read-only decision reports it, and the builder answers it with a reach reading.
+    checks.append({"stage": "reach", "criterion": None, "command": []})
     checks.append(_check("ready-reviewers"))
     checks.append(_check("proof"))
-    # No stage runs reach: the read-only decide reports it, and the builder answers it with a reach reading.
-    checks.append({"stage": "reach", "criterion": None, "command": []})
     return checks
 
 
@@ -81,11 +82,14 @@ def _checks_section(checks, *, mechanical, repo, issue, holder_root, plugin_root
     def argv(command):
         return _argv(command, repo=repo, issue=issue, holder_root=holder_root, plugin_root=plugin_root)
 
-    lines = ["Run each check through the entrance, in this order, from the change's tree. Each command "
-             "composes its own dispatch and tree, launches a fresh reader and posts its report; a check's "
-             "report is what your record answers.", ""]
+    lines = ["Run each check through the entrance, from the change's tree. Each command composes its own "
+             "dispatch and tree, launches a fresh reader and posts its report; a check's report is what "
+             "your record answers.", "",
+             "This list is not a fixed sequence, except where a check is held on another: ready-reviewers "
+             "and proof are both held on reach, so answer reach before either.", ""]
     for number, check in enumerate(checks, 1):
         stage = check["stage"]
+        block = _block(argv(check["command"]))
         if stage == "acceptance-criterion" and check["criterion"] is None:
             title = "acceptance-criterion, one row at a time"
             note = ("On this lane there is no settled plan to name criteria, so this form is given once. "
@@ -94,18 +98,42 @@ def _checks_section(checks, *, mechanical, repo, issue, holder_root, plugin_root
         elif stage == "acceptance-criterion":
             title = "acceptance-criterion " + check["criterion"]
             note = None
+        elif stage == "use":
+            title = "use"
+            # The use rules read the change's paths, which do not exist until the builder has built them.
+            note = ("Use is listed because the settled plan carries a `Use session job` block. The "
+                    "entrance decides at your head whether use is owed, because the use rules read changed "
+                    "paths that do not exist at this handoff.")
+        elif stage == "floor" and check["floor_command"] is not None:
+            title = "floor"
+            block = ["```text", check["floor_command"], "```"]
+            note = ("The holder supplied this floor command at the handoff. Run it word for word at the "
+                    "head you test and, once it passes there, post an issue or pull-request comment whose "
+                    "first line is `<!-- tradecraft:floor:v1 head=FULL_COMMIT_SHA status=pass -->`, with "
+                    "`head` the full commit id it ran at, carrying the command and its exact output.")
+        elif stage == "floor":
+            title = "floor"
+            block = []
+            note = ("The declared CI jobs are the floor; the holder supplied no floor command. If a builder "
+                    "floor then falls due, post `status=stopped` with a `cannot-launch` stop naming the "
+                    "floor. Never write or pick a floor command yourself.")
         elif stage == "reach":
             title = "reach"
-            note = ("This read-only command reports reach. Where it flags a path your turns removed or "
-                    "shrank, account for each in an issue comment opening "
-                    "`<!-- tradecraft:reach-reading:v1 head=FULL_COMMIT_SHA -->` with its one fenced json "
-                    "payload, under the work cell's reach and markers references, before proof is current.")
+            note = ("This is the read-only decision; it prints the reach report. For every item it flags, "
+                    "post the `reach-reading` comment in the form the work cell's markers reference gives "
+                    "it: an issue comment whose first line is "
+                    "`<!-- tradecraft:reach-reading:v1 head=FULL_COMMIT_SHA -->`, with `head` the full "
+                    "commit id the reading covers and no `holder-reading` companion, followed by exactly "
+                    "one fenced `json` object holding the integer `schema_version` 1, `turns` (each turn's "
+                    "`dispatch_id` and its `items`, one per flagged path, each with `path`, `disposition`, "
+                    "a nonempty `basis` and that disposition's reference field) and, optionally, "
+                    "`superset_settlements`.")
         else:
             title = stage
             note = None
-        lines += [f"{number}. {title}:", ""] + _block(argv(check["command"]))
+        lines += [f"{number}. {title}:", ""] + block
         if note:
-            lines += ["", note]
+            lines += ["", note] if block else [note]
         lines.append("")
     lines += [
         "When the decision orders it, bring the branch up to its base with:", "",

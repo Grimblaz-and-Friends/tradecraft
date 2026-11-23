@@ -64,6 +64,7 @@ FLOOR = f"<!-- tradecraft:floor:v1 head={SHA} status=pass -->"
 USE = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false staffing_status=qualified -->"
 REVIEWED = "<!-- tradecraft:connected-reviewer:v1 name=fixture status=complete -->"
 WOULD_NOT = "<!-- tradecraft:cold-verdict:v1 verdict=would-not staffing_status=qualified -->"
+RELAY_ASK = "<!-- tradecraft:route:v1 route=relay -->\n\n> Keep this one on today's route.\n"
 PRODUCER = "holder-fixture"
 REVIEWER = "reviewer-fixture[bot]"
 SESSION = "01234567-89ab-cdef-0123-456789abcdef"
@@ -2455,6 +2456,11 @@ def write_registry_rows(rows):
     work.write_registry({"schema_version": 1, "worktrees": rows})
 
 
+def without_route_ask(markers):
+    """The markers other than the fixture issue's own ask for today's route, which every state() carries."""
+    return [marker for marker in markers if not (marker.name == "route" and marker.surface == "issue")]
+
+
 def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
           reviewer_ran=False, config=CONFIG):
     comments = [{"body": text, "user": {"login": PRODUCER}} for text in texts]
@@ -2468,7 +2474,8 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
                 }}
     fixture = work.WorkState(
         "example/product", 12,
-        {"number": 12, "state": issue_state, "body": "", "labels": [],
+        # These tests are of today's route, which the owner asked for in the issue before anything launched.
+        {"number": 12, "state": issue_state, "body": RELAY_ASK, "labels": [],
          "user": {"login": PRODUCER}},
         issue_comments=comments, pr=pull, changed_paths=paths or ["lib/runtime.py"],
         config=config,
@@ -3759,11 +3766,13 @@ def test_disposition_reply_carries_connected_reviewer_marker_in_plain_and_format
          "user": {"login": PRODUCER}},
     ]
     lawful, _invalid = work.validate_marker_claims(fixture)
+    lawful = without_route_ask(lawful)
     assert [item.name for item in lawful] == ["connected-reviewer"]
     assert fixture.quotation_claims == []
 
     fixture.review_comments[1]["body"] = f"Considered - no action\n{marker}"
     lawful, _invalid = work.validate_marker_claims(fixture)
+    lawful = without_route_ask(lawful)
     assert lawful == []
     assert [item["name"] for item in fixture.quotation_claims] == ["connected-reviewer"]
 
@@ -3781,6 +3790,7 @@ def test_connected_reviewer_marker_in_an_ordinary_comment_or_quoted_region_does_
          "body": f"Fixed - done\n`{marker}`", "user": {"login": PRODUCER}},
     ]
     lawful, _invalid = work.validate_marker_claims(fixture)
+    lawful = without_route_ask(lawful)
     assert lawful == []
     assert [item["name"] for item in fixture.quotation_claims] == [
         "connected-reviewer", "connected-reviewer",
@@ -6156,7 +6166,7 @@ def test_review_disposition_marker_is_part_of_the_entrance_evidence():
         "id": 42, "in_reply_to_id": 41, "body": "Fixed\n" + REVIEWED,
         "user": {"login": PRODUCER},
     }]
-    assert {marker.name for marker in fixture.markers} == {"connected-reviewer"}
+    assert {marker.name for marker in without_route_ask(fixture.markers)} == {"connected-reviewer"}
 
 
 def test_run_reads_the_work_configuration_from_root(tmp_path, monkeypatch, capsys):
@@ -6571,6 +6581,12 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
         run_value["result"] = {"source_output": str(source)}
     request.write_text(json.dumps(request_value), encoding="utf-8")
     run.write_text(json.dumps(run_value), encoding="utf-8")
+
+
+def relay_launch(work_value):
+    """The change's first launch, an artifact author's, which keeps it on today's route for good."""
+    dispatch_bundle(work.records.default_record_root(), work_value=work_value, stage="artifact",
+                    name="relay-first-launch", launched_at="2026-09-01T00:00:00+00:00")
 
 
 def native_bundle(record_root, monkeypatch, *, stage="use", vendor="claude",
@@ -8796,6 +8812,9 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
                 return [{"id": 751, "body": ARTIFACT_BRIEF,
                          "created_at": "2026-09-19T00:00:00Z",
                          "html_url": "https://github.example/issue#issuecomment-751",
+                         "user": {"login": PRODUCER}},
+                        {"id": 752, "body": RELAY_ASK, "created_at": "2026-09-19T00:01:00Z",
+                         "html_url": "https://github.example/issue#issuecomment-752",
                          "user": {"login": PRODUCER}}]
             if endpoint.endswith("/timeline?per_page=100"):
                 return []
@@ -10040,6 +10059,7 @@ def test_judging_root_is_empty_detached_and_removes_it_afterward(tmp_path):
 @pytest.mark.parametrize("stage", work.COMMANDS)
 def test_power_user_commands_run_one_named_stage(stage, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    relay_launch("acme/widget#3")
     root = (
         policy_repository(tmp_path, "proof-command") if stage == "proof" else tmp_path
     )
@@ -12174,6 +12194,7 @@ def test_report_handover_preview_keeps_reservation_and_predecessor(tmp_path, mon
 
 def test_named_stage_report_uses_named_role_not_recommendation(tmp_path, monkeypatch):
     ruling_file(tmp_path, monkeypatch)
+    relay_launch("acme/widget#3")
     write_policy(tmp_path)
     args = work.parser().parse_args([
         "run", "build", "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),

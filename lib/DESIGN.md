@@ -336,7 +336,7 @@ A builder in a stretch launch's tree is refused `tree` with or without options: 
 - The route is fixed by the work's first launch, over every term, so a change in flight finishes on the route it started and an amended brief can't move it; a `builder-session` marker can't decide it, because a builder on either route posts one.
 - The handoff is composed rather than written, so a builder never receives instructions for a check that the entrance didn't compose, and the text it received can be compared byte for byte.
 
-**Decisions in force:** the decision record for this route follows.
+**Decisions in force:** D-1013, the builder route, fixed by a work's first launch, a handoff composed once, a builder that answers for readiness through its record, and a release report that shows the owner its declines and decisions; D-1012, a builder's own checks and writes, which this route composes.
 
 ## Pricing a run
 

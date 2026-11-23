@@ -38,6 +38,12 @@ The Steward holds the cross-change read at its cadence, intake under that standa
 
 **The Steward owes the owner one report** of what the reviews caught, and the errors they added, against the delay they added; the owner then decides whether to keep the review. Count the added errors, because #830's and #915's reviews each added a row that later cost a repair.
 
+## The builder route's comparison
+
+**At #1013's merge, the Steward writes `~/.tradecraft/route-comparison.json` on the owner's machine** as `{"issue": "Grimblaz-and-Friends/tradecraft#1011", "count": 5}`. Without that file the release report counts nothing, because the shipped practice carries no lab-specific comparison (#1011, row 7).
+
+**When a release report says the comparison is due, the Steward posts it on #1011 at its next read across changes,** so the owner can decide whether the builder route stays the default. It holds the five builder-route changes, measured with [the probe that produced the baseline](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7069465335); the baseline figures; the builder's and the checks' cost with the holder's; and each send-back and each defect found after merge.
+
 ## The Daemon Steward
 
 **Daemon has its own coordinating session, `Daemon Steward`** (#918; Daemon's [docs/daemon-steward.md](https://github.com/Grimblaz-and-Friends/Daemon/blob/main/docs/daemon-steward.md) is its role). It keeps Daemon's work in flight on Daemon #104, checks each Daemon draft against Daemon's open pull requests and other work in flight, and answers Daemon holders' record-or-precedent questions. A fresh one-off reader that the holder launches reviews each Daemon draft row by row (the owner's A+, 2026-11-07), because in the trial it found 44 real defects on first drafts to the Daemon Steward's 20, at about $1.35 a brief.

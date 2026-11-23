@@ -2250,6 +2250,73 @@ def test_route_split_names_why_a_hand_started_builder_is_unknown(tmp_path, conte
     assert "usd" not in builder and "vendor" not in builder
 
 
+def claude_builder_stream(session, *replies):
+    """A Claude stream-json log: each reply's event carries its usage as it began, output not yet counted."""
+    events = [{"type": "system", "subtype": "init", "session_id": session}]
+    for identity, input, read, five, hour in replies:
+        events.append({"type": "assistant", "session_id": session, "parent_tool_use_id": None, "message": {
+            "id": identity, "model": "claude-opus-5-5", "usage": {
+                "input_tokens": input, "output_tokens": 1, "cache_read_input_tokens": read,
+                "cache_creation_input_tokens": five + hour,
+                "cache_creation": {"ephemeral_5m_input_tokens": five, "ephemeral_1h_input_tokens": hour}}}})
+    events.append({"type": "result", "session_id": session, "modelUsage": {"claude-opus-5-5": {
+        "inputTokens": 1, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "outputTokens": 1}}})
+    return b"".join((json.dumps(event) + "\n").encode() for event in events)
+
+
+@pytest.fixture
+def claude_builder(tmp_path):
+    import run_lifecycle
+    from test_holder_transcript import reply, write_lines
+    store, projects, session = tmp_path / "dispatches", tmp_path / "projects", "builder-session"
+    stretch = claude_builder_stream(session, ("m1", 1000, 0, 0, 0), ("m2", 0, 0, 0, 0))
+    send_back = claude_builder_stream(session, ("m3", 0, 100000, 0, 1000))
+    route_bundle(store, "a" * 32, "stretch", "claude", "claude-opus-5-5", stretch, launched=5, completed=20)
+    route_bundle(store, "b" * 32, "stretch", "claude", "claude-opus-5-5", send_back, launched=30, completed=40,
+                 session=session)
+    for name, stream in (("a" * 32, stretch), ("b" * 32, send_back)):
+        (store / name / "answer.v2.txt.stdout.log").write_bytes(stream)
+    write_lines(projects / "slug" / f"{session}.jsonl", [
+        # 1000 input, 100 output: 0.004 + 0.002 = 0.006.
+        reply("m1", second=6, session=session, input=1000, output=100, read=0, five=0, hour=0),
+        # 1000 output: 0.02; the stream's event carried only 1 of it.
+        reply("m2", second=7, session=session, input=0, output=1000, read=0, five=0, hour=0),
+        # The send-back's one reply: 100000 cache reads and 1000 one-hour writes: 0.02 + 0.008 = 0.028.
+        reply("m3", second=31, session=session, input=0, output=0, read=100000, five=0, hour=1000),
+        # A reply no builder launch's stream names is no part of the builder's cost.
+        reply("m9", second=50, session=session, input=0, output=10 ** 6, read=0, five=0, hour=0)])
+    rows = run_lifecycle.launch_bundles(store, "acme/widget#12", None, exact_work=True)
+    return store, projects, rows
+
+
+def test_1011_a_launched_claude_builder_and_its_resumed_send_back_price_from_their_own_replies(claude_builder):
+    store, projects, rows = claude_builder
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=rows, seat_bundles=[],
+                               claude_projects=projects)["builder"]
+    assert builder["status"] == "priced", builder
+    assert Decimal(builder["amount"]) == Decimal("0.054") and not builder.get("floor")
+    assert sorted(builder["dispatch_ids"]) == ["a" * 32, "b" * 32]
+    # The dispatch report's pricing of the same resumed launch is unchanged.
+    send_back = next(row for row in rows if row[2]["dispatch_id"] == "b" * 32)
+    value = cost.rate_card_equivalent(send_back[3]["attempts"][0]["usage"], SHIPPED)
+    assert value["status"] == "unknown" and "resumed Claude usage scope is not established" in value["reasons"]
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("stream", "cannot read stdout log"),
+    ("transcript", "cannot read the builder's Claude transcript for session builder-session"),
+])
+def test_1011_a_launched_claude_builder_whose_usage_cannot_be_read_is_unknown(claude_builder, fault, reason):
+    store, projects, rows = claude_builder
+    if fault == "stream":
+        (store / ("b" * 32) / "answer.v2.txt.stdout.log").unlink()
+    else:
+        shutil.rmtree(projects)
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=rows, seat_bundles=[],
+                               claude_projects=projects)["builder"]
+    assert builder["status"] == "unknown" and reason in builder["reason"] and "usd" not in builder
+
+
 def test_route_split_without_any_builder_evidence_is_unknown():
     builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[],
                                seat_bundles=[])["builder"]

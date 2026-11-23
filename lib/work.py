@@ -291,7 +291,7 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
         },
         "surfaces": {"issue-comment"},
     },
-    "route": {"required": {"route"}, "optional": set(), "surfaces": {"issue-comment"}},
+    "route": {"required": {"route"}, "optional": set(), "surfaces": {"issue", "issue-comment"}},
 }
 ROUTES = frozenset({"relay", "builder"})
 MODEL_OVERRIDE_ROLES = {
@@ -3726,7 +3726,7 @@ def _decision_status(decision: Decision) -> str:
     if decision.dispatch:
         return "runnable"
     if decision.stage in {"artifact-cap", "artifact-settlement", "open-pull-request",
-                          "merged-pull-request", "holder-read",
+                          "merged-pull-request", "holder-read", "handoff", "stretch-stopped", "final-pass",
                           "ready-reviewers", "proof", "use", "release-report", "catch-up",
                           "ambiguous-pr", "panel", "floor-blocked", "floor-stalled", "floor-unverifiable"}:
         return "holder-owned"
@@ -5990,6 +5990,14 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     _risk, lane = lane_pair
     policy = effective_policy(state, rules)
     phase = state.artifact_phase or _artifact_phase(state)
+    builder_route = _route(state)["name"] == "builder"
+
+    def artifact(continuity: str, reason: str) -> Decision:
+        if builder_route:
+            # No author is launched on the builder route; the holder writes the plan itself.
+            return result("artifact", False, None, reason, BUILDER_ROUTE_ARTIFACT_DETAIL, status="holder-owned")
+        return result("artifact", True, continuity, reason)
+
     if not policy.mechanical:
         if phase.source_error:
             return result("artifact-source", False, None, "artifact-source-unusable",
@@ -6000,7 +6008,7 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
                               phase.prior_artifact_error + "; supply a holder-written run artifact "
                               "--dispatch with the replacement text, or repair the prior source.",
                               status="holder-owned")
-            return result("artifact", True, "fresh", "artifact-marker-absent")
+            return artifact("fresh", "artifact-marker-absent")
         if phase.latest_settlement is None:
             current_verdicts = list(phase.current_verdicts)
             current_values = [marker.attributes.get("verdict") for marker in current_verdicts]
@@ -6019,6 +6027,8 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
                 )
             latest_verdict = current_verdicts[-1].attributes.get("verdict")
             if latest_verdict == "would-not":
+                if builder_route:
+                    return artifact("resume", "cold-verdict-would-not")
                 # The draft's own history decides, as it does for the named stage (#919).
                 return result("artifact", True, _named_continuity(
                     state, "artifact", Decision("artifact", True, "resume", "cold-verdict-would-not")),
@@ -6040,6 +6050,10 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         )
         if not reading_is_current:
             return result("holder-read", False, None, "whole-change-holder-reading-absent")
+    if builder_route:
+        builder = _builder_route_decision(state)
+        return result(builder.stage, builder.dispatch, builder.continuity, builder.reason,
+                      builder.detail, builder.status)
     terms = _governing_terms_decision(state)
     if terms is not None:
         return result(terms.stage, terms.dispatch, terms.continuity, terms.reason, terms.detail, terms.status)
@@ -6165,6 +6179,54 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result("waiting", False, None, "merge-blocked-unattributed", merge["detail"])
     reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
     return result("release-report", False, None, reason, merge["detail"])
+
+
+BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and posts it as a draft "
+                                 "with `author=holder`")
+
+
+def _builder_route_decision(state: WorkState) -> Decision:
+    """The next stage once the plan is settled on the builder route, from its stretch and readiness record.
+
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    work = f"{state.repo}#{state.issue_number}"
+    store = state.record_root or records.default_record_root()
+    live = [pointer for pointer in launch_tree.live_launches(store)
+            if str(pointer.get("work", "")).lower() == work.lower()]
+    if live:
+        return Decision("with-builder", False, None, "builder-live",
+                        "stretch launch " + ", ".join(str(pointer["dispatch_id"]) for pointer in live)
+                        + " is still running; wait for its readiness record", status="waiting")
+    term, _lane = _affirmed_review(state)
+    if not lifecycle.launch_bundles(store, work, {"stretch"}, after=term.timestamp if term else None):
+        return Decision("handoff", False, None, "handoff-due",
+                        "No stretch launch of this work in this term; compose the handoff and launch the builder.",
+                        status="holder-owned")
+    reading = readiness_reading(state, builder_checks(state)) or {}
+    if reading.get("status") == "stopped":
+        stop = reading.get("stop") or {}
+        return Decision("stretch-stopped", False, None,
+                        "cannot-launch" if stop.get("kind") == "cannot-launch" else "builder-stopped",
+                        json.dumps({"record": reading.get("record"), "stop": stop}, ensure_ascii=True),
+                        status="holder-owned")
+    if reading.get("status") != "ready" or not reading.get("at_head"):
+        not_at_head = reading.get("status") == "ready"
+        return Decision("stretch-stopped", False, None,
+                        "ready-record-not-at-head" if not_at_head else "builder-stopped",
+                        json.dumps({"record": reading.get("record"), "head": reading.get("head"),
+                                    "current_head": _head_sha(state)} if not_at_head else
+                                   {"record": None, "invalid": reading.get("invalid", [])}, ensure_ascii=True),
+                        status="holder-owned")
+    sync = _synchronization_decision(state)
+    if sync is not None and sync.stage == "catch-up":
+        return Decision("catch-up", False, None, "base-moved-after-ready", sync.detail, status="holder-owned")
+    if sync is not None:
+        return sync  # Synchronization that can't be read holds, as it does on the relay route.
+    return Decision("final-pass", False, None, "ready-reported",
+                    json.dumps({"record": reading.get("record"), "reconciled": reading.get("reconciled"),
+                                "unreconciled": reading.get("unreconciled")}, ensure_ascii=True),
+                    status="holder-owned")
 
 
 def _draft_ready_detail(mechanical: bool) -> str:
@@ -11259,7 +11321,7 @@ def fresh_reader_criteria(artifact: str) -> list[str]:
 
 
 def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plugin_root: Path,
-                        notify: str | None, floor_owed: bool, hand: dict | None = None) -> bytes:
+                        notify: str | None, floor_command: str | None, hand: dict | None = None) -> bytes:
     """The handoff a builder of this change receives, composed from the issue's own records alone.
 
     The same records give the same bytes, so a handoff the builder received can be recomposed and
@@ -11278,7 +11340,7 @@ def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plu
         except BuilderRefused:
             use_owed = False
     checks = handoff.owed_checks(criteria=[] if mechanical else fresh_reader_criteria(artifact),
-                                 mechanical=mechanical, use_owed=use_owed, floor_owed=floor_owed)
+                                 mechanical=mechanical, use_owed=use_owed, floor_command=floor_command)
     allowance = github_allowance.sentence(github_allowance.allowance_for(
         "stretch", repository=state.repo, branch=branch,
         pull_request=state.pr.get("number") if state.pr else None, issue=state.issue_number))
@@ -11827,7 +11889,7 @@ def _route(state: WorkState) -> dict[str, object]:
     """
     work = f"{state.repo}#{state.issue_number}"
     asks = [marker for marker in state.issue_markers if marker.name == "route"
-            and marker.surface == "issue-comment" and _attribute_error(marker) is None
+            and marker.surface in {"issue", "issue-comment"} and _attribute_error(marker) is None
             and _marker_value_error(marker) is None]
     ask = max(asks, key=_source_order) if asks else None
     ask_id = (int(ask.source_id) if ask.source_id and ask.source_id.isdigit() else ask.source_id
@@ -11850,6 +11912,42 @@ def _route(state: WorkState) -> dict[str, object]:
                  if ask is not None and reason != "owner-asked" and ask.attributes["route"] != name else None)
     return {"name": name, "reason": reason, "marker": ask_id if reason == "owner-asked" else None,
             "overruled": overruled}
+
+
+class RouteRefused(WorkError):
+    """A holder's named stage that the change's route doesn't run, refused before anything is launched."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+
+
+# The relay's launches, which the builder route makes through its builder instead.
+RELAY_ONLY_STAGES = frozenset({"build", "artifact", "floor", "review-disposition"})
+RELAY_ASK = ("post the `route` marker (`<!-- tradecraft:route:v1 route=relay -->` quoting the owner's words) "
+             "at the owner's word, before anything is launched, to take today's route")
+
+
+def _refuse_off_route(state: WorkState, stage: str) -> None:
+    """Refuse a holder's named stage that the builder route doesn't run, before any tree, bundle or write.
+
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    route = _route(state)
+    if route["name"] != "builder":
+        return
+    if stage in RELAY_ONLY_STAGES:
+        raise RouteRefused("route-is-builder", f"run {stage}: this change is on the builder route "
+                           f"({route['reason']}); {RELAY_ASK}")
+    if stage == "proof":
+        raise RouteRefused("stage-is-the-builders", "run proof: on the builder route the builder posts proof "
+                           "from its own tree")
+    if stage == "release-report":
+        reading = readiness_reading(state, builder_checks(state)) or {}
+        if reading.get("status") != "ready" or not reading.get("at_head"):
+            raise RouteRefused("no-ready-record-at-head", "run release-report: on the builder route the "
+                               "release report waits for a lawful ready readiness record at the current head "
+                               f"{_head_sha(state)}")
 
 
 def run(
@@ -12072,6 +12170,12 @@ def _run(
     state.holder_root = root
     state.instalment = args.instalment
     state.readiness_policy = (use_rules_path, selected_policy_bytes)
+    if args.command == "run" and builder_mode() is None:
+        try:
+            _refuse_off_route(state, args.stage)
+        except WorkError as exc:
+            exc.stage = args.stage
+            raise
     state.version_obligation["policy_sha256"] = hashlib.sha256(selected_policy_bytes).hexdigest()
     _evaluate_raw_output(state, rules, str(use_rules_path))
     policy_diagnostics: list[dict[str, object]] = []

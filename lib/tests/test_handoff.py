@@ -1,6 +1,7 @@
 """The builder's handoff: its owed checks, its sections in order, and its exact bytes."""
 from pathlib import Path
 import hashlib
+import re
 import sys
 
 import pytest
@@ -13,15 +14,16 @@ BRIEF = "Brief line one.\n\n| Row | Outcome |\n|---|---|\n| 1 | The thing - exac
 ARTIFACT = "Plan.\n\nAC1. It holds.\nFresh reader: yes\n\nAC2. Another.\n"
 ALLOWANCE = "You may push the branch and comment on the issue and its pull request."
 DISPATCH = "0123456789abcdef0123456789abcdef"
+FLOOR = "npm run lint && npm test -- --ci"
 HAND = {"tree": "/work/tree", "branch": "tradecraft/7-abc", "store": "/records", "dispatch": DISPATCH}
 TITLES = ["Your role", "The affirmed brief", "The settled plan", "The checks you owe",
           "What you may write", "The readiness record", "Where the plan settles nothing", "How to finish"]
 
 
-def compose(*, mechanical=False, criteria=("AC1",), use_owed=True, floor_owed=False, hand=None,
+def compose(*, mechanical=False, criteria=("AC1",), use_owed=True, floor_command=None, hand=None,
             notify="holder-7"):
     checks = handoff.owed_checks(criteria=list(criteria), mechanical=mechanical,
-                                 use_owed=use_owed, floor_owed=floor_owed)
+                                 use_owed=use_owed, floor_command=floor_command)
     return handoff.compose_handoff(
         brief=BRIEF, artifact=None if mechanical else ARTIFACT,
         lane_reason="A rename with nothing left to choose." if mechanical else None,
@@ -40,12 +42,12 @@ def command_lines(text):
 def test_1011_same_bytes_on_repeated_calls_lf_only():
     first = handoff.compose_handoff(
         brief=BRIEF, artifact=ARTIFACT, lane_reason=None,
-        checks=handoff.owed_checks(criteria=["AC1"], mechanical=False, use_owed=True, floor_owed=True),
+        checks=handoff.owed_checks(criteria=["AC1"], mechanical=False, use_owed=True, floor_command=FLOOR),
         allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/holder/root", plugin_root="/plugin",
         notify="holder-7", hand=HAND)
     second = handoff.compose_handoff(
         brief=BRIEF, artifact=ARTIFACT, lane_reason=None,
-        checks=handoff.owed_checks(criteria=["AC1"], mechanical=False, use_owed=True, floor_owed=True),
+        checks=handoff.owed_checks(criteria=["AC1"], mechanical=False, use_owed=True, floor_command=FLOOR),
         allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/holder/root", plugin_root="/plugin",
         notify="holder-7", hand=HAND)
     assert isinstance(first, bytes) and first == second
@@ -66,14 +68,17 @@ def test_1011_brief_and_artifact_byte_for_byte_and_allowance_verbatim():
 
 
 def test_1011_owed_checks_order_and_shape():
-    checks = handoff.owed_checks(criteria=["AC1", "AC3"], mechanical=False, use_owed=True, floor_owed=True)
+    checks = handoff.owed_checks(criteria=["AC1", "AC3"], mechanical=False, use_owed=True,
+                                 floor_command=FLOOR)
     assert [check["stage"] for check in checks] == [
-        "cold-reader", "acceptance-criterion", "acceptance-criterion", "use", "floor",
-        "ready-reviewers", "proof", "reach"]
+        "cold-reader", "acceptance-criterion", "acceptance-criterion", "use", "floor", "reach",
+        "ready-reviewers", "proof"]
     assert [check["criterion"] for check in checks[1:3]] == ["AC1", "AC3"]
     assert checks[1]["command"] == ["run", "acceptance-criterion", "--criterion", "AC1"]
     assert checks[3]["command"] == ["run", "use", "--job-from-artifact"]
-    assert all(set(check) == {"stage", "criterion", "command"} for check in checks)
+    assert checks[4] == {"stage": "floor", "criterion": None, "command": [], "floor_command": FLOOR}
+    assert all(set(check) == {"stage", "criterion", "command"} for check in checks
+               if check["stage"] != "floor")
 
 
 def test_1011_one_criterion_command_per_criterion_and_none_otherwise():
@@ -91,7 +96,7 @@ def test_1011_use_command_only_when_owed():
 
 
 def test_1011_every_command_names_repo_issue_and_holder_root_and_no_session_id():
-    for kwargs in ({}, {"mechanical": True}, {"hand": HAND, "floor_owed": True}):
+    for kwargs in ({}, {"mechanical": True}, {"hand": HAND, "floor_command": FLOOR}):
         text = compose(**kwargs)
         assert "--holder-session-id" not in text
         lines = command_lines(text)
@@ -177,6 +182,70 @@ def test_1011_without_notify_the_builder_ends():
     assert "holder session named" not in finish and "the owner tells the holder" in finish
 
 
+def checks_section(text):
+    return text[text.index("## The checks you owe"):text.index("## What you may write")]
+
+
+def entry(section, title):
+    """One numbered entry of the checks section, up to the next numbered entry or the catch-up line."""
+    entries = re.split(r"\n(?=\d+\. )|\n(?=When the decision orders it)", section)
+    [found] = [part for part in entries if re.match(r"\d+\. " + re.escape(title) + ":\n", part)]
+    return found
+
+
+def test_1011_use_line_says_the_entrance_decides_use_at_the_builders_head():
+    use = entry(checks_section(compose()), "use")
+    assert "settled plan carries a `Use session job` block" in use
+    assert "The entrance decides at your head whether use is owed" in use
+    assert "changed paths that do not exist at this handoff" in use
+    assert "Use session job" not in checks_section(compose(use_owed=False))
+
+
+def test_1011_reach_is_listed_before_ready_reviewers_and_proof_and_the_list_is_not_a_sequence():
+    for kwargs in ({}, {"mechanical": True}, {"floor_command": FLOOR}):
+        stages = [check["stage"] for check in handoff.owed_checks(
+            criteria=["AC1"], mechanical=kwargs.get("mechanical", False), use_owed=True,
+            floor_command=kwargs.get("floor_command"))]
+        assert stages.index("reach") < stages.index("ready-reviewers") < stages.index("proof")
+        section = checks_section(compose(**kwargs))
+        assert section.index(". reach:") < section.index(". ready-reviewers:") < section.index(". proof:")
+        assert section.count("not a fixed sequence") == 1
+        assert ("except where a check is held on another: ready-reviewers and proof are both held on "
+                "reach") in section
+        assert "in this order" not in section
+
+
+def test_1011_reach_entry_names_the_read_only_decision_and_the_reach_reading_form():
+    reach = entry(checks_section(compose()), "reach")
+    assert "python -B /plugin/lib/work.py --repo acme/app --issue 7 --root /holder/root\n" in reach
+    assert "read-only decision; it prints the reach report" in reach
+    assert "For every item it flags" in reach
+    assert "first line is `<!-- tradecraft:reach-reading:v1 head=FULL_COMMIT_SHA -->`" in reach
+    assert "no `holder-reading` companion" in reach
+    for field in ("`schema_version` 1", "`turns`", "`dispatch_id`", "`items`", "`path`", "`disposition`",
+                  "`basis`", "`superset_settlements`"):
+        assert field in reach
+    assert " run reach " not in compose()
+
+
+def test_1011_floor_with_a_command_carries_it_word_for_word():
+    floor = entry(checks_section(compose(floor_command=FLOOR)), "floor")
+    assert "```text\n" + FLOOR + "\n```" in floor
+    assert "Run it word for word" in floor
+    assert "`<!-- tradecraft:floor:v1 head=FULL_COMMIT_SHA status=pass -->`" in floor
+    assert "the command and its exact output" in floor
+    assert "declared CI jobs" not in floor and " run floor " not in compose(floor_command=FLOOR)
+
+
+def test_1011_floor_without_a_command_names_the_ci_jobs_and_the_cannot_launch_stop():
+    text = compose(floor_command=None)
+    floor = entry(checks_section(text), "floor")
+    assert "The declared CI jobs are the floor; the holder supplied no floor command." in floor
+    assert "post `status=stopped` with a `cannot-launch` stop naming the floor" in floor
+    assert "Never write or pick a floor command yourself." in floor
+    assert "```" not in floor and "tradecraft:floor:v1" not in text and " run floor " not in text
+
+
 # The entrance's composition from an issue's own records.
 from types import SimpleNamespace  # noqa: E402
 
@@ -200,9 +269,10 @@ def _entrance_state(lane="Review risk: elevated\nReview lane: routine-panel\n", 
                                        source_error=None))
 
 
-def _entrance_text(state, **extra):
+def _entrance_text(state, floor_command="make check", **extra):
     return work.compose_handoff_for(state, branch="tradecraft/5-ab", holder_root=Path("H"),
-                                    plugin_root=Path("P"), notify="Start 5", floor_owed=True, **extra)
+                                    plugin_root=Path("P"), notify="Start 5", floor_command=floor_command,
+                                    **extra)
 
 
 def test_1011_the_entrance_composes_one_text_from_the_brief_and_the_settled_plan():
@@ -235,3 +305,12 @@ def test_1011_a_plan_without_a_use_job_owes_no_use_and_an_unsettled_plan_is_refu
     with pytest.raises(work.BuilderRefused) as refused:
         _entrance_text(unsettled)
     assert refused.value.code == "plan-unsettled"
+
+
+def test_1011_the_entrance_carries_the_holders_floor_command_or_names_the_ci_jobs():
+    state = _entrance_state()
+    given = _entrance_text(state).decode("utf-8")
+    assert "```text\nmake check\n```" in given and "declared CI jobs" not in given
+    none = _entrance_text(state, floor_command=None).decode("utf-8")
+    assert "The declared CI jobs are the floor; the holder supplied no floor command." in none
+    assert "make check" not in none

@@ -26,6 +26,11 @@ class ArtifactTransport:
             return [{"id": 751, "body": ARTIFACT_BRIEF,
                      "created_at": "2026-09-19T00:00:00Z",
                      "html_url": "https://github.example/issue#issuecomment-751",
+                     "user": {"login": PRODUCER}},
+                    # The owner's ask for today's route, which these tests exercise.
+                    {"id": 752, "body": "<!-- tradecraft:route:v1 route=relay -->\n\n> Keep this one on today's route.",
+                     "created_at": "2026-09-19T00:01:00Z",
+                     "html_url": "https://github.example/issue#issuecomment-752",
                      "user": {"login": PRODUCER}}]
         if "/timeline?" in endpoint:
             return []

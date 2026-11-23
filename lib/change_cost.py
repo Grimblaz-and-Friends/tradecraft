@@ -1888,25 +1888,113 @@ def _bundle_attempts(request: dict, run: dict, path: str) -> tuple[list[_Attempt
     return items, reasons
 
 
-def _launched_builder(builder_bundles: list, seat_bundles: list, card: _Card) -> dict[str, object]:
+def _stream_reply_ids(path: object) -> tuple[dict[str, dict] | None, str | None]:
+    """Each usage-bearing reply id in a Claude stream-json log, with that reply's input-side counts.
+
+    A reply's events in the stream carry its usage as the reply began: the input-side counts are its
+    own, but the output count is not its whole output, so the stream names a launch's replies and the
+    session transcript supplies what each one spent.
+    """
+    if not isinstance(path, str) or not path:
+        return None, "attempt records no stdout log"
+    try:
+        lines = Path(path).read_bytes().splitlines()
+    except OSError as exc:
+        return None, f"cannot read stdout log: {path}: {exc}"
+    replies = {}
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (UnicodeError, ValueError):
+            continue
+        message = event.get("message") if isinstance(event, dict) and event.get("type") == "assistant" else None
+        if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
+            continue
+        identity = message.get("id")
+        if not isinstance(identity, str) or not identity:
+            return None, f"stdout log has a usage-bearing reply with no message id: {path}"
+        try:
+            counts, _ = transcripts.call_classes(message["usage"])
+        except transcripts.TranscriptError as exc:
+            return None, f"reply {identity} usage is unreadable: {path}: {exc}"
+        replies[identity] = {name: counts[name] for name in ("input", "cache_read", "cache_creation")}
+    return replies, None
+
+
+def _claude_builder_replies(items: list[_Attempt], projects: Path) -> tuple[list[dict], list, list[str]]:
+    """The replies the builder's Claude launches made, named by each launch's stream, from its transcript.
+
+    A resumed launch's stream holds only that launch's replies, so joining each stream's reply ids to
+    the session transcript counts every reply once; an id met twice is still counted once.
+    """
+    named: dict[str, dict[str, tuple[dict, str]]] = {}
+    reasons = []
+    for item in items:
+        sessions = _session_ids(item)
+        stdout = item.evidence.get("stdout")
+        if len(sessions) != 1:
+            reasons.append(f"{stdout}: the launch does not name exactly one Claude session")
+            continue
+        found, failure = _stream_reply_ids(stdout)
+        if failure:
+            reasons.append(failure)
+            continue
+        session = sessions.pop()
+        for identity, counts in found.items():
+            named.setdefault(session, {}).setdefault(identity, (counts, str(stdout)))
+    replies, gaps = [], []
+    for session, wanted in named.items():
+        try:
+            _source, transcript, session_gaps, _sources = transcripts.snapshot(projects, session)
+        except (OSError, transcripts.TranscriptError) as exc:
+            reasons.append(f"cannot read the builder's Claude transcript for session {session}: {exc}")
+            continue
+        by_id = {reply["id"]: reply for reply in transcript}
+        for gap in session_gaps:
+            if gap.get("reply_id") is None:
+                gaps.append(gap)  # Unplaceable, as in the holder's ledger: the figure becomes a floor.
+            elif gap["reply_id"] in wanted:
+                reasons.append(f"reply {gap['reply_id']}: {gap['reason']}")
+        for identity, (counts, stdout) in wanted.items():
+            reply = by_id.get(identity)
+            if reply is None:
+                if not any(gap.get("reply_id") == identity for gap in session_gaps):
+                    reasons.append(f"reply {identity} in {stdout} is not in session {session}'s transcript")
+            elif any(reply["tokens"][name] != count for name, count in counts.items()):
+                reasons.append(f"reply {identity} in {stdout} disagrees with the transcript's input-side counts")
+            else:
+                replies.append(reply)
+    return replies, gaps, reasons
+
+
+def _launched_builder(builder_bundles: list, seat_bundles: list, card: _Card,
+                      projects: Path) -> dict[str, object]:
     builders = [_route_bundle(bundle) for bundle in builder_bundles]
     identities = {request.get("dispatch_id") for request, _run, _path in builders} - {None}
     # A seat counts only when its request names one of these launches as the one that began it.
     seats = [(request, run, path) for request, run, path in map(_route_bundle, seat_bundles)
              if _mapping(request.get("launched_by")).get("dispatch_id") in identities]
-    items, reasons, counted, seen = [], [], [], set()
-    for request, run, path in [*builders, *seats]:
+    items, streamed, reasons, counted, seen = [], [], [], [], set()
+    for position, (request, run, path) in enumerate([*builders, *seats]):
         identity = request.get("dispatch_id") or path
         if identity in seen:
             continue
         seen.add(identity)
         counted.append(identity)
         found, problems = _bundle_attempts(request, run, path)
-        items.extend(found)
+        for item in found:
+            # A local Claude builder launch is priced per reply, so a resume of its session can be priced.
+            local_claude = (position < len(builders) and not _cloud_attempt(item) and not _not_launched(item)
+                            and _mapping(item.usage.get("dispatch")).get("actual_vendor") == "claude")
+            (streamed if local_claude else items).append(item)
         reasons.extend(problems)
     # A resumed Codex send-back is priced as its share of the session the stretch began.
     _session_shares(items)
     values = [_price(item, card) for item in items]
+    if streamed:
+        replies, gaps, problems = _claude_builder_replies(streamed, projects)
+        reasons.extend(problems)
+        values.append(_replies_price(replies, card, gaps))
     values.extend(_unknown_price([reason]) for reason in reasons)
     return _route_figure(values, dispatch_ids=counted)
 
@@ -1945,7 +2033,7 @@ def _hand_started_builder(log: Path, vendor: str | None, start: datetime, card: 
 
 def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles: list,
                 seat_bundles: list, hand_usage_log: Path | None = None, hand_vendor: str | None = None,
-                rates=None) -> dict[str, dict]:
+                rates=None, claude_projects: Path | None = None) -> dict[str, dict]:
     """Three list-price figures for a stretch: the holder before it began, the holder after, the builder.
 
     holder_replies: reply-ledger entries as a transcript holder close keeps them, ``row["holder"]["replies"]``
@@ -1959,6 +2047,10 @@ def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles:
     hand_usage_log, hand_vendor: with no builder bundle, the hand-started session's own usage log, a Claude
         transcript or a Codex JSON event stream, read by that vendor's reader.
     rates: a rate list or card; the shipped card when omitted.
+    claude_projects: where a launched Claude builder's session transcript lives, the ``projects`` directory
+        the Claude configuration in force names when omitted. Each local Claude builder launch, fresh or
+        resumed, is priced by the replies its own stdout stream names, at the usage that transcript records
+        for them; a stream or transcript that cannot be read leaves the builder figure unknown.
 
     Each figure is ``{"status": "priced", "usd", "amount", ...}`` or ``{"status": "unknown", "reason"}``; a
     builder figure read from a log also carries the ``vendor`` and ``model`` it observed.
@@ -1984,7 +2076,8 @@ def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles:
         holder_before = _route_figure([_replies_price(before, card)], replies=len(before))
         holder_after = _route_figure([_replies_price(after, card)], replies=len(after))
     if builder_bundles:
-        builder = _launched_builder(builder_bundles, seat_bundles, card)
+        projects = Path(claude_projects) if claude_projects is not None else transcripts.projects_directory()[0]
+        builder = _launched_builder(builder_bundles, seat_bundles, card, projects)
     elif hand_usage_log is not None:
         builder = _hand_started_builder(Path(hand_usage_log), hand_vendor, start, card)
     else:
