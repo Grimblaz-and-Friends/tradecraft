@@ -158,7 +158,7 @@ def test_1011_a_hand_holding_attributes_the_seat_as_hand_started(tmp_path, monke
     assert launch_tree.attribution(tmp_path) == {"launched_by": expected, "dispatch_origin": "caller"}
     # The entrance drops the variable before a seat starts and names the record by its flags.
     monkeypatch.delenv(launch_tree.DISPATCH_VARIABLE)
-    fields = launch_tree.attribution(tmp_path, dispatch=written["dispatch_id"], session="None", origin="entrance")
+    fields = launch_tree.attribution(tmp_path, dispatch=written["dispatch_id"], origin="entrance")
     assert fields == {"launched_by": expected, "dispatch_origin": "entrance"}
 
 

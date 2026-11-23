@@ -44,15 +44,16 @@ An incomplete handover keeps its reserved Claude identity. A later run reuses th
 
 1. `cloud`: a repository whose builds the `work` cell's cloud route takes stays on the relay route.
 2. `in-flight`: the work's first launch, in any term, decides for good. A builder launch or hand-started builder puts it on the builder route; an artifact author or a `build` puts it on the relay route. A change finishes on the route it started, and an amended brief does not move it.
-3. `owner-asked`: the latest lawful `route` marker, posted at the owner's word.
-4. `default`: the builder route.
+3. `mechanical-lane`: an `ordinary` / `mechanical` change stays on the relay route, because it has no plan to name the checks a builder owes.
+4. `owner-asked`: the latest lawful `route` marker, posted at the owner's word.
+5. `default`: the relay route. A change takes the builder route only when the owner asks for it.
 
-An owner's ask that `cloud` or `in-flight` overrules is reported as overruled. The mechanical lane takes the builder route too, handing over the affirmed brief and its lane reason in place of a plan.
+An owner's ask that a rule above it overrules is reported as overruled.
 
-**The plan and the handoff.** The holder writes the plan and a cold seat settles it (`the-artifact.md`, `cold-seat.md`); no plan writer is launched. Once it is settled, or at once on the mechanical lane, the decision reads `handoff` and the holder runs `run handoff` (the `work` cell). That stage cuts and publishes the builder's tree as `run build` would, composes one text, and starts the builder: a Claude builder launched detached, or, where the machine vendor is Codex or the holder names `--by-hand VENDOR:MODEL`, a hand-started record whose text the owner pastes into a session they start. The text gives the builder, in order:
+**The plan and the handoff.** The holder writes the plan and a cold seat settles it (`the-artifact.md`, `cold-seat.md`); no plan writer is launched. Once it is settled, the decision reads `handoff` and the holder runs `run handoff` (the `work` cell). That stage cuts and publishes the builder's tree as `run build` would, composes one text, and starts the builder: a Claude builder launched detached, or, where the machine vendor is Codex or the holder names `--by-hand VENDOR:MODEL`, a hand-started record whose text the owner pastes into a session they start. The text gives the builder, in order:
 
 1. its role;
-2. the affirmed brief and the settled plan, or the lane reason, verbatim;
+2. the affirmed brief and the settled plan, verbatim;
 3. the checks it owes, as entrance commands;
 4. its allowance sentence;
 5. the readiness record's contract;
@@ -65,16 +66,16 @@ The holder writes no check's instructions, and supplies the floor command only h
 **The builder's run.** In its own session, the builder:
 
 - opens the pull request as a draft and posts `implementing-pr`, with `builder-session` where it has a session id;
-- runs each owed check through the entrance: `run cold-reader`; `run acceptance-criterion --criterion ID` for each criterion with a `Fresh reader:` line, or on the mechanical lane `--row N` for each row it maps to a fresh reader; `run use --job-from-artifact` where the entrance finds use owed at its head; and the floor. The entrance composes each check and posts its report, and the builder chooses nothing a check reads;
+- runs each owed check through the entrance: `run cold-reader`; `run acceptance-criterion --criterion ID` for each criterion with a `Fresh reader:` line; `run use --job-from-artifact` where the entrance finds use owed at its head; and the floor. The entrance composes each check and posts its report, and the builder chooses nothing a check reads;
 - fixes or declines every finding of every report, writing a decline's reason when it makes the decline;
 - posts the cold reading's `open` and `clean`, whose `Accepted:` lines are its declines, a `launch-account` for each check it launched, the `reach-reading` for each item reach flags, and the `floor` marker;
 - runs `run ready-reviewers`, and `run catch-up` when the decision orders it, answers every connected reviewer's threads, body findings and unidentified reviews, and posts proof;
 - where the plan settled nothing, continues on its recommendation and records it, naming any brief row it would change. It stops only when Shape is wrong (a `shape` stop) or a check cannot be launched (a `cannot-launch` stop naming it);
-- posts the readiness record (the `work` cell's `readiness` marker) at each ready report as its last post, after proof: each check it ran, one disposition for every finding, the mechanical lane's row mapping, its decisions and refusals, and any stop. It then messages the holder session `--notify` named, or ends.
+- posts the readiness record (the `work` cell's `readiness` marker) at each ready report as its last post, after proof: each check it ran, one disposition for every finding, its decisions and refusals, and any stop. It then messages the holder session `--notify` named, or ends.
 
-Seats under a hand-started record are staffed against the builder's declared vendor.
+A hand-started builder's seats are staffed as the machine's setting says, its vendor and model are the ones it declares, and its cost reads `unknown` with that reason.
 
-**The holder stays quiet between handoff and ready.** While the builder is live, every holder-mode `run` but `run handoff` is refused `with-builder`, and `run handoff` refuses `builder-live` itself, `--resume-reason` included; only `--ended-reason` closing a live hand-started record gets past it. The read-only decision still runs. At every state on this route the holder's `run build`, `artifact`, `floor` and `review-disposition` are refused `route-is-builder`, and its `run proof` is refused `stage-is-the-builders`. The release report lists every holder reply and launch in that window, read from the holder's transcript. A stopped builder (its ceiling, a crash, an end with no ready record, or `status=stopped`) reads `stretch-stopped`. Its one way on is `run handoff --resume-reason TEXT` carrying the owner's word, which resumes the same session, or restarts it where the entrance's recovery restart accepts it; nothing resumes it on its own. A hand-started session that ended without a record is closed on the owner's word with `--ended-reason`.
+**The holder stays quiet between handoff and ready.** While the builder is live, every holder-mode `run` but `run handoff` is refused `with-builder`, and `run handoff` refuses `builder-live` itself, `--resume-reason` included; only `--ended-reason` closing a live hand-started record gets past it. The read-only decision still runs. At every state on this route the holder's `run build`, `artifact`, `floor` and `review-disposition` are refused `route-is-builder`, and its `run proof` is refused `stage-is-the-builders`. A stopped builder (its ceiling, a crash, an end with no ready record, or `status=stopped`) reads `stretch-stopped`. Its one way on is `run handoff --resume-reason TEXT` carrying the owner's word, which resumes the same session, or restarts it where the entrance's recovery restart accepts it; nothing resumes it on its own. A hand-started session that ended without a record is closed on the owner's word with `--ended-reason`.
 
 **The final pass.** A ready record at the current head, with the builder ended, reads `final-pass`. The holder first accounts for the stretch launch's own findings, then reads the record (with any finding it leaves unreconciled shown) and the change, spot-checking what it chooses. The final pass launches nothing: `run cold-seat`, `use`, `cold-reader`, `acceptance-criterion` and a fresh `handoff` are refused. A finding left unreconciled doesn't hold the change; the send-back is its remedy. What stays open is one send-back, a catch-up resume, the release report, a bought panel's seats and a source-verification launch.
 

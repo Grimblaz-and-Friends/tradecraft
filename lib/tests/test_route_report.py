@@ -19,14 +19,9 @@ def inputs(**changes):
         "readiness": {
             "record": 11, "status": "ready", "launched_by_builder": True, "reconciled": True,
             "relaunches": {"pairs": [], "unpaired": []}, "stop": None,
-            "vendor_model": {"source": "observed", "log": "readable"},
             "builder": {"vendor": "claude", "model": "opus", "started_by": "launch", "usage_log": None}},
-        "owed_at_ready": {"last": []},
         "send_back": {"count": 0},
         "catch_up_resumes": [],
-        "reviewer_declines": [{"comment": 900, "reason": "out of scope"}],
-        "holder_after_ready": {"bundles": [{"class": "send-back"}], "transcript": {"status": "found", "calls": []}},
-        "holder_quiet": {"status": "quiet", "calls": [], "unprompted": []},
         "handoff_plan": {"reading": "composed"},
         "plan_writer_launches": [],
         "limits": ["a limit"],
@@ -55,9 +50,7 @@ def with_readiness(**changes):
 
 
 HOLDS_AND_OTHER = [
-    ("1.1", {}, {"owed_at_ready": {"last": ["use"]}}, "fails"),
     ("1.2", {}, {"readiness": with_readiness(launched_by_builder=False)}, "fails"),
-    ("1.3", {}, {"holder_quiet": {"status": "not-quiet", "calls": [{"tool": "x"}], "unprompted": []}}, "fails"),
     ("2.1", {}, {"handoff_plan": {"reading": "differs", "reason": "holder-written"}}, "fails"),
     ("2.2", {}, {"check_dispatches": [{"stage": "use", "status": "differs", "dispatch": "d1"}]}, "fails"),
     ("2.3", {}, {"plan_writer_launches": [{"dispatch": "p"}]}, "fails"),
@@ -65,17 +58,12 @@ HOLDS_AND_OTHER = [
     ("3.2", {}, {"check_reports": [{"builder": "b1", "invalid": ["store-and-posted-differ"]}]}, "fails"),
     ("3.3", {}, {"check_dispatches": [{"stage": "use", "status": "composed", "dispatch": "d1"},
                                       {"stage": "floor", "status": "differs", "dispatch": "d2"}]}, "fails"),
-    ("4.1", {}, {"holder_after_ready": {"bundles": [{"class": "other"}],
-                                        "transcript": {"status": "found", "calls": []}}}, "fails"),
     ("4.2", {"send_back": {"count": 1}}, {"send_back": {"count": 2}}, "fails"),
     ("5.2", {}, {"refusals": {"stretch": [REFUSAL], "reported": []}}, "fails"),
     ("5.3", {}, {"refusals": {"stretch": [], "reported": []}}, "not-occurred"),
     ("5.4", {}, {"readiness": with_readiness(relaunches={"pairs": [], "unpaired": [{"dispatch": "d"}]})}, "fails"),
     ("5.5", {"hand_record": {"ran_under": "codex"}}, {}, "not-applicable"),
     ("6.2", {"hand_record": {"ran_under": "codex"}}, {}, "not-applicable"),
-    ("6.3", {}, {"readiness": with_readiness(vendor_model={"source": "declared", "log": None})}, "not-stated"),
-    ("7.1", {}, {"route": {"name": "relay", "reason": "in-flight"}}, "not-applicable"),
-    ("7.2", {"route": {"name": "relay", "reason": "owner-asked"}}, {}, "not-applicable"),
     ("7.3", {}, {"cost_split": {"holder_before": PRICED, "holder_after": PRICED,
                                 "builder": {"status": "unknown", "reason": "no usage log"}}}, "not-stated"),
 ]
@@ -116,27 +104,15 @@ def test_a_stretch_with_refusals_that_did_not_succeed_fails():
     assert reading("5.3", stretch_outcome="error")["reading"] == "fails"
 
 
-def test_declared_vendor_model_with_a_readable_log_fails():
-    declared = with_readiness(vendor_model={"source": "declared", "log": "readable"})
-    assert reading("6.3", readiness=declared)["reading"] == "fails"
-
-
 def test_the_route_comparison_due_is_echoed_in_the_cost_entry():
     assert reading("7.3")["due"] is True
     assert reading("7.3", route_comparison=None)["due"] is None
 
 
-def test_unknown_statuses_read_unknown():
-    assert reading("1.3", holder_quiet={"status": "unknown", "reason": "unreadable"})["reading"] == "unknown"
-    unread = {"bundles": [], "transcript": {"status": "unknown", "reason": "gone"}}
-    assert reading("4.1", holder_after_ready=unread)["reading"] == "unknown"
-
-
 def test_missing_inputs_read_unknown_with_a_reason_and_never_raise():
     payload = route_report.builder_route()
     by_check = {entry["check"]: entry for entry in payload["row_checks"]}
-    for check in ("1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "3.1", "3.2", "3.3", "4.1", "4.2",
-                  "5.2", "5.3", "5.4", "6.3", "7.1", "7.2", "7.3"):
+    for check in ("1.2", "2.1", "2.2", "2.3", "3.1", "3.2", "3.3", "4.2", "5.2", "5.3", "5.4", "7.3"):
         assert by_check[check]["reading"] == "unknown", check
         assert by_check[check]["reason"], check
     assert by_check["5.5"]["reading"] == "not-applicable"
@@ -144,13 +120,12 @@ def test_missing_inputs_read_unknown_with_a_reason_and_never_raise():
 
 def test_malformed_inputs_read_unknown():
     payload = route_report.builder_route(**inputs(
-        owed_at_ready={"last": "x"}, readiness={"record": 1, "relaunches": "x", "vendor_model": 3},
+        readiness={"record": 1, "relaunches": "x"},
         send_back={"count": "1"}, check_dispatches="x", check_reports=[1], cost_split={"builder": PRICED},
         refusals={"stretch": None}, route={"name": None}))
     readings = {entry["check"]: entry["reading"] for entry in payload["row_checks"]}
-    for check in ("1.1", "1.2", "2.2", "3.1", "3.2", "3.3", "4.2", "5.2", "5.3", "5.4", "6.3", "7.1", "7.3"):
+    for check in ("1.2", "2.2", "3.1", "3.2", "3.3", "4.2", "5.2", "5.3", "5.4", "7.3"):
         assert readings[check] == "unknown", check
-
 
 
 def test_refusals_pair_in_order_whatever_their_wording():

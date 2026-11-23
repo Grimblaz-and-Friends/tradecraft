@@ -39,6 +39,8 @@ RETURN_TAILS = {
         "Close your return with a section that opens with the line `Findings:` and lists each problem "
         "you found on its own line as `F1. ...`, `F2. ...`, numbered from 1, with nothing after the list. "
         "With no problems, close your return with the single line `Findings: none`."),
+    # Not appended: the cold reader's dispatch already fixes its account's form, so this only states what
+    # is counted from that form, its flags and a `Can tell: no`.
     "cold-reader": (
         "Keep your account's form exactly as given above: the `## Flags` lines, or the single word "
         "`none`, and the `Can tell: yes` or `Can tell: no` line opening `## Why this change was made` "
@@ -290,8 +292,3 @@ def relaunches(checks: list[dict], outcomes: dict[str, str]) -> dict:
             pairs.append([check, later])
     return {"pairs": pairs, "unpaired": unpaired}
 
-
-def unmapped_rows(record: dict, brief_rows: list[int]) -> list[int]:
-    """The affirmed rows no entry of the record's `rows` carries, in the brief's order."""
-    mapped = {entry["row"] for entry in record["rows"]}
-    return list(dict.fromkeys(row for row in brief_rows if row not in mapped))

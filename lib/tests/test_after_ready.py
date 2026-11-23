@@ -21,7 +21,7 @@ from test_handoff_stage import (  # noqa: E402,F401
     HOLDER_SESSION, claude_machine, hand_requests, holder, no_spawn, quiet_report, stored, stub,
 )
 from test_route import (  # noqa: E402
-    CLEAR, MECHANICAL, RULES, START, launch, post, readiness_record, route_marker, with_pull_request,
+    CLEAR, MECHANICAL, PLANNED, RULES, START, launch, post, readiness_record, route_marker, with_pull_request,
 )
 
 SESSION = "77777777-7777-7777-7777-777777777777"
@@ -65,8 +65,9 @@ def words(tmp_path, text="Point 1: the floor skips lib/new.py.\n"):
 
 def ready_hand(tmp_path, monkeypatch, holder):
     """A hand-started builder whose ready record stands at the head: the final pass."""
-    state = with_pull_request(stored(tmp_path, MECHANICAL))
+    state = with_pull_request(stored(tmp_path, *PLANNED))
     state.pr["draft"] = False
+    state.floor_public = {"outcome": "ci-met", "head": state.pr["head"]["sha"]}  # The CI floor passed.
     assert run(monkeypatch, holder, state, "handoff", "--by-hand", "gemini:any-model") == 0
     [request] = hand_requests()
     post(state, readiness_record(request["dispatch_id"]), 30)
@@ -111,7 +112,7 @@ def test_1011_the_final_pass_launches_nothing_but_one_send_back(
 
 
 def test_1011_a_send_back_waits_for_the_final_pass(tmp_path, monkeypatch, holder, quiet_report, no_spawn):
-    state = with_pull_request(stored(tmp_path, MECHANICAL))
+    state = with_pull_request(stored(tmp_path, *PLANNED))
     launch(state, "stretch", 5)
     assert refused(monkeypatch, holder, state, "send-back", "--dispatch", words(tmp_path)) == "not-at-final-pass"
 
@@ -131,7 +132,7 @@ def test_1011_a_send_back_does_not_wait_on_a_connected_reviewer(
 
 def test_1011_a_stopped_record_completes_a_hand_started_record(
         tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     assert run(monkeypatch, holder, state, "handoff", "--by-hand", "gemini:any-model") == 0
     [request] = hand_requests()
     stop = {"kind": "cannot-launch", "reason": "gh is not signed in", "check": "use"}
@@ -164,7 +165,7 @@ def test_1011_a_launched_builder_is_resumed_in_its_own_session(
     claude_machine()
     stub()
     behind = {**CLEAR, "behind": True, "strict": True, "merge_state": "behind"}
-    state = with_pull_request(stored(tmp_path, MECHANICAL), behind if stage == "catch-up" else CLEAR)
+    state = with_pull_request(stored(tmp_path, *PLANNED), behind if stage == "catch-up" else CLEAR)
     state.pr["draft"] = False
     first = resumable(state, tmp_path)
     if stage == "send-back":
@@ -204,7 +205,7 @@ def received(state, tmp_path, *, holder_written=False, altered=False, version=No
     ({"holder_written": True}, ("differs", "holder-written")), ({"version": "0.0.1"}, (
         "unknown", f"composed-by-another-version: 0.0.1 composed it and {work.records.producer_version()} runs"))])
 def test_1011_the_release_report_reads_the_handoff_it_received(tmp_path, kind, expected):
-    state = with_pull_request(stored(tmp_path, MECHANICAL))
+    state = with_pull_request(stored(tmp_path, *PLANNED))
     state.holder_root = tmp_path
     received(state, tmp_path, **kind)
     plan = work._builder_route_report(state)["handoff_plan"]
@@ -214,7 +215,7 @@ def test_1011_the_release_report_reads_the_handoff_it_received(tmp_path, kind, e
 def test_1011_the_release_report_carries_the_builder_route(tmp_path, monkeypatch):
     monkeypatch.setattr(work.change_cost, "route_split", lambda **_k: (_ for _ in ()).throw(
         work.change_cost.CostError("no transcript")))
-    state = with_pull_request(stored(tmp_path, MECHANICAL))
+    state = with_pull_request(stored(tmp_path, *PLANNED))
     state.holder_root = tmp_path
     first = received(state, tmp_path, timeout_seconds=30000.0, override_reason="a long change")
     launch(state, "artifact", 6)
@@ -227,7 +228,7 @@ def test_1011_the_release_report_carries_the_builder_route(tmp_path, monkeypatch
     post(state, readiness_record(caught), 70)
     report = work._builder_route_report(state)
     assert report["route"]["name"] == "builder" and report["readiness"]["dispatch"] == caught
-    assert report["send_back"] == {"count": 1, "marker": "302", "second_ready_head": "a" * 40}
+    assert report["send_back"] == {"count": 1, "marker": "305", "second_ready_head": "a" * 40}
     assert [(entry["stage"], entry["override_reason"]) for entry in report["limits"]] == [
         ("handoff", "a long change"), ("send-back", "a wide fix")]
     assert [entry["dispatch"] for entry in report["catch_up_resumes"]] == [caught]

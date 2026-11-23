@@ -18,11 +18,12 @@ sys.path.insert(0, str(LIB / "tests"))
 import work  # noqa: E402
 from route_fixture import BRIEF as CONNECTED, DRAFT, SETTLED  # noqa: E402
 from test_route import (  # noqa: E402
-    CLEAR, HEAD, MECHANICAL, RULES, START, WORK, decision, fixture, launch, post, readiness_record,
+    CLEAR, HEAD, MECHANICAL, PLANNED, RULES, START, WORK, decision, fixture, launch, post, readiness_record,
     route_marker, with_pull_request,
 )
 
 RELAY = route_marker("relay")
+ASK = route_marker("builder")
 
 
 def draft(**attributes):
@@ -43,7 +44,7 @@ def invalid(state):
 def test_1011_a_draft_may_name_its_holder_author_and_vendor(tmp_path):
     for index, attributes in enumerate(({"author": "holder", "vendor": "claude"}, {"author": "holder"},
                                         {"vendor": "codex"}, {})):
-        state = fixture(tmp_path / str(index), CONNECTED, draft(**attributes))
+        state = fixture(tmp_path / str(index), CONNECTED, ASK, draft(**attributes))
         assert invalid(state) == set()
 
 
@@ -53,32 +54,32 @@ def test_1011_a_draft_may_name_its_holder_author_and_vendor(tmp_path):
     ({"route": "would"}, "artifact draft cannot name a settlement route"),
 ])
 def test_1011_a_draft_names_only_a_holder_and_a_known_vendor(tmp_path, attributes, reason):
-    assert ("artifact", reason) in invalid(fixture(tmp_path, CONNECTED, draft(**attributes)))
+    assert ("artifact", reason) in invalid(fixture(tmp_path, CONNECTED, ASK, draft(**attributes)))
 
 
 def test_1011_a_settlement_names_no_author_or_vendor(tmp_path):
     for word in ("author=holder", "vendor=claude"):
         settled = SETTLED.replace("route=unobtainable", f"route=unobtainable {word}")
-        state = fixture(tmp_path / word.split("=")[0], CONNECTED, draft(author="holder", vendor="claude"), settled)
+        state = fixture(tmp_path / word.split("=")[0], CONNECTED, ASK, draft(author="holder", vendor="claude"), settled)
         assert ("artifact", "artifact settlement cannot name author or vendor") in invalid(state)
 
 
 def test_1011_a_holder_draft_is_invalid_on_the_relay_route(tmp_path):
     relay = fixture(tmp_path / "relay", CONNECTED, RELAY, draft(author="holder", vendor="claude"))
     assert ("artifact", "holder-draft-on-relay-route") in invalid(relay)
-    builder = fixture(tmp_path / "builder", CONNECTED, draft(author="holder", vendor="claude"))
+    builder = fixture(tmp_path / "builder", CONNECTED, ASK, draft(author="holder", vendor="claude"))
     assert invalid(builder) == set()
 
 
 def test_1011_a_holder_reading_counts_for_nothing_on_the_builder_route(tmp_path):
-    builder = fixture(tmp_path / "builder", CONNECTED, draft(author="holder", vendor="claude"), SETTLED, READING)
+    builder = fixture(tmp_path / "builder", CONNECTED, ASK, draft(author="holder", vendor="claude"), SETTLED, READING)
     assert ("holder-reading", "not-read-on-builder-route") in invalid(builder)
     relay = fixture(tmp_path / "relay", CONNECTED, RELAY, draft(), SETTLED, READING)
     assert invalid(relay) == set()
 
 
 def test_1011_a_builder_route_settlement_owes_no_holder_reading(tmp_path):
-    made = work.decide(fixture(tmp_path / "builder", CONNECTED, draft(author="holder", vendor="claude"),
+    made = work.decide(fixture(tmp_path / "builder", CONNECTED, ASK, draft(author="holder", vendor="claude"),
                                SETTLED), RULES)
     assert (made.stage, made.reason) == ("handoff", "handoff-due")
     relay = work.decide(fixture(tmp_path / "relay", CONNECTED, RELAY, draft(), SETTLED), RULES)
@@ -86,7 +87,7 @@ def test_1011_a_builder_route_settlement_owes_no_holder_reading(tmp_path):
 
 
 def test_1011_a_holder_plans_producer_is_its_draft_markers_vendor(tmp_path, monkeypatch):
-    state = fixture(tmp_path, CONNECTED, draft(author="holder", vendor="codex"))
+    state = fixture(tmp_path, CONNECTED, ASK, draft(author="holder", vendor="codex"))
     [plan] = [marker for marker in state.issue_markers if marker.name == "artifact"]
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     assert work._plan_producer_vendor(state, plan, in_run=True) == ("codex", f"holder-written draft marker {plan.source_id}")
@@ -95,7 +96,7 @@ def test_1011_a_holder_plans_producer_is_its_draft_markers_vendor(tmp_path, monk
         work._plan_producer_vendor(state, plan, in_run=True)
     # Judging a verdict already given reads the marker alone; the session running now proves nothing of it.
     assert work._plan_producer_vendor(state, plan)[0] == "codex"
-    unnamed = fixture(tmp_path / "unnamed", CONNECTED, draft(author="holder"))
+    unnamed = fixture(tmp_path / "unnamed", CONNECTED, ASK, draft(author="holder"))
     with pytest.raises(work.WorkError, match="names no vendor"):
         work._plan_producer_vendor(unnamed, unnamed.issue_markers[-1])
 
@@ -116,7 +117,7 @@ def capture_seat(monkeypatch):
 
 @pytest.mark.parametrize("holder", [True, False])
 def test_1011_a_claude_seat_on_a_claude_holders_plan_records_why(tmp_path, monkeypatch, holder):
-    texts = (CONNECTED, draft(author="holder", vendor="claude")) if holder else (CONNECTED, RELAY, draft())
+    texts = (CONNECTED, ASK, draft(author="holder", vendor="claude")) if holder else (CONNECTED, RELAY, draft())
     state = fixture(tmp_path, *texts)
     work.validate_marker_claims(state)
     monkeypatch.setattr(work, "judging_root", lambda _root: nullcontext(tmp_path))
@@ -140,8 +141,9 @@ def test_1011_a_claude_seat_on_a_claude_holders_plan_records_why(tmp_path, monke
 # The gates a ready record continues into.
 
 def ready(tmp_path, *texts, draft_pr=False):
-    state = with_pull_request(fixture(tmp_path, MECHANICAL, *texts))
+    state = with_pull_request(fixture(tmp_path, *PLANNED, *texts))
     state.pr["draft"] = draft_pr
+    state.floor_public = {"outcome": "ci-met", "head": HEAD}  # The declared CI jobs passed at the head.
     builder = launch(state, "stretch", 5)
     post(state, readiness_record(builder), 30)
     return state, builder
@@ -177,14 +179,14 @@ def test_1011_a_review_thread_owed_at_ready_is_the_builders(tmp_path, monkeypatc
 
 
 def test_1011_no_gate_before_the_ready_record_reads_the_chain(tmp_path):
-    state = with_pull_request(fixture(tmp_path, MECHANICAL))
+    state = with_pull_request(fixture(tmp_path, *PLANNED))
     state.pr["draft"] = False
     launch(state, "stretch", 5)
     assert decision(state)[:3] == ("stretch-stopped", "holder-owned", "builder-stopped")
 
 
 def test_1011_a_ready_builder_without_a_pull_request_owes_one(tmp_path):
-    state = fixture(tmp_path, MECHANICAL)
+    state = fixture(tmp_path, *PLANNED)
     builder = launch(state, "stretch", 5)
     post(state, readiness_record(builder), 30)
     assert decision(state)[:3] == ("open-pull-request", "holder-owned", "builder-returned-without-pull-request")
@@ -193,7 +195,7 @@ def test_1011_a_ready_builder_without_a_pull_request_owes_one(tmp_path):
 def test_1011_a_builder_floor_counts_with_its_handoff_command_and_output(tmp_path):
     floor = f"<!-- tradecraft:floor:v1 head={HEAD} status=pass -->\n\n"
     command = "python -B -m pytest -q"
-    state = with_pull_request(fixture(tmp_path, MECHANICAL, floor + f"```\n{command}\n```\n\n3 passed\n",
+    state = with_pull_request(fixture(tmp_path, *PLANNED, floor + f"```\n{command}\n```\n\n3 passed\n",
                                       floor + f"```\n{command}\n```\n", floor + "3 passed\n"))
     launch(state, "stretch", 5, handoff={"floor_command": command})
     reasons = [claim["reason"] for claim in work.validate_marker_claims(state)[1] if claim["name"] == "floor"]
@@ -224,7 +226,7 @@ def stretch_with_session(state, session):
 def test_1011_a_builder_session_agrees_with_a_stretch_bundle(tmp_path):
     session = "22222222-2222-2222-2222-222222222222"
     marker = f"<!-- tradecraft:builder-session:v1 session={session} -->"
-    state = fixture(tmp_path, MECHANICAL)
+    state = fixture(tmp_path, *PLANNED)
     stretch_with_session(state, session)
     post(state, marker, 30)
     assert not [claim for claim in work.validate_marker_claims(state)[1] if claim["name"] == "builder-session"]
@@ -234,14 +236,14 @@ def test_1011_a_builder_session_agrees_with_a_stretch_bundle(tmp_path):
 
 
 def test_1011_the_stretch_makes_a_cold_reading_due(tmp_path):
-    state = fixture(tmp_path, MECHANICAL)
+    state = fixture(tmp_path, *PLANNED)
     assert work._cold_reading_due(state) is False
     launch(state, "stretch", 5)
     assert work._cold_reading_due(state) is True
 
 
 def test_1011_a_builders_catch_up_takes_the_holder_session_from_its_launch(tmp_path):
-    state = fixture(tmp_path, MECHANICAL)
+    state = fixture(tmp_path, *PLANNED)
     launch(state, "stretch", 5, holder_session_id="44444444-4444-4444-4444-444444444444")
     request = next(state.record_root.rglob("*.request.json"))
     assert work._holding_launch_holder_session({"request": str(request)}) == "44444444-4444-4444-4444-444444444444"
@@ -250,14 +252,14 @@ def test_1011_a_builders_catch_up_takes_the_holder_session_from_its_launch(tmp_p
         handoff={"tree": str(tmp_path), "holder_session_id": "55555555-5555-5555-5555-555555555555"})
     assert work._holding_launch_holder_session({"request": str(hand["request"])}) == (
         "55555555-5555-5555-5555-555555555555")
-    bare = fixture(tmp_path / "bare", MECHANICAL)
+    bare = fixture(tmp_path / "bare", *PLANNED)
     launch(bare, "stretch", 5)
     with pytest.raises(work.WorkError, match="names no holder session"):
         work._holding_launch_holder_session({"request": str(next(bare.record_root.rglob("*.request.json")))})
 
 
 def test_1011_a_builders_catch_up_refuses_a_holder_session_on_its_command_line(tmp_path, monkeypatch):
-    state = with_pull_request(fixture(tmp_path, MECHANICAL), {**CLEAR, "behind": True})
+    state = with_pull_request(fixture(tmp_path, *PLANNED), {**CLEAR, "behind": True})
     monkeypatch.setattr(work, "builder_mode", lambda: {"request": str(tmp_path / "absent.json")})
     monkeypatch.setattr(work, "_version_refusal", lambda *_a, **_k: None)
     work.validate_marker_claims(state)
@@ -269,10 +271,27 @@ def test_1011_a_builders_catch_up_refuses_a_holder_session_on_its_command_line(t
 
 def test_1011_a_builder_floor_counts_only_at_the_head_and_from_a_producer(tmp_path):
     shown = "\n\n```\npytest\n```\n\n3 passed\n"
-    state = with_pull_request(fixture(tmp_path, MECHANICAL, f"<!-- tradecraft:floor:v1 head={'c' * 40} status=pass -->"
+    state = with_pull_request(fixture(tmp_path, *PLANNED, f"<!-- tradecraft:floor:v1 head={'c' * 40} status=pass -->"
                                       + shown))
     state.issue_comments.append({"id": 400, "body": f"<!-- tradecraft:floor:v1 head={HEAD} status=pass -->" + shown,
                                  "user": {"login": "someone"}, "created_at": START.isoformat()})
     launch(state, "stretch", 5, handoff={"floor_command": "pytest"})
     assert ("floor", "marker producer is not authorized: someone") in invalid(state)
     assert work.floor_evaluation(state)["outcome"] == "builder-missing"
+
+
+def test_1011_a_ready_record_with_the_builders_floor_absent_is_owed_at_ready(tmp_path):
+    state, _builder = ready(tmp_path)
+    state.floor_public = None  # A builder floor is owed, and no floor marker stands at the head.
+    stage, _status, reason, detail = decision(state)
+    assert (stage, reason) == ("final-pass", "owed-at-ready")
+    assert json.loads(detail)["owed_at_ready"]["stage"] == "floor"
+
+
+def test_1011_a_ready_record_with_a_stale_cold_reading_is_owed_at_ready(tmp_path, monkeypatch):
+    state, _builder = ready(tmp_path)
+    stale = work.Decision("cold-reader", True, "fresh", "cold-reading-stale", json.dumps({"covered": ["lib/a.py"]}))
+    monkeypatch.setattr(work, "_cold_reading_decision", lambda _state, sha: stale if sha == HEAD else None)
+    stage, _status, reason, detail = decision(state)
+    assert (stage, reason) == ("final-pass", "owed-at-ready")
+    assert json.loads(detail)["owed_at_ready"]["reason"] == "cold-reading-stale"

@@ -1,4 +1,4 @@
-"""Token-only Claude transcript snapshots, serialized holder close evidence, and a holder's acts over a window."""
+"""Token-only Claude transcript snapshots and serialized holder close evidence."""
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
@@ -7,8 +7,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
-import shlex
 import time
 import uuid
 
@@ -264,20 +262,14 @@ def _fingerprint(reply):
     return {key: reply[key] for key in ("model", "tokens", "additional_native_classes")}
 
 
-def _transcript_paths(projects, session):
-    """The session's one main transcript, then its subagent transcripts."""
+def snapshot(projects, session):
     candidates = [directory / (session + ".jsonl") for directory in projects.iterdir()
                   if directory.is_dir() and (directory / (session + ".jsonl")).is_file()] if projects.exists() else []
     if len(candidates) != 1:
         raise TranscriptError(f"holder transcript {'not found' if not candidates else 'ambiguous'}: {projects}/*/{session}.jsonl")
     main = candidates[0].resolve()
     children = main.parent / session / "subagents"
-    return [main, *sorted(children.glob("agent-*.jsonl"))]
-
-
-def snapshot(projects, session):
-    paths = _transcript_paths(projects, session)
-    main = paths[0]
+    paths = [main, *sorted(children.glob("agent-*.jsonl"))]
     replies = {}
     invalid_ids = set()
     gaps = []
@@ -703,260 +695,3 @@ def holder_rows(destination, *, state_root=None):
         row["model"]["reported_unknown_reason"] = None if holder["replies"] else row.get("tokens_unknown_reason")
         rows[identity] = row
     return [(identity, row, problems.get(identity, [])) for identity, row in rows.items()], skipped
-
-
-# --- What a holder did over a window: its launching calls and unprompted replies ---
-
-LAUNCHERS = frozenset({"dispatch_seat.py", "dispatch_implementer.py", "dispatch_record.py"})
-AGENT_TOOLS = frozenset({"Agent", "Task"})
-SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
-_WRITE_METHODS = frozenset({"POST", "PATCH", "PUT", "DELETE"})
-_GH_WRITES = {"pr": {"create", "comment", "edit", "ready", "merge", "close", "reopen", "review"},
-              "issue": {"create", "comment", "edit", "close", "reopen"}}
-_INTERPRETER = re.compile(r"^(?:py|pythonw?(?:3(?:\.\d+)?)?)(?:\.exe)?$", re.I)
-_SEGMENT = re.compile(r"\|\||&&|[;|\n]")
-# Runtime-generated user records; none is the owner speaking or another session's message.
-_SYNTHETIC_TAGS = ("<task-notification", "<system-reminder", "<ci-monitor-event", "<local-command-caveat")
-_SYNTHETIC_TURNS = frozenset({"task_notification", "auto_continuation", "host_synthetic", "system"})
-
-
-def _words(segment):
-    try:
-        words = shlex.split(segment, posix=False)
-    except ValueError:
-        words = segment.split()
-    # Non-POSIX splitting keeps Windows backslashes, so quotes are stripped here.
-    return [word[1:-1] if len(word) > 1 and word[0] == word[-1] and word[0] in "'\"" else word
-            for word in words]
-
-
-def _base(word):
-    return re.split(r"[\\/]", word)[-1]
-
-
-def _program(words):
-    """The program one simple command runs, seen through a Python interpreter, and its arguments."""
-    words = list(words)
-    while words and (words[0] in {"&", "env", "exec", "command"} or re.match(r"^[A-Za-z_]\w*=", words[0])):
-        words.pop(0)
-    if words and _INTERPRETER.match(_base(words[0])):
-        words.pop(0)
-        while words and words[0].startswith("-"):
-            flag = words.pop(0)
-            if flag in {"-X", "-W"} and words:
-                words.pop(0)
-    return (_base(words[0]).lower(), words[1:]) if words else (None, [])
-
-
-def _gh_write(arguments):
-    if len(arguments) >= 2 and arguments[1] in _GH_WRITES.get(arguments[0], ()):
-        return True
-    if not arguments or arguments[0] != "api":
-        return False
-    method, fields = None, []
-    for index, word in enumerate(arguments):
-        following = arguments[index + 1] if index + 1 < len(arguments) else ""
-        if word in {"-X", "--method"}:
-            method = following.upper()
-        elif word.startswith("--method="):
-            method = word.split("=", 1)[1].upper()
-        elif word.startswith("-X") and len(word) > 2:
-            method = word[2:].upper()
-        elif word in {"-f", "-F", "--field", "--raw-field"}:
-            fields.append(following)
-        elif word.startswith(("--field=", "--raw-field=")) or (word[:2] in {"-f", "-F"} and len(word) > 2):
-            fields.append(word.split("=", 1)[1] if word.startswith("--") else word[2:])
-    if method is not None:
-        return method in _WRITE_METHODS
-    if "graphql" in arguments[1:2]:
-        # A GraphQL query is POSTed too; only a mutation writes.
-        return any("mutation" in field for field in fields)
-    return bool(fields)
-
-
-def _names_change(words, change):
-    if change is None:
-        return True
-    repository, number = change
-    repository = str(repository).lower()
-    exact = re.compile(rf"^#?{int(number)}$")
-    path = re.compile(rf"/(?:issues|pulls|pull)/{int(number)}(?:$|[/?#])")
-    owners = re.compile(r"(?:repos/|github\.com/)([^/\s]+/[^/\s]+?)(?:/|$)")
-    named = False
-    for index, word in enumerate(words):
-        if word in {"-R", "--repo"} and index + 1 < len(words) and words[index + 1].lower() != repository:
-            return False
-        if word.startswith("--repo=") and word.split("=", 1)[1].lower() != repository:
-            return False
-        found = owners.search(word)
-        if found and found.group(1).lower() != repository:
-            return False
-        if exact.match(word) or path.search(word) or any(exact.match(part) for part in word.split("=")[1:]):
-            named = True
-    return named
-
-
-def _call_kinds(name, tool_input, builder, change):
-    """Each launching or handoff-breaking kind one tool call is, and its description."""
-    tool_input = tool_input if isinstance(tool_input, dict) else {}
-    if name in AGENT_TOOLS:
-        return {"agent"}, f"{name}: {tool_input.get('description') or tool_input.get('subagent_type') or 'agent'}"
-    if name == "SendMessage":
-        to = tool_input.get("to")
-        return ({"message"} if builder is None or to == builder else set()), f"SendMessage to {to}"
-    command = tool_input.get("command")
-    if name not in SHELL_TOOLS or not isinstance(command, str):
-        return set(), name
-    kinds = set()
-    for segment in _SEGMENT.split(command):
-        words = _words(segment)
-        program, arguments = _program(words)
-        if program == "work.py" and "run" in arguments:
-            kinds.add("work-run")  # The read-only decision has no `run`.
-        elif program in LAUNCHERS:
-            kinds.add("launcher")
-        elif program in {"gh", "gh.exe"} and _gh_write(arguments) and _names_change(words, change):
-            kinds.add("github-write")
-    description = " ".join(command.split())
-    return kinds, description if len(description) <= 200 else description[:197] + "..."
-
-
-def _prompt_kind(record):
-    """``owner`` or ``peer`` for a user record that prompts a reply; None for a tool result or runtime text."""
-    message = record.get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
-    if "toolUseResult" in record or any(block.get("type") == "tool_result" for block in blocks):
-        return None
-    if record.get("isCompactSummary") or record.get("isSidechain"):
-        return None
-    origin = record.get("origin")
-    if isinstance(origin, dict):
-        # The native origin names the sender; a plugin's resume or a task notification is neither.
-        return {"human": "owner", "peer": "peer"}.get(origin.get("kind"))
-    text = content if isinstance(content, str) else " ".join(
-        block["text"] for block in blocks if block.get("type") == "text" and isinstance(block.get("text"), str))
-    # Earlier runtimes record no origin; another session's message still carries its tag.
-    if "<cross-session-message" in text or record.get("turnOrigin") == "peer":
-        return "peer"
-    if (record.get("isMeta") or not text.strip() or text.lstrip().startswith(_SYNTHETIC_TAGS)
-            or record.get("turnOrigin") in _SYNTHETIC_TURNS):
-        return None
-    return "owner"
-
-
-def _records(path):
-    data = path.read_bytes().decode("utf-8")
-    for number, line in enumerate(data.splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            record = None
-        yield f"{path}:{number}", record if isinstance(record, dict) else None
-
-
-def _activity(session, start, end, home, builder=None, change=None):
-    """Tool calls and unprompted replies timestamped in [start, end), and what could not be read."""
-    if start.utcoffset() is None or end.utcoffset() is None:
-        raise ValueError("window bounds need a timezone")
-    identity = session_identity(session) if isinstance(session, str) and session.strip() else None
-    if identity is None:
-        raise TranscriptError("Claude session identity is unavailable")
-    projects, _ = projects_directory(home)
-    paths = _transcript_paths(projects, identity)
-    main = paths[0]
-    calls, unprompted, gaps, seen = [], [], [], set()
-    previous, turn_open, prompted = None, False, False
-    for path in paths:
-        try:
-            records = list(_records(path))
-        except (OSError, UnicodeError) as exc:
-            if path == main:
-                raise TranscriptError(f"cannot read holder transcript: {path}: {exc}") from exc
-            gaps.append(f"cannot read subagent transcript {path}: {exc}")
-            continue
-        for location, record in records:
-            if record is None:
-                gaps.append(f"malformed transcript record at {location}")
-                continue
-            if path == main and record.get("isSidechain") is True:
-                continue
-            if record.get("type") == "user" and path == main:
-                # Prompts before the window still answer the window's first reply.
-                prompted = prompted or _prompt_kind(record) is not None
-                continue
-            message = record.get("message")
-            if record.get("type") != "assistant" or not isinstance(message, dict):
-                continue
-            if message.get("model") == "<synthetic>":
-                continue  # The runtime's own placeholder, never a model reply.
-            when = timestamp(record.get("timestamp"))
-            if when is None:
-                gaps.append(f"assistant record without a usable timestamp at {location}")
-                continue
-            inside = start <= when < end
-            for block in message.get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                key = block.get("id") or (location, len(seen))
-                if key in seen:
-                    continue
-                seen.add(key)
-                kinds, description = _call_kinds(block.get("name"), block.get("input"), builder, change)
-                if inside and kinds:
-                    calls.append({"timestamp": when.isoformat(), "tool": block.get("name"), "kinds": kinds,
-                                  "description": description,
-                                  "agent_id": None if path == main else path.stem.removeprefix("agent-")})
-            if path != main:
-                continue
-            # One reply's blocks are separate records sharing its message id. A
-            # reply after a finished turn begins a new one; mid-turn, a tool's
-            # result is the only thing between calls and is not a prompt.
-            message_id = message.get("id") or location
-            if message_id != previous:
-                if not turn_open and not prompted and inside:
-                    unprompted.append({"timestamp": when.isoformat(), "message_id": message.get("id"),
-                                       "description": "assistant reply with no owner or peer message before it"})
-                previous, prompted = message_id, False
-            turn_open = message.get("stop_reason") == "tool_use"
-    return calls, unprompted, gaps
-
-
-def _listed(calls, wanted):
-    order = ("work-run", "launcher", "agent", "message", "github-write")
-    return [{**call, "kinds": [kind for kind in order if kind in call["kinds"] and kind in wanted]}
-            for call in calls if call["kinds"] & wanted]
-
-
-# The window readers the builder route's release report reads. Design: lib/DESIGN.md#the-builder-route
-def handoff_quiet(session: str, start: datetime, end: datetime, *, builder: str | None = None,
-                  change: tuple[str, int] | None = None, home=None) -> dict:
-    """Whether the holder stayed out of a handed-off change over [start, end).
-
-    It lists each call that ran a stage or launcher, messaged the builder or
-    wrote to the change on GitHub, and each reply no owner or peer message
-    asked for. ``home`` is the Claude projects root, as ``close`` takes ``projects``.
-    """
-    try:
-        calls, unprompted, gaps = _activity(session, start, end, home, builder, change)
-    except (OSError, TranscriptError) as exc:
-        return {"status": "unknown", "calls": [], "unprompted": [], "reason": str(exc)}
-    calls = _listed(calls, {"work-run", "launcher", "message", "github-write"})
-    reason = "; ".join(gaps) or None
-    if calls or unprompted:
-        return {"status": "not-quiet", "calls": calls, "unprompted": unprompted, "reason": reason}
-    # A record that could not be read might be the act this reader looks for.
-    return {"status": "unknown" if gaps else "quiet", "calls": [], "unprompted": [], "reason": reason}
-
-
-def launch_calls(session: str, start: datetime, end: datetime, *, home=None) -> dict:
-    """Each call over [start, end) that started an agent, a launcher or a stage."""
-    try:
-        calls, _, gaps = _activity(session, start, end, home)
-    except (OSError, TranscriptError) as exc:
-        return {"status": "unknown", "calls": [], "reason": str(exc)}
-    calls = _listed(calls, {"work-run", "launcher", "agent"})
-    reason = "; ".join(gaps) or None
-    return {"status": "found" if calls else "unknown" if gaps else "none", "calls": calls, "reason": reason}

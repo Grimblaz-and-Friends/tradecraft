@@ -250,12 +250,12 @@ Every other comment carrying the marker counts for nothing, and the entrance's `
 - **Exact form:** `<!-- tradecraft:route:v1 route=ROUTE -->`, followed by a blockquote of the owner's words asking for that route.
 - **Attributes and lawful values:** only `route`, which is `builder` or `relay`. A marker with no `>` quotation line is invalid.
 - **Producer, surface, moment:** a configured marker producer, at the owner's word, before anything is launched: in the issue body, where the owner asks for a route when the issue is filed, or in an issue comment. The latest lawful marker governs, so a later comment governs over the body.
-- **What it decides.** The owner's ask is the third rule of the route reading. A repository the cloud route would take stays on `relay`, and a change that has launched keeps the route of its first launch; the entrance reports an ask either of those overrules under the route's `overruled`. With no ask and no launch, the change takes the builder route.
+- **What it decides.** The owner's ask is the fourth rule of the route reading. A repository the cloud route would take stays on `relay`, a change that has launched keeps the route of its first launch, and an `ordinary` / `mechanical` change stays on `relay`; the entrance reports an ask any of those overrules under the route's `overruled`. With no ask and no launch, the change takes the relay route.
 
 ```text
-<!-- tradecraft:route:v1 route=relay -->
+<!-- tradecraft:route:v1 route=builder -->
 
-> Keep this change on today's route.
+> Take this change by the builder route.
 ```
 
 ## `readiness`
@@ -266,7 +266,7 @@ Every other comment carrying the marker counts for nothing, and the entrance's `
 
 - **Attributes and lawful values:** `head` is the full commit the builder reports at; `status` is `ready` or `stopped`; `dispatch` is the 32-character id of the builder's own stretch launch or hand-started record.
 - **Producer, surface, moment:** the builder on the builder route, in a comment on the change's issue, as the last thing it posts at each ready report, after proof. At each head the latest lawful record governs.
-- **Payload:** exactly one fenced `json` object with `schema_version` 1, `builder` (`vendor`, `model`, `started_by` `launch` or `hand`, and `usage_log` or null), `checks` (each check's `stage`, `criterion`, `row`, `dispatch`, `head`, posted `report` comment id and `relaunch_of`), `findings` (each report's finding `F<n>`, `fixed` with its full `commit` or `declined` with its `reason`), `rows` (the mechanical lane's mapping of each brief row to a `test`, `check` or `fresh-reader`), `decisions` (each with `text`, `recommendation` and the brief `row` it would change, or null), `refusals` (`command`, `reason`, `then`) and `stop`. `stop` is null on a ready record; on a stopped one it is `{"kind": "shape|cannot-launch", "reason": "...", "check": "..."}`, where a `cannot-launch` stop names the first check the builder couldn't launch. Unknown keys and a finding answered twice are invalid.
+- **Payload:** exactly one fenced `json` object with `schema_version` 1, `builder` (`vendor`, `model`, `started_by` `launch` or `hand`, and `usage_log` or null), `checks` (each check's `stage`, `criterion`, `row`, `dispatch`, `head`, posted `report` comment id and `relaunch_of`), `findings` (each report's finding `F<n>`, `fixed` with its full `commit` or `declined` with its `reason`), `rows` (each row the builder maps to a `test`, `check` or `fresh-reader`, or none), `decisions` (each with `text`, `recommendation` and the brief `row` it would change, or null), `refusals` (`command`, `reason`, `then`) and `stop`. `stop` is null on a ready record; on a stopped one it is `{"kind": "shape|cannot-launch", "reason": "...", "check": "..."}`, where a `cannot-launch` stop names the first check the builder couldn't launch. Unknown keys and a finding answered twice are invalid.
 - **What reads it.** The entrance reports the governing record as `readiness`: whether it is at the current head, whether its dispatch is this work's stretch, whether every finding of every counting check report its builder launched has one entry (`reconciled`, with what isn't), its declines, decisions, refusals and stop, and its relaunch pairs. A ready record at the current head moves the decision to the holder's final pass; a stopped one, or none, reads `stretch-stopped`.
 
 ## `send-back`

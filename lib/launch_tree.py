@@ -372,9 +372,8 @@ def attribution(store: Path, *, dispatch: str | None = None, session: str | None
     fields: dict[str, object] = {"launched_by": launched_by,
                                  "dispatch_origin": "entrance" if origin == "entrance" else "caller"}
     expected = {"dispatch": launch["dispatch_id"], "session": own_session}
-    # The entrance passes an absent session as the text "None".
     ignored = {name: value for name, value in (("dispatch", dispatch), ("session", session))
-               if value is not None and value not in (expected[name], str(expected[name]))}
+               if value is not None and value != expected[name]}
     if ignored:
         fields["launched_by_ignored"] = ignored
     return fields

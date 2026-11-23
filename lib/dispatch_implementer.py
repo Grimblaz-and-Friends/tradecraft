@@ -684,6 +684,7 @@ def run_implementer(args: argparse.Namespace) -> int:
         raise ImplementerError(str(exc)) from exc
     deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
                                          started=getattr(args, "invocation_started_monotonic", None),
+                                         declared=True if getattr(args, "limit_declared", False) else None,
                                          cap=cap_seconds, cap_reason=cap_reason)
     return cap_declaration.launcher_run(args, deadline, lambda: _launch_implementer(args, deadline),
                                         "implementer")
@@ -1676,6 +1677,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--timeout-seconds", type=float,
                      help="the time the recipient gets from its start; build defaults to 7200, "
                           "other stages to 3600")
+    # The entrance passes every limit, so it says which one its holder declared.
+    cli.add_argument("--limit-declared", action="store_true", help=argparse.SUPPRESS)
     cli.add_argument("--preflight-cap-seconds", type=float,
                      help="a cap larger than 900 seconds on the work before the recipient starts")
     cli.add_argument("--preflight-cap-reason", help="why this run declares a larger preflight cap")

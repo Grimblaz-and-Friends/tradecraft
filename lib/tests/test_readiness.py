@@ -302,8 +302,3 @@ def test_1011_a_relaunch_must_come_after_the_failure():
     checks = [check(OTHER, relaunch_of=DISPATCH), check(DISPATCH)]
     assert readiness.relaunches(checks, {DISPATCH: "error"}) == {"pairs": [], "unpaired": [checks[1]]}
 
-
-def test_1011_unmapped_rows_are_the_affirmed_rows_nothing_carries():
-    assert readiness.unmapped_rows(record(), [1, 2, 3, 3]) == [1, 3]
-    assert readiness.unmapped_rows(record(rows=[]), [2]) == [2]
-    assert readiness.unmapped_rows(record(), [2]) == []

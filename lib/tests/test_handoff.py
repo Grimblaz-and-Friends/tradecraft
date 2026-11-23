@@ -20,14 +20,10 @@ TITLES = ["Your role", "The affirmed brief", "The settled plan", "The checks you
           "What you may write", "The readiness record", "Where the plan settles nothing", "How to finish"]
 
 
-def compose(*, mechanical=False, criteria=("AC1",), use_owed=True, floor_command=None, hand=None,
-            notify="holder-7"):
-    checks = handoff.owed_checks(criteria=list(criteria), mechanical=mechanical,
-                                 use_owed=use_owed, floor_command=floor_command)
+def compose(*, criteria=("AC1",), use_owed=True, floor_command=None, hand=None, notify="holder-7"):
+    checks = handoff.owed_checks(criteria=list(criteria), use_owed=use_owed, floor_command=floor_command)
     return handoff.compose_handoff(
-        brief=BRIEF, artifact=None if mechanical else ARTIFACT,
-        lane_reason="A rename with nothing left to choose." if mechanical else None,
-        checks=checks, allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/holder/root",
+        brief=BRIEF, artifact=ARTIFACT, checks=checks, allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/holder/root",
         plugin_root="/plugin", notify=notify, hand=hand).decode("utf-8")
 
 
@@ -41,13 +37,13 @@ def command_lines(text):
 
 def test_1011_same_bytes_on_repeated_calls_lf_only():
     first = handoff.compose_handoff(
-        brief=BRIEF, artifact=ARTIFACT, lane_reason=None,
-        checks=handoff.owed_checks(criteria=["AC1"], mechanical=False, use_owed=True, floor_command=FLOOR),
+        brief=BRIEF, artifact=ARTIFACT,
+        checks=handoff.owed_checks(criteria=["AC1"], use_owed=True, floor_command=FLOOR),
         allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/holder/root", plugin_root="/plugin",
         notify="holder-7", hand=HAND)
     second = handoff.compose_handoff(
-        brief=BRIEF, artifact=ARTIFACT, lane_reason=None,
-        checks=handoff.owed_checks(criteria=["AC1"], mechanical=False, use_owed=True, floor_command=FLOOR),
+        brief=BRIEF, artifact=ARTIFACT,
+        checks=handoff.owed_checks(criteria=["AC1"], use_owed=True, floor_command=FLOOR),
         allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/holder/root", plugin_root="/plugin",
         notify="holder-7", hand=HAND)
     assert isinstance(first, bytes) and first == second
@@ -68,7 +64,7 @@ def test_1011_brief_and_artifact_byte_for_byte_and_allowance_verbatim():
 
 
 def test_1011_owed_checks_order_and_shape():
-    checks = handoff.owed_checks(criteria=["AC1", "AC3"], mechanical=False, use_owed=True,
+    checks = handoff.owed_checks(criteria=["AC1", "AC3"], use_owed=True,
                                  floor_command=FLOOR)
     assert [check["stage"] for check in checks] == [
         "cold-reader", "acceptance-criterion", "acceptance-criterion", "use", "floor", "reach",
@@ -96,7 +92,7 @@ def test_1011_use_command_only_when_owed():
 
 
 def test_1011_every_command_names_repo_issue_and_holder_root_and_no_session_id():
-    for kwargs in ({}, {"mechanical": True}, {"hand": HAND, "floor_command": FLOOR}):
+    for kwargs in ({}, {"hand": HAND, "floor_command": FLOOR}):
         text = compose(**kwargs)
         assert "--holder-session-id" not in text
         lines = command_lines(text)
@@ -108,26 +104,6 @@ def test_1011_every_command_names_repo_issue_and_holder_root_and_no_session_id()
     assert lines[0] == "python -B /plugin/lib/work.py run cold-reader --repo acme/app --issue 7 --root /holder/root"
     assert any(line.startswith("python -B /plugin/lib/work.py run catch-up ") for line in lines)
     assert "When the decision orders it" in compose()
-
-
-def test_1011_mechanical_lane_carries_reason_and_row_form_once_and_no_artifact():
-    text = compose(mechanical=True, criteria=("AC1",))
-    assert headings(text)[2] == "The mechanical lane"
-    assert "A rename with nothing left to choose." in text
-    assert ARTIFACT not in text and "--criterion" not in text
-    rows = [line for line in command_lines(text) if "--row" in line]
-    assert rows == ["python -B /plugin/lib/work.py run acceptance-criterion --repo acme/app --issue 7 "
-                    "--root /holder/root --row N"]
-    assert "launch each row you map to a fresh reader through this command" in text
-    assert "each brief row's mapping" in text
-
-
-def test_1011_exactly_one_of_artifact_and_lane_reason():
-    for artifact, reason in ((None, None), ("plan", "reason")):
-        with pytest.raises(ValueError):
-            handoff.compose_handoff(brief=BRIEF, artifact=artifact, lane_reason=reason, checks=[],
-                                    allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/h",
-                                    plugin_root="/p", notify=None)
 
 
 def test_1011_record_contract_and_last_post_after_proof():
@@ -211,10 +187,9 @@ def test_1011_use_line_says_the_entrance_decides_use_at_the_builders_head():
 
 
 def test_1011_reach_is_listed_before_ready_reviewers_and_proof_and_the_list_is_not_a_sequence():
-    for kwargs in ({}, {"mechanical": True}, {"floor_command": FLOOR}):
+    for kwargs in ({}, {"floor_command": FLOOR}):
         stages = [check["stage"] for check in handoff.owed_checks(
-            criteria=["AC1"], mechanical=kwargs.get("mechanical", False), use_owed=True,
-            floor_command=kwargs.get("floor_command"))]
+            criteria=["AC1"], use_owed=True, floor_command=kwargs.get("floor_command"))]
         assert stages.index("reach") < stages.index("ready-reviewers") < stages.index("proof")
         section = checks_section(compose(**kwargs))
         assert section.index(". reach:") < section.index(". ready-reviewers:") < section.index(". proof:")
@@ -297,13 +272,6 @@ def test_1011_the_entrance_composes_one_text_from_the_brief_and_the_settled_plan
     sentence = work.github_allowance.sentence(work.github_allowance.allowance_for(
         "stretch", repository="o/r", branch="tradecraft/5-ab", pull_request=None, issue=5))
     assert sentence in decoded
-
-
-def test_1011_the_mechanical_lane_hands_off_the_brief_and_the_lane_reason():
-    state = _entrance_state(lane="Review risk: ordinary\nReview lane: mechanical\n", artifact=None)
-    decoded = _entrance_text(state).decode("utf-8")
-    assert work.MECHANICAL_HANDOFF_REASON in decoded and "--criterion" not in decoded
-    assert decoded.count("--row") == 1 and "--job-from-artifact" not in decoded
 
 
 def test_1011_a_plan_without_a_use_job_owes_no_use_and_an_unsettled_plan_is_refused():

@@ -2883,9 +2883,9 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
         builder_route = False  # an unreadable route is refused by every stage that reads it
     if builder_route:
         # A stretch proves delivery of the brief and plan its handoff block names; a resume copies its launch's.
-        brief, lane = _affirmed_review(state)
+        brief, _lane = _affirmed_review(state)
         try:
-            plan = None if lane == ("ordinary", "mechanical") else _settled_artifact_text(state, "plan-unsettled")[1]
+            plan = _settled_artifact_text(state, "plan-unsettled")[1]
         except BuilderRefused:
             plan = ""  # no settled plan, so no block names it
         if any((request.get("handoff") or {}).get("brief_comment") == brief.source_id
@@ -6005,7 +6005,8 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     if builder is not None:
         # A builder's reading is framed and posted from this run. Design: lib/DESIGN.md#a-builders-own-checks-and-writes
         command.extend(("--return-frame", "--launched-by-dispatch", builder["dispatch_id"],
-                        "--launched-by-session", str(builder.get("session_id")), "--dispatch-origin", "entrance"))
+                        *(("--launched-by-session", builder["session_id"]) if builder.get("session_id") else ()),
+                        "--dispatch-origin", "entrance"))
     setting_resolution.print_plan(launch_plan, label="work")
     captured = bytearray()
     code = _invoke_recipient(command, deadline,
@@ -6297,7 +6298,18 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         if builder.stage != "final-pass":
             return result(builder.stage, builder.dispatch, builder.continuity, builder.reason,
                           builder.detail, builder.status)
-        made = chain(str(_head_sha(state)))
+        sha = str(_head_sha(state))
+        # The relay's floor and cold-reading holds come before the chain here too, so a ready record that
+        # skipped either is named as owed rather than read through.
+        evaluation = floor_evaluation(state)
+        outcome = evaluation["outcome"]
+        if outcome in {"blocked", "stalled", "unverifiable"}:
+            return result("floor-" + outcome, False, None, "declared-floor-" + outcome, _floor_detail(evaluation))
+        if outcome == "pending":
+            return result("waiting", False, None, "latest-check-run-pending", _floor_detail(evaluation) or None)
+        made = (Decision("floor", True, "resume", "current-head-floor-missing-or-red", _floor_detail(evaluation) or None)
+                if outcome in {"fallback", "builder-missing", "builder-red"} else
+                _cold_reading_decision(state, sha) or chain(sha))
         if made.stage == "release-report":
             # The final pass stands until the holder runs release-report, so its send-back stays open.
             return result("final-pass", False, None, "ready-reported", builder.detail, status="holder-owned")
@@ -6347,7 +6359,7 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
 # The stages a builder-route holder doesn't run once a ready record stands, so the builder owed them at
 # ready: those refused to the holder on this route, and readying reviewers, which the builder does there.
 BUILDER_OWED_STAGES = frozenset({"build", "artifact", "floor", "review-disposition", "proof", "use",
-                                 "ready-reviewers"})
+                                 "ready-reviewers", "cold-reader", "cold-reading-post", "cold-reading-close"})
 BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and posts it as a draft "
                                  "with `author=holder`")
 
@@ -11535,12 +11547,6 @@ def compose_check_dispatch(stage: str, inputs: dict[str, object]) -> bytes:
     raise WorkError(f"compose_check_dispatch: {stage} is composed elsewhere")
 
 
-MECHANICAL_HANDOFF_REASON = (
-    "The owner affirmed this change's risk and lane as ordinary / mechanical, so the brief records a "
-    "determinate correction and no plan is owed; build from the brief's rows."
-)
-
-
 def fresh_reader_criteria(artifact: str) -> list[str]:
     """The ids, in order, of the settled artifact's criteria whose text names a `Fresh reader:` line."""
     lines = artifact.splitlines(keepends=True)
@@ -11560,22 +11566,19 @@ def fresh_reader_criteria(artifact: str) -> list[str]:
 
 
 def _handoff_inputs(state: WorkState, floor_command: str | None):
-    """The affirmed brief, whether the lane is mechanical, the settled plan and its comment, and the owed checks."""
-    brief, lane = _affirmed_review(state)
+    """The affirmed brief, the settled plan and its comment, and the owed checks."""
+    brief, _lane = _affirmed_review(state)
     if brief is None:
         raise BuilderRefused("brief-absent", "the change has no affirmed brief")
-    mechanical = lane == ("ordinary", "mechanical")
-    artifact, comment = (None, None) if mechanical else _settled_artifact_text(state, "plan-unsettled")
-    use_owed = False
-    if artifact is not None:
-        try:
-            artifact_use_job(artifact)
-            use_owed = True
-        except BuilderRefused:
-            use_owed = False
-    checks = handoff.owed_checks(criteria=[] if mechanical else fresh_reader_criteria(artifact),
-                                 mechanical=mechanical, use_owed=use_owed, floor_command=floor_command)
-    return brief, mechanical, artifact, comment, checks
+    artifact, comment = _settled_artifact_text(state, "plan-unsettled")
+    try:
+        artifact_use_job(artifact)
+        use_owed = True
+    except BuilderRefused:
+        use_owed = False
+    checks = handoff.owed_checks(criteria=fresh_reader_criteria(artifact), use_owed=use_owed,
+                                 floor_command=floor_command)
+    return brief, artifact, comment, checks
 
 
 def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plugin_root: Path,
@@ -11585,14 +11588,13 @@ def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plu
     The same records give the same bytes, so a handoff the builder received can be recomposed and
     compared. Design: lib/DESIGN.md#the-builder-route
     """
-    brief, mechanical, artifact, _comment, checks = _handoff_inputs(state, floor_command)
+    brief, artifact, _comment, checks = _handoff_inputs(state, floor_command)
     allowance = github_allowance.sentence(github_allowance.allowance_for(
         "stretch", repository=state.repo, branch=branch,
         pull_request=state.pr.get("number") if state.pr else None, issue=state.issue_number),
         hand=hand is not None)
     return handoff.compose_handoff(
-        brief=brief.body, artifact=artifact, lane_reason=MECHANICAL_HANDOFF_REASON if mechanical else None,
-        checks=checks, allowance=allowance, repo=state.repo, issue=state.issue_number,
+        brief=brief.body, artifact=artifact, checks=checks, allowance=allowance, repo=state.repo, issue=state.issue_number,
         holder_root=str(holder_root), plugin_root=str(plugin_root), notify=notify, hand=hand)
 
 
@@ -11884,8 +11886,9 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
             "--classification", "cold", "--requires", capability, "--timeout-seconds", timeout_argument,
             "--return-frame",
             *(["--same-vendor-reason", "owner-selected-claude-implementer"] if own_vendor == "claude" else []),
-            *(["--launched-by-dispatch", builder["dispatch_id"], "--launched-by-session",
-               str(builder.get("session_id")), "--dispatch-origin", "entrance"] if builder else []),
+            *(["--launched-by-dispatch", builder["dispatch_id"], "--dispatch-origin", "entrance",
+               *(["--launched-by-session", builder["session_id"]] if builder.get("session_id") else [])]
+              if builder else []),
             *_seat_launch_arguments(state, "use-consumer", "cold", claude_path=args.claude,
                                     codex_path=args.codex, plan=launch_plan),
         ]
@@ -12158,8 +12161,9 @@ ROUTE_STAGES = {"stretch": "builder", "artifact": "relay", "build": "relay"}
 
 
 def _route(state: WorkState) -> dict[str, object]:
-    """The route a change takes, by the first rule that applies: a cloud build keeps the relay,
-    the work's first launch decides for good, the owner's latest route marker, else the builder.
+    """The route a change takes, by the first rule that applies: a cloud build keeps the relay, the
+    work's first launch decides for good, the mechanical lane keeps the relay, the owner's latest route
+    marker, else the relay.
 
     Design: lib/DESIGN.md#the-builder-route
     """
@@ -12182,8 +12186,11 @@ def _route(state: WorkState) -> dict[str, object]:
                                         set(ROUTE_STAGES))
         if rows:
             name, reason = ROUTE_STAGES[rows[0][2]["stage"]], "in-flight"
+        elif _affirmed_review(state)[1] == ("ordinary", "mechanical"):
+            # No plan names its checks, so a handoff would owe the builder a row check it cannot run yet.
+            name, reason = "relay", "mechanical-lane"
     if name is None:
-        name, reason = (ask.attributes["route"], "owner-asked") if ask is not None else ("builder", "default")
+        name, reason = (ask.attributes["route"], "owner-asked") if ask is not None else ("relay", "default")
     overruled = ({"asked": ask.attributes["route"], "marker": ask_id}
                  if ask is not None and reason != "owner-asked" and ask.attributes["route"] != name else None)
     return {"name": name, "reason": reason, "marker": ask_id if reason == "owner-asked" else None,
@@ -12216,7 +12223,10 @@ def _refuse_off_route(state: WorkState, stage: str) -> None:
     if route["name"] != "builder":
         if stage in ("handoff", "send-back"):
             raise RouteRefused("route-is-relay", f"run {stage}: this change is on the relay route "
-                               f"({route['reason']}); its builds launch through run build")
+                               f"({route['reason']}); its builds launch through run build. Post the `route` "
+                               "marker (`<!-- tradecraft:route:v1 route=builder -->` quoting the owner's "
+                               "words) at the owner's word, before anything is launched, to take the builder "
+                               "route")
         return
     if stage in RELAY_ONLY_STAGES:
         raise RouteRefused("route-is-builder", f"run {stage}: this change is on the builder route "
@@ -12326,7 +12336,7 @@ def _handoff_flags(args: argparse.Namespace) -> None:
 
 def _handoff_block(state: WorkState, args: argparse.Namespace, composed: bytes, limit: float) -> dict:
     """What the stretch's request record says of the handoff it carried."""
-    brief, _mechanical, artifact, comment, checks = _handoff_inputs(state, args.floor_command)
+    brief, artifact, comment, checks = _handoff_inputs(state, args.floor_command)
     return {"brief_comment": brief.source_id, "artifact_comment": comment,
             "artifact_sha256": hashlib.sha256(artifact.encode("utf-8")).hexdigest() if artifact else None,
             "composed_sha256": hashlib.sha256(composed).hexdigest(),
@@ -12586,6 +12596,7 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
                "--settings-scope", "implementer", "--timeout-seconds", f"{limit:g}", "--vendor", "claude",
                "--holder-session-id", holder_identity, "--lineage-branch", branch, "--output", str(output),
                "--lifecycle-input", str(metadata),
+               *(["--limit-declared"] if args.timeout_seconds is not None else []),
                *(["--claude", str(args.claude)] if args.claude is not None else []),
                *(["--resume", resume] if resume else [])]
     deadline = lifecycle.current_deadline()
@@ -12613,8 +12624,6 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
     window = next((line for line in (out.read_bytes().decode("utf-8", "replace").splitlines()
                                      if out.is_file() else []) if line.startswith("implementer: window")), None)
     if window:
-        if args.timeout_seconds is not None:  # the launcher is passed every limit, so it can't tell declared
-            window = window.replace('"limit_source": "default"', '"limit_source": "declared"')
         print(window, flush=True)
     _note_cap_outcome("handed-off", bundle=str(request_path))
     added = after(dispatch_id) if after is not None else {}

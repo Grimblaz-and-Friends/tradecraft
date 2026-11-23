@@ -14,6 +14,7 @@ LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 
 import work  # noqa: E402
+import route_fixture  # noqa: E402
 
 PRODUCER = "producer"
 CONFIG = work.WorkConfig(marker_producers=frozenset({PRODUCER}))
@@ -57,9 +58,9 @@ def reading(state):
     return work._route(state)
 
 
-def test_1011_nothing_launched_reads_the_builder_by_default(tmp_path):
+def test_1011_nothing_launched_reads_todays_route_by_default(tmp_path):
     assert reading(fixture(tmp_path, BRIEF)) == {
-        "name": "builder", "reason": "default", "marker": None, "overruled": None}
+        "name": "relay", "reason": "default", "marker": None, "overruled": None}
 
 
 def test_1011_an_owners_relay_marker_with_nothing_launched_reads_relay(tmp_path):
@@ -110,8 +111,8 @@ def test_1011_a_first_artifact_author_launch_is_the_relay_and_seats_decide_nothi
 
 
 def test_1011_a_builder_session_marker_without_a_build_does_not_make_the_relay(tmp_path):
-    state = fixture(tmp_path, BRIEF, "<!-- tradecraft:builder-session:v1 session=s -->\n")
-    assert reading(state)["name"] == "builder" and reading(state)["reason"] == "default"
+    state = fixture(tmp_path, BRIEF, route_marker("builder"), "<!-- tradecraft:builder-session:v1 session=s -->\n")
+    assert reading(state)["name"] == "builder" and reading(state)["reason"] == "owner-asked"
 
 
 def test_1011_an_ask_for_the_builder_on_a_relay_change_is_overruled(tmp_path):
@@ -178,6 +179,9 @@ def test_1011_a_lawful_route_marker_validates(tmp_path):
 # The decision and the named stages on the builder route.
 
 MECHANICAL = "<!-- tradecraft:affirmed-brief:v1 -->\nReview risk: ordinary\nReview lane: mechanical\n"
+CONNECTED = MECHANICAL.replace("mechanical", "connected")
+# A builder-route change with nothing launched: a brief, its settled plan, and the owner's ask for the route.
+PLANNED = (route_fixture.BRIEF, route_fixture.DRAFT, route_fixture.SETTLED, route_marker("builder"))
 RULES = {"schema_version": 1, "rules": [{"name": "fixture", "include": ["lib/**"], "exclude": []}]}
 HEAD = "a" * 40
 CLEAR = {"behind": False, "strict": False, "conflict": False, "mergeability_known": True,
@@ -215,9 +219,14 @@ def ended_stretch(tmp_path, *texts):
     return state, launch(state, "stretch", 5)
 
 
-def test_1011_a_settled_plan_with_no_stretch_is_handed_off(tmp_path):
-    stage, status, reason, _detail = decision(fixture(tmp_path, MECHANICAL))
-    assert (stage, status, reason) == ("handoff", "holder-owned", "handoff-due")
+def test_1011_the_mechanical_lane_keeps_todays_route_and_overrules_an_ask(tmp_path):
+    assert reading(fixture(tmp_path, MECHANICAL)) == {
+        "name": "relay", "reason": "mechanical-lane", "marker": None, "overruled": None}
+    state = fixture(tmp_path, MECHANICAL, route_marker("builder"))
+    assert reading(state) == {"name": "relay", "reason": "mechanical-lane", "marker": None,
+                              "overruled": {"asked": "builder", "marker": 101}}
+    made = work.decide(state, RULES)
+    assert (made.stage, made.reason) == ("build", "pull-request-absent")
 
 
 def test_1011_a_live_stretch_is_with_the_builder(tmp_path):
@@ -266,8 +275,7 @@ def test_1011_a_base_that_moved_after_the_ready_record_is_caught_up(tmp_path):
 
 
 def test_1011_the_builder_route_artifact_is_the_holders_to_write(tmp_path):
-    connected = MECHANICAL.replace("mechanical", "connected")
-    made = work.decide(fixture(tmp_path, connected), RULES)
+    made = work.decide(fixture(tmp_path, CONNECTED, route_marker("builder")), RULES)
     assert (made.stage, made.dispatch, made.status) == ("artifact", False, "holder-owned")
     assert "`author=holder`" in made.detail
 
@@ -279,9 +287,9 @@ def test_1011_a_relay_change_keeps_todays_chain(tmp_path):
     for made in (asked, work.decide(in_flight, RULES)):
         assert (made.stage, made.dispatch, made.continuity, made.reason) == (
             "build", True, "fresh", "pull-request-absent")
-    connected = MECHANICAL.replace("mechanical", "connected")
-    made = work.decide(fixture(tmp_path / "plan", connected, route_marker("relay")), RULES)
-    assert (made.stage, made.dispatch, made.continuity, made.status) == ("artifact", True, "fresh", "runnable")
+    for texts in ((CONNECTED, route_marker("relay")), (CONNECTED,)):
+        made = work.decide(fixture(tmp_path / "plan", *texts), RULES)
+        assert (made.stage, made.dispatch, made.continuity, made.status) == ("artifact", True, "fresh", "runnable")
 
 
 class NoTransport:
@@ -319,7 +327,7 @@ def stored(tmp_path):
 
 @pytest.mark.parametrize("stage", ["build", "artifact", "floor", "review-disposition"])
 def test_1011_the_relays_launches_are_refused_on_the_builder_route(tmp_path, monkeypatch, stored, stage):
-    code, message = named(tmp_path, monkeypatch, stored(MECHANICAL), stage)
+    code, message = named(tmp_path, monkeypatch, stored(CONNECTED, route_marker("builder")), stage)
     assert code == "route-is-builder" and message.startswith("route-is-builder: ")
     assert "<!-- tradecraft:route:v1 route=relay -->" in message
     stopped = stored(MECHANICAL)
@@ -329,7 +337,7 @@ def test_1011_the_relays_launches_are_refused_on_the_builder_route(tmp_path, mon
 
 
 def test_1011_proof_is_the_builders_on_the_builder_route(tmp_path, monkeypatch, stored):
-    assert named(tmp_path, monkeypatch, stored(MECHANICAL), "proof")[0] == "stage-is-the-builders"
+    assert named(tmp_path, monkeypatch, stored(CONNECTED, route_marker("builder")), "proof")[0] == "stage-is-the-builders"
 
 
 def test_1011_the_release_report_waits_for_a_ready_record_at_the_head(tmp_path, monkeypatch, stored):

@@ -1999,41 +1999,8 @@ def _launched_builder(builder_bundles: list, seat_bundles: list, card: _Card,
     return _route_figure(values, dispatch_ids=counted)
 
 
-def _hand_started_builder(log: Path, vendor: str | None, start: datetime, card: _Card) -> dict[str, object]:
-    """A builder begun by hand, priced from its session's own usage log by that vendor's reader."""
-    if vendor == "claude":
-        # The session's transcript, <projects>/<project>/<session>.jsonl, with its subagents beside it.
-        try:
-            _source, replies, gaps, _sources = transcripts.snapshot(log.parent.parent, log.stem)
-        except (OSError, transcripts.TranscriptError) as exc:
-            return unknown(f"cannot read the hand-started builder's Claude transcript: {log}: {exc}")
-        main = sorted({reply["model"] for reply in replies if reply.get("agent_id") is None})
-        return _route_figure([_replies_price(replies, card, gaps)], vendor="claude",
-                             model=main[0] if len(main) == 1 else None,
-                             models=sorted({reply["model"] for reply in replies}))
-    if vendor == "codex":
-        try:
-            raw = log.read_bytes()
-        except OSError as exc:
-            return unknown(f"cannot read the hand-started builder's Codex log: {log}: {exc}")
-        observed = records.runtime_evidence("codex", raw, "fresh")
-        if not observed.get("stream_valid"):
-            return unknown(f"the hand-started builder's log is not a Codex JSON event stream: {log}")
-        models = observed.get("reported_models") or []
-        model = models[0] if len(models) == 1 else None
-        request = {"dispatch_id": "hand-started", "stage": "stretch", "launched_at": start.isoformat(),
-                   "requested": {"vendor": "codex", "model": model, "continuity": "fresh"}}
-        attempt = {"observed": observed, "vendor": "codex", "model": model, "stdout": str(log)}
-        usage = records.usage_record(attempt, request, completed_at=start.isoformat(),
-                                     staffing_status="hand-started")
-        return _route_figure([_price(_Attempt(usage, request, attempt), card)], vendor="codex",
-                             model=model, models=list(models))
-    return unknown(f"no usage reader for vendor {vendor}; the hand-started builder's log cannot be priced")
-
-
 def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles: list,
-                seat_bundles: list, hand_usage_log: Path | None = None, hand_vendor: str | None = None,
-                rates=None, claude_projects: Path | None = None) -> dict[str, dict]:
+                seat_bundles: list, rates=None, claude_projects: Path | None = None) -> dict[str, dict]:
     """Three list-price figures for a stretch: the holder before it began, the holder after, the builder.
 
     holder_replies: reply-ledger entries as a transcript holder close keeps them, ``row["holder"]["replies"]``
@@ -2044,16 +2011,13 @@ def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles:
         ``run_lifecycle.launch_bundles`` returns it, ``(order, run_path, request, run)``, or a ``*.run.json`` path.
     seat_bundles: candidate seat launches in either shape; only those whose request's
         ``launched_by.dispatch_id`` names a builder bundle are counted.
-    hand_usage_log, hand_vendor: with no builder bundle, the hand-started session's own usage log, a Claude
-        transcript or a Codex JSON event stream, read by that vendor's reader.
     rates: a rate list or card; the shipped card when omitted.
     claude_projects: where a launched Claude builder's session transcript lives, the ``projects`` directory
         the Claude configuration in force names when omitted. Each local Claude builder launch, fresh or
         resumed, is priced by the replies its own stdout stream names, at the usage that transcript records
         for them; a stream or transcript that cannot be read leaves the builder figure unknown.
 
-    Each figure is ``{"status": "priced", "usd", "amount", ...}`` or ``{"status": "unknown", "reason"}``; a
-    builder figure read from a log also carries the ``vendor`` and ``model`` it observed.
+    Each figure is ``{"status": "priced", "usd", "amount", ...}`` or ``{"status": "unknown", "reason"}``.
     """
     if start.utcoffset() is None:
         raise CostError("route split start must carry a timezone")
@@ -2078,10 +2042,9 @@ def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles:
     if builder_bundles:
         projects = Path(claude_projects) if claude_projects is not None else transcripts.projects_directory()[0]
         builder = _launched_builder(builder_bundles, seat_bundles, card, projects)
-    elif hand_usage_log is not None:
-        builder = _hand_started_builder(Path(hand_usage_log), hand_vendor, start, card)
     else:
-        builder = unknown("no launched builder bundle and no usage log for a hand-started builder")
+        # A builder started by hand leaves no launch record to price, and its own log is not read yet.
+        builder = unknown("no launched builder bundle: a hand-started builder's cost is not read")
     return {"holder_before": holder_before, "holder_after": holder_after, "builder": builder,
             "start": start.isoformat()}
 

@@ -66,8 +66,7 @@ def fixture_state(*, version="2.9.9", base_version="2.9.9", files=None,
     comments = [{"id": index + 21, "body": text, "user": {"login": PRODUCER},
                  "created_at": f"2026-09-23T12:00:{index:02d}Z",
                  "html_url": f"https://github.com/{REPO}/issues/12#issuecomment-{index + 21}"}
-                # The owner's ask for today's route, which these tests exercise, follows the evidence.
-                for index, text in enumerate([*texts, RELAY_ASK])]
+                for index, text in enumerate(texts)]
     inventory = deepcopy(files if files is not None else [{"filename": "runtime/code.py", "status": "modified"}])
     pull = {"number": 7, "state": "open", "draft": draft, "merged_at": None, "mergeable": True,
             "mergeable_state": "clean", "node_id": "PR_fixture", "body": "Closes #12", "changed_files": len(inventory),
@@ -81,9 +80,6 @@ def fixture_state(*, version="2.9.9", base_version="2.9.9", files=None,
     transport = RecordingGitHub(state, version=version, base_version=base_version,
                                 merge_base_version=merge_base_version)
     return state, transport
-
-
-RELAY_ASK = "<!-- tradecraft:route:v1 route=relay -->\n\n> Keep this one on today's route.\n"
 
 
 def _cross_reference(number):

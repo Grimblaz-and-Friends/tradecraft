@@ -2222,42 +2222,6 @@ def test_route_split_takes_bundles_by_their_run_record_paths(route_store):
     assert split["holder_before"]["usd"] == split["holder_after"]["usd"] == 0
 
 
-def test_route_split_prices_a_hand_started_codex_builder_from_its_own_log(tmp_path):
-    log = tmp_path / "hand.jsonl"
-    log.write_bytes(codex_stream("h1", 100000, 40000, 10000, model="gpt-6-sol"))
-    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
-                               hand_usage_log=log, hand_vendor="codex")["builder"]
-    assert builder["status"] == "priced" and Decimal(builder["amount"]) == Decimal("0.228")
-    assert (builder["vendor"], builder["model"]) == ("codex", "gpt-6-sol")
-
-
-def test_route_split_prices_a_hand_started_claude_builder_from_its_transcript(tmp_path):
-    from test_holder_transcript import reply, write_lines
-    log = tmp_path / "projects" / "slug" / "builder.jsonl"
-    write_lines(log, [reply("b1", second=9, session="builder", input=0, output=1000, read=0, five=0, hour=0)])
-    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
-                               hand_usage_log=log, hand_vendor="claude")["builder"]
-    assert builder["status"] == "priced" and Decimal(builder["amount"]) == Decimal("0.02")
-    assert (builder["vendor"], builder["model"]) == ("claude", "claude-opus-5-5")
-
-
-@pytest.mark.parametrize("content,vendor,reason", [
-    (None, "codex", "cannot read the hand-started builder's Codex log"),
-    (b"not json\n", "codex", "is not a Codex JSON event stream"),
-    (None, "claude", "cannot read the hand-started builder's Claude transcript"),
-    (b"{}\n", "gemini", "no usage reader for vendor gemini"),
-])
-def test_route_split_names_why_a_hand_started_builder_is_unknown(tmp_path, content, vendor, reason):
-    log = tmp_path / "projects" / "slug" / "hand.jsonl"
-    if content is not None:
-        log.parent.mkdir(parents=True)
-        log.write_bytes(content)
-    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
-                               hand_usage_log=log, hand_vendor=vendor)["builder"]
-    assert builder["status"] == "unknown" and reason in builder["reason"]
-    assert "usd" not in builder and "vendor" not in builder
-
-
 def claude_builder_stream(session, *replies):
     """A Claude stream-json log: each reply's event carries its usage as it began, output not yet counted."""
     events = [{"type": "system", "subtype": "init", "session_id": session}]

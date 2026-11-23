@@ -16,7 +16,7 @@ sys.path.insert(0, str(LIB))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import work  # noqa: E402
-from test_route import MECHANICAL, RULES, fixture, launch, route_marker  # noqa: E402
+from test_route import MECHANICAL, PLANNED, RULES, fixture, launch, route_marker  # noqa: E402
 
 HOLDER_SESSION = "holder-session"
 STUB = r'''
@@ -160,14 +160,14 @@ def test_1011_a_relay_change_is_refused_route_is_relay_with_or_without_a_dispatc
 
 
 def test_1011_a_plan_lane_with_no_settled_plan_is_refused(tmp_path, monkeypatch, holder, quiet_report, no_spawn):
-    state = stored(tmp_path, MECHANICAL.replace("mechanical", "connected"))
+    state = stored(tmp_path, MECHANICAL.replace("mechanical", "connected"), route_marker("builder"))
     assert refused(monkeypatch, holder, state) == "plan-unsettled"
     nothing_made(holder)
     assert no_bundle()
 
 
 def test_1011_a_live_builder_refuses_another_handoff(tmp_path, monkeypatch, holder, quiet_report, no_spawn):
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     # The launcher is a live child, so this process isn't inside the launch's tree on POSIX.
     child = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(120)"],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -197,7 +197,7 @@ def _live_builder_refusals(monkeypatch, holder, state):
 
 
 def test_1011_a_spent_handoff_is_refused(tmp_path, monkeypatch, holder, quiet_report, no_spawn):
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     launch(state, "stretch", 5)
     assert refused(monkeypatch, holder, state) == "handoff-spent"
     nothing_made(holder)
@@ -206,7 +206,7 @@ def test_1011_a_spent_handoff_is_refused(tmp_path, monkeypatch, holder, quiet_re
 def test_1011_a_limit_above_the_stretch_default_needs_an_override_reason(
         tmp_path, monkeypatch, holder, quiet_report, no_spawn):
     assert work.DEFAULT_STRETCH_TIMEOUT_SECONDS == 28800
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     assert refused(monkeypatch, holder, state, "--timeout-seconds", "30000") == "limit-above-default"
     nothing_made(holder)
     with pytest.raises(work.WorkError, match="--budget-override-reason requires"):
@@ -223,7 +223,7 @@ def hand_requests():
 
 def test_1011_a_hand_started_builder_is_recorded_printed_and_ended(
         tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     assert run(monkeypatch, holder, state, "handoff", "--by-hand", "gemini:any-model",
                "--timeout-seconds", "30000", "--budget-override-reason", "a long change") == 0
     out = capsys.readouterr().out
@@ -248,7 +248,7 @@ def test_1011_a_hand_started_builder_is_recorded_printed_and_ended(
 
 
 def test_1011_a_codex_machine_builder_is_started_by_hand(tmp_path, monkeypatch, holder, quiet_report, no_spawn):
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     assert run(monkeypatch, holder, state) == 0
     [request] = hand_requests()
     assert request["requested"]["vendor"] == "codex" and request["handoff"]["timeout_seconds"] == 28800
@@ -264,7 +264,7 @@ def test_1011_a_claude_builder_is_launched_detached_and_the_holder_waits_for_it(
         tmp_path, monkeypatch, holder, quiet_report, stub, capsys):
     claude_machine()
     stub()
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     assert run(monkeypatch, holder, state) == 0
     out = capsys.readouterr().out
     pointers = list(work.launch_tree.pointer_directory(work.records.default_record_root()).glob("*.json"))
@@ -276,7 +276,7 @@ def test_1011_a_claude_builder_is_launched_detached_and_the_holder_waits_for_it(
     argv = json.loads((Path(pointer["request"]).parent / "argv.json").read_bytes())
     assert argv[argv.index("--stage") + 1] == "stretch"
     assert argv[argv.index("--holder-session-id") + 1] == HOLDER_SESSION
-    assert argv[argv.index("--timeout-seconds") + 1] == "28800"
+    assert argv[argv.index("--timeout-seconds") + 1] == "28800" and "--limit-declared" not in argv
     assert argv[argv.index("--work") + 1] == "o/r#5"
     state.validated_markers = None
     assert work.decide(state, RULES).stage == "with-builder"
@@ -288,7 +288,7 @@ def test_1011_a_launcher_that_does_not_start_takes_the_tree_it_was_given_away(
         tmp_path, monkeypatch, holder, quiet_report, stub):
     claude_machine()
     stub(fail=True)
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     assert refused(monkeypatch, holder, state) == "launcher-did-not-start"
     nothing_made(holder)
     assert git(holder, "ls-remote", "--heads", "origin", "tradecraft/*") == ""
@@ -296,7 +296,7 @@ def test_1011_a_launcher_that_does_not_start_takes_the_tree_it_was_given_away(
 
 def test_1011_a_stopped_hand_started_builder_resumes_only_by_the_holders_reason(
         tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
-    state = stored(tmp_path, MECHANICAL)
+    state = stored(tmp_path, *PLANNED)
     assert run(monkeypatch, holder, state, "handoff", "--by-hand", "gemini:any-model") == 0
     assert run(monkeypatch, holder, state, "handoff", "--ended-reason", "the session closed") == 0
     assert refused(monkeypatch, holder, state) == "handoff-spent"

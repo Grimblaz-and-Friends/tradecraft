@@ -13,7 +13,6 @@ NO_LAUNCH_BLOCK = ("You run under these instructions alone, with no launch block
                    "outside your change but these instructions.")
 READINESS_MARKER = "<!-- tradecraft:readiness:v1 head=SHA status=ready|stopped dispatch=ID -->"
 DISPATCH_VARIABLE = "TRADECRAFT_STRETCH_DISPATCH"
-ROW_PLACEHOLDER = "N"
 
 # The record's payload, spelled out field by field; lib/readiness.py's payload() is what reads it.
 RECORD_EXAMPLE = """```json
@@ -40,16 +39,10 @@ def _check(stage: str, criterion: str | None = None, *extra: str) -> dict:
     return {"stage": stage, "criterion": criterion, "command": ["run", stage, *extra]}
 
 
-def owed_checks(*, criteria: list[str], mechanical: bool, use_owed: bool,
-                floor_command: str | None) -> list[dict]:
+def owed_checks(*, criteria: list[str], use_owed: bool, floor_command: str | None) -> list[dict]:
     """The checks the builder owes, reach before the two checks held on it."""
     checks = [_check("cold-reader")]
-    if mechanical:
-        # One form only: the builder launches each row it maps to a fresh reader through it.
-        checks.append(_check("acceptance-criterion", None, "--row", ROW_PLACEHOLDER))
-    else:
-        checks.extend(_check("acceptance-criterion", criterion, "--criterion", criterion)
-                      for criterion in criteria)
+    checks.extend(_check("acceptance-criterion", criterion, "--criterion", criterion) for criterion in criteria)
     if use_owed:
         checks.append(_check("use", None, "--job-from-artifact"))
     # The holder supplies the floor command once, at the handoff; the builder never writes or picks one.
@@ -78,7 +71,7 @@ def _block(argv: list[str]) -> list[str]:
     return ["```text", _line(argv), "```"]
 
 
-def _checks_section(checks, *, mechanical, repo, issue, holder_root, plugin_root) -> list[str]:
+def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[str]:
     def argv(command):
         return _argv(command, repo=repo, issue=issue, holder_root=holder_root, plugin_root=plugin_root)
 
@@ -90,12 +83,7 @@ def _checks_section(checks, *, mechanical, repo, issue, holder_root, plugin_root
     for number, check in enumerate(checks, 1):
         stage = check["stage"]
         block = _block(argv(check["command"]))
-        if stage == "acceptance-criterion" and check["criterion"] is None:
-            title = "acceptance-criterion, one row at a time"
-            note = ("On this lane there is no settled plan to name criteria, so this form is given once. "
-                    "Map each row of the brief to what carries it; launch each row you map to a fresh "
-                    "reader through this command, with N replaced by that row's number.")
-        elif stage == "acceptance-criterion":
+        if stage == "acceptance-criterion":
             title = "acceptance-criterion " + check["criterion"]
             note = None
         elif stage == "use":
@@ -157,7 +145,7 @@ def _checks_section(checks, *, mechanical, repo, issue, holder_root, plugin_root
     return lines
 
 
-def _record_section(mechanical: bool, started_by: str) -> list[str]:
+def _record_section(started_by: str) -> list[str]:
     lines = [
         "Report ready, or stopped, with one issue comment whose first line is the marker", "",
         "```text", READINESS_MARKER, "```", "",
@@ -170,17 +158,15 @@ def _record_section(mechanical: bool, started_by: str) -> list[str]:
         "of your usage log or null.",
         "- `checks`: one entry per check you ran: its `stage` (`use`, `acceptance-criterion`, "
         "`cold-reader`, `floor` or `reach`), its `criterion` id or null (an acceptance-criterion check "
-        "always names one), its `row` (the brief row a row check reads) or null, its `dispatch` id or null, the full commit `head` it read, "
+        "always names one), its `row` or null, its `dispatch` id or null, the full commit `head` it read, "
         "its `report` comment id (null for a reach check that flagged nothing), and `relaunch_of`, the dispatch id of the errored check it relaunches, "
         "or null.",
         "- `findings`: exactly one entry for every finding of every check report, never two: its "
         "`report` comment id, its `finding` (`F1`, `F2` ... as the report numbers them), and a "
         "`disposition` of `fixed` with the full `commit` that fixed it, or `declined` with the "
         "`reason`, written when you decline it.",
-        "- `rows`: " + ("each brief row's mapping: its `row` number, what carries it (`carried_by` "
-                        "`test`, `check` or `fresh-reader`), and `where`." if mechanical else
-                        "each row you map: its `row`, `carried_by` (`test`, `check` or `fresh-reader`) "
-                        "and `where`; leave it empty when you map none."),
+        "- `rows`: each row you map: its `row`, `carried_by` (`test`, `check` or `fresh-reader`) and "
+        "`where`; leave it empty when you map none.",
         "- `decisions`: each thing the plan left open that you decided: its `text`, your "
         "`recommendation`, and the brief `row` it would change, or null.",
         "- `refusals`: each command the entrance refused you: the `command`, its `reason`, and what "
@@ -193,25 +179,20 @@ def _record_section(mechanical: bool, started_by: str) -> list[str]:
     return lines
 
 
-def compose_handoff(*, brief: str, artifact: str | None, lane_reason: str | None, checks: list[dict],
+def compose_handoff(*, brief: str, artifact: str, checks: list[dict],
                     allowance: str, repo: str, issue: int, holder_root: str, plugin_root: str,
                     notify: str | None, hand: dict | None = None) -> bytes:
     """The handoff's exact UTF-8 bytes, LF line endings, the same on every call."""
-    if (artifact is None) == (lane_reason is None):
-        raise ValueError("give exactly one of artifact and lane_reason")
-    mechanical = artifact is None
     sections = [
         ("Your role", [ROLE]),
         ("The affirmed brief", [brief]),
-        ("The settled plan", [artifact]) if not mechanical else ("The mechanical lane", [
-            "This change is on the owner-affirmed mechanical lane, with no settled plan. Its reason:", "",
-            lane_reason]),
-        ("The checks you owe", _checks_section(checks, mechanical=mechanical, repo=repo, issue=issue,
+        ("The settled plan", [artifact]),
+        ("The checks you owe", _checks_section(checks, repo=repo, issue=issue,
                                                holder_root=holder_root, plugin_root=plugin_root)),
         ("What you may write", [allowance, "", f"Open the pull request as a draft from your branch, with "
                                 f"`Closes #{issue}` alone on a line of its body, nothing after it: the "
                                 "entrance finds the pull request by that line."]),
-        ("The readiness record", _record_section(mechanical, "hand" if hand else "launch")),
+        ("The readiness record", _record_section("hand" if hand else "launch")),
         ("Where the plan settles nothing", [
             "Where the plan did not settle something, go on with your recommendation, record it in the "
             "record's `decisions`, and name any brief row it would change.",

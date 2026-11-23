@@ -2972,3 +2972,16 @@ def test_1011_a_call_two_sources_refused_takes_the_earlier_time_whichever_report
     [entry] = refusals
     assert entry["sources"] == ["github-write-bound", "file-write-guard", "permission-denial"]
     assert entry["at"] == file_at
+
+
+@pytest.mark.parametrize("flag, source", [([], "default"), (["--limit-declared"], "declared")])
+def test_1011_the_launcher_names_a_limit_its_holder_declared(monkeypatch, flag, source):
+    args = implementer.parser().parse_args(["--dispatch", "d", "--root", ".", "--stage", "stretch", "--work", "o/r#5",
+                                            "--settings-source", "s", "--settings-scope", "implementer",
+                                            "--timeout-seconds", "30000", *flag])
+    seen = []
+    monkeypatch.setattr(implementer.cap_declaration, "launcher_run", lambda _a, deadline, *_r: seen.append(deadline))
+    implementer.run_implementer(args)
+    deadline = seen[0]
+    deadline.called_epoch = 0.0
+    assert implementer.lifecycle.window_line(deadline)["limit_source"] == source

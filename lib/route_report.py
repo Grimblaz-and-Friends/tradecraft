@@ -43,35 +43,6 @@ def _bool_check(readiness, check, key, false_reason):
     return _entry(check, UNKNOWN, field, field + " is not true or false")
 
 
-def _owed(owed_at_ready):
-    field = "owed_at_ready.last"
-    if not isinstance(owed_at_ready, dict) or "last" not in owed_at_ready:
-        return _missing("1.1", field)
-    last = owed_at_ready["last"]
-    if last is None:
-        return _entry("1.1", NOT_OCCURRED, field, "no ready record")
-    if not isinstance(last, list):
-        return _entry("1.1", UNKNOWN, field, field + " is not a list")
-    if not last:
-        return _entry("1.1", HOLDS, field)
-    return _entry("1.1", FAILS, field, f"{len(last)} check(s) still owed at the last ready record")
-
-
-def _quiet(holder_quiet):
-    field = "holder_quiet"
-    if not isinstance(holder_quiet, dict):
-        return _missing("1.3", field)
-    if holder_quiet.get("status") == "unknown":
-        return _entry("1.3", UNKNOWN, field, holder_quiet.get("reason") or "the holder's transcript is unreadable")
-    calls, unprompted = holder_quiet.get("calls"), holder_quiet.get("unprompted")
-    if not isinstance(calls, list) or not isinstance(unprompted, list):
-        return _entry("1.3", UNKNOWN, field, "holder_quiet has no calls and unprompted lists")
-    if not calls and not unprompted:
-        return _entry("1.3", HOLDS, field)
-    return _entry("1.3", FAILS, field,
-                  f"{len(calls)} call(s) and {len(unprompted)} unprompted reply(ies) during the handoff")
-
-
 def _handoff(handoff_plan):
     field = "handoff_plan.reading"
     if not isinstance(handoff_plan, dict) or not isinstance(handoff_plan.get("reading"), str):
@@ -119,28 +90,6 @@ def _store_and_posted(check_reports):
         return _entry("3.2", FAILS, field, "store-and-posted-differ: " + ", ".join(
             str(entry.get("comment", entry.get("report"))) for entry in differ))
     return _entry("3.2", HOLDS, field)
-
-
-def _after_ready(holder_after_ready):
-    field = "holder_after_ready"
-    if not isinstance(holder_after_ready, dict):
-        return _missing("4.1", field)
-    bundles, transcript = holder_after_ready.get("bundles"), holder_after_ready.get("transcript")
-    if not _list_of_dicts(bundles) or not isinstance(transcript, dict):
-        return _entry("4.1", UNKNOWN, field, "holder_after_ready has no bundles list and transcript part")
-    other = [bundle for bundle in bundles if bundle.get("class") == "other"]
-    calls = transcript.get("calls")
-    reasons = []
-    if other:
-        reasons.append(f"{len(other)} bundle(s) classed other")
-    if isinstance(calls, list) and calls:
-        reasons.append(f"{len(calls)} transcript call(s)")
-    if reasons:
-        return _entry("4.1", FAILS, field, "; ".join(reasons))
-    if transcript.get("status") == UNKNOWN or not isinstance(calls, list):
-        return _entry("4.1", UNKNOWN, field + ".transcript",
-                      transcript.get("reason") or "the holder's transcript is unreadable")
-    return _entry("4.1", HOLDS, field)
 
 
 def _send_back(send_back):
@@ -236,34 +185,6 @@ def _hand_answered(readiness, hand_record):
     return _entry("6.2", FAILS, field, f"status {status}, stop kind {stop.get('kind')}")
 
 
-def _vendor_model(readiness):
-    """``readiness.vendor_model`` is ``{"source": "observed"|"declared", "log": "readable"|"unreadable"|None}``."""
-    field = "readiness.vendor_model.source"
-    value, missing = _readiness_field(readiness, "6.3", field, "vendor_model")
-    if missing is not None:
-        return missing
-    if not isinstance(value, dict) or value.get("source") not in ("observed", "declared"):
-        return _missing("6.3", field)
-    readable = value.get("log") == "readable"
-    if value["source"] == "observed":
-        return _entry("6.3", HOLDS, field)
-    if readable:
-        return _entry("6.3", FAILS, field, "declared though a readable usage log exists")
-    return _entry("6.3", NOT_STATED, field, value.get("reason") or (
-        "declared: the usage log is unreadable" if value.get("log") == "unreadable" else "declared: no usage log"))
-
-
-def _route_is(check, route, name, reason):
-    field = "route"
-    if not isinstance(route, dict) or not isinstance(route.get("name"), str):
-        return _missing(check, field)
-    if route.get("name") == UNKNOWN:
-        return _entry(check, UNKNOWN, field, route.get("error") or "the route is unknown")
-    if route["name"] == name and route.get("reason") == reason:
-        return _entry(check, HOLDS, field)
-    return _entry(check, NOT_APPLICABLE, field, f"route {route['name']}/{route.get('reason')}")
-
-
 def _cost(cost_split, route_comparison):
     field = "cost_split"
     due = route_comparison.get("due") if isinstance(route_comparison, dict) else None
@@ -276,64 +197,33 @@ def _cost(cost_split, route_comparison):
         f"{name}: {cost_split[name].get('reason') or 'unknown'}" for name in unpriced)), "due": due}
 
 
-# What each row check asks, in row_checks' order. 5.1 is the launcher's own tests, with nothing to read from a
-# change's records, and 6.1 (a fresh Claude session reaching ready unprompted) the holder writes from the run, beside
-# holder_quiet.
-ROW_CHECKS = {
-    "1.1": "nothing owed at the ready commit",
-    "1.2": "each check named was the builder's launch",
-    "1.3": "the holder sent and launched nothing unasked",
-    "2.1": "the plan handed off is the settled text",
-    "2.2": "the use job is the plan's",
-    "2.3": "no plan writer was launched",
-    "3.1": "each counted finding has one record entry",
-    "3.2": "each posted report is its stored return",
-    "3.3": "each check's instructions were composed",
-    "4.1": "no holder launch after ready",
-    "4.2": "at most one send-back",
-    "5.2": "each logged refusal pairs with a reported one",
-    "5.3": "a run with a refusal still yields its ready record",
-    "5.4": "a failed check's relaunch, both recorded",
-    "5.5": "a hand-started record names what it ran under",
-    "6.2": "a hand-started builder reaches ready or names its unlaunched check",
-    "6.3": "vendor and model come from the run's own log",
-    "7.1": "the first change takes the builder route by default",
-    "7.2": "an owner-asked change takes today's route",
-    "7.3": "the cost split, and whether the comparison is due",
-}
-
-
 def row_checks(payload: dict) -> list[dict]:
-    """Each computed row check's reading, from the payload's named field, in row order."""
+    """Each computed row check's reading, from the payload's named field, in row order.
+
+    5.1 is the launcher's own tests, with nothing to read from a change's records, and 6.1 the holder writes
+    from the run.
+    """
     readiness = payload.get("readiness")
     return [
-        _owed(payload.get("owed_at_ready")),
         _bool_check(readiness, "1.2", "launched_by_builder", "a check the record names was not launched composed"),
-        _quiet(payload.get("holder_quiet")),
         _handoff(payload.get("handoff_plan")),
         _composed("2.2", payload.get("check_dispatches"), "use"),
         _plan_writers(payload.get("plan_writer_launches")),
         _bool_check(readiness, "3.1", "reconciled", "a counted finding is not answered in the record"),
         _store_and_posted(payload.get("check_reports")),
         _composed("3.3", payload.get("check_dispatches"), None),
-        _after_ready(payload.get("holder_after_ready")),
         _send_back(payload.get("send_back")),
         _refusals_reported(payload.get("refusals")),
         _refused_then_ready(payload.get("refusals"), payload.get("stretch_outcome"), readiness),
         _relaunches(readiness),
         _ran_under(payload.get("hand_record")),
         _hand_answered(readiness, payload.get("hand_record")),
-        _vendor_model(readiness),
-        _route_is("7.1", payload.get("route"), "builder", "default"),
-        _route_is("7.2", payload.get("route"), "relay", "owner-asked"),
         _cost(payload.get("cost_split"), payload.get("route_comparison")),
     ]
 
 
-def builder_route(*, route: dict | None = None, readiness: dict | None = None, owed_at_ready: dict | None = None,
-                  send_back: dict | None = None, catch_up_resumes: list | None = None,
-                  reviewer_declines: list | None = None, holder_after_ready: dict | None = None,
-                  holder_quiet: dict | None = None, handoff_plan: dict | None = None,
+def builder_route(*, route: dict | None = None, readiness: dict | None = None,
+                  send_back: dict | None = None, catch_up_resumes: list | None = None, handoff_plan: dict | None = None,
                   plan_writer_launches: list | None = None, limits: list | None = None,
                   cost_split: dict | None = None, route_comparison: dict | None = None,
                   refusals: dict | None = None, hand_record: dict | None = None,
@@ -343,10 +233,8 @@ def builder_route(*, route: dict | None = None, readiness: dict | None = None, o
 
     A missing input reads ``unknown`` with a reason in the row checks that need it; nothing raises.
     """
-    payload = {"route": route, "readiness": readiness, "owed_at_ready": owed_at_ready, "send_back": send_back,
-               "catch_up_resumes": catch_up_resumes, "reviewer_declines": reviewer_declines,
-               "holder_after_ready": holder_after_ready, "holder_quiet": holder_quiet,
-               "handoff_plan": handoff_plan, "plan_writer_launches": plan_writer_launches, "limits": limits,
+    payload = {"route": route, "readiness": readiness, "send_back": send_back,
+               "catch_up_resumes": catch_up_resumes, "handoff_plan": handoff_plan, "plan_writer_launches": plan_writer_launches, "limits": limits,
                "cost_split": cost_split, "route_comparison": route_comparison, "refusals": refusals,
                "hand_record": hand_record, "check_dispatches": check_dispatches, "check_reports": check_reports,
                "stretch_outcome": stretch_outcome}

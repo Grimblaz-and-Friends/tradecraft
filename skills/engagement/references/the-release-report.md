@@ -26,14 +26,14 @@
 
 - **Needs your decision** adds, in this order:
   1. the final-pass block: each spot check the holder made and what it found, what it sent back and what came of it, and what stays open after the send-back;
-  2. each decline, from a check report or a connected reviewer, where the holder's view differs from the builder's or the holder can't judge it;
+  2. each decline, from a check report or a connected reviewer, where the holder's view differs from the builder's or the holder can't judge it. The readiness record supplies the checks' declines; the holder reads a connected reviewer's from the pull request's threads and answers, as on the relay route;
   3. every builder decision that would change a brief row;
   4. a handoff whose text differs from the composed one (`handoff_plan` reads `differs`, holder-written or altered);
   5. one line counting the remaining declines and pointing at their list.
 - **Declined findings** is an uncollapsed entry directly after "Your decisions, and what they did". It lists every other decline, check reports' and connected reviewers' alike, each with the builder's reason and the holder's view, and declines sharing a reason are listed together under it. No decline appears only in the collapsed section.
 - **Settled by checks** adds the route and its reason, the cost split (the holder before the handoff, the holder after it, and the builder), every limit above its default with its reason, each catch-up resume, and each row check's reading.
 
-The payload's other fields (the readiness reading, what was owed at each ready record, the send-back, the holder's quiet and its launches after ready, plan-writer launches and refusals) are the evidence these placements draw on, and stay in the collapsed section.
+The payload's other fields (the readiness reading, the send-back, plan-writer launches and refusals) are the evidence these placements draw on, and stay in the collapsed section.
 
 ## What it leaves where it is
 

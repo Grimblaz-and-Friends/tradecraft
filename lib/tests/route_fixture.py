@@ -44,7 +44,7 @@ DRAFT = "<!-- tradecraft:artifact:v1 status=draft -->" + QUOTED + PLAN
 # Settled where no cold seat could be obtained, so the settlement stands without a seat's bundle.
 SETTLED = "<!-- tradecraft:artifact:v1 status=settled route=unobtainable -->" + QUOTED + PLAN
 HOLDER_READING = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->"
-RELAY_ASK = "<!-- tradecraft:route:v1 route=relay -->\n\n> Take this one by today's route.\n"
+BUILDER_ASK = "<!-- tradecraft:route:v1 route=builder -->\n\n> Take this one by the builder route.\n"
 CLEAR = {"behind": False, "strict": False, "conflict": False, "mergeability_known": True,
          "merge_state": "clean", "uncertainties": []}
 USE_RETURN = "The job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
@@ -59,7 +59,7 @@ SCENARIOS = {
     "final-pass": "a ready readiness record at the head, with one counting use report reconciled",
     "catch-up": "the ready record at the head after the base moved",
     "relay-in-flight": "a first build launch, so today's relay chain",
-    "owner-asked-relay": "the owner's route=relay marker, nothing launched",
+    "relay-default": "no route marker and nothing launched, so today's route",
     "hand-started": "a builder the owner started by hand, its record still open",
 }
 
@@ -108,6 +108,9 @@ class Fixture:
         self.pr = None
         self.synchronization = None
         self.children = []
+        # The owner's ask for the builder route, made in the issue before anything launched.
+        self.body = BUILDER_ASK
+        self.cold_reading_clean = False
         for text in (BRIEF, DRAFT, SETTLED, HOLDER_READING):
             self.post(text)
 
@@ -126,7 +129,7 @@ class Fixture:
 
     def state(self):
         work = self.work
-        state = work.WorkState(REPO, ISSUE, {"number": ISSUE, "state": "open", "body": "", "labels": [],
+        state = work.WorkState(REPO, ISSUE, {"number": ISSUE, "state": "open", "body": self.body, "labels": [],
                                              "user": {"login": PRODUCER}},
                                issue_comments=[dict(comment) for comment in self.comments], pr=self.pr,
                                config=work.WorkConfig(marker_producers=frozenset({PRODUCER})),
@@ -175,7 +178,7 @@ class Fixture:
         return self.launch_tree.write_hand_record(
             self.store, work=WORK, vendor="claude", model="fixture",
             handoff={"tree": str(tree), "branch": "tradecraft/5-fixture", "store": str(self.store),
-                     "dispatch": uuid.uuid4().hex}, now=START + timedelta(minutes=5))
+                     "dispatch": uuid.uuid4().hex, "floor_command": FLOOR}, now=START + timedelta(minutes=5))
 
     def source(self) -> tuple[Path, str]:
         """The change's built source: one committed job file, whose commit is the pull request's head."""
@@ -240,6 +243,9 @@ class Fixture:
 
         work.GitHubREST = FixtureGitHub
         work._read_policy_state = lambda *_args, **_kwargs: state
+        if self.cold_reading_clean:
+            # The stand-in builder's cold reading stands clean: the fixture keeps no Git history to judge it by.
+            work._cold_reading_decision = lambda *_args: None
         return work.main(["--repo", REPO, "--issue", str(ISSUE), "--root", str(self.holder)])
 
     def stop(self) -> None:
@@ -253,7 +259,10 @@ def ready_at_head(fixture: Fixture, synchronization: dict) -> object:
     fixture.pull_request(head, synchronization)
     hand = fixture.hand_stretch(source)
     builder = hand["dispatch_id"]
+    fixture.cold_reading_clean = True
     report, dispatch = fixture.use_report(fixture.state(), source, builder)
+    # The handoff's floor command, run at the head as the handoff says, with its output.
+    fixture.post(f"<!-- tradecraft:floor:v1 head={head} status=pass -->\n\n```\n{FLOOR}\n```\n\n1 passed\n")
     fixture.launch_tree.complete_hand_record(fixture.store, builder, completed_by="the builder's readiness record",
                                              now=START + timedelta(minutes=20))
     fixture.readiness(builder, head, checks=[{"stage": "use", "criterion": None, "row": None, "dispatch": dispatch,
@@ -301,8 +310,8 @@ def scenario(name: str, fixture: Fixture) -> int:
     if name == "relay-in-flight":
         fixture.completed("build", 5)
         return fixture.decision(fixture.state())
-    if name == "owner-asked-relay":
-        fixture.post(RELAY_ASK)
+    if name == "relay-default":
+        fixture.body = ""
         return fixture.decision(fixture.state())
     raise ValueError(f"unknown scenario: {name}")
 
