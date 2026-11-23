@@ -168,6 +168,7 @@ WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
     "builder-session", "model-override", "proof", "reach-reading", "launch-account", "route",
+    "readiness", "send-back",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
