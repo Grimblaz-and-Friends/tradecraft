@@ -75,6 +75,7 @@ import vendor_cli
 import use_history
 import version_policy
 import raw_output
+import route_report
 import build_reach
 import change_cost
 import holder_transcript
@@ -98,7 +99,7 @@ def _run_probe(command, **kwargs):
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
     "review-disposition", "proof", "ready-reviewers", "release-report", "catch-up", "cold-reader",
-    "acceptance-criterion", "handoff",
+    "acceptance-criterion", "handoff", "send-back",
 )
 # A stage whose sentence `allowance` prints though the entrance launches no such stage: the holder
 # writes a stretch builder's dispatch, and the sentence it carries must be the launch's own.
@@ -245,6 +246,7 @@ STAGE_SAFETY = {
     "cold-reader": ((COLD_READER_VERSION, "isolated cold reading of the change"),),
     "acceptance-criterion": (("0.218.0", "a criterion reader composed from the settled artifact"),),
     "handoff": (("0.219.0", "a composed handoff to a detached or hand-started builder"),),
+    "send-back": (("0.219.0", "one send-back to the builder that reported ready"),),
 }
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "affirmed-brief": {"required": set(), "optional": set(),
@@ -10425,6 +10427,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "cold_readings": _cold_reading_measures(state),
             "declared_caps": declared_caps(f"{state.repo}#{state.issue_number}", state.record_root),
         })
+        if _route(state)["name"] == "builder":
+            payload["builder_route"] = _builder_route_report(state)
         _emit_report(payload, state)
         return 0
     if decision.stage == "use" and decision.dispatch:
@@ -11718,14 +11722,20 @@ def _post_check_report(github, state: WorkState, body: str) -> dict[str, object]
         marker, _, returned = body.partition("\n\n")
         body = f"{marker}\n\n{OVERSIZED_LINE.format(size=len(returned.encode('utf-8')))}"
         status = "check-report-oversized"
+    posted = _post_comment(github, endpoint, body)
+    return {"status": status, **posted} if "comment" in posted else {"status": "check-report-unposted", **posted}
+
+
+def _post_comment(github, endpoint: str, body: str) -> dict[str, object]:
+    """One comment posted in up to REPORT_POST_ATTEMPTS tries: its ``comment`` id, or the ``errors``."""
     errors = []
     for _attempt in range(REPORT_POST_ATTEMPTS):
         try:
             posted = github.post(endpoint, {"body": body})
-            return {"status": status, "comment": posted.get("id") if isinstance(posted, dict) else None}
+            return {"comment": posted.get("id") if isinstance(posted, dict) else None}
         except (OSError, ValueError, WorkError) as exc:
             errors.append(str(exc))
-    return {"status": "check-report-unposted", "errors": errors}
+    return {"errors": errors}
 
 
 def _holding_launch_holder_session(builder: dict) -> str:
@@ -12162,8 +12172,8 @@ def _refuse_off_route(state: WorkState, stage: str) -> None:
     """
     route = _route(state)
     if route["name"] != "builder":
-        if stage == "handoff":
-            raise RouteRefused("route-is-relay", f"run handoff: this change is on the relay route "
+        if stage in ("handoff", "send-back"):
+            raise RouteRefused("route-is-relay", f"run {stage}: this change is on the relay route "
                                f"({route['reason']}); its builds launch through run build")
         return
     if stage in RELAY_ONLY_STAGES:
@@ -12277,6 +12287,7 @@ def _handoff_block(state: WorkState, args: argparse.Namespace, composed: bytes, 
             "artifact_sha256": hashlib.sha256(artifact.encode("utf-8")).hexdigest() if artifact else None,
             "composed_sha256": hashlib.sha256(composed).hexdigest(),
             "holder_written": args.dispatch is not None, "notify": args.notify, "owed_checks": checks,
+            "pull_request": state.pr.get("number") if state.pr else None,
             "timeout_seconds": limit, "override_reason": args.budget_override_reason,
             "floor_command": args.floor_command}
 
@@ -12508,8 +12519,11 @@ def _resume_handoff(state, args, store, holder_root, spent) -> int:
 
 
 def _launch_stretch(state, args, store, implementation_root, branch, block, text, holder_identity, limit,
-                    *, resume: str | None = None) -> int:
-    """Start the stretch launcher detached and return once its request record and pointer exist."""
+                    *, resume: str | None = None, after: Callable[[str], dict] | None = None) -> int:
+    """Start the stretch launcher detached and return once its request record and pointer exist.
+
+    AFTER, given the new dispatch id, returns what it adds to the report; one carrying ``error`` fails the run.
+    """
     work = f"{state.repo}#{state.issue_number}"
     bundle = store / f"handoff-{uuid.uuid4().hex}"
     bundle.mkdir(parents=True)
@@ -12548,7 +12562,7 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
                                  f"{exit_file.read_text(encoding='ascii').strip()} before its pointer: {detail}")
         if deadline is not None and deadline.cap_left() <= 0:
             # The launcher may still be starting; its tree is not this call's to remove.
-            _emit_report({"stage": "handoff", "status": "launch-unconfirmed", "bundle": str(bundle),
+            _emit_report({"stage": args.stage, "status": "launch-unconfirmed", "bundle": str(bundle),
                           "detail": "the launcher wrote no request record and pointer within the cap"}, state)
             return 1
         time.sleep(LAUNCH_CONFIRM_POLL_SECONDS)
@@ -12557,11 +12571,228 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
     if window:
         print(window, flush=True)
     _note_cap_outcome("handed-off", bundle=str(request_path))
-    _emit_report({"stage": "handoff", "status": "handed-off", "started_by": "launch", "dispatch": dispatch_id,
+    added = after(dispatch_id) if after is not None else {}
+    _emit_report({"stage": args.stage, "status": "handed-off", "started_by": "launch", "dispatch": dispatch_id,
                   "resume": resume, "tree": str(implementation_root), "branch": branch,
                   "request": str(request_path), "records": str(bundle),
-                  "launcher_output": str(out), "launcher_errors": str(err)}, state)
-    return 0
+                  "launcher_output": str(out), "launcher_errors": str(err), **added}, state)
+    return 1 if added.get("error") else 0
+
+
+# --- after ready: one send-back and the catch-up resume, both to the builder that reported ready -----
+# Design: lib/DESIGN.md#the-builder-route
+
+DEFAULT_SEND_BACK_TIMEOUT_SECONDS = 3600.0
+SEND_BACK_HEADER = (b"Re-run the checks your changes make stale, answer each point, and post a new "
+                    b"readiness record.\n\n")
+CATCH_UP_LINE = (b"Catch up with the base, re-run what the merge makes stale, post proof and a new "
+                 b"readiness record.\n")
+# The holder's launches the final pass refuses; a send-back, the catch-up resume, the release report and
+# a bought panel's seats stay open.
+FINAL_PASS_LAUNCHES = frozenset({"cold-seat", "use", "cold-reader", "acceptance-criterion"})
+
+
+def _refuse_final_pass_launch(args: argparse.Namespace, recommendation: Decision) -> None:
+    fresh_handoff = args.stage == "handoff" and args.resume_reason is None and args.ended_reason is None
+    if recommendation.stage == "final-pass" and (args.stage in FINAL_PASS_LAUNCHES or fresh_handoff):
+        raise RouteRefused("final-pass-launches-nothing", f"run {args.stage}: a ready record stands at the "
+                           "head, and the final pass launches nothing; send the builder back once instead")
+
+
+def _send_back_markers(state: WorkState) -> list[Marker]:
+    """This term's lawful send-back markers, oldest first."""
+    term, _lane = _affirmed_review(state)
+    return sorted((marker for marker in state.issue_markers if marker.name == "send-back"
+                   and marker.surface == "issue-comment" and _attribute_error(marker) is None
+                   and _marker_value_error(marker) is None
+                   and (term is None or _source_order(marker) > _source_order(term))), key=_source_order)
+
+
+def _resume_limit(args: argparse.Namespace) -> float:
+    limit = args.timeout_seconds if args.timeout_seconds is not None else DEFAULT_SEND_BACK_TIMEOUT_SECONDS
+    if limit > DEFAULT_SEND_BACK_TIMEOUT_SECONDS and args.budget_override_reason is None:
+        raise RouteRefused("limit-above-default", f"run {args.stage}: --timeout-seconds {limit:g} is above its "
+                           f"{DEFAULT_SEND_BACK_TIMEOUT_SECONDS:g}" + (
+                               "; give --budget-override-reason"))
+    return limit
+
+
+def _resume_ready_builder(state: WorkState, args: argparse.Namespace, text: bytes, key: str, record: dict,
+                          after: Callable[[str], dict] | None = None) -> int:
+    """Resume this term's last stretch with TEXT: its own session, or a reopened hand-started record whose
+    text is printed for the owner. RECORD goes into the new record's handoff block under KEY."""
+    work = f"{state.repo}#{state.issue_number}"
+    store = (state.record_root or records.default_record_root()).expanduser().resolve()
+    decision = Decision(args.stage, True, "resume", "holder-named-stage")
+    for refusal in (_launch_account_refusal(state, args.stage), _version_refusal(state, decision)):
+        if refusal is not None:
+            _emit_report(_reported_decision(state, refusal).as_dict(), state)
+            return 0
+    term, _lane = _affirmed_review(state)
+    spent = lifecycle.launch_bundles(store, work, {"stretch"}, after=term.timestamp if term else None)
+    if not spent:
+        raise RouteRefused("nothing-to-resume", f"run {args.stage}: no stretch of this work in this term")
+    _order, _path, request, run = spent[-1]
+    handed = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
+    block = dict(handed, resume_of=request.get("dispatch_id"), **{key: record})
+    if request.get("started_by") == "hand":
+        block["dispatch"] = uuid.uuid4().hex
+        written = launch_tree.write_hand_record(store, work=work, vendor=request["requested"]["vendor"],
+                                                model=request["requested"]["model"], handoff=block)
+        _note_cap_outcome("handed-off", bundle=str(written["request"]))
+        added = after(written["dispatch_id"]) if after is not None else {}
+        _emit_report({"stage": args.stage, "status": "resumed", "started_by": "hand",
+                      "dispatch": written["dispatch_id"], "resume_of": request.get("dispatch_id"),
+                      "request": str(written["request"]), **added}, state, flush=True)
+        sys.stdout.buffer.write(f"work: {args.stage} text for the owner to paste follows\n".encode("ascii") + text
+                                + (b"" if text.endswith(b"\n") else b"\n") + f"export {launch_tree.DISPATCH_VARIABLE}={written['dispatch_id']}\n".encode("ascii"))
+        sys.stdout.flush()
+        return 1 if added.get("error") else 0
+    holder = (args.holder_session_id or "").strip() or request.get("holder_session_id") or handed.get(
+        "holder_session_id")
+    if not holder:
+        raise RouteRefused("holder-session-id-required", f"run {args.stage}: pass --holder-session-id")
+    try:
+        session = lifecycle.recovery_session(request, run)
+    except ValueError:
+        session = None
+    if not (session and _session_shaped(session, request)):
+        raise RouteRefused("builder-not-resumable", f"run {args.stage}: the stretch {request.get('dispatch_id')} "
+                           "left no session to resume")
+    return _launch_stretch(state, args, store, Path(request["root"]), request.get("lineage_branch"), block, text,
+                           holder, record["timeout_seconds"], resume=session, after=after)
+
+
+def _execute_send_back(state: WorkState, args: argparse.Namespace, github, recommendation: Decision) -> int:
+    """The holder's one send-back of the term: its text, under the fixed header, to the builder that reported
+    ready, and posted on the issue with the send-back marker. Design: lib/DESIGN.md#the-builder-route"""
+    if _send_back_markers(state):
+        raise RouteRefused("send-back-spent", "run send-back: this term's one send-back is spent; what stays "
+                           "open goes into the release report for the owner")
+    if recommendation.stage != "final-pass":
+        raise RouteRefused("not-at-final-pass", f"run send-back: the decision is {recommendation.stage}, "
+                           "not final-pass")
+    supplied = args.dispatch.expanduser().resolve() if args.dispatch is not None else None
+    words = supplied.read_bytes() if supplied is not None and supplied.is_file() else b""
+    if not words.strip():
+        raise RouteRefused("dispatch-absent", "run send-back: --dispatch must name a nonempty file")
+    try:
+        holder_text = words.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RouteRefused("dispatch-not-utf-8", f"run send-back: {exc}") from exc
+    if len(words) + 80 > COMMENT_LIMIT_BYTES:
+        raise RouteRefused("send-back-oversized", "run send-back: the text would pass GitHub's comment limit")
+    limit = _resume_limit(args)
+
+    def post(dispatch_id: str) -> dict:
+        posted = _post_comment(github, f"repos/{state.repo}/issues/{state.issue_number}/comments",
+                               f"<!-- tradecraft:send-back:v1 dispatch={dispatch_id} -->\n\n{holder_text}")
+        return ({"send_back_marker": posted["comment"]} if "comment" in posted else
+                {"error": "send-back-unposted", "errors": posted["errors"]})
+    record = {"timeout_seconds": limit, "override_reason": args.budget_override_reason,
+              "dispatch_sha256": hashlib.sha256(words).hexdigest()}
+    return _resume_ready_builder(state, args, SEND_BACK_HEADER + words, "send_back", record, post)
+
+
+def _catch_up_resume(state: WorkState, args: argparse.Namespace, recommendation: Decision) -> int:
+    """On the builder route the holder's catch-up merges nothing: it resumes the ready builder with the fixed
+    line, carrying no text of the holder's, so it spends no send-back."""
+    if recommendation.stage != "catch-up":
+        raise RouteRefused("catch-up-not-due", f"run catch-up: the decision is {recommendation.stage}; on the "
+                           "builder route the holder's catch-up only resumes a ready builder whose base moved")
+    record = {"timeout_seconds": _resume_limit(args), "override_reason": args.budget_override_reason}
+    return _resume_ready_builder(state, args, CATCH_UP_LINE, "catch_up_resume", record)
+
+
+def _handoff_plan_reading(state: WorkState, first: tuple | None) -> dict:
+    """Whether the handoff the stretch received is the one the entrance composes from the same inputs."""
+    if first is None:
+        return {"reading": "unknown", "reason": "no handoff stretch in this term"}
+    run_path, request = first
+    block = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
+    if block.get("holder_written"):
+        return {"reading": "differs", "reason": "holder-written"}
+    hand = ({name: block.get(name) for name in ("tree", "branch", "store", "dispatch")}
+            if request.get("started_by") == "hand" else None)
+    try:
+        number = block.get("pull_request")
+        recomposed = compose_handoff_for(
+            replace(state, pr={"number": number} if number else None),
+            branch=block.get("branch") or request.get("lineage_branch"), holder_root=state.holder_root,
+            plugin_root=Path(__file__).resolve().parent.parent, notify=block.get("notify"),
+            floor_command=block.get("floor_command"), hand=hand)
+        # A hand-started builder's text was printed, not kept; its record names the text's digest.
+        received = (block.get("composed_sha256") if hand is not None else
+                    hashlib.sha256(_bundle_file(Path(run_path), ".dispatch.bin").read_bytes()).hexdigest())
+    except (OSError, ValueError, WorkError) as exc:
+        return {"reading": "unknown", "reason": str(exc)}
+    if received == hashlib.sha256(recomposed).hexdigest():
+        return {"reading": "composed", "reason": None}
+    return {"reading": "differs", "reason": "altered"}
+
+
+def _builder_route_report(state: WorkState) -> dict:
+    """The release report's ``builder_route`` from what the entrance holds; what it doesn't read is None,
+    which route_report reads as unknown with a reason. Design: lib/DESIGN.md#the-builder-route"""
+    work = f"{state.repo}#{state.issue_number}"
+    store = state.record_root or records.default_record_root()
+    term, _lane = _affirmed_review(state)
+    after = term.timestamp if term else None
+    stretches = lifecycle.launch_bundles(store, work, {"stretch"}, after=after)
+    blocks = [(request, request.get("handoff") if isinstance(request.get("handoff"), dict) else {})
+              for _order, _path, request, _run in stretches]
+    first = next(((row[1], row[2]) for row, (_request, block) in zip(stretches, blocks)
+                  if not block.get("resume_of")), None)
+    checks = builder_checks(state)
+    reading = readiness_reading(state, checks)
+    marks = _send_back_markers(state)
+    later = [marker for marker in state.issue_markers if marks and marker.name == "readiness"
+             and marker.surface == "issue-comment" and _source_order(marker) > _source_order(marks[0])
+             and _attribute_error(marker) is None and _marker_value_error(marker) is None
+             and marker.attributes.get("status") == "ready"]
+    limits = [{"stage": stage, "dispatch": request.get("dispatch_id"), "timeout_seconds": part["timeout_seconds"],
+               "override_reason": part.get("override_reason")}
+              for request, block in blocks
+              for stage, part, default in (("handoff", {} if block.get("resume_of") else block,
+                                            DEFAULT_STRETCH_TIMEOUT_SECONDS),
+                                           ("send-back", block.get("send_back") or {},
+                                            DEFAULT_SEND_BACK_TIMEOUT_SECONDS))
+              if isinstance(part.get("timeout_seconds"), (int, float)) and part["timeout_seconds"] > default]
+    try:
+        replies = [reply for row in change_cost._read_jsonl(change_cost.default_holder_usage(
+            state.repo, state.issue_number)) for reply in (row.get("holder") or {}).get("replies") or ()]
+        cost = change_cost.route_split(
+            holder_replies=replies, start=datetime.fromisoformat(first[1]["launched_at"]) if first else None,
+            builder_bundles=[row for row in stretches if row[2].get("started_by") != "hand"],
+            seat_bundles=lifecycle.launch_bundles(store, work, None))
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, change_cost.CostError,
+            holder_transcript.TranscriptError) as exc:
+        cost = {name: {"status": "unknown", "reason": f"the route's cost could not be read: {exc}"}
+                for name in route_report.COST_FIGURES}
+    try:
+        comparison = change_cost.route_comparison(work)
+    except (OSError, ValueError, change_cost.CostError) as exc:
+        comparison = {"status": "unknown", "reason": str(exc)}
+    hand = next((request for request, _block in reversed(blocks) if request.get("started_by") == "hand"), None)
+    return route_report.builder_route(
+        route=_route(state), readiness=reading,
+        send_back={"count": len(marks), "marker": marks[-1].source_id if marks else None,
+                   "second_ready_head": max(later, key=_source_order).attributes["head"] if later else None},
+        catch_up_resumes=[{"dispatch": request.get("dispatch_id"), "resume_of": block.get("resume_of"),
+                           "launched_at": request.get("launched_at")}
+                          for request, block in blocks if "catch_up_resume" in block],
+        handoff_plan=_handoff_plan_reading(state, first),
+        plan_writer_launches=[{"dispatch": request.get("dispatch_id"), "bundle": str(path)}
+                              for _order, path, request, _run in lifecycle.launch_bundles(
+                                  store, work, {"artifact"}, after=after)],
+        limits=limits, cost_split=cost, route_comparison=comparison,
+        refusals={"stretch": [entry for _o, _p, _request, run in stretches
+                              for entry in (run or {}).get("refusals") or () if isinstance(entry, dict)],
+                  "reported": (reading or {}).get("refusals") or []},
+        hand_record=None if hand is None else {"dispatch": hand.get("dispatch_id"),
+                                               "ran_under": hand.get("ran_under")},
+        check_dispatches=(checks or {}).get("check_dispatches"), check_reports=(checks or {}).get("check_reports"),
+        stretch_outcome=(stretches[-1][3] or {}).get("outcome") if stretches else None)
 
 
 def run(
@@ -12584,9 +12815,11 @@ def _run_entry(
     if getattr(args, "draft_comment", None) is not None and (args.command != "run" or args.stage != "cold-seat"):
         raise WorkError("--draft-comment requires run cold-seat")
     reason = getattr(args, "budget_override_reason", None)
-    if reason is not None and (args.command != "run" or args.stage not in ("build", "handoff")
+    if reason is not None and (args.command != "run"
+                               or args.stage not in ("build", "handoff", "send-back", "catch-up")
                                or not reason.strip()):
-        raise WorkError("--budget-override-reason requires a named build or handoff and nonempty reason")
+        raise WorkError("--budget-override-reason requires a named build, handoff, send-back or builder-route "
+                        "catch-up and nonempty reason")
     _handoff_flags(args)
     cap_seconds = getattr(args, "preflight_cap_seconds", None)
     cap_reason = getattr(args, "preflight_cap_reason", None)
@@ -12880,9 +13113,22 @@ def _run(
     if args.command is None:
         _emit_report(recommendation.as_dict(), state)
         return 0
-    if args.stage == "handoff":
+    holder_resume = builder_mode() is None and (
+        args.stage == "send-back" or args.stage == "catch-up" and _route(state)["name"] == "builder")
+    if args.stage == "catch-up" and args.budget_override_reason is not None and not holder_resume:
+        # Only the builder route's catch-up resume carries a limit to raise; a merge has none.
+        raise WorkError("--budget-override-reason requires a named build, handoff, send-back or builder-route "
+                        "catch-up and nonempty reason")
+    if args.stage == "handoff" or holder_resume or builder_mode() is None and recommendation.stage == "final-pass":
         try:
-            return _execute_handoff(state, args, root)
+            if builder_mode() is None:
+                _refuse_final_pass_launch(args, recommendation)
+            if args.stage == "send-back":
+                return _execute_send_back(state, args, github, recommendation)
+            if holder_resume:
+                return _catch_up_resume(state, args, recommendation)
+            if args.stage == "handoff":
+                return _execute_handoff(state, args, root)
         except WorkError as exc:
             exc.stage = args.stage
             raise

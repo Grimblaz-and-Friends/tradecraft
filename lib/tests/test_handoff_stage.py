@@ -40,7 +40,7 @@ request = records.request_record(
     dispatch_id=dispatch_id, work=option("--work"), stage="stretch", settings_source="stub launcher",
     settings_scope="implementer", vendor="claude", model="stub", effort="stub",
     continuity="resume" if "--resume" in arguments else "fresh", permission_boundary="stub",
-    root=Path(option("--root")))
+    root=Path(option("--root")), requested_session_id=option("--resume") if "--resume" in arguments else None)
 request.update(handoff=metadata["handoff"], lineage_branch=option("--lineage-branch"),
                caller_limit_seconds=float(option("--timeout-seconds")))
 print("implementer: window " + json.dumps({{"latest_return_at": "stub"}}), flush=True)
