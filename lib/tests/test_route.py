@@ -265,6 +265,7 @@ def test_1011_a_stopped_record_that_could_not_launch_a_check_is_named(tmp_path):
     post(state, readiness_record(builder, status="stopped", stop=stop), 30)
     stage, _status, reason, detail = decision(state)
     assert (stage, reason) == ("stretch-stopped", "cannot-launch") and json.loads(detail)["stop"] == stop
+    assert json.loads(detail)["way_on"] == work.RESUME_WAY
 
 
 def test_1011_a_later_launch_that_stopped_with_no_record_is_stopped(tmp_path):

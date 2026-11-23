@@ -366,3 +366,11 @@ def test_1011_no_holder_usage_record_reads_the_holder_unknown(tmp_path):
     split = work._builder_route_report(state)["cost_split"]
     assert all(split[name]["status"] == "unknown" and "no holder usage record" in split[name]["reason"]
                for name in ("holder_before", "holder_after"))
+
+
+def test_1011_a_hand_record_with_no_handoff_digest_reads_unknown(tmp_path):
+    state = stored(tmp_path, *PLANNED)
+    request = {"started_by": "hand", "producer_version": work.records.producer_version(),
+               "handoff": {"tree": str(tmp_path), "branch": "b", "store": str(tmp_path), "dispatch": "d" * 32}}
+    assert work._handoff_plan_reading(state, (tmp_path / "run.json", request)) == {
+        "reading": "unknown", "reason": "the hand-started record names no handoff digest"}

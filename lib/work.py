@@ -6386,6 +6386,10 @@ BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and post
                                  "marked `author=holder vendor=claude` or `vendor=codex`")
 
 
+# A stopped builder goes on only on the owner's word, so each stopped decision names that way.
+RESUME_WAY = "run handoff --resume-reason TEXT, on the owner's word"
+
+
 def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Decision:
     """The next stage once the plan is settled on the builder route, from its stretch and readiness record.
 
@@ -6412,7 +6416,8 @@ def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Deci
         stop = reading.get("stop") or {}
         return Decision("stretch-stopped", False, None,
                         "cannot-launch" if stop.get("kind") == "cannot-launch" else "builder-stopped",
-                        json.dumps({"record": reading.get("record"), "stop": stop}, ensure_ascii=True),
+                        json.dumps({"record": reading.get("record"), "stop": stop, "way_on": RESUME_WAY},
+                                   ensure_ascii=True),
                         status="holder-owned")
     if reading.get("status") == "ready" and state.pr is None:
         # The stretch is the builder turn here, so a ready builder with no pull request owes one, as on the relay.
@@ -6422,14 +6427,15 @@ def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Deci
     if reading.get("status") == "ready" and not reading.get("from_last_launch"):
         return Decision("stretch-stopped", False, None, "builder-stopped", json.dumps(
             {"record": reading.get("record"), "detail": "the term's last builder launch ended with no record of "
-             "its own; run handoff --resume-reason"}, ensure_ascii=True), status="holder-owned")
+             "its own", "way_on": RESUME_WAY}, ensure_ascii=True), status="holder-owned")
     if reading.get("status") != "ready" or not reading.get("at_head"):
         not_at_head = reading.get("status") == "ready"
         return Decision("stretch-stopped", False, None,
                         "ready-record-not-at-head" if not_at_head else "builder-stopped",
                         json.dumps({"record": reading.get("record"), "head": reading.get("head"),
-                                    "current_head": _head_sha(state)} if not_at_head else
-                                   {"record": None, "invalid": reading.get("invalid", [])}, ensure_ascii=True),
+                                    "current_head": _head_sha(state), "way_on": RESUME_WAY} if not_at_head else
+                                   {"record": None, "invalid": reading.get("invalid", []), "way_on": RESUME_WAY},
+                                   ensure_ascii=True),
                         status="holder-owned")
     sync = _synchronization_decision(state)
     if sync is not None and sync.stage == "catch-up":
@@ -12943,6 +12949,8 @@ def _handoff_plan_reading(state: WorkState, first: tuple | None) -> dict:
                     hashlib.sha256(_bundle_file(Path(run_path), ".dispatch.bin").read_bytes()).hexdigest())
     except (OSError, ValueError, WorkError) as exc:
         return {"reading": "unknown", "reason": str(exc)}
+    if received is None:
+        return {"reading": "unknown", "reason": "the hand-started record names no handoff digest"}
     if received == hashlib.sha256(recomposed).hexdigest():
         return {"reading": "composed", "reason": None}
     return {"reading": "differs", "reason": "altered"}

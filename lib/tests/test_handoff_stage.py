@@ -54,8 +54,13 @@ time.sleep(60)
 '''
 
 
+# A caller's own repository variables would point git away from the fixture's.
+GIT_LOCATORS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR")
+
+
 def git(root, *arguments):
     return subprocess.run(["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL,
+                          env={key: value for key, value in os.environ.items() if key not in GIT_LOCATORS},
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout.decode().strip()
 
 

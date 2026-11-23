@@ -176,10 +176,16 @@ class Fixture:
         return dispatch_id
 
     def hand_stretch(self, tree: Path) -> dict:
+        """A hand-started record whose handoff block is the one `run handoff --by-hand` writes, digest included."""
+        hand = {"tree": str(tree), "branch": "tradecraft/5-fixture", "store": str(self.store),
+                "dispatch": uuid.uuid4().hex}
+        text = self.work.compose_handoff_for(self.state(), branch=hand["branch"], holder_root=self.holder,
+                                             plugin_root=LIB.parent, notify=None, floor_command=FLOOR, hand=hand)
         return self.launch_tree.write_hand_record(
-            self.store, work=WORK, vendor="claude", model="fixture",
-            handoff={"tree": str(tree), "branch": "tradecraft/5-fixture", "store": str(self.store),
-                     "dispatch": uuid.uuid4().hex, "floor_command": FLOOR}, now=START + timedelta(minutes=5))
+            self.store, work=WORK, vendor="claude", model="fixture", now=START + timedelta(minutes=5), handoff={
+                **hand, "floor_command": FLOOR, "notify": None, "holder_root": str(self.holder),
+                "plugin_root": str(LIB.parent), "pull_request": (self.pr or {}).get("number"),
+                "composed_sha256": hashlib.sha256(text).hexdigest()})
 
     def source(self) -> tuple[Path, str]:
         """The change's built source: one committed job file, whose commit is the pull request's head."""

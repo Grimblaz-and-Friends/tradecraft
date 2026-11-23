@@ -13,6 +13,8 @@ NO_LAUNCH_BLOCK = ("You run under these instructions alone, with no launch block
                    "outside your change but these instructions.")
 READINESS_MARKER = "<!-- tradecraft:readiness:v1 head=SHA status=ready|stopped dispatch=ID -->"
 DISPATCH_VARIABLE = "TRADECRAFT_STRETCH_DISPATCH"
+# The cold reading's Accepted line takes an em dash, built here so the text's constants stay ASCII.
+DASH = chr(0x2014)
 
 # The record's payload, spelled out field by field; lib/readiness.py's payload() is what reads it.
 RECORD_EXAMPLE = """```json
@@ -75,12 +77,13 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
     def argv(command):
         return _argv(command, repo=repo, issue=issue, holder_root=holder_root, plugin_root=plugin_root)
 
-    markers = "`" + plugin_root.rstrip("/\\") + "/skills/work/references/markers.md`"
-    lines = ["Run each check through the entrance, from the change's tree. Each command composes its own "
-             "dispatch and tree, launches a fresh reader and posts its report; a check's report is what "
-             "your record answers.", "",
-             "This list is not a fixed sequence, except where a check is held on another: ready-reviewers "
-             "and proof are both held on reach, so answer reach before either.", ""]
+    lines = ["First push your branch and open the draft pull request (below). Run each check from the "
+             "change's tree. The cold-reader, acceptance-criterion and use commands each launch a fresh "
+             "reader and post its report, which your record answers; they, the floor and reach are the "
+             "record's `checks`, and ready-reviewers and proof are not.", "",
+             "Run the floor at the pull request's head before ready-reviewers. Otherwise the list is not a "
+             "fixed sequence, except where a check is held on another: ready-reviewers and proof are both "
+             "held on reach, so answer reach before either.", ""]
     for number, check in enumerate(checks, 1):
         stage = check["stage"]
         block = _block(argv(check["command"]))
@@ -109,19 +112,25 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
         elif stage == "reach":
             title = "reach"
             note = ("This is the read-only decision; it prints the reach report. For every item it flags, "
-                    "post the `reach-reading` comment in the form " + markers + " gives it: an issue comment whose first line is "
+                    "post the `reach-reading` comment: an issue comment whose first line is "
                     "`<!-- tradecraft:reach-reading:v1 head=FULL_COMMIT_SHA -->`, with `head` the full "
                     "commit id the reading covers and no `holder-reading` companion, followed by exactly "
                     "one fenced `json` object holding the integer `schema_version` 1, `turns` (each turn's "
                     "`dispatch_id` and its `items`, one per flagged path, each with `path`, `disposition`, "
                     "a nonempty `basis` and that disposition's reference field) and, optionally, "
-                    "`superset_settlements`.")
+                    "`superset_settlements`. The dispositions and their fields: `row-or-criterion` with "
+                    "`requirement`, `generator` with `generator`, `restored` with `restored_by`, "
+                    "`owner-ruling` with `ruling_source`, and `own-turn` with `added_by`.")
         else:
             title = stage
             note = None if stage != "cold-reader" else (
-                "You post the cold reading's `open`, quoting the counting `cold-reader` report, and then its "
-                "`clean`, in the `cold-reading` form " + markers + " gives. The entrance holds `run use`, "
-                "`run ready-reviewers` and `run proof` until a `clean` stands at your head.")
+                "Post the reading's `open`: a comment whose first line is `<!-- tradecraft:cold-reading:v1 "
+                "head=SHA status=open staffing_status=STATUS -->`, with the reading's head and its report's "
+                "staffing, quoting the report's account whole, then your review under \"Holder's review "
+                "against the brief\" with an `Accepted: path:lines " + DASH + " KIND " + DASH + " reason` line for "
+                "each flag you decline. After repairs run the reader again. Once nothing stands, post the "
+                "same marker with `status=clean` and your head. The entrance holds `run use`, `run "
+                "ready-reviewers` and `run proof` until a `clean` stands at your head.")
         lines += [f"{number}. {title}:", ""] + block
         if note:
             lines += ["", note] if block else [note]
@@ -141,7 +150,8 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
         "[unidentified review](https://github.com/OWNER/REPO/pull/N#pullrequestreview-REVIEW_ID)`. "
         "One answer names one source link. Close each reviewer's answers with its "
         "`<!-- tradecraft:connected-reviewer:v1 name=NAME status=complete -->` reply once every comment "
-        "from it is answered.", "",
+        "from it is answered, NAME being its name in the repository's `.tradecraft/work.json` "
+        "`connected_reviewers`, the list of those configured; the read-only decision names any not yet run.", "",
         "After `ready-reviewers`, wait for each connected reviewer's review and answer it whole; then run "
         "proof, then post the readiness record.",
     ]
@@ -189,7 +199,8 @@ def compose_handoff(*, brief: str, artifact: str, checks: list[dict],
     sections = [
         ("Your role", [ROLE]),
         ("The affirmed brief", [brief]),
-        ("The settled plan", [artifact]),
+        ("The settled plan", ["The text below is the draft its settlement names, so its marker reads "
+                              "`status=draft`; the settlement is what makes it the plan.", "", artifact]),
         ("The checks you owe", _checks_section(checks, repo=repo, issue=issue,
                                                holder_root=holder_root, plugin_root=plugin_root)),
         ("What you may write", [allowance, "", f"Open the pull request as a draft from your branch, with "

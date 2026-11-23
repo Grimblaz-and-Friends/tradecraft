@@ -24,7 +24,6 @@ import holder_transcript as transcripts
 from winio import utf8_stdio
 from vendor_cli import CliError, resolve_command
 from dispatch_record import _change
-import dispatch_record as records
 import run_lifecycle as lifecycle
 
 

@@ -171,11 +171,11 @@ def test_1011_proof_owed_at_ready_is_named_under_the_final_pass(tmp_path):
     assert (stage, status, reason) == ("final-pass", "holder-owned", "owed-at-ready")
     detail = json.loads(detail)
     assert detail["owed_at_ready"]["stage"] == "proof" and detail["reconciled"] is True
-    # The relay's same evidence asks the holder for its proof run, as it does today.
+    # Today's route reads the same evidence through its own chain: its floor comes first.
     relay = with_pull_request(fixture(tmp_path / "relay", MECHANICAL, RELAY))
     relay.pr["draft"] = False
     made = work.decide(relay, RULES)
-    assert made.stage != "final-pass"
+    assert (made.stage, made.reason) == ("floor", "current-head-floor-missing-or-red")
 
 
 def test_1011_a_review_thread_owed_at_ready_is_the_builders(tmp_path, monkeypatch):

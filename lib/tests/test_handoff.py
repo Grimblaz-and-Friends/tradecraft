@@ -61,6 +61,7 @@ def test_1011_brief_and_artifact_byte_for_byte_and_allowance_verbatim():
     text = compose()
     assert BRIEF in text and ARTIFACT in text and ALLOWANCE in text
     assert text.index(BRIEF) < text.index(ARTIFACT) < text.index("## The checks you owe")
+    assert "the draft its settlement names, so its marker reads `status=draft`" in text
 
 
 def test_1011_owed_checks_order_and_shape():
@@ -160,7 +161,10 @@ def test_1011_the_closing_line_and_who_posts_the_cold_reading():
     cold = entry(checks_section(text), "cold-reader")
     assert cold.index("`open`") < cold.index("`clean`")
     assert "holds `run use`, `run ready-reviewers` and `run proof` until a `clean` stands at your head" in cold
-    assert "`/plugin/skills/work/references/markers.md`" in cold
+    assert "status=open staffing_status=STATUS -->" in cold and "status=clean" in cold and "Accepted: path:lines" in cold
+    assert "First push your branch and open the draft pull request" in text and "proof are not." in text
+    assert "Run the floor at the pull request's head before ready-reviewers" in text
+    assert "`own-turn` with `added_by`" in text and "`.tradecraft/work.json` `connected_reviewers`" in text
     assert "wait for each connected reviewer's review and answer it whole; then run proof, then post" in text
     assert "any departure from the plan a check required, with what you added" in text
     assert "implementing-pr" not in text and "builder-session" not in text
