@@ -408,3 +408,43 @@ def test_1011_reach_counts_a_stretch_among_the_turns_it_measures(tmp_path, monke
     monkeypatch.setattr(work.lifecycle, "launch_bundles", lambda *a, **k: seen.append(set(a[2] or ())) or [])
     work._evaluate_reach(with_pull_request(fixture(tmp_path, BRIEF)))
     assert any({"build", "stretch"} <= stages for stages in seen)
+
+
+def test_1011_a_builder_reads_and_settles_its_own_live_launchs_reach(tmp_path, monkeypatch):
+    import subprocess
+    from comparison_window import stretch_launch
+
+    def git(*words):
+        return subprocess.run(["git", "-C", str(root), "-c", "user.name=f", "-c", "user.email=f@invalid", *words],
+                              check=True, capture_output=True, stdin=subprocess.DEVNULL).stdout.decode().strip()
+    root = tmp_path / "repo"
+    root.mkdir()
+    git("init", "-q", "-b", "main")
+    (root / "a.txt").write_text("one\ntwo\n", encoding="utf-8")
+    git("add", "a.txt")
+    git("commit", "-q", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    git("checkout", "-q", "-b", "tradecraft/5-x")
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    git("commit", "-q", "-am", "the builder's change")
+    head = git("rev-parse", "HEAD")
+    state = with_pull_request(fixture(tmp_path, *PLANNED))
+    state.pr.update(head={"sha": head, "ref": "tradecraft/5-x"}, base={"ref": "main", "sha": base})
+    state.holder_root = root
+    pointer = stretch_launch(state.record_root, root=root)
+    request = json.loads(Path(pointer["request"]).read_bytes())
+    # The launcher records the tree's revision and branch before it spawns.
+    Path(pointer["request"]).write_text(json.dumps({**request, "revision_before": base,
+                                                    "lineage_branch": "tradecraft/5-x"}), encoding="utf-8")
+    work._evaluate_reach(state)
+    assert state.reach["state"] in ("pending", "unmeasurable")  # The holder can't measure a live launch.
+    monkeypatch.setattr(work, "builder_mode", lambda: {"dispatch_id": pointer["dispatch_id"]})
+    work._evaluate_reach(state)
+    [turn] = state.reach["turns"]
+    assert turn["state"] == "reading-required" and [item["path"] for item in turn["items"]] == ["a.txt"]
+    account = {"schema_version": 1, "turns": [{"dispatch_id": pointer["dispatch_id"], "items": [
+        {"path": "a.txt", "disposition": "row-or-criterion", "basis": "Row 1 drops the line.", "requirement": "C1"}]}]}
+    post(state, f"<!-- tradecraft:reach-reading:v1 head={head} -->\n\n```json\n{json.dumps(account)}\n```\n", 10 ** 6)
+    work._evaluate_reach(state)
+    assert state.reach["state"] == "clear"
+    assert work._reach_refusal(state, "ready-reviewers") is None

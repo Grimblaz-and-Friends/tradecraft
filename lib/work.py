@@ -4168,9 +4168,16 @@ def _evaluate_reach_in_part(state: WorkState) -> None:
         actual = [row for row in selected if not build_reach.never_launched(row[3])]
         latest = actual[-1][1] if actual else None
         turns = []
+        own = (builder_mode() or {}).get("dispatch_id")
         for order, bundle, request, record, error in selected:
             pending = False
-            if bundle == latest:
+            if own and head and request.get("dispatch_id") == own:
+                # A builder reads its own live launch up to the head it reports, so it can settle its reach
+                # before ready-reviewers and proof; a holder's read still sees the launch pending. A live launch has
+                # no run record yet, so its absence isn't an error here.
+                record = {**{key: value for key, value in (record or {}).items() if key != "recovery_error"},
+                          "revision_after": head}
+            elif bundle == latest:
                 pending = (bool(record.get("launch_unresolved")) or record.get("cleanup_proven") is False
                            or lifecycle.liveness(record) == "active"
                            or isinstance(record.get("recipient_process"), dict) and lifecycle.liveness(
