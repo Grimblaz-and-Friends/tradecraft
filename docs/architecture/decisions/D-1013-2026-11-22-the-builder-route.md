@@ -107,10 +107,7 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 
 ## From the holder's reading of the checks at `ccb5688`
 
-- **Only the term's last launch's ready record governs,** so a send-back that stopped silent reads `stretch-stopped` and can't be reported over.
-- **After its launcher starts, a failed handoff keeps the builder's tree;** only the launcher's exit before its pointer gives it back.
-- **A builder-route proof takes its use from the counting composed use report and declares the floor and use from the launches that made them,** as the route's decision reads them.
-- **Reach counts stretch launches,** so a removal made in a stretch is measured.
+- **Only the term's last launch's ready record governs,** so a send-back that stopped silent can't be reported over. DESIGN's builder-route section lists the rest.
 - **Two overlapping `run handoff` calls aren't closed against each other here:** a claim of its own is a mechanism, left to the third pull request's plan.
 
 ## Rejected
