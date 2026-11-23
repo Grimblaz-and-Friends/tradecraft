@@ -6,7 +6,8 @@ launch names; on Linux the launcher is the recipient's child subreaper. So the t
 variable, decides whether a process is a builder's; the variable only names which launch.
 A builder the owner started by hand has no tree: its hand-started stretch record is named by the
 variable alone, so its identity is declared, never proved.
-Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+Design: lib/DESIGN.md#a-builders-own-checks-and-writes; hand records:
+lib/DESIGN.md#the-builder-route
 """
 from __future__ import annotations
 

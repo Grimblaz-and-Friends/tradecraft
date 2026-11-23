@@ -62,6 +62,13 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **Reconciliation reads every counting report any stretch or hand record of the term launched,** and a ready record naming a dispatch that is none of them is invalid.
 - **An unreadable cloud switch is reported, not raised:** the read-only decision names it in a holder-owned decision and the report's `route` reads `unknown`.
 
+## From the holder's reading of the repair turn
+
+- **The final pass is a decision state,** `ready-reported` or `owed-at-ready` until `run release-report`, saying if the send-back is spent; it accepts a send-back while none is, `run release-report` when nothing is owed.
+- **A stretch proves delivery of its handoff's terms,** a resume counting with its launch; no answer names `run build`.
+- **The handoff names what the entrance would refuse:** the closing reference alone on a line; the cold reading's `open` before `run use`, `clean` before `run proof`.
+- **`implementing-pr` and `builder-session` stay out of the handoff;** the entrance needs neither.
+
 ## Rejected
 
 - **A Codex cold seat for a Claude holder's plan,** which D-1012's plan recommended. It would change which model the entrance launches, against Not this (C5).

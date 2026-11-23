@@ -242,3 +242,33 @@ def test_1011_each_resume_is_reported_once_and_a_send_back_is_spent_by_its_launc
     report = work._builder_route_report(state)
     assert [(entry["dispatch"], entry["base"]) for entry in report["catch_up_resumes"]] == [(caught, "c" * 40)]
     assert [entry["stage"] for entry in report["limits"]] == ["catch-up"]
+
+
+def test_1011_a_clean_ready_report_is_the_final_pass_until_the_release_report(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
+    state, first = ready_hand(tmp_path, monkeypatch, holder)
+    proof = work._current_marker
+    monkeypatch.setattr(work, "_current_marker", lambda s, name, **k: name == "proof" or proof(s, name, **k))
+    monkeypatch.setattr(work, "_release_gate_status", lambda *_a: {"verdict": "none", "reason": "none",
+                                                                   "head": None, "requirement_known": True})
+    monkeypatch.setattr(work, "_merge_readiness", lambda *_a: {"reason": "ready", "detail": "", "ready": True})
+    state.proof_current = None  # the run above found no proof policy to compare
+    made = work.decide(state, RULES)
+    assert (made.stage, made.reason, json.loads(made.detail)["send_back_spent"]) == (
+        "final-pass", "ready-reported", False)
+    assert work._governing_terms_decision(state) is None
+    transport = Recorder()
+    assert run(monkeypatch, holder, state, "send-back", "--dispatch", words(tmp_path), transport=transport) == 0
+    [sent] = [request for request in hand_requests() if request["dispatch_id"] != first["dispatch_id"]]
+    post(state, transport.posted[0][1], 40)
+    post(state, readiness_record(sent["dispatch_id"]), 50)
+    work._complete_readied_hand_records(state)
+    assert json.loads(work.decide(state, RULES).detail)["send_back_spent"] is True
+    assert refused(monkeypatch, holder, state, "send-back", "--dispatch", words(tmp_path)) == "send-back-spent"
+    capsys.readouterr()
+    assert work.execute_stage(state, work.Decision("release-report", False, None, "holder-named-stage"),
+                              holder, None) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == "release-report" and report["builder_route"]["send_back"]["count"] == 1
+    monkeypatch.setattr(work, "_term_stretches", lambda _s: [{"handoff": {"brief_comment": "999"}}])
+    assert work._governing_terms_decision(state).reason == "governing-record-not-handed"

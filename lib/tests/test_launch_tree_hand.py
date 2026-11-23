@@ -1,6 +1,6 @@
 """A builder the owner starts by hand: its stretch record, how long it is live, and its declared identity.
 
-Design: lib/DESIGN.md#a-builders-own-checks-and-writes
+Design: lib/DESIGN.md#the-builder-route
 """
 from __future__ import annotations
 

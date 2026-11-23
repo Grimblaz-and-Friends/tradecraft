@@ -2877,6 +2877,24 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
     record = max(records_to_build, key=_source_order)
     identity = (f"{record.name} {record.surface}:{record.source_id or 'unknown'}"
                 f" ({record.url or 'URL unavailable'}) at {record.timestamp or 'timestamp unavailable'}")
+    try:
+        builder_route = _route(state)["name"] == "builder"
+    except WorkError:
+        builder_route = False  # an unreadable route is refused by every stage that reads it
+    if builder_route:
+        # A stretch proves delivery of the brief and plan its handoff block names; a resume copies its launch's.
+        brief, lane = _affirmed_review(state)
+        try:
+            plan = None if lane == ("ordinary", "mechanical") else _settled_artifact_text(state, "plan-unsettled")[1]
+        except BuilderRefused:
+            plan = ""  # no settled plan, so no block names it
+        if any((request.get("handoff") or {}).get("brief_comment") == brief.source_id
+               and (request.get("handoff") or {}).get("artifact_comment") == plan
+               for request in _term_stretches(state)):
+            return None
+        return Decision("handoff", False, None, "governing-record-not-handed",
+                        f"Governing record {identity}; no stretch of this term was handed the current brief "
+                        "and plan. Run handoff to hand them to the builder.", status="holder-owned")
     released_pr = False
 
     def result(proved_stale: bool, evidence: str) -> Decision:
@@ -6280,6 +6298,9 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
             return result(builder.stage, builder.dispatch, builder.continuity, builder.reason,
                           builder.detail, builder.status)
         made = chain(str(_head_sha(state)))
+        if made.stage == "release-report":
+            # The final pass stands until the holder runs release-report, so its send-back stays open.
+            return result("final-pass", False, None, "ready-reported", builder.detail, status="holder-owned")
         if made.stage not in BUILDER_OWED_STAGES:
             return made
         # The holder is refused these on the builder route, so the ready record owed them: its final pass
@@ -6341,9 +6362,11 @@ def _builder_route_decision(state: WorkState) -> Decision:
     live = [pointer for pointer in launch_tree.live_launches(store)
             if str(pointer.get("work", "")).lower() == work.lower()]
     if live:
-        return Decision("with-builder", False, None, "builder-live",
-                        "stretch launch " + ", ".join(str(pointer["dispatch_id"]) for pointer in live)
-                        + " is still running; wait for its readiness record", status="waiting")
+        return Decision("with-builder", False, None, "builder-live", "; ".join(
+            f"hand-started record {pointer['dispatch_id']} is open, awaiting its readiness record or "
+            "run handoff --ended-reason" if pointer.get("hand") is True else
+            f"stretch launch {pointer['dispatch_id']} is still running; wait for its readiness record"
+            for pointer in live), status="waiting")
     term, _lane = _affirmed_review(state)
     if not lifecycle.launch_bundles(store, work, {"stretch"}, after=term.timestamp if term else None):
         return Decision("handoff", False, None, "handoff-due",
@@ -6371,12 +6394,15 @@ def _builder_route_decision(state: WorkState) -> Decision:
                         status="holder-owned")
     sync = _synchronization_decision(state)
     if sync is not None and sync.stage == "catch-up":
-        return Decision("catch-up", False, None, "base-moved-after-ready", sync.detail, status="holder-owned")
+        return Decision("catch-up", False, None, "base-moved-after-ready",
+                        "The holder's run catch-up resumes the builder to catch up with the base.",
+                        status="holder-owned")
     if sync is not None:
         return sync  # Synchronization that can't be read holds, as it does on the relay route.
     return Decision("final-pass", False, None, "ready-reported",
                     json.dumps({"record": reading.get("record"), "reconciled": reading.get("reconciled"),
-                                "unreconciled": reading.get("unreconciled")}, ensure_ascii=True),
+                                "unreconciled": reading.get("unreconciled"),
+                                "send_back_spent": bool(_send_back_launches(state))}, ensure_ascii=True),
                     status="holder-owned")
 
 
@@ -11559,7 +11585,8 @@ def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plu
     brief, mechanical, artifact, _comment, checks = _handoff_inputs(state, floor_command)
     allowance = github_allowance.sentence(github_allowance.allowance_for(
         "stretch", repository=state.repo, branch=branch,
-        pull_request=state.pr.get("number") if state.pr else None, issue=state.issue_number))
+        pull_request=state.pr.get("number") if state.pr else None, issue=state.issue_number),
+        hand=hand is not None)
     return handoff.compose_handoff(
         brief=brief.body, artifact=artifact, lane_reason=MECHANICAL_HANDOFF_REASON if mechanical else None,
         checks=checks, allowance=allowance, repo=state.repo, issue=state.issue_number,
@@ -12259,8 +12286,8 @@ def _refuse_with_builder(state: WorkState, args: argparse.Namespace) -> None:
 
     The handoff decides its own refusals, because its resume and ended reasons act on a builder.
     """
-    if args.stage == "handoff" or args.stage == "send-back" and _send_back_launches(state) and not (
-            _send_back_markers(state)):
+    if args.stage == "handoff" or (args.stage == "send-back" and _send_back_launches(state)
+                                   and not _send_back_markers(state)):
         return  # a launched send-back's missing marker is posted while its builder works
     live = _live_builders(state)
     if live:
@@ -12580,6 +12607,8 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
     window = next((line for line in (out.read_bytes().decode("utf-8", "replace").splitlines()
                                      if out.is_file() else []) if line.startswith("implementer: window")), None)
     if window:
+        if args.timeout_seconds is not None:  # the launcher is passed every limit, so it can't tell declared
+            window = window.replace('"limit_source": "default"', '"limit_source": "declared"')
         print(window, flush=True)
     _note_cap_outcome("handed-off", bundle=str(request_path))
     added = after(dispatch_id) if after is not None else {}
@@ -12712,13 +12741,14 @@ def _execute_send_back(state: WorkState, args: argparse.Namespace, github, recom
         holder_text = words.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise RouteRefused("dispatch-not-utf-8", f"run send-back: {exc}") from exc
-    if len(words) + 80 > COMMENT_LIMIT_BYTES:
+    marker = "<!-- tradecraft:send-back:v1 dispatch={} -->\n\n"
+    if len(words) + len(marker.format("0" * 32)) > COMMENT_LIMIT_BYTES:
         raise RouteRefused("send-back-oversized", "run send-back: the text would pass GitHub's comment limit")
     limit = _resume_limit(args)
 
     def post(dispatch_id: str) -> dict:
         posted = _post_comment(github, f"repos/{state.repo}/issues/{state.issue_number}/comments",
-                               f"<!-- tradecraft:send-back:v1 dispatch={dispatch_id} -->\n\n{holder_text}")
+                               marker.format(dispatch_id) + holder_text)
         return ({"send_back_marker": posted["comment"]} if "comment" in posted else
                 {"error": "send-back-unposted", "errors": posted["errors"]})
     if launched:  # its marker never posted: post it with the same text
@@ -12889,7 +12919,8 @@ def _run_entry(
         declaration = (cap_declaration.write(_records_home(None), f"{args.repo}#{args.issue}", args.stage,
                                              deadline, window) if deadline.cap_declared else None)
         window["cap_record"] = str(declaration) if declaration else None
-        print("work: window " + json.dumps(window, ensure_ascii=True), flush=True)
+        if not (args.stage == "handoff" and args.ended_reason is not None):  # it launches nobody
+            print("work: window " + json.dumps(window, ensure_ascii=True), flush=True)
         outcome_token = _CAP_OUTCOME.set(None)
         try:
             with lifecycle.deadline_scope(deadline):
@@ -13157,12 +13188,12 @@ def _run(
         _emit_report(recommendation.as_dict(), state)
         return 0
     holder_resume = builder_mode() is None and (
-        args.stage == "send-back" or args.stage == "catch-up" and _route(state)["name"] == "builder")
+        args.stage == "send-back" or (args.stage == "catch-up" and _route(state)["name"] == "builder"))
     if args.stage == "catch-up" and args.budget_override_reason is not None and not holder_resume:
         # Only the builder route's catch-up resume carries a limit to raise; a merge has none.
         raise WorkError("--budget-override-reason requires a named build, handoff, send-back or builder-route "
                         "catch-up and nonempty reason")
-    if args.stage == "handoff" or holder_resume or builder_mode() is None and recommendation.stage == "final-pass":
+    if args.stage == "handoff" or holder_resume or (builder_mode() is None and recommendation.stage == "final-pass"):
         try:
             if builder_mode() is None:
                 _refuse_final_pass_launch(args, recommendation)

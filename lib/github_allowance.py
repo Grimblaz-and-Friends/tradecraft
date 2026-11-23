@@ -161,7 +161,7 @@ STRETCH_HOW = ("Reply on a review thread with the comment's numeric id written a
                "launcher is refused. ")
 
 
-def sentence(allowance: dict) -> str:
+def sentence(allowance: dict, *, hand: bool = False) -> str:
     """The instruction every bounded step receives, in its prompt or launcher notice.
 
     One sentence for both vendors: a Codex launch's children get the same child
@@ -172,12 +172,16 @@ def sentence(allowance: dict) -> str:
              "Start no Codex session.")
     how = (STRETCH_HOW.format(repository=allowance.get("repository"), branch=allowance.get("branch"))
            if allowance.get("kind") == "stretch" else "")
+    stretch = allowance.get("kind") == "stretch"
+    if stretch and hand:  # a hand-started builder has no child settings
+        start = "Start no Claude or Codex session."
+    route = "record in the readiness record's `decisions`" if stretch else (  # no return on that route
+        "end your return with a **Write requests** section")
     return (f"GitHub writes this step may make: {_writes(allowance)}. Make no other GitHub write "
             "- no comment, pull request, branch, branch deletion, tag, release, workflow run or "
             "setting. GitHub reads (`gh api --method GET`, fetches) stay open. " + how + start
-            + " If the work needs any other write, do not make it: end your return with a "
-            "**Write requests** section naming each write, why the work needs it, and what it "
-            "would leave behind.")
+            + " If the work needs any other write, do not make it: " + route + " naming each write, "
+            "why the work needs it, and what it would leave behind.")
 
 
 SENTENCE_OPENING = "GitHub writes this step may make:"
@@ -214,6 +218,8 @@ def _stated_pattern() -> re.Pattern:
     tail = local[len(head) + len("none"):]
     split = tail.index("Start a Claude session")
     shapes.append((head, tail[:split], tail[split:]))
+    for stretch in (sentence({"kind": "stretch"}), sentence({"kind": "stretch"}, hand=True)):
+        shapes.append((head, stretch[stretch.index("Start "):]))
     cloud = cloud_sentence("artifact")
     pushes = "a push to its report branch, which carries its return"
     shapes.append((cloud[:cloud.index(pushes)], cloud[cloud.index(pushes) + len(pushes):]))

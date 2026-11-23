@@ -130,7 +130,9 @@ def _checks_section(checks, *, mechanical, repo, issue, holder_root, plugin_root
                     "`superset_settlements`.")
         else:
             title = stage
-            note = None
+            note = None if stage != "cold-reader" else (
+                "You post the cold reading's `open`, quoting the counting `cold-reader` report, before `run "
+                "use`, and its `clean` before `run proof`, in the markers reference's `cold-reading` form.")
         lines += [f"{number}. {title}:", ""] + block
         if note:
             lines += ["", note] if block else [note]
@@ -206,7 +208,9 @@ def compose_handoff(*, brief: str, artifact: str | None, lane_reason: str | None
             lane_reason]),
         ("The checks you owe", _checks_section(checks, mechanical=mechanical, repo=repo, issue=issue,
                                                holder_root=holder_root, plugin_root=plugin_root)),
-        ("What you may write", [allowance]),
+        ("What you may write", [allowance, "", f"Open the pull request as a draft from your branch, with "
+                                f"`Closes #{issue}` alone on a line of its body, nothing after it: the "
+                                "entrance finds the pull request by that line."]),
         ("The readiness record", _record_section(mechanical, "hand" if hand else "launch")),
         ("Where the plan settles nothing", [
             "Where the plan did not settle something, go on with your recommendation, record it in the "

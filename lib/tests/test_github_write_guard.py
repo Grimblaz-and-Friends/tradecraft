@@ -1364,6 +1364,12 @@ def test_the_stretch_sentence_names_its_writes_and_how_to_reply():
     assert text.count(allowance_module.SENTENCE_OPENING) == 1
     assert not allowance_module.needs_notice(allowance, text.encode("utf-8"))
     other = allowance_module.allowance_for("build", repository="o/r", branch="B", pull_request=None)
+    hand, cut = allowance_module.sentence(allowance, hand=True), text.index(" If the work")
+    assert hand == text[:text.index("Start a")] + "Start no Claude or Codex session." + text[cut:]
+    assert "it: record in the readiness" in text
+    with pytest.raises(allowance_module.BoundError):
+        allowance_module.needs_notice(allowance, hand.encode())
+    assert allowance_module.sentence(other, hand=True) == allowance_module.sentence(other)
     with pytest.raises(allowance_module.BoundError):
         allowance_module.needs_notice(other, text.encode("utf-8"))
     with pytest.raises(allowance_module.BoundError):

@@ -176,6 +176,14 @@ def test_1011_hand_block_only_with_hand():
     assert '"started_by": "hand"' in text and '"started_by": "launch"' in plain
 
 
+def test_1011_the_closing_line_and_who_posts_the_cold_reading():
+    text = compose()
+    assert "as a draft from your branch, with `Closes #7` alone on a line" in text
+    cold = entry(checks_section(text), "cold-reader")
+    assert cold.index("`open`") < cold.index("`run use`") < cold.index("`clean` before `run proof`")
+    assert "implementing-pr" not in text and "builder-session" not in text
+
+
 def test_1011_without_notify_the_builder_ends():
     finish = compose(notify=None)
     finish = finish[finish.index("## How to finish"):]
