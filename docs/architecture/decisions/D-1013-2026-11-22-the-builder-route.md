@@ -54,6 +54,14 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **A Claude builder started by hand must work** (E4). Row 6 sets no vendor or model for a builder the owner starts, and E4's conditions carry no exception for Claude, but a hand record has no session id, so comparing a present one with it refused every entrance run of a hand-started Claude session. Under a hand record a present session id is accepted and recorded as declared; it is refused only where it is the holder session the handoff names, because the holder can't be its own builder.
 - **The price join is accepted as built:** reply ids from each launch's stream, priced from the session transcript, `unknown` with its reason where either can't be read or they disagree. One `unknown` is known and left: a subagent transcript that writes one message id twice, its partial output and then its final one, is refused by the transcript reader as conflicting usage, so that session's builder figure is `unknown`.
 
+## From the holder's reading of the third build turn
+
+- **A send-back is spent by its launch, not by its marker,** read from the store's record of that launch, so a failed post can't re-arm it. A `run send-back` that finds the launch made and the marker missing posts the marker and launches nothing.
+- **`handoff_plan` for a hand-started builder compares the recorded digest,** and a stretch whose record carries no `handoff` block reads `differs`.
+- **The doctrine:** `run handoff` is the one stage not refused `with-builder`, and it refuses `builder-live` itself unless it carries `--resume-reason` or `--ended-reason`.
+- **Reconciliation reads every counting report any stretch or hand record of the term launched,** and a ready record naming a dispatch that is none of them is invalid.
+- **An unreadable cloud switch is reported, not raised:** the read-only decision names it in a holder-owned decision and the report's `route` reads `unknown`.
+
 ## Rejected
 
 - **A Codex cold seat for a Claude holder's plan,** which D-1012's plan recommended. It would change which model the entrance launches, against Not this (C5).

@@ -2108,23 +2108,30 @@ def test_the_reload_lists_first_call_takes_the_last_event_of_its_message():
     assert problem is None and first == {"input": 3, "cache_read": 0, "cache_creation": 40}
 
 
-# The route split and the comparison ledger. Every figure below is worked by hand from the shipped
-# card's list prices per million tokens: claude-opus-5-5 input 4, cache read 0.2, one-hour write 8,
-# output 20; claude-sonnet-5-5 input 2, output 10; gpt-6-sol input 2, cached input 0.2, output 10.
+# The route split and the comparison ledger.
 def route_moment(second):
     return datetime(2026, 10, 10, 12, 0, second, tzinfo=timezone.utc)
+
+
+# A second before the launch, exactly at its start, and after it.
+ROUTE_HOLDER_REPLIES = (("early", 4, {"input": 1000, "output": 100}), ("edge", 5, {"output": 1000}),
+                        ("late", 8, {"cache_read": 100000, "cache_write_1h": 1000}))
+
+
+def route_reply_price(tokens):
+    """A holder reply's price at the shipped card's claude-opus-5-5 rates."""
+    rates = next(row for row in cost.load_rates(LIB / "rates.json") if row["model"] == "claude-opus-5-5")
+    return sum((Decimal(count) * Decimal(str(rates["classes"][name])) for name, count in tokens.items()),
+               Decimal(0)) / Decimal(1_000_000)
 
 
 def route_holder_replies(tmp_path):
     from test_holder_transcript import reply, write_lines
     projects = tmp_path / "projects"
     write_lines(projects / "slug" / "holder.jsonl", [
-        # 1000 input, 100 output: 0.004 + 0.002 = 0.006, a second before the launch.
-        reply("early", second=4, input=1000, output=100, read=0, five=0, hour=0),
-        # 1000 output: 0.02, exactly at the launch's start.
-        reply("edge", second=5, input=0, output=1000, read=0, five=0, hour=0),
-        # 100000 cache reads and 1000 one-hour writes: 0.02 + 0.008 = 0.028.
-        reply("late", second=8, input=0, output=0, read=100000, five=0, hour=1000)])
+        reply(name, second=second, input=tokens.get("input", 0), output=tokens.get("output", 0),
+              read=tokens.get("cache_read", 0), five=0, hour=tokens.get("cache_write_1h", 0))
+        for name, second, tokens in ROUTE_HOLDER_REPLIES])
     row = cost.holder_close("acme/widget", 12, "claude", None, None, None, tmp_path / "holder.jsonl",
                             now=route_moment(50), session_id="holder", claude_projects=projects,
                             state_root=tmp_path / "holder-state")
@@ -2195,10 +2202,11 @@ def test_route_split_prices_holder_before_after_and_the_builder_with_its_own_sea
     split = cost.route_split(holder_replies=route_holder_replies(tmp_path), start=route_moment(5),
                              builder_bundles=builders, seat_bundles=seats)
     assert split["holder_before"]["status"] == "priced"
-    assert Decimal(split["holder_before"]["amount"]) == Decimal("0.006")
+    early, edge, late = (route_reply_price(tokens) for _name, _second, tokens in ROUTE_HOLDER_REPLIES)
+    assert Decimal(split["holder_before"]["amount"]) == early
     # The reply exactly at the start falls after it.
     assert split["holder_before"]["replies"] == 1 and split["holder_after"]["replies"] == 2
-    assert Decimal(split["holder_after"]["amount"]) == Decimal("0.048")
+    assert Decimal(split["holder_after"]["amount"]) == edge + late
     builder = split["builder"]
     assert builder["status"] == "priced", builder
     assert Decimal(builder["amount"]) == Decimal("0.354") and builder["usd"] == pytest.approx(0.354)

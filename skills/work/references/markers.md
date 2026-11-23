@@ -243,7 +243,7 @@ The line names a flag in that reading's account by its path, the `:lines` it giv
 - the store's copy of the return, read as UTF-8 text, equals the posted text;
 - its author is a configured marker producer.
 
-Every other comment carrying the marker counts for nothing, and the entrance's `builder_checks` report lists it with its reasons (`store-and-posted-differ` where the two copies differ). A failed seat posts `outcome=error`, and a second launch posts a second report beside the first. The marker is informational: no gate reads it yet.
+Every other comment carrying the marker counts for nothing, and the entrance's `builder_checks` report lists it with its reasons (`store-and-posted-differ` where the two copies differ). A failed seat posts `outcome=error`, and a second launch posts a second report beside the first. On the builder route the use gate counts these reports, and the final pass reads the reconciliation against them.
 
 ## `route`
 
@@ -276,7 +276,7 @@ Every other comment carrying the marker counts for nothing, and the entrance's `
 ```
 
 - **Attributes and lawful values:** only `dispatch`, the 32-character id of the builder launch the holder sends back.
-- **Producer, surface, moment:** the entrance, through the holder's `run send-back` at `final-pass`, on the change's issue, carrying the holder's text of the problems it found in its final pass. One counts per term; a second `run send-back` is refused `send-back-spent`. A builder's own shell is refused any comment carrying this marker, as it is refused `check-report`.
+- **Producer, surface, moment:** the entrance, through the holder's `run send-back` at `final-pass`, on the change's issue, carrying the holder's text of the problems it found in its final pass. A send-back is spent by its launch: a second `run send-back` in the term is refused `send-back-spent`, and one that finds the launch made and the marker missing posts the marker and launches nothing. A builder's own shell is refused any comment carrying this marker, as it is refused `check-report`.
 
 ## `proof`
 

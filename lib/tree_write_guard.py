@@ -7,7 +7,7 @@ Usage (a PreToolUse command hook the launcher supplies in its own settings):
 The config names the canonical tree, the session scratchpad and the decision
 log. Every decision, allow or deny, is appended to that log with its UTC time
 in `at`, so the launcher can prove afterwards that each completed file-tool
-call was checked and say when a refusal happened (#906).
+call was checked and say when a refusal happened.
 
 It also refuses a helper or a session move into a separate working copy, which
 the runtime places outside the tree.

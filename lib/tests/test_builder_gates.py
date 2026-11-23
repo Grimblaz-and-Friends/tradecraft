@@ -38,7 +38,7 @@ def invalid(state):
     return {(claim["name"], claim["reason"]) for claim in claims}
 
 
-# E2: the holder-written plan.
+# The holder-written plan.
 
 def test_1011_a_draft_may_name_its_holder_author_and_vendor(tmp_path):
     for index, attributes in enumerate(({"author": "holder", "vendor": "claude"}, {"author": "holder"},
@@ -137,7 +137,7 @@ def test_1011_a_claude_seat_on_a_claude_holders_plan_records_why(tmp_path, monke
     assert source.startswith("holder-written draft marker ") if holder else source == "artifact bundle"
 
 
-# E6: the gates a ready record continues into.
+# The gates a ready record continues into.
 
 def ready(tmp_path, *texts, draft_pr=False):
     state = with_pull_request(fixture(tmp_path, MECHANICAL, *texts))
@@ -148,7 +148,7 @@ def ready(tmp_path, *texts, draft_pr=False):
 
 
 def test_1011_a_ready_record_on_a_draft_pull_request_names_ready_reviewers_as_the_builders(tmp_path):
-    # Row 5's holder no longer readies reviewers on this route, so the builder owed it at ready.
+    # On this route the builder readies reviewers, so a draft pull request at ready leaves it owed.
     state, _builder = ready(tmp_path, draft_pr=True)
     stage, _status, reason, detail = decision(state)
     assert (stage, reason) == ("final-pass", "owed-at-ready")
@@ -265,3 +265,14 @@ def test_1011_a_builders_catch_up_refuses_a_holder_session_on_its_command_line(t
         work.execute_stage(state, work.Decision("catch-up", False, None, "fixture"), tmp_path, None,
                            holder_session_id="66666666-6666-6666-6666-666666666666",
                            transport=object(), rules=RULES)
+
+
+def test_1011_a_builder_floor_counts_only_at_the_head_and_from_a_producer(tmp_path):
+    shown = "\n\n```\npytest\n```\n\n3 passed\n"
+    state = with_pull_request(fixture(tmp_path, MECHANICAL, f"<!-- tradecraft:floor:v1 head={'c' * 40} status=pass -->"
+                                      + shown))
+    state.issue_comments.append({"id": 400, "body": f"<!-- tradecraft:floor:v1 head={HEAD} status=pass -->" + shown,
+                                 "user": {"login": "someone"}, "created_at": START.isoformat()})
+    launch(state, "stretch", 5, handoff={"floor_command": "pytest"})
+    assert ("floor", "marker producer is not authorized: someone") in invalid(state)
+    assert work.floor_evaluation(state)["outcome"] == "builder-missing"

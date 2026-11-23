@@ -285,6 +285,31 @@ def _cost(cost_split, route_comparison):
         f"{name}: {cost_split[name].get('reason') or 'unknown'}" for name in unpriced)), "due": due}
 
 
+# What each row check asks, in row_checks' order.
+ROW_CHECKS = {
+    "1.1": "nothing owed at the ready commit",
+    "1.2": "each check named was the builder's launch",
+    "1.3": "the holder sent and launched nothing unasked",
+    "2.1": "the plan handed off is the settled text",
+    "2.2": "the use job is the plan's",
+    "2.3": "no plan writer was launched",
+    "3.1": "each counted finding has one record entry",
+    "3.2": "each posted report is its stored return",
+    "3.3": "each check's instructions were composed",
+    "4.1": "no holder launch after ready",
+    "4.2": "at most one send-back",
+    "5.2": "the refusals are in the record and the report",
+    "5.3": "a run with a refusal still yields its ready record",
+    "5.4": "a failed check's relaunch, both recorded",
+    "5.5": "a hand-started record names what it ran under",
+    "6.2": "a hand-started builder reaches ready or names its unlaunched check",
+    "6.3": "vendor and model come from the run's own log",
+    "7.1": "the first change takes the builder route by default",
+    "7.2": "an owner-asked change takes today's route",
+    "7.3": "the cost split, and whether the comparison is due",
+}
+
+
 def row_checks(payload: dict) -> list[dict]:
     """Each computed row check's reading, from the payload's named field, in row order."""
     readiness = payload.get("readiness")

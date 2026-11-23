@@ -930,6 +930,7 @@ def _listed(calls, wanted):
             for call in calls if call["kinds"] & wanted]
 
 
+# The window readers the builder route's release report reads. Design: lib/DESIGN.md#the-builder-route
 def handoff_quiet(session: str, start: datetime, end: datetime, *, builder: str | None = None,
                   change: tuple[str, int] | None = None, home=None) -> dict:
     """Whether the holder stayed out of a handed-off change over [start, end).

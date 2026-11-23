@@ -214,3 +214,31 @@ def test_1011_a_resume_above_its_default_needs_an_override_reason(stage):
         work._resume_limit(above)
     assert work._resume_limit(SimpleNamespace(stage=stage, timeout_seconds=7200.0,
                                               budget_override_reason="a long merge")) == 7200.0
+
+
+class Failing(Recorder):
+    def post(self, endpoint, payload):
+        raise work.WorkError("502")
+
+
+def test_1011_each_resume_is_reported_once_and_a_send_back_is_spent_by_its_launch(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn):
+    state, first = ready_hand(tmp_path, monkeypatch, holder)
+    state.synchronization = {**CLEAR, "behind": True, "strict": True, "base": {"sha": "c" * 40}}
+    assert run(monkeypatch, holder, state, "catch-up", "--timeout-seconds", "7200",
+               "--budget-override-reason", "a long merge") == 0
+    [caught] = [request["dispatch_id"] for request in hand_requests() if request != first]
+    post(state, readiness_record(caught), 40)
+    work._complete_readied_hand_records(state)
+    state.synchronization = dict(CLEAR)
+    assert run(monkeypatch, holder, state, "send-back", "--dispatch", words(tmp_path), transport=Failing()) == 1
+    [sent] = [request for request in hand_requests() if request["dispatch_id"] not in (first["dispatch_id"], caught)]
+    assert "catch_up_resume" not in sent["handoff"]
+    assert refused(monkeypatch, holder, state, "send-back", "--dispatch",
+                   words(tmp_path, "Point 9.")) == "send-back-text-differs"
+    transport = Recorder()
+    assert run(monkeypatch, holder, state, "send-back", "--dispatch", words(tmp_path), transport=transport) == 0
+    assert len(hand_requests()) == 3 and f"dispatch={sent['dispatch_id']} -->" in transport.posted[0][1]
+    report = work._builder_route_report(state)
+    assert [(entry["dispatch"], entry["base"]) for entry in report["catch_up_resumes"]] == [(caught, "c" * 40)]
+    assert [entry["stage"] for entry in report["limits"]] == ["catch-up"]

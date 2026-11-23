@@ -346,3 +346,12 @@ def test_1011_a_relay_change_is_refused_nothing(stored):
     state = stored(MECHANICAL, route_marker("relay"))
     for stage in ("build", "artifact", "floor", "review-disposition", "proof", "release-report"):
         assert work._refuse_off_route(state, stage) is None
+
+
+def test_1011_an_unreadable_route_holds_the_decision_and_refuses_each_stage(tmp_path, monkeypatch):
+    monkeypatch.setattr(work.cloud_build, "launch_route", lambda *_a: (None, None, "the cloud switch is unreadable"))
+    state = with_pull_request(fixture(tmp_path, MECHANICAL))
+    assert decision(state) == ("route", "holder-owned", "route-unreadable", "the cloud switch is unreadable")
+    with pytest.raises(work.RouteRefused) as caught:
+        work._refuse_off_route(state, "build")
+    assert caught.value.code == "route-unreadable"

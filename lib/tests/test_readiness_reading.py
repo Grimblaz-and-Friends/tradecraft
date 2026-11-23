@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import work  # noqa: E402
-from test_route import BRIEF, fixture, launch  # noqa: E402
+from test_route import BRIEF, decision, ended_stretch, fixture, launch, post, readiness_record  # noqa: E402
 
 HEAD = "a" * 40
 COMMIT = "b" * 40
@@ -79,3 +79,16 @@ def test_1011_no_record_reads_nothing_and_an_unlawful_one_is_listed(tmp_path):
     broken = record("e" * 32).replace("\"schema_version\": 1", "\"schema_version\": 2")
     reading = work.readiness_reading(fixture(tmp_path, BRIEF, broken), None)
     assert reading["record"] is None and len(reading["invalid"]) == 1
+
+
+def test_1011_a_record_reads_its_terms_reports_and_names_one_of_its_stretches(tmp_path):
+    state = fixture(tmp_path, BRIEF)
+    before, builder, seat = launch(state, "stretch", -5), launch(state, "stretch", 1), "c" * 32
+    resumed = launch(state, "stretch", 9, handoff={"resume_of": builder})
+    state = fixture(tmp_path, BRIEF, record(before), record(resumed))
+    reading = work.readiness_reading(state, accounting(builder, seat, findings=("F1",)))
+    assert reading["dispatch"] == resumed and reading["reconciled"] is False
+    assert [entry["reason"] for entry in reading["invalid"]] == ["dispatch is no stretch of this term"]
+    state, _builder = ended_stretch(tmp_path / "decided")
+    post(state, readiness_record(before), 30)
+    assert decision(state)[:3] == ("stretch-stopped", "holder-owned", "builder-stopped")
