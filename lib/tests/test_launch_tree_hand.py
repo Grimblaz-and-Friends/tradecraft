@@ -30,10 +30,12 @@ def clean_environment(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def hand(store, *, work_name=WORK):
+def hand(store, *, work_name=WORK, holder_session_id=None):
     dispatch_id = uuid.uuid4().hex
     handoff = {"dispatch": dispatch_id, "tree": str(Path(store) / "tree"), "branch": "b",
                "store": str(store), "sha256": "0" * 64}
+    if holder_session_id is not None:
+        handoff["holder_session_id"] = holder_session_id
     return launch_tree.write_hand_record(Path(store), work=work_name, vendor="codex", model="gpt-x",
                                          handoff=handoff, now=NOW)
 
@@ -158,10 +160,44 @@ def test_1011_a_hand_holding_attributes_the_seat_as_hand_started(tmp_path, monke
     monkeypatch.delenv(launch_tree.DISPATCH_VARIABLE)
     fields = launch_tree.attribution(tmp_path, dispatch=written["dispatch_id"], session="None", origin="entrance")
     assert fields == {"launched_by": expected, "dispatch_origin": "entrance"}
-    # A present Claude session is not the hand record's, as for a launched tree.
+
+
+@pytest.mark.parametrize("holder", ["h", None])
+def test_1011_a_hand_holding_records_a_present_session_as_declared(tmp_path, monkeypatch, holder):
+    # A record whose handoff named no holder session has none to refuse.
+    written = hand(tmp_path, holder_session_id=holder)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s")
+    expected = {"role": "builder", "dispatch_id": written["dispatch_id"], "session_id": "s",
+                "started_by": "hand", "identity": "declared"}
+    monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, written["dispatch_id"])
+    assert launch_tree.attribution(tmp_path) == {"launched_by": expected, "dispatch_origin": "caller"}
+    monkeypatch.delenv(launch_tree.DISPATCH_VARIABLE)
+    fields = launch_tree.attribution(tmp_path, dispatch=written["dispatch_id"], session="s", origin="entrance")
+    assert fields == {"launched_by": expected, "dispatch_origin": "entrance"}
+
+
+def test_1011_the_holder_session_is_refused_as_its_own_hand_builder(tmp_path, monkeypatch):
+    written = hand(tmp_path, holder_session_id="h")
+    assert json.loads(written["pointer"].read_bytes())["holder_session_id"] == "h"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "h")
+    monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, written["dispatch_id"])
+    with pytest.raises(launch_tree.LaunchRefused, match="builder-identity-unproved") as refused:
+        launch_tree.attribution(tmp_path)
+    assert refused.value.code == "builder-identity-unproved" and "holder" in refused.value.detail
+    monkeypatch.delenv(launch_tree.DISPATCH_VARIABLE)
     with pytest.raises(launch_tree.LaunchRefused, match="builder-identity-unproved"):
         launch_tree.attribution(tmp_path, dispatch=written["dispatch_id"], origin="entrance")
+
+
+def test_1011_a_launched_holding_still_refuses_a_session_not_its_own(tmp_path, monkeypatch):
+    tree = launched(tmp_path)
+    monkeypatch.setattr(launch_tree, "holds", lambda launch: launch["dispatch_id"] == tree)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "other")
+    with pytest.raises(launch_tree.LaunchRefused, match="builder-identity-unproved"):
+        launch_tree.attribution(tmp_path)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s")
+    assert launch_tree.attribution(tmp_path)["launched_by"] == {
+        "role": "builder", "dispatch_id": tree, "session_id": "s", "identity": "proved"}
 
 
 def test_1011_a_flag_naming_a_completed_hand_record_is_refused_outside_every_tree(tmp_path):
@@ -169,3 +205,16 @@ def test_1011_a_flag_naming_a_completed_hand_record_is_refused_outside_every_tre
     launch_tree.complete_hand_record(tmp_path, written["dispatch_id"], completed_by="readiness")
     with pytest.raises(launch_tree.LaunchRefused, match="launched-by-outside-a-stretch"):
         launch_tree.attribution(tmp_path, dispatch=written["dispatch_id"], origin="entrance")
+
+
+def test_1011_the_entrance_takes_a_hand_started_claude_session_as_declared(tmp_path, monkeypatch):
+    written = hand(tmp_path, holder_session_id="h")
+    monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, written["dispatch_id"])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s")
+    builder = identity(tmp_path, monkeypatch)
+    assert (builder["session_id"], builder["identity"]) == ("s", "declared")
+    # The holder can't be its own builder.
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "h")
+    with pytest.raises(work.BuilderRefused) as refused:
+        identity(tmp_path, monkeypatch)
+    assert refused.value.code == "builder-identity-unproved"

@@ -811,6 +811,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         metadata = json.loads(lifecycle_input.read_bytes())
         if not isinstance(metadata, dict):
             raise ImplementerError("lifecycle input must be an object")
+    if "handoff" in metadata and (args.stage != STRETCH or not isinstance(metadata["handoff"], dict)):
+        # The entrance's handoff record names what a stretch carried; no other stage carries one.
+        raise ImplementerError("a handoff record is only valid for a stretch launch")
     copy = metadata.get("artifact_copy")
     if args.stage == "artifact" and copy is None:
         raise ImplementerError("artifact requires entrance-owned copy lifecycle; use work.py run artifact")
@@ -1057,7 +1060,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 "budget_lineage", "budget_account_before", "budget_override_reason",
                 "progress_baseline", "predecessor_bundle", "predecessor_stop_snapshot",
                 "retained_session_id", "retained_session_source",
-                "artifact_copy",
+                "artifact_copy", "handoff",
             ) if key in metadata})
             request["caller_limit_seconds"] = args.timeout_seconds
             request["stage_ceiling_seconds"] = (

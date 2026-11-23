@@ -122,7 +122,8 @@ def write_hand_record(store: Path, *, work: str, vendor: str, model: str, handof
     staged = pointer.with_suffix(".tmp")
     staged.write_bytes(json.dumps({
         "schema_version": 1, "dispatch_id": dispatch_id, "work": work, "request": str(request_path),
-        "run": str(run_path), "hand": True, "session_id": None, "root": tree}, indent=2).encode("utf-8"))
+        "run": str(run_path), "hand": True, "session_id": None, "root": tree,
+        "holder_session_id": handoff.get("holder_session_id")}, indent=2).encode("utf-8"))
     staged.replace(pointer)
     return {"dispatch_id": dispatch_id, "request": request_path, "run": run_path, "pointer": pointer}
 
@@ -302,6 +303,22 @@ class LaunchRefused(ValueError):
     def __init__(self, code: str, detail: str):
         super().__init__(f"{code}: {detail}")
         self.code = code
+        self.detail = detail
+
+
+def hand_session(launch: dict) -> str | None:
+    """A hand-started builder's present session, declared; refused only where it is the holder's own.
+
+    The owner may start any session as the builder, so a present session is recorded, not checked
+    against one the record reserved; the session that wrote the handoff cannot be its own builder.
+    """
+    present = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
+    # A record whose handoff named no holder session has none to refuse, so any present one stands.
+    holder = launch.get("holder_session_id")
+    if present and present == holder:
+        raise LaunchRefused("builder-identity-unproved", f"this session {present} is the holder session "
+                            "that wrote the hand-started record, and the holder cannot be its own builder")
+    return present
 
 
 def attribution(store: Path, *, dispatch: str | None = None, session: str | None = None,
@@ -311,7 +328,7 @@ def attribution(store: Path, *, dispatch: str | None = None, session: str | None
     Inside a live stretch launch's tree the seat is the builder's whatever its variable says, and a
     flag that disagrees with the holding launch is ignored and noted. Outside every tree it is the
     holder's, and the entrance's builder flags are refused there. An empty session variable is an
-    absent one. ``dispatch_origin``
+    absent one; a hand-started record's present session is declared (``hand_session``). ``dispatch_origin``
     is declared and proves nothing; recomposing the dispatch decides whether it was the entrance's.
     """
     holding = stretch_holding(store)
@@ -336,20 +353,24 @@ def attribution(store: Path, *, dispatch: str | None = None, session: str | None
                                 "outside every stretch launch's tree")
         return {}
     launch = holding.launch
-    present = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
-    if present and present != launch.get("session_id"):
-        # One session rule everywhere: a present session that is not the launch's is refused, as the
-        # entrance refuses it; `declared` is for an absent session variable only.
-        raise LaunchRefused("builder-identity-unproved", f"this session {present} is not the launch's "
-                            f"session {launch.get('session_id')}")
-    launched_by: dict[str, object] = {"role": "builder", "dispatch_id": launch["dispatch_id"],
-                                      "session_id": launch.get("session_id"),
-                                      "identity": "proved" if present else "declared"}
     if holding.hand:
-        launched_by.update(started_by="hand", identity="declared")
+        own_session = hand_session(launch)
+        launched_by: dict[str, object] = {"role": "builder", "dispatch_id": launch["dispatch_id"],
+                                          "session_id": own_session, "started_by": "hand",
+                                          "identity": "declared"}
+    else:
+        own_session = launch.get("session_id")
+        present = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
+        if present and present != own_session:
+            # A launch reserved its session, so a present session that is not it is refused, as the
+            # entrance refuses it; `declared` is for an absent session variable only.
+            raise LaunchRefused("builder-identity-unproved", f"this session {present} is not the launch's "
+                                f"session {own_session}")
+        launched_by = {"role": "builder", "dispatch_id": launch["dispatch_id"], "session_id": own_session,
+                       "identity": "proved" if present else "declared"}
     fields: dict[str, object] = {"launched_by": launched_by,
                                  "dispatch_origin": "entrance" if origin == "entrance" else "caller"}
-    expected = {"dispatch": launch["dispatch_id"], "session": launch.get("session_id")}
+    expected = {"dispatch": launch["dispatch_id"], "session": own_session}
     # The entrance passes an absent session as the text "None".
     ignored = {name: value for name, value in (("dispatch", dispatch), ("session", session))
                if value is not None and value not in (expected[name], str(expected[name]))}

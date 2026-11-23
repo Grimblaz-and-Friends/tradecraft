@@ -10056,7 +10056,8 @@ def test_judging_root_is_empty_detached_and_removes_it_afterward(tmp_path):
     assert not recipient_path.exists()
 
 
-@pytest.mark.parametrize("stage", work.COMMANDS)
+# The handoff runs only on the builder route and launches through its own path (test_handoff_stage.py).
+@pytest.mark.parametrize("stage", [stage for stage in work.COMMANDS if stage != "handoff"])
 def test_power_user_commands_run_one_named_stage(stage, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     relay_launch("acme/widget#3")

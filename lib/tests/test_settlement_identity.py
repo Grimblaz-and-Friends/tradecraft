@@ -11,7 +11,8 @@ import cold_draft
 import dispatch_implementer
 import work
 from test_work import (AFFIRMED, ARTIFACT, HOLDER, PRODUCER, RULES, SOURCE_DRAFT, SOURCE_REVISED,
-                       WHOLE_ARTIFACT, SESSION, SHA, state, _source_settlement, _assert_source_consumers)
+                       WHOLE_ARTIFACT, SESSION, SHA, state, _source_settlement, _assert_source_consumers,
+                       without_route_ask)
 
 VERDICT = "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
 AMENDED = "<!-- tradecraft:holder-reading:v1 result=amended -->\n"
@@ -167,7 +168,7 @@ def test_C6_876_semantic_reference_failures_cannot_anchor_a_later_valid_source(t
 def test_C6_876_omitted_reference_cannot_anchor_an_edited_or_wrong_judgment(tmp_path):
     fixture = bound_fixture(tmp_path)
     work.validate_marker_claims(fixture)
-    brief, draft, verdict = fixture.raw_markers[:3]
+    brief, draft, verdict = without_route_ask(fixture.raw_markers)[:3]
     evidence = work._cold_judgment(fixture, verdict)
     pointer = work.markers([("<!-- tradecraft:artifact:v1 status=settled route=would -->", PRODUCER)])[0]
     assert work._settlement_identity(fixture, pointer, brief, draft, "would", evidence)
@@ -915,7 +916,7 @@ def test_C5_C6_882_bound_form_omission_cannot_anchor_another_judged_text(tmp_pat
             record["judged_draft"]["comment_id"] = "99"
             path.write_bytes(work.records.json_bytes(record))
     work.validate_marker_claims(fixture)
-    brief, draft, verdict, omitted = fixture.raw_markers[:4]
+    brief, draft, verdict, omitted = without_route_ask(fixture.raw_markers)[:4]
     evidence = work._cold_judgment(fixture, verdict)
     for infer_draft in (False, True):
         assert work._settlement_identity(fixture, omitted, brief, draft, "would", evidence,

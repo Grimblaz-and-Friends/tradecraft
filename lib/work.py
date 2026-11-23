@@ -62,6 +62,7 @@ import launch_tree
 import run_lifecycle as lifecycle
 import work_recovery
 import cloud_build
+import detached
 import dispatch_implementer
 import dispatch_seat
 import launch_settings as setting_resolution
@@ -97,7 +98,7 @@ def _run_probe(command, **kwargs):
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
     "review-disposition", "proof", "ready-reviewers", "release-report", "catch-up", "cold-reader",
-    "acceptance-criterion",
+    "acceptance-criterion", "handoff",
 )
 # A stage whose sentence `allowance` prints though the entrance launches no such stage: the holder
 # writes a stretch builder's dispatch, and the sentence it carries must be the launch's own.
@@ -243,6 +244,7 @@ STAGE_SAFETY = {
     "catch-up": (("0.173.0", "holder-owned checked catch-up"),),
     "cold-reader": ((COLD_READER_VERSION, "isolated cold reading of the change"),),
     "acceptance-criterion": (("0.218.0", "a criterion reader composed from the settled artifact"),),
+    "handoff": (("0.219.0", "a composed handoff to a detached or hand-started builder"),),
 }
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "affirmed-brief": {"required": set(), "optional": set(),
@@ -10816,12 +10818,18 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--criterion", help="run acceptance-criterion: the settled artifact's criterion id")
     cli.add_argument(
         "--timeout-seconds", type=float,
-        help="the time the recipient gets, from its start (default 7200 for build, 3600 otherwise)",
+        help="the time the recipient gets, from its start (default 28800 for handoff, 7200 for build, "
+             "3600 otherwise)",
     )
     cli.add_argument("--preflight-cap-seconds", type=float,
                      help="a cap larger than 900 seconds on the entrance's own work before the recipient starts")
     cli.add_argument("--preflight-cap-reason", help="why this run declares a larger preflight cap; required with it")
-    cli.add_argument("--budget-override-reason", help="reason for this build invocation beyond its runtime budget")
+    cli.add_argument("--budget-override-reason",
+                     help="reason for this build, or this handoff's stretch, beyond its runtime budget")
+    cli.add_argument("--notify", help="run handoff: who the builder tells when it is ready or stopped")
+    cli.add_argument("--by-hand", help="run handoff: VENDOR:MODEL of a builder the owner starts by hand")
+    cli.add_argument("--resume-reason", help="run handoff: resume the stopped builder, for this reason")
+    cli.add_argument("--ended-reason", help="run handoff: complete a hand-started builder's record, for this reason")
     cli.add_argument("--cloud", action="store_true",
                      help="with allowance: print the cloud route's sentence, for a launch the cloud route takes")
     cli.add_argument("--grant", action="append", type=int, default=[],
@@ -11100,6 +11108,15 @@ def _builder_identity(args: argparse.Namespace) -> dict | None:
     if str(launch.get("work", "")).lower() != work.lower():
         raise BuilderRefused("builder-identity-unproved", f"the launch holding this process carries "
                              f"{launch.get('work')}, not {work}")
+    if holding.hand:
+        # A hand-started builder's session is declared, never proved; only the holder's own is refused.
+        try:
+            session = launch_tree.hand_session(launch)
+        except launch_tree.LaunchRefused as exc:
+            raise BuilderRefused(exc.code, exc.detail) from exc
+        return {"role": "builder", "dispatch_id": launch["dispatch_id"], "session_id": session,
+                "identity": "declared", "root": launch.get("root"), "request": launch.get("request"),
+                "work": launch.get("work")}
     session = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
     if session and session != launch.get("session_id"):
         raise BuilderRefused("builder-identity-unproved", f"this session {session} is not the launch's "
@@ -11321,18 +11338,13 @@ def fresh_reader_criteria(artifact: str) -> list[str]:
     return found
 
 
-def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plugin_root: Path,
-                        notify: str | None, floor_command: str | None, hand: dict | None = None) -> bytes:
-    """The handoff a builder of this change receives, composed from the issue's own records alone.
-
-    The same records give the same bytes, so a handoff the builder received can be recomposed and
-    compared. Design: lib/DESIGN.md#the-builder-route
-    """
+def _handoff_inputs(state: WorkState, floor_command: str | None):
+    """The affirmed brief, whether the lane is mechanical, the settled plan and its comment, and the owed checks."""
     brief, lane = _affirmed_review(state)
     if brief is None:
         raise BuilderRefused("brief-absent", "the change has no affirmed brief")
     mechanical = lane == ("ordinary", "mechanical")
-    artifact = None if mechanical else _settled_artifact_text(state, "plan-unsettled")[0]
+    artifact, comment = (None, None) if mechanical else _settled_artifact_text(state, "plan-unsettled")
     use_owed = False
     if artifact is not None:
         try:
@@ -11342,6 +11354,17 @@ def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plu
             use_owed = False
     checks = handoff.owed_checks(criteria=[] if mechanical else fresh_reader_criteria(artifact),
                                  mechanical=mechanical, use_owed=use_owed, floor_command=floor_command)
+    return brief, mechanical, artifact, comment, checks
+
+
+def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plugin_root: Path,
+                        notify: str | None, floor_command: str | None, hand: dict | None = None) -> bytes:
+    """The handoff a builder of this change receives, composed from the issue's own records alone.
+
+    The same records give the same bytes, so a handoff the builder received can be recomposed and
+    compared. Design: lib/DESIGN.md#the-builder-route
+    """
+    brief, mechanical, artifact, _comment, checks = _handoff_inputs(state, floor_command)
     allowance = github_allowance.sentence(github_allowance.allowance_for(
         "stretch", repository=state.repo, branch=branch,
         pull_request=state.pr.get("number") if state.pr else None, issue=state.issue_number))
@@ -11936,6 +11959,9 @@ def _refuse_off_route(state: WorkState, stage: str) -> None:
     """
     route = _route(state)
     if route["name"] != "builder":
+        if stage == "handoff":
+            raise RouteRefused("route-is-relay", f"run handoff: this change is on the relay route "
+                               f"({route['reason']}); its builds launch through run build")
         return
     if stage in RELAY_ONLY_STAGES:
         raise RouteRefused("route-is-builder", f"run {stage}: this change is on the builder route "
@@ -11949,6 +11975,390 @@ def _refuse_off_route(state: WorkState, stage: str) -> None:
             raise RouteRefused("no-ready-record-at-head", "run release-report: on the builder route the "
                                "release report waits for a lawful ready readiness record at the current head "
                                f"{_head_sha(state)}")
+
+
+# --- the handoff: the holder hands a builder-route change to its builder ---------------------------
+# Design: lib/DESIGN.md#the-builder-route
+
+# The stretch's own limit: one builder carries the change from handoff to ready, so it is not cut to
+# the relay's build lineage.
+DEFAULT_STRETCH_TIMEOUT_SECONDS = 28800.0
+HANDOFF_OPTIONS = ("notify", "by_hand", "resume_reason", "ended_reason")
+RESUME_LINE = ("You are resumed as this change's builder after your stretch stopped. Read your last "
+               "readiness record and the change's state, then carry the change on to ready under the "
+               "handoff you were given.")
+LAUNCH_CONFIRM_POLL_SECONDS = 0.2
+# A launcher's own steps before its request record are bounded by its own cap; this is only the
+# entrance's wait for them, cut at the entrance's cap.
+LAUNCHER_EXIT_WRAPPER = ("import subprocess,sys;r=subprocess.call(sys.argv[2:]);"
+                         "open(sys.argv[1],'w').write(str(r))")
+
+
+class HandoffRefused(RouteRefused):
+    """A handoff refused before anything is created, or after, with what this call made removed."""
+
+
+def _stretch_launcher() -> list[str]:
+    """The stretch launcher's command; a test replaces it with a stand-in."""
+    return [sys.executable, "-B", str(Path(__file__).resolve().parent / "dispatch_implementer.py")]
+
+
+def _live_builders(state: WorkState) -> list[dict]:
+    """The live stretch launches and hand-started records of this work."""
+    work = f"{state.repo}#{state.issue_number}"
+    store = state.record_root or records.default_record_root()
+    return [pointer for pointer in launch_tree.live_launches(store)
+            if str(pointer.get("work", "")).lower() == work.lower()]
+
+
+def _complete_readied_hand_records(state: WorkState) -> None:
+    """A live hand-started record whose dispatch a lawful ready readiness record names is completed.
+
+    The owner's builder has no process whose end would end its record, so its ready record does.
+    """
+    hand = [pointer for pointer in _live_builders(state) if pointer.get("hand") is True]
+    if not hand:
+        return
+    reading = readiness_reading(state, builder_checks(state)) or {}
+    if reading.get("status") != "ready":
+        return
+    store = state.record_root or records.default_record_root()
+    for pointer in hand:
+        if pointer["dispatch_id"] == reading.get("dispatch"):
+            try:
+                launch_tree.complete_hand_record(store, pointer["dispatch_id"], completed_by="readiness")
+            except ValueError:
+                pass  # Another run completed it first; the record is written once.
+
+
+def _refuse_with_builder(state: WorkState, args: argparse.Namespace) -> None:
+    """While a builder of this work is live, the holder's named stages wait for it.
+
+    The handoff decides its own refusals, because its resume and ended reasons act on a builder.
+    """
+    if args.stage == "handoff":
+        return
+    live = _live_builders(state)
+    if live:
+        raise RouteRefused("with-builder", f"run {args.stage}: the builder of dispatch "
+                           + ", ".join(str(pointer["dispatch_id"]) for pointer in live)
+                           + " is live; wait for its readiness record")
+
+
+def _handoff_flags(args: argparse.Namespace) -> None:
+    """The handoff's own options, refused on any other command."""
+    handoff_run = args.command == "run" and args.stage == "handoff"
+    named = [name for name in HANDOFF_OPTIONS if getattr(args, name, None) is not None]
+    if named and not handoff_run:
+        raise WorkError("--" + named[0].replace("_", "-") + " requires run handoff")
+    if not handoff_run:
+        return
+    for name in named:
+        if not str(getattr(args, name)).strip():
+            raise WorkError("--" + name.replace("_", "-") + " must be nonempty")
+    if args.resume_reason is not None and args.ended_reason is not None:
+        raise WorkError("--resume-reason and --ended-reason are two different acts; give one")
+    if args.by_hand is not None and (":" not in args.by_hand or not all(
+            part.strip() for part in args.by_hand.split(":", 1))):
+        raise WorkError("--by-hand takes VENDOR:MODEL")
+    limit = args.timeout_seconds if args.timeout_seconds is not None else DEFAULT_STRETCH_TIMEOUT_SECONDS
+    if limit > DEFAULT_STRETCH_TIMEOUT_SECONDS and args.budget_override_reason is None:
+        raise HandoffRefused("limit-above-default", f"--timeout-seconds {limit:g} is above the stretch's "
+                             f"{DEFAULT_STRETCH_TIMEOUT_SECONDS:g}; give --budget-override-reason")
+
+
+def _handoff_block(state: WorkState, args: argparse.Namespace, composed: bytes, limit: float) -> dict:
+    """What the stretch's request record says of the handoff it carried."""
+    brief, _mechanical, artifact, comment, checks = _handoff_inputs(state, args.floor_command)
+    return {"brief_comment": brief.source_id, "artifact_comment": comment,
+            "artifact_sha256": hashlib.sha256(artifact.encode("utf-8")).hexdigest() if artifact else None,
+            "composed_sha256": hashlib.sha256(composed).hexdigest(),
+            "holder_written": args.dispatch is not None, "notify": args.notify, "owed_checks": checks,
+            "timeout_seconds": limit, "override_reason": args.budget_override_reason,
+            "floor_command": args.floor_command}
+
+
+def _handoff_vendor(state: WorkState, args: argparse.Namespace) -> tuple[str, str, bool]:
+    """The builder's vendor, model and whether the owner starts it by hand; Codex is always by hand."""
+    if args.by_hand is not None:
+        vendor, model = args.by_hand.split(":", 1)
+        return vendor.strip(), model.strip(), True
+    vendor = _implementer_vendor(state, "implementer")[0]
+    model, effort = dispatch_implementer.PROFILES["implementer"].get(vendor, (None, None))
+    try:
+        settings = setting_resolution.resolve("implementer", vendor, model, effort, "handoff default",
+                                              "handoff default", bridge=setting_resolution.read_bridge())
+        model = settings.model
+    except (OSError, ValueError, KeyError) as exc:
+        if vendor == "codex":
+            raise WorkError(f"the Codex builder's model could not be resolved: {exc}") from exc
+    return vendor, str(model), vendor == "codex"
+
+
+def _discard_handoff_tree(holder: Path, made: dict) -> None:
+    """Remove what this handoff made: its worktree, local branch, registration row and published branch.
+
+    The published branch goes only while its remote tip is still the one this call pushed; otherwise
+    it is named, because someone else's push is not this call's to delete.
+    """
+    root, branch = Path(made["root"]), made["branch"]
+    with lifecycle.cleanup_scope():
+        remote, pushed = made.get("remote"), made.get("published")
+        if remote and pushed:
+            listed = _git(["ls-remote", "--heads", remote, f"refs/heads/{branch}"], root)
+            tip = (listed.stdout.decode("ascii", "replace").split() or [None])[0] if not listed.returncode else None
+            removed = (_git(["push", remote, "--delete", branch], root)
+                       if tip == pushed else None)
+            if removed is None or removed.returncode:
+                print(f"work: the published branch {remote}/{branch} was left; remove it by hand",
+                      file=sys.stderr)
+        for command in (["worktree", "remove", "--force", str(root)], ["branch", "-D", branch]):
+            result = _git(command, holder)
+            if result.returncode:
+                print(f"work: {' '.join(command[:2])} after the refused handoff failed: "
+                      f"{_git_failure(result)}", file=sys.stderr)
+        current = read_registry()
+        current["worktrees"] = [row for row in current["worktrees"]
+                                if not (isinstance(row.get("root"), str) and _same_path(Path(row["root"]), root))]
+        write_registry(current)
+
+
+def _handoff_tree(state: WorkState, holder: Path, instalment: str | None,
+                  holder_identity: str) -> tuple[Path, str, dict | None]:
+    """The fresh build's tree: a registration reused and republished, else made and published.
+
+    Returns what this call made, for a later refusal to remove, or None for a reused registration.
+    """
+    resolved = resolve_implementation_root(holder, state.repo, state.issue_number, instalment)
+    if resolved is not None:
+        implementation_root, branch, _migrated = resolved
+        publish_implementation_branch(implementation_root, branch)
+        return implementation_root, branch, None
+    implementation_root, branch = create_implementation_root(
+        holder, state.repo, state.issue_number, instalment, holder_identity)
+    made = {"root": str(implementation_root), "branch": branch}
+    try:
+        made["remote"] = publish_implementation_branch(implementation_root, branch)
+        made["published"] = _git_text(["rev-parse", "HEAD"], implementation_root, "read the published head")
+    except BaseException:
+        _discard_handoff_tree(canonical_holder_root(holder), made)
+        raise
+    return implementation_root, branch, made
+
+
+def _execute_handoff(state: WorkState, args: argparse.Namespace, holder_root: Path) -> int:
+    """Hand a builder-route change to its builder: a detached stretch launch, or a hand-started record.
+
+    Every refusal before the tree is made creates nothing; one after it removes what this call made.
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    work = f"{state.repo}#{state.issue_number}"
+    store = (state.record_root or records.default_record_root()).expanduser().resolve()
+    holder_identity = (args.holder_session_id or "").strip()
+    if not holder_identity:
+        raise HandoffRefused("holder-session-id-required", "run handoff: pass --holder-session-id, the "
+                             "holder's own session, which the builder can never be")
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    decision = Decision("handoff", True, "fresh", "holder-named-stage")
+    for refusal in (_launch_account_refusal(state, "handoff"), _version_refusal(state, decision)):
+        if refusal is not None:
+            _emit_report(_reported_decision(state, refusal).as_dict(), state)
+            return 0
+    live = _live_builders(state)
+    if args.ended_reason is not None:
+        return _end_hand_record(state, args, store, live)
+    if live:
+        raise HandoffRefused("builder-live", "run handoff: the builder of dispatch "
+                             + ", ".join(str(pointer["dispatch_id"]) for pointer in live) + " is live")
+    term, _lane = _affirmed_review(state)
+    try:
+        _handoff_inputs(state, args.floor_command)
+    except BuilderRefused as exc:
+        raise HandoffRefused(exc.code, f"run handoff: {str(exc).split(': ', 1)[-1]}") from exc
+    spent = lifecycle.launch_bundles(store, work, {"stretch"}, after=term.timestamp if term else None)
+    if args.resume_reason is not None:
+        return _resume_handoff(state, args, store, holder_root, spent)
+    reading = readiness_reading(state, builder_checks(state)) or {}
+    if spent or reading.get("status") == "ready":
+        raise HandoffRefused("handoff-spent", "run handoff: this term's builder has already been handed the "
+                             "change; resume it with --resume-reason, or end a hand-started one with "
+                             "--ended-reason")
+    limit = args.timeout_seconds if args.timeout_seconds is not None else DEFAULT_STRETCH_TIMEOUT_SECONDS
+    vendor, model, by_hand = _handoff_vendor(state, args)
+    supplied = None
+    if args.dispatch is not None:
+        supplied = args.dispatch.expanduser().resolve()
+        if not supplied.is_file() or not supplied.read_bytes().strip():
+            raise HandoffRefused("dispatch-absent", f"run handoff: the dispatch file is absent or empty: {supplied}")
+        if _dispatch_inside_registered_root(supplied, state.repo, state.issue_number, args.instalment):
+            raise HandoffRefused("dispatch-inside-tree", "run handoff: the dispatch file must be outside "
+                                 "the implementation tree")
+    deadline = lifecycle.current_deadline()
+    if deadline is not None:
+        deadline.remaining()  # The cap is checked before any registration, worktree or push.
+    try:
+        implementation_root, branch, made = _handoff_tree(state, holder_root, args.instalment, holder_identity)
+    except WorkError as exc:
+        raise HandoffRefused("tree-unproved", f"run handoff: {exc}") from exc
+    try:
+        plugin = Path(__file__).resolve().parent.parent
+        common = {"branch": branch, "holder_root": holder_root, "plugin_root": plugin,
+                  "notify": args.notify, "floor_command": args.floor_command}
+        if by_hand:
+            return _hand_handoff(state, args, store, implementation_root, branch, vendor, model, limit,
+                                 holder_identity, common, supplied)
+        composed = compose_handoff_for(state, **common)
+        block = _handoff_block(state, args, composed, limit)
+        return _launch_stretch(state, args, store, implementation_root, branch, block,
+                               supplied.read_bytes() if supplied else composed, holder_identity, limit)
+    except BaseException:
+        if made is not None:
+            _discard_handoff_tree(canonical_holder_root(holder_root), made)
+        raise
+
+
+def _hand_handoff(state, args, store, implementation_root, branch, vendor, model, limit, holder_identity,
+                  common, supplied) -> int:
+    """Record a builder the owner starts by hand and print the text the owner pastes; start nothing."""
+    dispatch_id = uuid.uuid4().hex
+    hand = {"tree": str(implementation_root), "branch": branch, "store": str(store), "dispatch": dispatch_id}
+    composed = compose_handoff_for(state, **common, hand=hand)
+    block = _handoff_block(state, args, composed, limit)
+    block.update(dispatch=dispatch_id, tree=str(implementation_root), branch=branch, store=str(store),
+                 holder_session_id=holder_identity)
+    written = launch_tree.write_hand_record(store, work=f"{state.repo}#{state.issue_number}", vendor=vendor,
+                                            model=model, handoff=block)
+    text = supplied.read_bytes() if supplied else composed
+    _note_cap_outcome("handed-off", bundle=str(written["request"]))
+    _emit_report({"stage": "handoff", "status": "handed-off", "started_by": "hand", "dispatch": dispatch_id,
+                  "vendor": vendor, "model": model, "tree": str(implementation_root), "branch": branch,
+                  "request": str(written["request"]), "pointer": str(written["pointer"])}, state, flush=True)
+    sys.stdout.flush()
+    sys.stdout.buffer.write(b"work: handoff text for the owner to paste follows\n" + text
+                            + (b"" if text.endswith(b"\n") else b"\n"))
+    sys.stdout.flush()
+    return 0
+
+
+def _end_hand_record(state: WorkState, args: argparse.Namespace, store: Path, live: list[dict]) -> int:
+    """The owner's builder ended without a ready record: its hand-started record is completed with the reason."""
+    launched = [pointer for pointer in live if pointer.get("hand") is not True]
+    if launched:
+        raise HandoffRefused("ended-reason-is-for-a-hand-record", "run handoff: the launched stretch "
+                             + ", ".join(str(pointer["dispatch_id"]) for pointer in launched)
+                             + " is live and ends with its own process")
+    hand = [pointer for pointer in live if pointer.get("hand") is True]
+    if not hand:
+        raise HandoffRefused("no-live-hand-record", "run handoff --ended-reason: no hand-started record "
+                             "of this work is live")
+    ended = [str(launch_tree.complete_hand_record(store, pointer["dispatch_id"], completed_by="ended-reason",
+                                                  reason=args.ended_reason)) for pointer in hand]
+    _emit_report({"stage": "handoff", "status": "ended", "dispatch": [p["dispatch_id"] for p in hand],
+                  "run": ended, "reason": args.ended_reason}, state)
+    return 0
+
+
+def _resume_handoff(state, args, store, holder_root, spent) -> int:
+    """Resume a stopped stretch with the reason, or reopen a stopped hand-started one; nothing resumes alone."""
+    if not spent:
+        raise HandoffRefused("nothing-to-resume", "run handoff --resume-reason: no stretch of this work has "
+                             "stopped in this term")
+    _order, path, request, run = spent[-1]
+    continuation = (RESUME_LINE + "\n\nThe holder's reason: " + args.resume_reason.strip() + "\n").encode("utf-8")
+    handed = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
+    if request.get("started_by") == "hand":
+        reopened = dict(handed, dispatch=uuid.uuid4().hex, resume_of=request.get("dispatch_id"),
+                        resume_reason=args.resume_reason)
+        written = launch_tree.write_hand_record(
+            store, work=f"{state.repo}#{state.issue_number}", vendor=request["requested"]["vendor"],
+            model=request["requested"]["model"], handoff=reopened)
+        _emit_report({"stage": "handoff", "status": "resumed", "started_by": "hand",
+                      "dispatch": written["dispatch_id"], "resume_of": request.get("dispatch_id"),
+                      "request": str(written["request"])}, state, flush=True)
+        sys.stdout.buffer.write(b"work: continuation for the owner to paste follows\n" + continuation
+                                + f"export {launch_tree.DISPATCH_VARIABLE}={written['dispatch_id']}\n".encode("ascii"))
+        sys.stdout.flush()
+        return 0
+    root, branch = request.get("root"), request.get("lineage_branch")
+    try:
+        session = lifecycle.recovery_session(request, run)
+    except ValueError:
+        session = None
+    block = dict(handed, resume_reason=args.resume_reason, resume_of=request.get("dispatch_id"))
+    if session and _session_shaped(session, request):
+        return _launch_stretch(state, args, store, Path(root), branch, block, continuation,
+                               args.holder_session_id.strip(), float(request.get("caller_limit_seconds")
+                                                                     or DEFAULT_STRETCH_TIMEOUT_SECONDS),
+                               resume=session)
+    if work_recovery.restartable(request, run):
+        # The launch left no session to resume; the recovery route restarts it fresh with the reason.
+        composed = compose_handoff_for(state, branch=branch, holder_root=holder_root,
+                                       plugin_root=Path(__file__).resolve().parent.parent, notify=args.notify,
+                                       floor_command=args.floor_command)
+        block.update(recovery_restart_reason=args.resume_reason, recovery_restart_bundle=path)
+        return _launch_stretch(state, args, store, Path(root), branch, block, composed,
+                               args.holder_session_id.strip(), float(request.get("caller_limit_seconds")
+                                                                     or DEFAULT_STRETCH_TIMEOUT_SECONDS))
+    raise HandoffRefused("stretch-not-resumable", f"run handoff --resume-reason: the stopped stretch {path} "
+                         "has no session to resume and is not one the recovery route restarts")
+
+
+def _launch_stretch(state, args, store, implementation_root, branch, block, text, holder_identity, limit,
+                    *, resume: str | None = None) -> int:
+    """Start the stretch launcher detached and return once its request record and pointer exist."""
+    work = f"{state.repo}#{state.issue_number}"
+    bundle = store / f"handoff-{uuid.uuid4().hex}"
+    bundle.mkdir(parents=True)
+    output = bundle / "result.md"
+    dispatch = bundle / "dispatch.txt"
+    dispatch.write_bytes(text)
+    metadata = bundle / "lifecycle.json"
+    lifecycle_fields = {"instalment": args.instalment, "handoff": block}
+    if block.get("recovery_restart_reason"):
+        lifecycle_fields.update(recovery_restart_reason=block["recovery_restart_reason"],
+                                recovery_restart_bundle=block["recovery_restart_bundle"])
+    metadata.write_bytes(records.json_bytes(lifecycle_fields))
+    exit_file, out, err = bundle / "launcher.exit", bundle / "launcher.out", bundle / "launcher.err"
+    command = [*_stretch_launcher(), "--dispatch", str(dispatch), "--root", str(implementation_root),
+               "--work", work, "--stage", "stretch", "--settings-source", "work entrance handoff route",
+               "--settings-scope", "implementer", "--timeout-seconds", f"{limit:g}", "--vendor", "claude",
+               "--holder-session-id", holder_identity, "--lineage-branch", branch, "--output", str(output),
+               "--lifecycle-input", str(metadata),
+               *(["--claude", str(args.claude)] if args.claude is not None else []),
+               *(["--resume", resume] if resume else [])]
+    deadline = lifecycle.current_deadline()
+    if deadline is not None:
+        deadline.require_cap()
+    environment = launch_tree.without_variables(dict(os.environ))
+    detached.spawn([sys.executable, "-B", "-c", LAUNCHER_EXIT_WRAPPER, str(exit_file), *command],
+                   cwd=bundle, env=environment, stdout=out, stderr=err)
+    request_path = records.sidecar(output, ".request.json")
+    while True:
+        request = _json_object(request_path) if request_path.is_file() else None
+        dispatch_id = request.get("dispatch_id") if isinstance(request, dict) else None
+        if dispatch_id and (launch_tree.pointer_directory(store) / f"{dispatch_id}.json").is_file():
+            break
+        if exit_file.is_file():
+            detail = err.read_bytes().decode("utf-8", "replace").strip()[-2000:] if err.is_file() else ""
+            raise HandoffRefused("launcher-did-not-start", f"run handoff: the stretch launcher exited "
+                                 f"{exit_file.read_text(encoding='ascii').strip()} before its pointer: {detail}")
+        if deadline is not None and deadline.cap_left() <= 0:
+            # The launcher may still be starting; its tree is not this call's to remove.
+            _emit_report({"stage": "handoff", "status": "launch-unconfirmed", "bundle": str(bundle),
+                          "detail": "the launcher wrote no request record and pointer within the cap"}, state)
+            return 1
+        time.sleep(LAUNCH_CONFIRM_POLL_SECONDS)
+    window = next((line for line in (out.read_bytes().decode("utf-8", "replace").splitlines()
+                                     if out.is_file() else []) if line.startswith("implementer: window")), None)
+    if window:
+        print(window, flush=True)
+    _note_cap_outcome("handed-off", bundle=str(request_path))
+    _emit_report({"stage": "handoff", "status": "handed-off", "started_by": "launch", "dispatch": dispatch_id,
+                  "resume": resume, "tree": str(implementation_root), "branch": branch,
+                  "request": str(request_path), "records": str(bundle),
+                  "launcher_output": str(out), "launcher_errors": str(err)}, state)
+    return 0
 
 
 def run(
@@ -11971,8 +12381,10 @@ def _run_entry(
     if getattr(args, "draft_comment", None) is not None and (args.command != "run" or args.stage != "cold-seat"):
         raise WorkError("--draft-comment requires run cold-seat")
     reason = getattr(args, "budget_override_reason", None)
-    if reason is not None and (args.command != "run" or args.stage != "build" or not reason.strip()):
-        raise WorkError("--budget-override-reason requires a named build and nonempty reason")
+    if reason is not None and (args.command != "run" or args.stage not in ("build", "handoff")
+                               or not reason.strip()):
+        raise WorkError("--budget-override-reason requires a named build or handoff and nonempty reason")
+    _handoff_flags(args)
     cap_seconds = getattr(args, "preflight_cap_seconds", None)
     cap_reason = getattr(args, "preflight_cap_reason", None)
     if (cap_seconds is not None or cap_reason is not None) and (args.command != "run" or args.stage is None):
@@ -11983,6 +12395,7 @@ def _run_entry(
         except ValueError as exc:
             raise WorkError(str(exc)) from exc
         limit = args.timeout_seconds if args.timeout_seconds is not None else (
+            DEFAULT_STRETCH_TIMEOUT_SECONDS if args.stage == "handoff" else
             DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else DEFAULT_STAGE_TIMEOUT_SECONDS)
         if not math.isfinite(limit) or limit <= 0:
             raise WorkError("--timeout-seconds must be finite and positive")
@@ -12173,7 +12586,9 @@ def _run(
     state.readiness_policy = (use_rules_path, selected_policy_bytes)
     if args.command == "run" and builder_mode() is None:
         try:
+            _complete_readied_hand_records(state)
             _refuse_off_route(state, args.stage)
+            _refuse_with_builder(state, args)
         except WorkError as exc:
             exc.stage = args.stage
             raise
@@ -12262,6 +12677,12 @@ def _run(
     if args.command is None:
         _emit_report(recommendation.as_dict(), state)
         return 0
+    if args.stage == "handoff":
+        try:
+            return _execute_handoff(state, args, root)
+        except WorkError as exc:
+            exc.stage = args.stage
+            raise
     if getattr(args, "job_from_artifact", False) and (args.stage != "use" or builder_mode() is None):
         raise WorkError("--job-from-artifact applies only to a builder's run use")
     # A stand-in executor is handed the named decision as every stage's is; only the real one composes.
