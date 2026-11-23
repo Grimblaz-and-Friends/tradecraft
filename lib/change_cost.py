@@ -2043,7 +2043,7 @@ def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles:
         projects = Path(claude_projects) if claude_projects is not None else transcripts.projects_directory()[0]
         builder = _launched_builder(builder_bundles, seat_bundles, card, projects)
     else:
-        # A builder started by hand leaves no launch record to price, and its own log is not read yet.
+        # A builder started by hand leaves no launch record to price, and this split reads no other log.
         builder = unknown("no launched builder bundle: a hand-started builder's cost is not read")
     return {"holder_before": holder_before, "holder_after": holder_after, "builder": builder,
             "start": start.isoformat()}

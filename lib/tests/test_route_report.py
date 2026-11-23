@@ -78,9 +78,10 @@ def test_each_row_check_reads_holds_and_another_reading_from_its_field(check, ho
     assert result["reason"]
 
 
-def test_every_computed_row_check_is_listed_once():
-    checks = [entry["check"] for entry in route_report.builder_route(**inputs())["row_checks"]]
-    assert checks == [case[0] for case in HOLDS_AND_OTHER]
+def test_every_computed_row_check_is_listed_once_and_says_what_it_asserts():
+    entries = route_report.builder_route(**inputs())["row_checks"]
+    assert [entry["check"] for entry in entries] == [case[0] for case in HOLDS_AND_OTHER] == list(route_report.ROW_CHECKS)
+    assert [entry["asserts"] for entry in entries] == list(route_report.ROW_CHECKS.values())
 
 
 def test_the_payload_carries_every_input_under_its_name():

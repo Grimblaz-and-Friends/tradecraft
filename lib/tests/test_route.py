@@ -333,7 +333,31 @@ def test_1011_the_relays_launches_are_refused_on_the_builder_route(tmp_path, mon
     stopped = stored(MECHANICAL)
     launch(stopped, "stretch", 5)
     assert work._route(stopped)["name"] == "builder"
-    assert named(tmp_path, monkeypatch, stopped, stage)[0] == "route-is-builder"
+    code, message = named(tmp_path, monkeypatch, stopped, stage)
+    assert code == "route-is-builder" and "route=relay" not in message and "the in-flight rule fixes it" in message
+
+
+@pytest.mark.parametrize("reason", ["default", "owner-asked", "in-flight", "mechanical-lane", "cloud"])
+def test_1011_a_relay_refusal_advises_the_marker_only_where_one_moves_the_route(stored, monkeypatch, reason):
+    state = stored(MECHANICAL if reason == "mechanical-lane" else CONNECTED,
+                   *([route_marker("relay")] if reason == "owner-asked" else []))
+    if reason == "in-flight":
+        launch(state, "build", 5)
+    if reason == "cloud":
+        monkeypatch.setattr(work.cloud_build, "route_for",
+                            lambda work_value: ({"practice": {"repository": "x/y"}}, "fixture"))
+    assert work._route(state)["reason"] == reason
+    with pytest.raises(work.RouteRefused) as caught:
+        work._refuse_off_route(state, "handoff")
+    advised = "route=builder -->" in str(caught.value)
+    assert caught.value.code == "route-is-relay" and advised == (reason in ("default", "owner-asked"))
+
+
+def test_1011_the_route_names_the_ask_it_answers_in_flight(tmp_path):
+    for route, stage in (("builder", "stretch"), ("relay", "build")):
+        state = fixture(tmp_path / route, BRIEF, route_marker(route))
+        launch(state, stage, 5)
+        assert reading(state) == {"name": route, "reason": "in-flight", "marker": 101, "overruled": None}
 
 
 def test_1011_proof_is_the_builders_on_the_builder_route(tmp_path, monkeypatch, stored):

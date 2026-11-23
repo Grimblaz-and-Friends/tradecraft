@@ -10,8 +10,29 @@ HOLDS, FAILS, NOT_STATED, NOT_APPLICABLE, NOT_OCCURRED, UNKNOWN = (
 COST_FIGURES = ("holder_before", "holder_after", "builder")
 
 
+# What each row check asserts, numbered as the route's brief numbers them (row.check), so a release
+# report's reader needs neither. 5.1 is the launcher's own tests, with nothing in a change's records to
+# read, and 6.1 the holder writes from the run, so neither is computed.
+ROW_CHECKS = {
+    "1.2": "every check the record names was launched by this builder and composed by the entrance",
+    "2.1": "the handoff the builder received is the one the entrance composes from the settled plan",
+    "2.2": "every use check the builder launched was composed from the plan's use job",
+    "2.3": "no plan-writer session was launched in the term",
+    "3.1": "every finding of every counted check report has one record entry, a fix or a reasoned decline",
+    "3.2": "each of the builder's posted check reports is byte for byte its stored return",
+    "3.3": "every check the builder launched was composed by the entrance",
+    "4.2": "the holder sent the builder back at most once",
+    "5.2": "each refusal the launch logged is paired with one the record reports",
+    "5.3": "a builder refused a call still ended in success with a ready record",
+    "5.4": "each check that errored was launched again, both launches recorded",
+    "5.5": "a builder started by hand has a record saying it ran under its instructions alone",
+    "6.2": "a builder started by hand reached ready, or named the first check it could not launch",
+    "7.3": "the holder's cost before and after the handoff and the builder's cost are priced",
+}
+
+
 def _entry(check, reading, field, reason=None):
-    return {"check": check, "reading": reading, "field": field, "reason": reason}
+    return {"check": check, "asserts": ROW_CHECKS[check], "reading": reading, "field": field, "reason": reason}
 
 
 def _missing(check, field):
@@ -198,11 +219,7 @@ def _cost(cost_split, route_comparison):
 
 
 def row_checks(payload: dict) -> list[dict]:
-    """Each computed row check's reading, from the payload's named field, in row order.
-
-    5.1 is the launcher's own tests, with nothing to read from a change's records, and 6.1 the holder writes
-    from the run.
-    """
+    """Each computed row check's reading, from the payload's named field, in row order (``ROW_CHECKS``)."""
     readiness = payload.get("readiness")
     return [
         _bool_check(readiness, "1.2", "launched_by_builder", "a check the record names was not launched composed"),

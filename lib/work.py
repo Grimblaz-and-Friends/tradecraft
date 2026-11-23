@@ -12187,13 +12187,15 @@ def _route(state: WorkState) -> dict[str, object]:
         if rows:
             name, reason = ROUTE_STAGES[rows[0][2]["stage"]], "in-flight"
         elif _affirmed_review(state)[1] == ("ordinary", "mechanical"):
-            # No plan names its checks, so a handoff would owe the builder a row check it cannot run yet.
+            # No plan names its checks, so a handoff would owe the builder a row check no stage runs.
             name, reason = "relay", "mechanical-lane"
     if name is None:
         name, reason = (ask.attributes["route"], "owner-asked") if ask is not None else ("relay", "default")
     overruled = ({"asked": ask.attributes["route"], "marker": ask_id}
                  if ask is not None and reason != "owner-asked" and ask.attributes["route"] != name else None)
-    return {"name": name, "reason": reason, "marker": ask_id if reason == "owner-asked" else None,
+    # The marker names the ask the change's route answers, in flight too, so a release report shows it.
+    return {"name": name, "reason": reason,
+            "marker": ask_id if ask is not None and ask.attributes["route"] == name else None,
             "overruled": overruled}
 
 
@@ -12207,8 +12209,15 @@ class RouteRefused(WorkError):
 
 # The relay's launches, which the builder route makes through its builder instead.
 RELAY_ONLY_STAGES = frozenset({"build", "artifact", "floor", "review-disposition"})
-RELAY_ASK = ("post the `route` marker (`<!-- tradecraft:route:v1 route=relay -->` quoting the owner's words) "
-             "at the owner's word, before anything is launched, to take today's route")
+# A marker moves only a change whose route no earlier rule fixed, so the advice is given only there.
+MARKER_REASONS = frozenset({"owner-asked", "default"})
+
+
+def _route_ask(route: dict, other: str) -> str:
+    if route["reason"] not in MARKER_REASONS:
+        return f"; the {route['reason']} rule fixes it, so no `route` marker moves it"
+    return (f". Post the `route` marker (`<!-- tradecraft:route:v1 route={other} -->` quoting the owner's "
+            f"words) at the owner's word, before anything is launched, to take the {other} route")
 
 
 def _refuse_off_route(state: WorkState, stage: str) -> None:
@@ -12223,14 +12232,12 @@ def _refuse_off_route(state: WorkState, stage: str) -> None:
     if route["name"] != "builder":
         if stage in ("handoff", "send-back"):
             raise RouteRefused("route-is-relay", f"run {stage}: this change is on the relay route "
-                               f"({route['reason']}); its builds launch through run build. Post the `route` "
-                               "marker (`<!-- tradecraft:route:v1 route=builder -->` quoting the owner's "
-                               "words) at the owner's word, before anything is launched, to take the builder "
-                               "route")
+                               f"({route['reason']}); its builds launch through run build"
+                               + _route_ask(route, "builder"))
         return
     if stage in RELAY_ONLY_STAGES:
         raise RouteRefused("route-is-builder", f"run {stage}: this change is on the builder route "
-                           f"({route['reason']}); {RELAY_ASK}")
+                           f"({route['reason']})" + _route_ask(route, "relay"))
     if stage == "proof":
         raise RouteRefused("stage-is-the-builders", "run proof: on the builder route the builder posts proof "
                            "from its own tree")
@@ -12334,8 +12341,9 @@ def _handoff_flags(args: argparse.Namespace) -> None:
                              f"{DEFAULT_STRETCH_TIMEOUT_SECONDS:g}; give --budget-override-reason")
 
 
-def _handoff_block(state: WorkState, args: argparse.Namespace, composed: bytes, limit: float) -> dict:
-    """What the stretch's request record says of the handoff it carried."""
+def _handoff_block(state: WorkState, args: argparse.Namespace, composed: bytes, limit: float,
+                   common: dict) -> dict:
+    """What the stretch's request record says of the handoff it carried, and the roots it was composed with."""
     brief, artifact, comment, checks = _handoff_inputs(state, args.floor_command)
     return {"brief_comment": brief.source_id, "artifact_comment": comment,
             "artifact_sha256": hashlib.sha256(artifact.encode("utf-8")).hexdigest() if artifact else None,
@@ -12343,7 +12351,8 @@ def _handoff_block(state: WorkState, args: argparse.Namespace, composed: bytes, 
             "holder_written": args.dispatch is not None, "notify": args.notify, "owed_checks": checks,
             "pull_request": state.pr.get("number") if state.pr else None,
             "timeout_seconds": limit, "override_reason": args.budget_override_reason,
-            "floor_command": args.floor_command}
+            "floor_command": args.floor_command, "holder_root": str(common["holder_root"]),
+            "plugin_root": str(common["plugin_root"])}
 
 
 def _handoff_vendor(state: WorkState, args: argparse.Namespace) -> tuple[str, str, bool]:
@@ -12477,7 +12486,7 @@ def _execute_handoff(state: WorkState, args: argparse.Namespace, holder_root: Pa
             return _hand_handoff(state, args, store, implementation_root, branch, vendor, model, limit,
                                  holder_identity, common, supplied)
         composed = compose_handoff_for(state, **common)
-        block = _handoff_block(state, args, composed, limit)
+        block = _handoff_block(state, args, composed, limit, common)
         return _launch_stretch(state, args, store, implementation_root, branch, block,
                                supplied.read_bytes() if supplied else composed, holder_identity, limit)
     except BaseException:
@@ -12492,7 +12501,7 @@ def _hand_handoff(state, args, store, implementation_root, branch, vendor, model
     dispatch_id = uuid.uuid4().hex
     hand = {"tree": str(implementation_root), "branch": branch, "store": str(store), "dispatch": dispatch_id}
     composed = compose_handoff_for(state, **common, hand=hand)
-    block = _handoff_block(state, args, composed, limit)
+    block = _handoff_block(state, args, composed, limit, common)
     block.update(dispatch=dispatch_id, tree=str(implementation_root), branch=branch, store=str(store),
                  holder_session_id=holder_identity)
     written = launch_tree.write_hand_record(store, work=f"{state.repo}#{state.issue_number}", vendor=vendor,
@@ -12532,6 +12541,13 @@ def _resume_handoff(state, args, store, holder_root, spent) -> int:
     if not spent:
         raise HandoffRefused("nothing-to-resume", "run handoff --resume-reason: no stretch of this work has "
                              "stopped in this term")
+    # A ready builder is resumed only by the one send-back or a catch-up, so row 4's limit holds.
+    stage = _builder_route_decision(state).stage
+    if stage != "stretch-stopped":
+        way = {"final-pass": "send it back once with run send-back",
+               "catch-up": "run catch-up resumes it to catch up"}.get(stage, f"the decision reads {stage}")
+        raise HandoffRefused("builder-not-stopped", f"run handoff --resume-reason: the builder has not stopped; "
+                             f"{way}")
     _order, path, request, run = spent[-1]
     continuation = (RESUME_LINE + "\n\nThe holder's reason: " + args.resume_reason.strip() + "\n").encode("utf-8")
     handed = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
@@ -12637,6 +12653,8 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
 # --- after ready: one send-back and the catch-up resume, both to the builder that reported ready -----
 # Design: lib/DESIGN.md#the-builder-route
 
+# The entrance's default for every stage but a build and a handoff: a resume carries one batch of fixes or
+# one merge, with the checks it makes stale, and a longer one takes an override reason the release report lists.
 DEFAULT_SEND_BACK_TIMEOUT_SECONDS = 3600.0
 SEND_BACK_HEADER = (b"Re-run the checks your changes make stale, answer each point, post proof and then "
                     b"a new readiness record.\n\n")
@@ -12813,8 +12831,10 @@ def _handoff_plan_reading(state: WorkState, first: tuple | None) -> dict:
         number = block.get("pull_request")
         recomposed = compose_handoff_for(
             replace(state, pr={"number": number} if number else None),
-            branch=block.get("branch") or request.get("lineage_branch"), holder_root=state.holder_root,
-            plugin_root=Path(__file__).resolve().parent.parent, notify=block.get("notify"),
+            # Recomposed with the roots the text was composed with, so another checkout reads it the same.
+            branch=block.get("branch") or request.get("lineage_branch"),
+            holder_root=block.get("holder_root") or state.holder_root,
+            plugin_root=block.get("plugin_root") or Path(__file__).resolve().parent.parent, notify=block.get("notify"),
             floor_command=block.get("floor_command"), hand=hand)
         # A hand-started builder's text was printed, not kept; its record names the text's digest.
         received = (block.get("composed_sha256") if hand is not None else

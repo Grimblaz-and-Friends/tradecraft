@@ -212,6 +212,13 @@ def test_1011_the_release_report_reads_the_handoff_it_received(tmp_path, kind, e
     assert (plan["reading"], plan["reason"]) == expected
 
 
+def test_1011_a_handoff_read_from_another_checkout_recomposes_with_its_own_roots(tmp_path):
+    state = with_pull_request(stored(tmp_path, *PLANNED))
+    received(state, tmp_path, holder_root=str(tmp_path), plugin_root=str(LIB.parent))
+    state.holder_root = tmp_path / "another-checkout"
+    assert work._builder_route_report(state)["handoff_plan"]["reading"] == "composed"
+
+
 def test_1011_the_release_report_carries_the_builder_route(tmp_path, monkeypatch):
     monkeypatch.setattr(work.change_cost, "route_split", lambda **_k: (_ for _ in ()).throw(
         work.change_cost.CostError("no transcript")))
@@ -304,3 +311,13 @@ def test_1011_a_clean_ready_report_is_the_final_pass_until_the_release_report(
     assert report["stage"] == "release-report" and report["builder_route"]["send_back"]["count"] == 1
     monkeypatch.setattr(work, "_term_stretches", lambda _s: [{"handoff": {"brief_comment": "999"}}])
     assert work._governing_terms_decision(state).reason == "governing-record-not-handed"
+
+
+def test_1011_a_ready_builder_is_resumed_only_by_the_send_back_or_a_catch_up(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn):
+    state, _first = ready_hand(tmp_path, monkeypatch, holder)
+    for synchronization, way in ((CLEAR, "run send-back"), ({**CLEAR, "behind": True, "strict": True}, "run catch-up")):
+        state.synchronization = dict(synchronization)
+        with pytest.raises(work.WorkError, match="^builder-not-stopped: .*" + way):
+            run(monkeypatch, holder, state, "handoff", "--resume-reason", "more")
+    assert len(hand_requests()) == 1

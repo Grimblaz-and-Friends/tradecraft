@@ -97,6 +97,14 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **The comparison file is written at the third's merge,** because the five changes it counts are those carried once the route is the default.
 - **From the fifth cold reading:** the launcher is told a declared limit and names it itself, and no caller passes an absent session as the text `None`.
 
+## From the holder's reading of the eighth build turn
+
+- **The route names the owner's ask in flight too,** so a release report, which is always written in flight, shows the marker that asked for the route.
+- **An off-route refusal advises the `route` marker only where one moves the route,** its reason `owner-asked` or `default`; `cloud`, `in-flight` and `mechanical-lane` fix the route whatever a marker says.
+- **`--resume-reason` is for a stopped builder only.** At `final-pass` or `catch-up` it would resume a ready builder with the holder's text as often as it liked, beside row 4's one send-back.
+- **The handoff block records the holder and plugin roots the text was composed with,** and `handoff_plan` recomposes with them, so a report run from another checkout doesn't read `altered` and put a handoff nobody altered before the owner.
+- **Each row check says what it asserts,** so the report's reader needs neither the brief's numbering nor the issue.
+
 ## Rejected
 
 - **A Codex cold seat for a Claude holder's plan,** which D-1012's plan recommended. It would change which model the entrance launches, against Not this (C5).

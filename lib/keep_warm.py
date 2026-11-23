@@ -493,7 +493,8 @@ def runner_command(directory: Path, python: str | None = None) -> list[str]:
             "--state", str(directory)]
 
 
-# The detached starters are shared with the builder route; keep-warm keeps its own names.
+# The detached starters are shared with the builder route; keep-warm keeps its own names because its
+# tests patch them here, where spawn looks them up.
 _windows_spawn = detached.windows_spawn
 _posix_spawn = detached.posix_spawn
 DETACH = detached.DETACH

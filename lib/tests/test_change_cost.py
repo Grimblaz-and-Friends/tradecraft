@@ -2118,9 +2118,9 @@ ROUTE_HOLDER_REPLIES = (("early", 4, {"input": 1000, "output": 100}), ("edge", 5
                         ("late", 8, {"cache_read": 100000, "cache_write_1h": 1000}))
 
 
-def route_reply_price(tokens):
-    """A holder reply's price at the shipped card's claude-opus-5-5 rates."""
-    rates = next(row for row in cost.load_rates(LIB / "rates.json") if row["model"] == "claude-opus-5-5")
+def route_reply_price(tokens, model="claude-opus-5-5"):
+    """Tokens by class priced at the shipped card's rates for MODEL, a holder reply's by default."""
+    rates = next(row for row in cost.load_rates(LIB / "rates.json") if row["model"] == model)
     return sum((Decimal(count) * Decimal(str(rates["classes"][name])) for name, count in tokens.items()),
                Decimal(0)) / Decimal(1_000_000)
 
@@ -2177,13 +2177,13 @@ def route_store(tmp_path):
     import run_lifecycle
     store = tmp_path / "dispatches"
     stretch = "a" * 32
-    # 100000 input of which 40000 cached, 10000 output: 0.12 + 0.008 + 0.1 = 0.228.
+    # 100000 input of which 40000 cached, and 10000 output.
     route_bundle(store, stretch, "stretch", "codex", "gpt-6-sol", codex_stream("t1", 100000, 40000, 10000),
                  launched=5, completed=20)
-    # The send-back resumes the session; its share is 50000 input, 20000 cached, 5000 output: 0.114.
+    # The send-back resumes the session; its share is 50000 input of which 20000 cached, and 5000 output.
     route_bundle(store, "b" * 32, "stretch", "codex", "gpt-6-sol", codex_stream("t1", 150000, 60000, 15000),
                  launched=30, completed=40, session="t1")
-    # The builder's seat: 1000 input, 1000 output on Sonnet 5.5: 0.002 + 0.01 = 0.012.
+    # The builder's seat: 1000 input and 1000 output on Sonnet 5.5.
     route_bundle(store, "c" * 32, "cold-reader", "claude", "claude-sonnet-5-5",
                  claude_result("claude-sonnet-5-5", 1000, 1000), launched=21, completed=25, launched_by=stretch)
     # Seats another launch began, or the holder's own, are no part of the builder's cost.
@@ -2195,6 +2195,16 @@ def route_store(tmp_path):
     rows = run_lifecycle.launch_bundles(store, "acme/widget#12", None, exact_work=True)
     return ([row for row in rows if row[2]["stage"] == "stretch"],
             [row for row in rows if row[2]["stage"] != "stretch"])
+
+
+# What route_store's builder launches and its own seat spent, by the card's classes.
+ROUTE_BUILDER_TOKENS = [("gpt-6-sol", {"input": 60000, "cached_input": 40000, "output": 10000}),
+                        ("gpt-6-sol", {"input": 30000, "cached_input": 20000, "output": 5000}),
+                        ("claude-sonnet-5-5", {"input": 1000, "output": 1000})]
+
+
+def route_builder_price():
+    return sum((route_reply_price(tokens, model) for model, tokens in ROUTE_BUILDER_TOKENS), Decimal(0))
 
 
 def test_route_split_prices_holder_before_after_and_the_builder_with_its_own_seats(tmp_path, route_store):
@@ -2209,7 +2219,8 @@ def test_route_split_prices_holder_before_after_and_the_builder_with_its_own_sea
     assert Decimal(split["holder_after"]["amount"]) == edge + late
     builder = split["builder"]
     assert builder["status"] == "priced", builder
-    assert Decimal(builder["amount"]) == Decimal("0.354") and builder["usd"] == pytest.approx(0.354)
+    assert Decimal(builder["amount"]) == route_builder_price() and builder["usd"] == pytest.approx(
+        float(route_builder_price()))
     assert sorted(builder["dispatch_ids"]) == ["a" * 32, "b" * 32, "c" * 32]
 
 
@@ -2218,7 +2229,7 @@ def test_route_split_takes_bundles_by_their_run_record_paths(route_store):
     split = cost.route_split(holder_replies=[], start=route_moment(5),
                              builder_bundles=[Path(row[1]) for row in builders],
                              seat_bundles=[Path(row[1]) for row in seats])
-    assert Decimal(split["builder"]["amount"]) == Decimal("0.354")
+    assert Decimal(split["builder"]["amount"]) == route_builder_price()
     assert split["holder_before"]["usd"] == split["holder_after"]["usd"] == 0
 
 
@@ -2249,11 +2260,10 @@ def claude_builder(tmp_path):
     for name, stream in (("a" * 32, stretch), ("b" * 32, send_back)):
         (store / name / "answer.v2.txt.stdout.log").write_bytes(stream)
     write_lines(projects / "slug" / f"{session}.jsonl", [
-        # 1000 input, 100 output: 0.004 + 0.002 = 0.006.
         reply("m1", second=6, session=session, input=1000, output=100, read=0, five=0, hour=0),
-        # 1000 output: 0.02; the stream's event carried only 1 of it.
+        # 1000 output, of which the stream's event carried only 1.
         reply("m2", second=7, session=session, input=0, output=1000, read=0, five=0, hour=0),
-        # The send-back's one reply: 100000 cache reads and 1000 one-hour writes: 0.02 + 0.008 = 0.028.
+        # The send-back's one reply.
         reply("m3", second=31, session=session, input=0, output=0, read=100000, five=0, hour=1000),
         # A reply no builder launch's stream names is no part of the builder's cost.
         reply("m9", second=50, session=session, input=0, output=10 ** 6, read=0, five=0, hour=0)])
@@ -2266,7 +2276,8 @@ def test_1011_a_launched_claude_builder_and_its_resumed_send_back_price_from_the
     builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=rows, seat_bundles=[],
                                claude_projects=projects)["builder"]
     assert builder["status"] == "priced", builder
-    assert Decimal(builder["amount"]) == Decimal("0.054") and not builder.get("floor")
+    replies = ({"input": 1000, "output": 100}, {"output": 1000}, {"cache_read": 100000, "cache_write_1h": 1000})
+    assert Decimal(builder["amount"]) == sum(map(route_reply_price, replies), Decimal(0)) and not builder.get("floor")
     assert sorted(builder["dispatch_ids"]) == ["a" * 32, "b" * 32]
     # The dispatch report's pricing of the same resumed launch is unchanged.
     send_back = next(row for row in rows if row[2]["dispatch_id"] == "b" * 32)

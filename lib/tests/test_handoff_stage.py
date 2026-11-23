@@ -273,6 +273,7 @@ def test_1011_a_claude_builder_is_launched_detached_and_the_holder_waits_for_it(
     assert work.launch_tree.live_launches(work.records.default_record_root())  # The stub still runs.
     request = json.loads(Path(pointer["request"]).read_bytes())
     assert request["handoff"]["timeout_seconds"] == 28800 and request["handoff"]["holder_written"] is False
+    assert request["handoff"]["plugin_root"] == str(LIB.parent) and request["handoff"]["holder_root"]
     argv = json.loads((Path(pointer["request"]).parent / "argv.json").read_bytes())
     assert argv[argv.index("--stage") + 1] == "stretch"
     assert argv[argv.index("--holder-session-id") + 1] == HOLDER_SESSION
