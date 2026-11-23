@@ -52,8 +52,11 @@ def test_each_scenario_prints_the_decision_it_names(exported, name):
     assert report["stage"] == STAGES[name]
     assert report["route"]["name"] == ("relay" if "relay" in name else "builder")
     if name == "final-pass":
-        assert json.loads(report["detail"]) == {"record": report["readiness"]["record"], "reconciled": True,
-                                                "unreconciled": []}
+        detail = json.loads(report["detail"])
+        # The stand-in builder reported ready on a draft pull request, so readying reviewers is still its own.
+        assert {key: detail[key] for key in ("record", "reconciled", "unreconciled")} == {
+            "record": report["readiness"]["record"], "reconciled": True, "unreconciled": []}
+        assert detail["owed_at_ready"]["stage"] == "ready-reviewers"
         assert [entry["counts"] for entry in report["builder_checks"]["check_reports"]] == [True]
     if name == "cannot-launch":
         assert report["reason"] == "cannot-launch"

@@ -2,7 +2,7 @@
 
 **Loaded when** you are handing work on at the affirmation, arriving at work whose implementation brief a session before you settled, or holding a belief that an affirmed implementation brief you were handed is wrong.
 
-**The holding session normally carries the design turns through affirmation and then owns the stretch.** Where responsibility changes at affirmation, the issue is all that crosses between sessions.
+**The holding session normally carries the design turns through affirmation and then owns the stretch.** Where responsibility changes at affirmation, the issue is all that crosses between sessions. This is a hand-on between holders; handing a settled change to its builder with `run handoff` is the builder route's, in `../references/the-stretch.md`, and leaves the holder holding.
 
 **Before it leaves, the session that settled the implementation brief makes the issue carry three things.** The first two go in the issue body's opening block, alongside the ties already there, because the ordinary read of an issue returns the body and no comments — so an implementation brief posted only as a comment is invisible to a successor who does not already know to look for it. **Where the implementation brief covers a set, it is posted on the cause's issue and every other issue in the set carries the pointer, and its own mark of what the implementation brief replaced in it** — one term for the set, and the issue that lands first has one too. Each filing was written separately and each is superseded separately.
 

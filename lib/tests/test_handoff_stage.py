@@ -16,7 +16,6 @@ sys.path.insert(0, str(LIB))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import work  # noqa: E402
-from comparison_window import stretch_launch  # noqa: E402
 from test_route import MECHANICAL, RULES, fixture, launch, route_marker  # noqa: E402
 
 HOLDER_SESSION = "holder-session"
@@ -169,7 +168,28 @@ def test_1011_a_plan_lane_with_no_settled_plan_is_refused(tmp_path, monkeypatch,
 
 def test_1011_a_live_builder_refuses_another_handoff(tmp_path, monkeypatch, holder, quiet_report, no_spawn):
     state = stored(tmp_path, MECHANICAL)
-    stretch_launch(work.records.default_record_root(), root=tmp_path / "implementation")
+    # The launcher is a live child, so this process isn't inside the launch's tree on POSIX.
+    child = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(120)"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        store = work.records.default_record_root()
+        output = store / "stretch-live" / "result.md"
+        output.parent.mkdir(parents=True)
+        request = work.records.sidecar(output, ".request.json")
+        work.records.write_json(request, work.records.request_record(
+            dispatch_id="a" * 32, work="o/r#5", stage="stretch", settings_source="fixture launch",
+            settings_scope="this stretch launch", vendor="claude", model="m", effort="e",
+            continuity="fresh", permission_boundary="fixture boundary", root=tmp_path / "implementation"))
+        work.launch_tree.write_pointer(
+            store, dispatch_id="a" * 32, work="o/r#5", request=request, run=work.records.sidecar(output, ".run.json"),
+            session_id="s", launcher=work.lifecycle.process_identity(child.pid), root=tmp_path / "implementation")
+        _live_builder_refusals(monkeypatch, holder, state)
+    finally:
+        child.kill()
+        child.wait()
+
+
+def _live_builder_refusals(monkeypatch, holder, state):
     assert refused(monkeypatch, holder, state) == "builder-live"
     assert refused(monkeypatch, holder, state, "--ended-reason", "gone") == "ended-reason-is-for-a-hand-record"
     nothing_made(holder)

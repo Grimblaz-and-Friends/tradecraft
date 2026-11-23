@@ -4,7 +4,7 @@
 
 ## The holder and the implementer
 
-**The holding session designs the change with the owner through affirmation and owns the whole stretch that follows.** It runs each stage explicitly through the `work` entrance, writes any holder-authored job that stage needs, and receives every return, remaining the owner's counterpart through the reviewed pull request and its posted report. One holding session per change, never one for many, because its context grows from the first turn through every stage. It edits no file in the implementation tree and takes no judging seat. Where responsibility changes at affirmation, the handoff rule (`../references/the-handoff.md`) governs the exception.
+**The holding session designs the change with the owner through affirmation and owns the whole stretch that follows.** It runs each stage explicitly through the `work` entrance, writes any holder-authored job that stage needs, and receives every return, remaining the owner's counterpart through the reviewed pull request and its posted report. One holding session per change, never one for many, because its context grows from the first turn through every stage. It edits no file in the implementation tree and takes no judging seat. Where responsibility changes at affirmation, the handoff rule (`../references/the-handoff.md`) governs the exception. This reference describes the relay route, where the holder runs each stage; on the builder route, Builder route below governs wherever the two differ.
 
 For a lane that owes an artifact and cold settlement, post the whole-change reading with the `work` cell's marker, replacing `RESULT` from that marker's vocabulary:
 
@@ -37,6 +37,52 @@ When the owner switches to Claude, an in-flight Codex artifact or pull-request l
 The switch does not change judging vendors. A Claude cold seat compares with the artifact author's vendor; a Claude use consumer compares with the builder's vendor. Only when that route's producer was Claude is its judgment same-vendor: record `degraded` staffing and its reason, `owner-selected-claude-implementer`, even when Claude was the requested judge. This is the exception to the other-vendor rule: the Claude judging route cannot supply the other vendor for a Claude producer. A Codex-authored artifact judged by a Claude cold seat stays `qualified`. A Claude implementer launch requests strict MCP configuration, no Chrome and exclusions for foreign plugins while retaining user settings and auto permission mode; its run record reports observed holdings, unknown coverage and any excess.
 
 An incomplete handover keeps its reserved Claude identity. A later run reuses that identity only with evidence that no process launched, or resumes it when the native result proves the session. If a process may have launched without retained session evidence, the entrance refuses with the bundle, reserved identity and holder recovery requirement. The work entrance gives the holder the recovery command. A missing completion record cannot return the change to Codex or create a second Opus session.
+
+## Builder route
+
+**A change takes one of two routes, and the entrance names it in every report as `route`, with its reason.** On the relay route the holder runs each stage, as the rest of this reference says. On the builder route the holder writes the plan, hands the change once to one builder, and the builder carries it to ready, so no return between handoff and ready passes through the holder. The first rule that applies decides:
+
+1. `cloud`: a repository whose builds the `work` cell's cloud route takes stays on the relay route.
+2. `in-flight`: the work's first launch, in any term, decides for good. A builder launch or hand-started builder puts it on the builder route; an artifact author or a `build` puts it on the relay route. A change finishes on the route it started, and an amended brief does not move it.
+3. `owner-asked`: the latest lawful `route` marker, posted at the owner's word.
+4. `default`: the builder route.
+
+An owner's ask that `cloud` or `in-flight` overrules is reported as overruled. The mechanical lane takes the builder route too, handing over the affirmed brief and its lane reason in place of a plan.
+
+**The plan and the handoff.** The holder writes the plan and a cold seat settles it (`the-artifact.md`, `cold-seat.md`); no plan writer is launched. Once it is settled, or at once on the mechanical lane, the decision reads `handoff` and the holder runs `run handoff` (the `work` cell). That stage cuts and publishes the builder's tree as `run build` would, composes one text, and starts the builder: a Claude builder launched detached, or, where the machine vendor is Codex or the holder names `--by-hand VENDOR:MODEL`, a hand-started record whose text the owner pastes into a session they start. The text gives the builder, in order:
+
+1. its role;
+2. the affirmed brief and the settled plan, or the lane reason, verbatim;
+3. the checks it owes, as entrance commands;
+4. its allowance sentence;
+5. the readiness record's contract;
+6. the stop rule;
+7. how to finish;
+8. for a hand-started builder, where it works and the access its session needs.
+
+The holder writes no check's instructions, and supplies the floor command only here, with `--floor-command`. A holder-written `--dispatch` reaches the builder byte for byte, and the release report shows that it differs from the composed text. The builder's limit is the stretch's own, 28,800 seconds by default; a larger figure needs `--budget-override-reason`.
+
+**The builder's run.** In its own session, the builder:
+
+- opens the pull request as a draft and posts `implementing-pr`, with `builder-session` where it has a session id;
+- runs each owed check through the entrance: `run cold-reader`; `run acceptance-criterion --criterion ID` for each criterion with a `Fresh reader:` line, or on the mechanical lane `--row N` for each row it maps to a fresh reader; `run use --job-from-artifact` where the entrance finds use owed at its head; and the floor. The entrance composes each check and posts its report, and the builder chooses nothing a check reads;
+- fixes or declines every finding of every report, writing a decline's reason when it makes the decline;
+- posts the cold reading's `open` and `clean`, whose `Accepted:` lines are its declines, a `launch-account` for each check it launched, the `reach-reading` for each item reach flags, and the `floor` marker;
+- runs `run ready-reviewers`, and `run catch-up` when the decision orders it, answers every connected reviewer's threads, body findings and unidentified reviews, and posts proof;
+- where the plan settled nothing, continues on its recommendation and records it, naming any brief row it would change. It stops only when Shape is wrong (a `shape` stop) or a check cannot be launched (a `cannot-launch` stop naming it);
+- posts the readiness record (the `work` cell's `readiness` marker) at each ready report as its last post, after proof: each check it ran, one disposition for every finding, the mechanical lane's row mapping, its decisions and refusals, and any stop. It then messages the holder session `--notify` named, or ends.
+
+Seats under a hand-started record are staffed against the builder's declared vendor.
+
+**The holder stays quiet between handoff and ready.** While the builder is live, every holder-mode `run` is refused `with-builder`. Only the read-only decision runs, and, on a stopped builder, `run handoff --resume-reason` or `--ended-reason`. At every state on this route the holder's `run build`, `artifact`, `floor` and `review-disposition` are refused `route-is-builder`, and its `run proof` is refused `stage-is-the-builders`. The release report lists every holder reply and launch in that window, read from the holder's transcript. A stopped builder (its ceiling, a crash, an end with no ready record, or `status=stopped`) reads `stretch-stopped`. Its one way on is `run handoff --resume-reason TEXT` carrying the owner's word, which resumes the same session, or restarts it where the entrance's recovery restart accepts it; nothing resumes it on its own. A hand-started session that ended without a record is closed on the owner's word with `--ended-reason`.
+
+**The final pass.** A ready record at the current head, with the builder ended, reads `final-pass`. The holder first accounts for the stretch launch's own findings, then reads the record (with any finding it leaves unreconciled shown) and the change, spot-checking what it chooses. The final pass launches nothing: `run cold-seat`, `use`, `cold-reader`, `acceptance-criterion` and a fresh `handoff` are refused. A finding left unreconciled doesn't hold the change; the send-back is its remedy. What stays open is one send-back, a catch-up resume, the release report, a bought panel's seats and a source-verification launch.
+
+**One send-back.** `run send-back --dispatch FILE` carries the problems the holder found to the same builder session under a fixed header, or prints them for the owner to paste into a hand-started one; the entrance posts them with the `send-back` marker. A second send-back in the term is refused `send-back-spent`, and what stays open after the first goes into the release report for the owner. Its limit is 3,600 seconds by default.
+
+**A catch-up resume.** When the base moves after a ready record, the decision reads `catch-up`, and the holder's `run catch-up` merges nothing. It resumes the builder with a fixed line to catch up, re-run what the merge makes stale, and post proof and a new readiness record. It carries no text of the holder's, so it spends no send-back, and the release report lists each one. The change then returns to `final-pass` at the new head.
+
+`run release-report` waits for a lawful ready record at the current head; what it adds on this route is `the-release-report.md`'s.
 
 ## Criteria after every implementation turn
 

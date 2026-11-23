@@ -249,7 +249,7 @@ STAGE_SAFETY = {
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "affirmed-brief": {"required": set(), "optional": set(),
                        "surfaces": {"issue-comment"}},
-    "artifact": {"required": {"status"}, "optional": {"route", "draft_comment", "draft_sha256"},
+    "artifact": {"required": {"status"}, "optional": {"route", "draft_comment", "draft_sha256", "author", "vendor"},
                  "surfaces": {"issue-comment"}},
     "cold-verdict": {"required": {"verdict", "staffing_status"},
                      "optional": {"same_vendor_reason"},
@@ -1687,6 +1687,12 @@ def _marker_value_error(marker: Marker) -> str | None:
         reference = {key for key in ("draft_comment", "draft_sha256") if key in values}
         if status == "draft" and reference:
             return "artifact draft cannot name draft_comment or draft_sha256"
+        if status != "draft" and ("author" in values or "vendor" in values):
+            return "artifact settlement cannot name author or vendor"
+        if values.get("author", "holder") != "holder":
+            return "artifact draft author must be holder"
+        if values.get("vendor", "claude") not in {"claude", "codex"}:
+            return "artifact draft vendor must be claude or codex"
         if len(reference) == 1:
             return "missing marker attributes: " + ("draft_sha256" if "draft_comment" in reference else "draft_comment")
         if reference:
@@ -1812,8 +1818,10 @@ def _native_staffing(state: WorkState, marker: Marker,
             completed_no_later_than=launched_at,
         )
     else:
-        producer, _source = _producer_vendor(
-            state, frozenset({"artifact"}), completed_no_later_than=launched_at,
+        judged = request.get("judged_draft")
+        producer, _source = _plan_producer_vendor(
+            state, _draft_by_comment(state, judged.get("comment_id")) if isinstance(judged, dict) else None,
+            completed_no_later_than=launched_at,
         )
     degraded = vendor == producer
     reason = request.get("same_vendor_reason") if degraded else None
@@ -1964,7 +1972,7 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
                     or isinstance(validation, dict) and validation.get("status") == "fail"):
                 return f"latest artifact dispatch has a failed return: {path}"
     stages = {
-        "builder-session": {"build"},
+        "builder-session": {"build", "stretch"},  # a stretch carries the builder route's build turns
         "floor": {"floor"},
         "cold-verdict": {"cold-seat"},
         "use": {"use"},
@@ -2019,6 +2027,36 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     return None
 
 
+def _builder_floor_error(state: WorkState, marker: Marker) -> str | None:
+    """A builder's floor needs no floor bundle: its comment carries the handoff's floor command and its output.
+
+    The holder supplied that command at the handoff, so the builder can only run it, never choose it.
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    rows = lifecycle.launch_bundles(state.record_root or records.default_record_root(),
+                                    f"{state.repo}#{state.issue_number}", {"stretch"})
+    commands = {row[2]["handoff"]["floor_command"] for row in rows if isinstance(row[2].get("handoff"), dict)
+                and isinstance(row[2]["handoff"].get("floor_command"), str) and row[2]["handoff"]["floor_command"]}
+    body = MARKER.sub("", marker.body)
+    if any(command in body and re.sub(r"[`~\s]", "", body.replace(command, "", 1)) for command in commands):
+        return None
+    return "builder floor does not carry its handoff's floor command and that command's output"
+
+
+def _route_claim_error(marker: Marker, on_route) -> str | None:
+    """A claim one route doesn't take: a holder-written plan on the relay, a holder reading on the builder route.
+
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    if (marker.name == "artifact" and marker.attributes.get("author") == "holder"
+            and on_route() == "relay"):
+        return "holder-draft-on-relay-route"
+    if marker.name == "holder-reading" and on_route() == "builder":
+        # The builder route's holder wrote the plan, so a reading of it by the holder checks nothing.
+        return "not-read-on-builder-route"
+    return None
+
+
 def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[str, object]]]:
     # Design: lib/DESIGN.md#the-entrances-work-before-a-launch
     with preflight.part("markers"):
@@ -2036,6 +2074,17 @@ def _validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[s
     state.quotation_claims = [
         _quotation_claim(state, marker) for marker in classified.quotations
     ]
+    route_name: list[str | None] = []
+
+    def on_route() -> str | None:
+        # Read once, and only when a claim depends on the route; one that can't be read invalidates nothing.
+        if not route_name:
+            try:
+                route_name.append(str(_route(state)["name"]))
+            except WorkError:
+                route_name.append(None)
+        return route_name[0]
+
     for marker in sorted(classified.claims, key=_source_order):
         contract = MARKER_CONTRACTS.get(marker.name)
         if contract is None:
@@ -2050,7 +2099,10 @@ def _validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[s
         if error is None:
             error = _marker_value_error(marker)
         if error is None:
-            error = _bundle_marker_error(state, marker)
+            error = (_builder_floor_error(state, marker) if marker.name == "floor" and on_route() == "builder"
+                     else _bundle_marker_error(state, marker))
+        if error is None:
+            error = _route_claim_error(marker, on_route)
         if error is None:
             lawful.append(marker)
         else:
@@ -3393,6 +3445,13 @@ def prepare_use_evidence(state: WorkState, transport: GitHubREST,
     head = _head_sha(state)
     if head is None or not effective_policy(state, rules).use_required:
         return
+    try:
+        builder_route = _route(state)["name"] == "builder"
+    except WorkError:
+        builder_route = False  # the decision reports the unreadable route; the relay's evidence is read here
+    if builder_route:
+        _prepare_builder_use(state, transport, rules, head)
+        return
     candidates = [
         marker for marker in _state_markers(state)
         if marker.name == "use" and _public_marker_valid(state, marker)
@@ -3437,6 +3496,51 @@ def prepare_use_evidence(state: WorkState, transport: GitHubREST,
             "message": str(application.get("reason") or "use evidence is not applicable"),
             "source": _marker_source(state, marker),
         })
+
+
+def _builder_use_reports(state: WorkState) -> list[dict[str, object]]:
+    """The builder's counting composed use reports whose seat succeeded, newest first."""
+    try:
+        checks = builder_checks(state) or {}
+    except (OSError, ValueError, WorkError):
+        return []  # an accounting that can't be made proves no use
+    return [entry for entry in reversed(checks.get("check_reports", [])) if entry.get("counts")
+            and entry.get("stage") == "use" and entry.get("outcome") == "success"]
+
+
+def _prepare_builder_use(state: WorkState, transport: GitHubREST, rules: dict[str, object], head: str) -> None:
+    """On the builder route, the use evidence is a counting composed use report at the head or a lawful ancestor.
+
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    for entry in _builder_use_reports(state):
+        evidence_head = entry.get("head")
+        if evidence_head == head:
+            state.use_application = {"applicability": "current-head", "evidence_head": head,
+                                     "intervening_commits": [], "report": entry.get("comment"),
+                                     "reason": "use report names the current head", "lawful": True}
+            return
+        try:
+            application = _ancestor_application(transport, state, str(evidence_head), head, rules)
+        except (KeyError, TypeError, OSError, UnicodeError, ValueError, WorkError) as exc:
+            state.collection_diagnostics.append({
+                "code": "use-history-unavailable",
+                "message": f"cannot establish use ancestry from {evidence_head}: {exc}",
+                "source": {"kind": "issue-comment", "id": entry.get("comment")},
+            })
+            continue
+        if application.get("applicable"):
+            state.use_application = {"applicability": "ancestor", "evidence_head": evidence_head,
+                                     **application, "report": entry.get("comment"), "lawful": True}
+            return
+
+
+def _builder_use_counts(state: WorkState, sha: str) -> bool:
+    """Whether a counting composed use report stands at this head, or at an ancestor the use rules accepted."""
+    application = state.use_application or {}
+    if application.get("report") is not None and application.get("lawful"):
+        return True
+    return any(entry.get("head") == sha for entry in _builder_use_reports(state))
 
 
 def _check_workflow_identity(check: dict[str, object]) -> object:
@@ -5510,9 +5614,10 @@ def _cold_reading_due(state: WorkState) -> bool:
     if any(marker.name == "builder-session" for marker in state.issue_markers):
         return True
     try:
+        # A stretch carries the builder route's build turns, so it makes a reading due as a build does.
         inventory = lifecycle.launch_bundles(
             _cold_reading_source(state), f"{state.repo}#{state.issue_number}",
-            RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
+            RESUME_SOURCE_STAGES["build"] | {"stretch"}, include_missing_stage=True)
     except (OSError, ValueError, WorkError):
         return True  # The gate fails closed: an unreadable inventory can't prove no builder ran.
     return any(not build_reach.never_launched(row[3]) for row in inventory)
@@ -5624,7 +5729,13 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     closing = [marker for marker in markers if marker.attributes["status"] == "clean"
                and _source_order(marker) > _source_order(review)]
     try:
-        turn = _builder_turn_after(state, review)
+        builder_route = _route(state)["name"] == "builder"
+    except WorkError:
+        builder_route = False
+    # On the builder route one stretch posts the open, reviews it and posts the clean, so no later build
+    # turn carries the open; a clean after it, at the head, closes it.
+    try:
+        turn = None if builder_route else _builder_turn_after(state, review)
     except (WorkError, OSError) as exc:
         _set_aside(state, closing, "cold-reading clean while the builder's review can't be read")
         return _cold_reading_unverifiable(sha, exc)
@@ -5632,7 +5743,7 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     routed = latest["account"]["can_tell"] is False or any(
         position not in latest_accepted for position in range(len(latest["account"]["flags"])))
     # The builder is resumed only for what the latest `open` routed to it; anything else goes to its reread.
-    if turn is None and routed:
+    if turn is None and routed and not builder_route:
         _set_aside(state, closing, "cold-reading clean before a builder turn received its open reading")
         return Decision("build", True, "resume", "cold-reading-review-owed",
                         _marker_setting_source(review))
@@ -6051,12 +6162,126 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
             and phase.settlement_order is not None
             and phase.holder_reading_order > phase.settlement_order
         )
-        if not reading_is_current:
+        if not reading_is_current and not builder_route:
+            # The builder route owes no holder reading: the holder wrote the plan it would read.
             return result("holder-read", False, None, "whole-change-holder-reading-absent")
+    def chain(sha: str) -> Decision:
+        """Today's gates from ready-reviewers on, which the builder route also takes once a ready record stands."""
+        if bool(state.pr.get("draft")) or (state.synchronization or {}).get("merge_state") == "draft":
+            return result("ready-reviewers", False, None, "floor-complete-pr-draft",
+                          _draft_ready_detail(policy.mechanical))
+        reviewers = state.config.connected_reviewers
+        if reviewers and not _reviewer_ran(state):
+            return result("waiting", False, None, "required-connected-reviewer-has-not-run")
+        threads, _ignored_dispositions = _undisposed_threads(state)
+        pending = _cloud_replies_pending(state)
+        if pending is not None:
+            return result("cloud-replies", False, None, "cloud-review-disposition-replies-unposted", pending,
+                          status="holder-owned")
+        if threads:
+            return result(
+                "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
+                ",".join(str(identity) for identity in threads),
+            )
+        bodies = _body_findings(state)
+        if bodies.missing_findings or bodies.missing_reviews:
+            return result(
+                "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
+                _body_disposition_detail(state, bodies),
+            )
+        answered_unresolved = _answered_unresolved_threads(state)
+        if answered_unresolved:
+            return result(
+                "review-disposition", True, "resume", "reviewer-thread-answered-unresolved",
+                ",".join(str(thread["comment_id"]) for thread in answered_unresolved),
+            )
+        panel_stage = _panel_next(state, lane)
+        if panel_stage:
+            return result("panel", False, None, "bought-panel-incomplete", panel_stage)
+        bought = policy.use_required
+        if builder_route:
+            # The builder's composed use report is the use evidence here; a `use` marker counts for nothing.
+            if bought and not _builder_use_counts(state, sha):
+                return result("use", False, None, "current-head-use-report-absent",
+                              "No counting composed use report with outcome success at this head or an "
+                              "ancestor the use rules accept.")
+        else:
+            current_use = _current_marker(state, "use", head=sha, status="pass")
+            applicable_use = state.applicable_use or current_use
+            applicable_lawful = (
+                bool(state.use_application.get("lawful")) if state.use_application is not None
+                else applicable_use in state.markers if applicable_use is not None else False
+            )
+            if bought and (
+                    applicable_use is None or not applicable_lawful
+                    or not staffing_qualified(applicable_use)):
+                return result("use", False, None, "current-head-use-absent", USE_HOLDER_DETAIL)
+        current_proof = _current_marker(state, "proof", head=sha)
+        if (current_proof is None or state.proof_current is False
+                or (state.raw_output or {}).get("status") in raw_output.REFUSALS
+                or (state.version_obligation or {}).get("status") in VERSION_REFUSALS
+                or (state.proof_version_obligation or {}).get("status") in VERSION_REFUSALS):
+            if (state.proof_version_obligation or {}).get("status") in VERSION_REFUSALS:
+                failed = replace(state, version_obligation=state.proof_version_obligation)
+                refusal = _version_obligation_refusal(failed, "proof")
+                return result("proof", False, None, refusal.reason,
+                              "Committed proof policy: " + refusal.detail)
+            return result("proof", False, "fresh", "current-head-proof-absent-or-outdated")
+        gate = _release_gate_status(state, sha)
+        verdict = gate["verdict"]
+        if verdict == "absent":
+            detail = str(gate["reason"]).rstrip()
+            if detail and detail[-1] not in ".!?":
+                detail += "."
+            if gate.get("pending"):
+                return result(
+                    "waiting", False, None, "latest-gate-evaluation-pending", detail
+                )
+            return result("waiting", False, None, "current-head-gate-evaluation-absent", detail)
+        if verdict == "unidentified":
+            return result(
+                "waiting", False, None, "required-gate-unidentified", str(gate["reason"])
+            )
+        if verdict == "stale":
+            return result(
+                "waiting", False, None, "required-gate-evaluation-stale", str(gate["reason"])
+            )
+        if verdict == "red":
+            return result(
+                "waiting", False, None, "latest-gate-evaluation-failed", str(gate["reason"])
+            )
+        if verdict not in {"green", "none"}:
+            return result(
+                "waiting", False, None, "latest-gate-evaluation-not-successful",
+                str(gate["reason"]),
+            )
+        merge = _merge_readiness(state, sha, gate)
+        if merge["reason"] == "merge-verdict-unknown":
+            return result("waiting", False, None, "merge-verdict-unknown", merge["detail"])
+        if merge["reason"] == "merge-blocked-required-gate":
+            return result("waiting", False, None, "merge-blocked-required-gate", merge["detail"])
+        if merge["reason"] == "merge-blocked-unresolved-review-threads":
+            return result("waiting", False, None, "merge-blocked-unresolved-review-threads",
+                          merge["detail"])
+        if merge["reason"] == "merge-blocked-unattributed":
+            return result("waiting", False, None, "merge-blocked-unattributed", merge["detail"])
+        reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
+        return result("release-report", False, None, reason, merge["detail"])
+
     if builder_route:
         builder = _builder_route_decision(state)
-        return result(builder.stage, builder.dispatch, builder.continuity, builder.reason,
-                      builder.detail, builder.status)
+        if builder.stage != "final-pass":
+            return result(builder.stage, builder.dispatch, builder.continuity, builder.reason,
+                          builder.detail, builder.status)
+        made = chain(str(_head_sha(state)))
+        if made.stage not in BUILDER_OWED_STAGES:
+            return made
+        # The holder is refused these on the builder route, so the ready record owed them: its final pass
+        # names what the builder left, for the holder to send back.
+        owed = {**json.loads(builder.detail),
+                "owed_at_ready": {"stage": made.stage, "reason": made.reason, "detail": made.detail}}
+        return result("final-pass", False, None, "owed-at-ready", json.dumps(owed, ensure_ascii=True),
+                      status="holder-owned")
     terms = _governing_terms_decision(state)
     if terms is not None:
         return result(terms.stage, terms.dispatch, terms.continuity, terms.reason, terms.detail, terms.status)
@@ -6089,101 +6314,13 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     cold = _cold_reading_decision(state, sha)
     if cold is not None:
         return result(cold.stage, cold.dispatch, cold.continuity, cold.reason, cold.detail, cold.status)
-    if bool(state.pr.get("draft")) or (state.synchronization or {}).get("merge_state") == "draft":
-        return result("ready-reviewers", False, None, "floor-complete-pr-draft",
-                      _draft_ready_detail(policy.mechanical))
-    reviewers = state.config.connected_reviewers
-    if reviewers and not _reviewer_ran(state):
-        return result("waiting", False, None, "required-connected-reviewer-has-not-run")
-    threads, _ignored_dispositions = _undisposed_threads(state)
-    pending = _cloud_replies_pending(state)
-    if pending is not None:
-        return result("cloud-replies", False, None, "cloud-review-disposition-replies-unposted", pending,
-                      status="holder-owned")
-    if threads:
-        return result(
-            "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
-            ",".join(str(identity) for identity in threads),
-        )
-    bodies = _body_findings(state)
-    if bodies.missing_findings or bodies.missing_reviews:
-        return result(
-            "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
-            _body_disposition_detail(state, bodies),
-        )
-    answered_unresolved = _answered_unresolved_threads(state)
-    if answered_unresolved:
-        return result(
-            "review-disposition", True, "resume", "reviewer-thread-answered-unresolved",
-            ",".join(str(thread["comment_id"]) for thread in answered_unresolved),
-        )
-    panel_stage = _panel_next(state, lane)
-    if panel_stage:
-        return result("panel", False, None, "bought-panel-incomplete", panel_stage)
-    bought = policy.use_required
-    current_use = _current_marker(state, "use", head=sha, status="pass")
-    applicable_use = state.applicable_use or current_use
-    applicable_lawful = (
-        bool(state.use_application.get("lawful")) if state.use_application is not None
-        else applicable_use in state.markers if applicable_use is not None else False
-    )
-    if bought and (
-            applicable_use is None or not applicable_lawful
-            or not staffing_qualified(applicable_use)):
-        return result("use", False, None, "current-head-use-absent", USE_HOLDER_DETAIL)
-    current_proof = _current_marker(state, "proof", head=sha)
-    if (current_proof is None or state.proof_current is False
-            or (state.raw_output or {}).get("status") in raw_output.REFUSALS
-            or (state.version_obligation or {}).get("status") in VERSION_REFUSALS
-            or (state.proof_version_obligation or {}).get("status") in VERSION_REFUSALS):
-        if (state.proof_version_obligation or {}).get("status") in VERSION_REFUSALS:
-            failed = replace(state, version_obligation=state.proof_version_obligation)
-            refusal = _version_obligation_refusal(failed, "proof")
-            return result("proof", False, None, refusal.reason,
-                          "Committed proof policy: " + refusal.detail)
-        return result("proof", False, "fresh", "current-head-proof-absent-or-outdated")
-    gate = _release_gate_status(state, sha)
-    verdict = gate["verdict"]
-    if verdict == "absent":
-        detail = str(gate["reason"]).rstrip()
-        if detail and detail[-1] not in ".!?":
-            detail += "."
-        if gate.get("pending"):
-            return result(
-                "waiting", False, None, "latest-gate-evaluation-pending", detail
-            )
-        return result("waiting", False, None, "current-head-gate-evaluation-absent", detail)
-    if verdict == "unidentified":
-        return result(
-            "waiting", False, None, "required-gate-unidentified", str(gate["reason"])
-        )
-    if verdict == "stale":
-        return result(
-            "waiting", False, None, "required-gate-evaluation-stale", str(gate["reason"])
-        )
-    if verdict == "red":
-        return result(
-            "waiting", False, None, "latest-gate-evaluation-failed", str(gate["reason"])
-        )
-    if verdict not in {"green", "none"}:
-        return result(
-            "waiting", False, None, "latest-gate-evaluation-not-successful",
-            str(gate["reason"]),
-        )
-    merge = _merge_readiness(state, sha, gate)
-    if merge["reason"] == "merge-verdict-unknown":
-        return result("waiting", False, None, "merge-verdict-unknown", merge["detail"])
-    if merge["reason"] == "merge-blocked-required-gate":
-        return result("waiting", False, None, "merge-blocked-required-gate", merge["detail"])
-    if merge["reason"] == "merge-blocked-unresolved-review-threads":
-        return result("waiting", False, None, "merge-blocked-unresolved-review-threads",
-                      merge["detail"])
-    if merge["reason"] == "merge-blocked-unattributed":
-        return result("waiting", False, None, "merge-blocked-unattributed", merge["detail"])
-    reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
-    return result("release-report", False, None, reason, merge["detail"])
+    return chain(sha)
 
 
+# The stages a builder-route holder doesn't run once a ready record stands, so the builder owed them at
+# ready: those refused to the holder on this route, and readying reviewers, which the builder does there.
+BUILDER_OWED_STAGES = frozenset({"build", "artifact", "floor", "review-disposition", "proof", "use",
+                                 "ready-reviewers"})
 BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and posts it as a draft "
                                  "with `author=holder`")
 
@@ -6212,6 +6349,11 @@ def _builder_route_decision(state: WorkState) -> Decision:
         return Decision("stretch-stopped", False, None,
                         "cannot-launch" if stop.get("kind") == "cannot-launch" else "builder-stopped",
                         json.dumps({"record": reading.get("record"), "stop": stop}, ensure_ascii=True),
+                        status="holder-owned")
+    if reading.get("status") == "ready" and state.pr is None:
+        # The stretch is the builder turn here, so a ready builder with no pull request owes one, as on the relay.
+        return Decision("open-pull-request", False, None, "builder-returned-without-pull-request",
+                        "Open the implementing pull request from the registered implementation branch.",
                         status="holder-owned")
     if reading.get("status") != "ready" or not reading.get("at_head"):
         not_at_head = reading.get("status") == "ready"
@@ -8165,6 +8307,35 @@ def _producer_vendor(state: WorkState, stages: frozenset[str], *,
     )
 
 
+# A cold seat judging a plan its holder wrote, on that holder's own vendor, records this as its reason.
+HOLDER_PLAN_REASON = "holder-written-plan"
+
+
+def _plan_producer_vendor(state: WorkState, draft: Marker | None, *, in_run: bool = False,
+                          completed_no_later_than: str | None = None) -> tuple[str, str]:
+    """The vendor a cold seat is judged against: a holder-written draft's own marker, else the author's bundle.
+
+    A holder-written plan has no author bundle, so its marker's `vendor` is the only record of who wrote it.
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    if draft is None or draft.attributes.get("author") != "holder":
+        return _producer_vendor(state, frozenset({"artifact"}), completed_no_later_than=completed_no_later_than)
+    vendor = draft.attributes.get("vendor")
+    if vendor is None:
+        raise WorkError(f"holder-written draft marker {draft.source_id} names no vendor; "
+                        "re-post the draft with `vendor=claude` or `vendor=codex`")
+    if in_run and vendor == "codex" and os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip():
+        # A Claude session running the seat can't be the Codex holder its draft names.
+        raise WorkError(f"holder-vendor-disagrees: holder-written draft marker {draft.source_id} names codex, "
+                        "but this run is a Claude session")
+    return vendor, f"holder-written draft marker {draft.source_id}"
+
+
+def _draft_by_comment(state: WorkState, comment_id: object) -> Marker | None:
+    return next((marker for marker in state.issue_markers if marker.name == "artifact"
+                 and marker.attributes.get("status") == "draft" and marker.source_id == str(comment_id)), None)
+
+
 def _bundle_session(work_value: str, stage: str, record_root: Path, *, state=None) -> str | None:
     source = _resume_source(work_value, stage, record_root, state=state)
     return source.session if source is not None else None
@@ -8242,8 +8413,11 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
         try:
             if not resolve_comparison or decision.stage == "use":
                 raise WorkError("comparison vendor awaits validated recipient tree")
-            stages = frozenset({"artifact"}) if decision.stage == "cold-seat" else RESUME_SOURCE_STAGES["build"]
-            own, own_source = _producer_vendor(state, stages)
+            if decision.stage == "cold-seat":
+                phase = state.artifact_phase
+                own, own_source = _plan_producer_vendor(state, phase.latest_draft if phase else None)
+            else:
+                own, own_source = _producer_vendor(state, RESUME_SOURCE_STAGES["build"])
             fallback = {**settings[own], **dispatch_seat.fallback_plan(primary, own,
                         "read" if decision.stage in {"cold-seat", "cold-reader"} else "execute"),
                         "comparison_vendor_source": own_source}
@@ -9940,6 +10114,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             raise WorkError("cold-seat requires the current term's latest lawful draft comment id")
         if draft_comment is not None and draft_comment != draft.source_id:
             raise WorkError("--draft-comment must name the current term's latest lawful draft")
+        if draft.attributes.get("author") == "holder":
+            _plan_producer_vendor(state, draft, in_run=True)  # its refusals come before any tree is built
     source_problem = (None if decision.stage == "artifact" and dispatch_path is not None else
                       _artifact_source_problem(state, decision.stage))
     if source_problem:
@@ -9956,6 +10132,12 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             raise WorkError("run catch-up accepts no dispatch, tree or recipient executable")
         if transport is None or rules is None:
             raise WorkError("run catch-up requires the entrance GitHub and policy context")
+        builder = builder_mode()
+        if builder is not None:
+            if holder_session_id:
+                raise WorkError("a builder's catch-up takes its holder session from its own launch; "
+                                "give no --holder-session-id")
+            holder_session_id = _holding_launch_holder_session(builder)
         _open_stage_work_window()
         return _execute_catch_up(transport, state, root, instalment, holder_session_id, rules)
     if decision.stage == "cold-reader":
@@ -10568,7 +10750,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 if dispatch_path is not None:
                     raise WorkError("cold-seat uses the exact bounded artifact-and-brief prompt")
                 with judging_root(dispatch_root) as recipient:
-                    own_vendor, own_vendor_source = _producer_vendor(state, frozenset({"artifact"}))
+                    own_vendor, own_vendor_source = _plan_producer_vendor(state, draft, in_run=True)
+                    holder_plan = draft.attributes.get("author") == "holder"
                     prompt = _stage_prompt(state, decision, recipient, floor_command=floor_command)
                     dispatch.write_bytes(prompt)
                     common = [
@@ -10585,7 +10768,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                                 "--vendor", "claude", "--own-vendor", own_vendor,
                                 "--own-vendor-source", own_vendor_source,
                                 "--classification", "cold", "--requires", "read",
-                                *(["--same-vendor-reason", "owner-selected-claude-implementer"]
+                                *(["--same-vendor-reason", HOLDER_PLAN_REASON if holder_plan
+                                   else "owner-selected-claude-implementer"]
                                   if own_vendor == "claude" else []),
                                 *_seat_launch_arguments(
                                     state, "cold-seat", "cold",
@@ -11544,6 +11728,24 @@ def _post_check_report(github, state: WorkState, body: str) -> dict[str, object]
     return {"status": "check-report-unposted", "errors": errors}
 
 
+def _holding_launch_holder_session(builder: dict) -> str:
+    """The holder session the builder's own launch names: a launch's request, or a hand record's handoff.
+
+    A builder never names it on its command line, because the registration check it passes is the holder's.
+    """
+    request = builder.get("request")
+    try:
+        record = json.loads(Path(str(request)).read_bytes())
+    except (OSError, ValueError) as exc:
+        raise WorkError(f"the holding stretch launch's request {request} could not be read: {exc}") from exc
+    handoff = record.get("handoff") if isinstance(record, dict) else None
+    session = (record.get("holder_session_id") if isinstance(record, dict) else None) or (
+        handoff.get("holder_session_id") if isinstance(handoff, dict) else None)
+    if not isinstance(session, str) or not session.strip():
+        raise WorkError(f"the holding stretch launch's request {request} names no holder session")
+    return session
+
+
 def _holding_launch_vendor(builder: dict) -> tuple[str, str]:
     """The builder's vendor, from its own launch's request record: a first launch has no completed bundle."""
     request = builder.get("request")
@@ -11832,6 +12034,7 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
             # A counting report's findings, read from the return tail its composed dispatch fixed.
             stage = bundle[1].get("stage")
             entry.update({"stage": stage, "builder": bundle[1]["launched_by"].get("dispatch_id"),
+                          "head": attributes.get("head"), "outcome": attributes.get("outcome"),
                           "findings": [item["finding"] for item in readiness.report_findings(stage, posted_text)]
                           if stage in readiness.RETURN_TAILS else []})
         reports.append(entry)

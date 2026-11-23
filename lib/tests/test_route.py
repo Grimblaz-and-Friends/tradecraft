@@ -236,9 +236,11 @@ def test_1011_an_ended_stretch_with_no_record_has_stopped(tmp_path):
 
 def test_1011_a_ready_record_at_the_head_reaches_the_final_pass(tmp_path):
     state, builder = ended_stretch(tmp_path)
+    state.pr["draft"] = False
     post(state, readiness_record(builder), 30)
+    # The ready record continues into today's chain; the proof the builder owed is named under the final pass.
     stage, status, reason, detail = decision(state)
-    assert (stage, status, reason) == ("final-pass", "holder-owned", "ready-reported")
+    assert (stage, status, reason) == ("final-pass", "holder-owned", "owed-at-ready")
     assert json.loads(detail)["reconciled"] is True and json.loads(detail)["unreconciled"] == []
 
 

@@ -34,9 +34,9 @@ A `cold-verdict` beside an artifact with `status=draft` is therefore a quotation
 
 ## `artifact`
 
-- **Exact form:** `<!-- tradecraft:artifact:v1 status=STATUS [route=ROUTE] [draft_comment=COMMENT_ID draft_sha256=SHA256] -->`.
-- **Attributes and lawful values:** `status=draft|settled`; a settled artifact requires `route=would|cap|discharge|unobtainable`, while a draft carries no route or draft reference. `draft_comment` and `draft_sha256` appear together: the former is a positive decimal issue-comment id, and the latter is a lowercase hexadecimal sha256.
-- **Producer, surface, moment:** the holder, in an issue comment, when the whole draft return arrives and when it takes a lawful settlement route.
+- **Exact form:** `<!-- tradecraft:artifact:v1 status=STATUS [route=ROUTE] [draft_comment=COMMENT_ID draft_sha256=SHA256] [author=holder] [vendor=VENDOR] -->`.
+- **Attributes and lawful values:** `status=draft|settled`; a settled artifact requires `route=would|cap|discharge|unobtainable`, while a draft carries no route or draft reference. A draft the holder wrote on the builder route may carry `author=holder` and `vendor=claude|codex`, either or both, and a settlement carries neither; the cold seat takes the plan's producer vendor from `vendor`. An `author=holder` draft on a relay-route term is invalid (`holder-draft-on-relay-route`). `draft_comment` and `draft_sha256` appear together: the former is a positive decimal issue-comment id, and the latter is a lowercase hexadecimal sha256.
+- **Producer, surface, moment:** the holder, in an issue comment, when the whole draft return arrives, or on the builder route when it posts the plan it wrote, and when it takes a lawful settlement route.
 
 ```text
 <!-- tradecraft:artifact:v1 status=draft -->
@@ -85,7 +85,7 @@ A holder reading counts strictly after that effective place, in record order, in
 
 - **Exact form:** `<!-- tradecraft:holder-reading:v1 result=RESULT -->`.
 - **Attributes and lawful values:** `result=no-amendment|amended`.
-- **Producer, surface, moment:** the holder, in an issue comment carrying the whole-change reading after a qualifying cold verdict and before the first build, or, after that reading, in an issue comment carrying a later direction to the builder on the settled artifact with `result=amended`, because both record the holder's calls without a new verdict. It may also come after a `would-not` verdict and before the revision it directs, in an issue comment carrying the holder's decisions on that verdict's points with `result=amended`. Such a reading directs the composed revision of the draft it follows. It counts for the builder only when it falls after the effective settlement place, so a reading posted before a settlement — including the decisions a `route=cap` settlement names — never becomes one of the builder's governing readings and does not supply the whole-change reading owed after settlement.
+- **Producer, surface, moment:** the holder, in an issue comment carrying the whole-change reading after a qualifying cold verdict and before the first build, or, after that reading, in an issue comment carrying a later direction to the builder on the settled artifact with `result=amended`, because both record the holder's calls without a new verdict. It may also come after a `would-not` verdict and before the revision it directs, in an issue comment carrying the holder's decisions on that verdict's points with `result=amended`. Such a reading directs the composed revision of the draft it follows. It counts for the builder only when it falls after the effective settlement place, so a reading posted before a settlement — including the decisions a `route=cap` settlement names — never becomes one of the builder's governing readings and does not supply the whole-change reading owed after settlement. On a builder-route term no holder reading is owed or read, so one posted there counts for nothing and is listed as invalid (`not-read-on-builder-route`).
 
 ```text
 <!-- tradecraft:holder-reading:v1 result=no-amendment -->
@@ -130,7 +130,7 @@ The head binds the covered flags; initial adoption may cover historical turns at
 
 - **Exact form:** `<!-- tradecraft:launch-account:v1 dispatch=DISPATCH_ID -->`.
 - **Attributes:** only `dispatch`, the 32-digit lowercase hexadecimal dispatch id of the held launch bundle.
-- **Producer, surface, moment:** an authorized marker producer acting as holder, in one or more issue comments after the entrance reports that bundle's launch findings. The comments that count name, together, every finding; where two name one finding, the one posted later governs it. It accounts for that bundle's comparison findings and its failed cloud attempt checks only, never reach, artifact settlement or a whole-change reading.
+- **Producer, surface, moment:** an authorized marker producer acting as holder, in one or more issue comments after the entrance reports that bundle's launch findings. On the builder route the builder posts the account for each check bundle it launched, and the holder posts the stretch launch's own in its final pass. The comments that count name, together, every finding; where two name one finding, the one posted later governs it. It accounts for that bundle's comparison findings and its failed cloud attempt checks only, never reach, artifact settlement or a whole-change reading.
 - **Payload:** exactly one fenced `json` object with integer `schema_version: 1` and a `findings` list. Each entry has an `id` unique within that comment, a `party` of `owner`, `plugin-update`, `session`, `builder-damage`, `none-found` or `cloud-check`, and a nonempty `basis`; `cloud-check` answers only a `cloud-check:<name>` finding, and its basis names that check and what the holder verified; for `none-found`, the basis says what was inspected and how; `session` also requires the session's id in `session`, and `builder-damage` requires `owner_report` (the URL of the notice that told the owner, or another exact locator where it is not on GitHub) and `practice_issue` (`owner/repo#n` of the practice's `product-incident` filing). Any other field or party makes the marker invalid. The party is whatever made the change: `plugin-update` covers the runtime's plugin machinery installing, updating or refreshing a plugin, a marketplace or its cached data, even when the launched runtime did it itself; `builder-damage` is only a tool call or command the launched recipient made.
 
 ```json
@@ -161,7 +161,7 @@ The entrance accepts the grant only for a turn that resumes that stage, when a c
 
 - **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.
 - **Attributes and lawful values:** `session` is the UUID-shaped session identity printed by the implementer launcher, or a Claude cloud session id (`cse_…`) where the vendor is `claude`; optional `vendor` is `codex` or `claude`. A matching dispatch bundle proves the vendor and must agree with a present attribute. Without a bundle, a vendor-qualified marker is the recovery route after the holder verifies the original runtime record; a UUID alone proves no vendor.
-- **Producer, surface, moment:** the holder, in a comment on the issue, when the build return and launcher output arrive.
+- **Producer, surface, moment:** the holder, in a comment on the issue, when the build return and launcher output arrive. On the builder route the builder posts it with `implementing-pr` where it has a session id, and it agrees with the `stretch` bundle as with a `build` bundle; it never moves the route.
 
 Reach correlates this claim across the issue's retained native records before scoping it to the selected implementation lineage. A proved sibling or other-lineage session is not this PR's missing turn. An authorized session with no retained attribution anywhere remains visible as its own uncertainty; a later return cannot account for an earlier marker.
 
@@ -214,7 +214,7 @@ A later bare line returns every role to default resolution:
 <!-- tradecraft:cold-reading:v1 head=SHA status=open|clean staffing_status=qualified|degraded [same_vendor_reason=REASON] -->
 ```
 
-**Producer, surface and moment:** a configured marker producer, on an issue or pull-request comment. The holder posts `open` after a `run cold-reader` return, at that reading's head, and `clean` once the builder has reviewed the latest reading, or at once when the holder accepted every flag that reading left standing. Staffing and its same-vendor reason are checked against the cold-reader bundle, not the marker text.
+**Producer, surface and moment:** a configured marker producer, on an issue or pull-request comment. The holder posts `open` after a `run cold-reader` return (on the builder route the builder posts both, quoting the counting `cold-reader` report), at that reading's head, and `clean` once the builder has reviewed the latest reading, or at once when the holder accepted every flag that reading left standing. Staffing and its same-vendor reason are checked against the cold-reader bundle, not the marker text.
 
 **`open`** counts only when the bundle's retained return appears in the comment as a run of whole lines, outside markers and after normalising line endings and trailing whitespace, so an account corrected by hand is set aside as invalid. An `open` quoting a return the form check refuses is set aside saying so, with that return's first form error, because such a return isn't a reading and the holder runs the reading again; one matching no retained return is set aside as differing from every retained return, because its quote needs copying again. Beneath it, under a "Holder's review against the brief" heading, the holder lists each misreading, the route for each flag worth another round and any `Can tell: no`, and one acceptance line for each flag it accepts:
 
@@ -224,7 +224,7 @@ Accepted: path:lines — KIND — reason
 
 The line names a flag in that reading's account by its path, the `:lines` it gives (which may be left out), and its kind, and gives a one-line reason; where two flags share all three, the flag's own text goes before the reason, `Accepted: path:lines — KIND — flag text — reason`. `lines` takes the flag's own forms: one line, one range, or several of either separated by commas, such as `lib/a.py:12,40-44,97`. A list names a flag when its items are that flag's items in the same order, whatever the dash in a range or the spacing after a comma. A line giving only part of a flag's list names no flag, because a flag naming several places is one flag; to accept some places and route others, route the flag and say in the review which places you would accept. A line opening `Accepted:` beneath the heading that is malformed or names no single flag sets the `open` aside as invalid, naming that line, so a mistyped acceptance never silently accepts nothing. An accepted flag doesn't stand and owes no reread. A `Can tell: no` is not a flag and can't be accepted.
 
-**`clean`** counts only when a builder turn launched after the latest `open`, completed, and carried that comment in its frozen prompt, or when the holder's acceptances leave nothing standing or owed, in which case it need only be posted after that `open`; its head is the current head; every current change-set path's latest reading is current by its own blob and its dependencies' blobs and lists no unaccepted flag on that path or its dependencies; and no `Can tell: no` stands. A `Can tell: no` stands until a later reading covering the whole current change set says `Can tell: yes`. A `clean` failing any of these is listed as invalid, and the change stays held.
+**`clean`** counts only when a builder turn launched after the latest `open`, completed, and carried that comment in its frozen prompt, or when the holder's acceptances leave nothing standing or owed, in which case it need only be posted after that `open`; its head is the current head; every current change-set path's latest reading is current by its own blob and its dependencies' blobs and lists no unaccepted flag on that path or its dependencies; and no `Can tell: no` stands. A `Can tell: no` stands until a later reading covering the whole current change set says `Can tell: yes`. A `clean` failing any of these is listed as invalid, and the change stays held. On the builder route the builder wrote the `open`, so its `clean` needs no later builder turn: it counts when posted after that `open` and the other conditions hold.
 
 ## `check-report`
 
@@ -276,7 +276,7 @@ Every other comment carrying the marker counts for nothing, and the entrance's `
 ```
 
 - **Attributes and lawful values:** only `dispatch`, the 32-character id of the builder launch the holder sends back.
-- **Producer, surface, moment:** the entrance, on the change's issue, carrying the holder's text of the problems it found in its final pass. A builder's own shell is refused any comment carrying this marker, as it is refused `check-report`.
+- **Producer, surface, moment:** the entrance, through the holder's `run send-back` at `final-pass`, on the change's issue, carrying the holder's text of the problems it found in its final pass. One counts per term; a second `run send-back` is refused `send-back-spent`. A builder's own shell is refused any comment carrying this marker, as it is refused `check-report`.
 
 ## `proof`
 
@@ -328,7 +328,7 @@ Body-finding and unidentified-review answers instead open with the bare disposit
 
 - **Exact form:** `<!-- tradecraft:implementing-pr:v1 number=NUMBER -->`.
 - **Attributes and lawful values:** `number` is the positive integer number of the pull request that implements this issue.
-- **Producer, surface, moment:** the holder, in a comment on the implemented issue, immediately after opening the implementing pull request as a draft.
+- **Producer, surface, moment:** the holder, in a comment on the implemented issue, immediately after opening the implementing pull request as a draft; on the builder route, the builder, which opens it.
 
 ```text
 <!-- tradecraft:implementing-pr:v1 number=91 -->

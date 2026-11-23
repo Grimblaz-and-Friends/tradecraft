@@ -28,6 +28,10 @@ Dispatch ownership and judging-seat staffing are in `../references/the-stretch.m
 
 **The bar below, the three verdicts below, what a verdict must name, and the row-and-cell trace check with its named-check direction.** The seat does not read this file, so a dispatch omitting the verdicts asks a three-valued question in a two-valued voice and gets what it asked for, one omitting the bar leaves the seat to infer a threshold, and one omitting the trace check leaves the seat without the implementation brief's completeness test. **So is the closed list under *What the draft carries between rounds*** — a seat that does not know the list is closed asks for a fifth thing, and additions of that kind have been made because a verdict asked for them.
 
+## A plan the holder wrote
+
+**On the builder route the holder writes the plan (`../references/the-artifact.md`), so the seat is compared with the holder's vendor.** `run cold-seat` takes the producer's vendor from the draft marker's `vendor` rather than from a launched author, and refuses `holder-vendor-disagrees` where a Claude session runs it on a draft marked `codex`. The seat's own vendor and model are chosen as for any cold seat. A Claude seat judging a Claude holder's plan is same-vendor: record it `degraded`, with `same_vendor_reason=holder-written-plan`. The dispatch, the bar, the verdicts, the cap and the settlement routes are unchanged, except that the holder, being the author, makes a cap's repairs itself: its decisions travel in the revised whole artifact it posts, since a `holder-reading` counts for nothing on that route.
+
 ## The three verdicts
 
 The verdict **names the text it judged** — the sha256 and byte count it was given, and the commit it confirmed, or what it found where the tree had none — so a later reader knows what it covers. An adverse one **names the points it fails on**: the claim, criterion or choice, one line each, not the prose of the finding.
