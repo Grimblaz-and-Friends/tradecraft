@@ -387,6 +387,13 @@ def test_1011_the_release_report_waits_for_a_ready_record_at_the_head(tmp_path, 
     assert named(tmp_path, monkeypatch, state, "release-report")[0] == "no-ready-record-at-head"
     post(state, readiness_record(builder), 40)
     assert work._refuse_off_route(state, "release-report") is None
+    # Let through, the named run's own report says what the final pass reads as owed.
+    owed = json.loads(decision(state)[3])["owed_at_ready"]
+    named_decisions = []
+    args = work.parser().parse_args(["run", "release-report", "--repo", "o/r", "--issue", "5",
+                                     "--root", str(tmp_path / "holder")])
+    work.run(args, transport=NoTransport(), executor=lambda checked, made, *a, **k: named_decisions.append(made))
+    assert f"owed at ready: {owed['stage']} ({owed['reason']})" in named_decisions[0].detail
 
 
 def test_1011_a_relay_change_is_refused_nothing(stored):

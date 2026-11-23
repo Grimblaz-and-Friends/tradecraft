@@ -12,6 +12,7 @@ record is written by the launchers' own writers, so the state is the shape they 
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -58,6 +59,7 @@ SCENARIOS = {
     "stretch-stopped": "a completed stretch and no readiness record",
     "cannot-launch": "a stopped readiness record whose builder could not launch a check",
     "final-pass": "a ready readiness record at the head, with one counting use report reconciled",
+    "ready-reported": "a launched builder's ready record, reach read from Git, then the release report's payload",
     "catch-up": "the ready record at the head after the base moved",
     "relay-in-flight": "a first build launch, so today's relay chain",
     "relay-default": "no route marker and nothing launched, so today's route",
@@ -251,10 +253,11 @@ class Fixture:
         work.GitHubREST = FixtureGitHub
         work._read_policy_state = lambda *_args, **_kwargs: state
         if self.cold_reading_clean:
-            # The stand-in builder's cold reading and reach stand clear: the fixture keeps no Git history to judge
-            # either by.
+            # The stand-in builder's cold reading stands clear, since no reader ran; so does reach where the fixture
+            # keeps no Git history to read it by.
             work._cold_reading_decision = lambda *_args: None
-            work._evaluate_reach = lambda checked: setattr(checked, "reach", {"state": "not-due"})
+            if self.cold_reading_clean != "reach-read":
+                work._evaluate_reach = lambda checked: setattr(checked, "reach", {"state": "not-due"})
         return work.main(["--repo", REPO, "--issue", str(ISSUE), "--root", str(self.holder)])
 
     def stop(self) -> None:
@@ -281,8 +284,77 @@ def ready_at_head(fixture: Fixture, synchronization: dict) -> object:
     return fixture.state()
 
 
+def git(root: Path, *words: str) -> str:
+    return subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c", "user.email=fixture@invalid",
+                           *words], check=True, capture_output=True, stdin=subprocess.DEVNULL).stdout.decode().strip()
+
+
+def ready_launched(fixture: Fixture) -> object:
+    """A launched builder carried the change to ready: the holder checkout is a repository whose branch holds the
+    builder's commit, so reach is read from Git. The stand-in GitHub serves no checks, so proof, the gate and
+    merge readiness stand in as passed."""
+    work, records, root = fixture.work, fixture.records, fixture.holder
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "--all")
+    git(root, "commit", "-q", "-m", "base")
+    base = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "-q", "-b", "tradecraft/5-fixture")
+    for path, text in (("job/job.md", "run the job\n"), ("skill/SKILL.md", "how an adopter loads the job\n")):
+        (root / path).parent.mkdir(exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+    git(root, "add", "--all")
+    git(root, "commit", "-q", "-m", "job")
+    head = git(root, "rev-parse", "HEAD")
+    fixture.pull_request(head, CLEAR)
+    fixture.pr.update(draft=False, base={"ref": "main", "sha": base})
+    state = fixture.state()
+    brief, _artifact, comment, _checks = work._handoff_inputs(state, FLOOR)
+    text = work.compose_handoff_for(state, branch="tradecraft/5-fixture", holder_root=root, plugin_root=LIB.parent,
+                                    notify=None, floor_command=FLOOR)
+    builder, output, request = fixture._request("stretch", 5, root=root)
+    request.update(revision_before=base, lineage_branch="tradecraft/5-fixture", handoff={
+        "brief_comment": brief.source_id, "artifact_comment": comment, "floor_command": FLOOR, "notify": None,
+        "holder_root": str(root), "plugin_root": str(LIB.parent), "pull_request": 7, "holder_written": False})
+    request_path = records.sidecar(output, ".request.json")
+    records.write_json(request_path, request)
+    records.write_bytes(records.sidecar(output, ".dispatch.bin"), text)
+    fixture.launch_tree.write_pointer(fixture.store, dispatch_id=builder, work=WORK, request=request_path,
+                                      run=records.sidecar(output, ".run.json"), session_id=None,
+                                      launcher=fixture.lifecycle.process_identity(), root=root)
+    # This process stands in the launch's tree, as the builder's own run would, while its use seat starts.
+    holds, fixture.launch_tree.holds = fixture.launch_tree.holds, lambda launch: launch["dispatch_id"] == builder
+    try:
+        report, dispatch = fixture.use_report(state, root, builder)
+    finally:
+        fixture.launch_tree.holds = holds
+    fixture.post(f"<!-- tradecraft:floor:v1 head={head} status=pass -->\n\n```\n{FLOOR}\n```\n\n1 passed\n")
+    records.write_json(records.sidecar(output, ".run.json"), {
+        "schema_version": records.SCHEMA_VERSION, "dispatch_id": builder, "lifecycle": "completed",
+        "outcome": "success", "revision_after": head, "completed_at": (START + timedelta(minutes=20)).isoformat()})
+    fixture.readiness(builder, head, checks=[{"stage": "use", "criterion": None, "row": None, "dispatch": dispatch,
+                                              "head": head, "report": report, "relaunch_of": None}],
+                      findings=[{"report": report, "finding": "F1", "disposition": "fixed", "commit": head}])
+    fixture.cold_reading_clean = "reach-read"
+    # The holder's proof, gate and merge readings stand clear: the fixture serves no policy sources to compose a
+    # proof from and no GitHub to read the others by, and this scenario's subject is the builder's own records.
+    work._current_marker = (lambda current: lambda checked, name, **k: name == "proof" or current(
+        checked, name, **k))(work._current_marker)
+    work.decide = (lambda decide: lambda checked, rules: decide(replace(checked, proof_current=True), rules))(
+        work.decide)
+    work._release_gate_status = lambda *_a: {"verdict": "none", "reason": "none", "head": None,
+                                             "requirement_known": True}
+    work._merge_readiness = lambda *_a: {"reason": "ready", "detail": "", "ready": True}
+    return fixture.state()
+
+
 def scenario(name: str, fixture: Fixture) -> int:
     head = "a" * 40
+    if name == "ready-reported":
+        state = ready_launched(fixture)
+        code = fixture.decision(state)
+        sys.stdout.write("--- the release report's builder_route ---\n")
+        sys.stdout.write(json.dumps(fixture.work._builder_route_report(state), indent=2, default=str) + "\n")
+        return code
     if name in ("handoff-due", "handoff"):
         state = fixture.state()
         code = fixture.decision(state)
@@ -345,13 +417,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.list or args.scenario is None:
         sys.stdout.buffer.write("".join(f"{name}\n" for name in SCENARIOS).encode("ascii"))
         return 0 if args.list else 2
-    base = Path(tempfile.mkdtemp(prefix="route-fixture-")).resolve()
+    # Inside the folder around the tree, with short names under Windows' path limit.
+    base = Path(tempfile.mkdtemp(prefix="rf-", dir=LIB.parent.parent)).resolve()
     try:
         isolate(base)
         if not (LIB.parent / ".claude-plugin" / "plugin.json").is_file():
             # A tree of the practice's paths alone has no plugin manifest to read a version from, so the run
             # works on a copy beside a stand-in one.
-            LIB = shutil.copytree(LIB, base / "practice" / "lib", ignore=shutil.ignore_patterns("__pycache__"))
+            LIB = shutil.copytree(LIB, base / "p" / "lib", ignore=shutil.ignore_patterns("__pycache__"))
             (LIB.parent / ".claude-plugin").mkdir()
             (LIB.parent / ".claude-plugin" / "plugin.json").write_text('{"version": "0.0.0"}', encoding="utf-8")
         fixture = Fixture(base)

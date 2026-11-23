@@ -4174,7 +4174,7 @@ def _evaluate_reach_in_part(state: WorkState) -> None:
             if own and head and request.get("dispatch_id") == own:
                 # A builder reads its own live launch up to the head it reports, so it can settle its reach
                 # before ready-reviewers and proof; a holder's read still sees the launch pending. A live launch has
-                # no run record yet, so its absence isn't an error here.
+                # no run record yet, so its absence isn't an error here. Design: lib/DESIGN.md#the-builder-route
                 record = {**{key: value for key, value in (record or {}).items() if key != "recovery_error"},
                           "revision_after": head}
             elif bundle == latest:
@@ -13401,7 +13401,10 @@ def _run(
         "holder-named-stage",
         f"current recommendation: {recommendation.stage} ({recommendation.reason})"
         + (f"; {recommendation.detail}" if recommendation.reason.startswith("governing-record-")
-           and recommendation.detail else ""),
+           and recommendation.detail else "")
+        # A named run at the final pass says what the ready record left owed, as the read-only decision does.
+        + ("; owed at ready: {stage} ({reason})".format(**json.loads(recommendation.detail)["owed_at_ready"])
+           if recommendation.reason == "owed-at-ready" else ""),
     ))
     grants = validated_grants(state, getattr(args, "grant", None), decision.stage, decision.continuity)
     try:

@@ -17,7 +17,8 @@ import route_fixture  # noqa: E402
 
 STAGES = {"handoff-due": "handoff", "handoff": "handoff", "with-builder": "with-builder",
           "stretch-stopped": "stretch-stopped", "cannot-launch": "stretch-stopped",
-          "final-pass": "final-pass", "catch-up": "catch-up", "hand-started": "with-builder",
+          "final-pass": "final-pass", "ready-reported": "final-pass", "catch-up": "catch-up",
+          "hand-started": "with-builder",
           # Today's relay chain: with the plan settled and no pull request, a build is next.
           "relay-in-flight": "build", "relay-default": "build"}
 
@@ -59,6 +60,11 @@ def test_each_scenario_prints_the_decision_it_names(exported, name):
         assert [entry["counts"] for entry in report["builder_checks"]["check_reports"]] == [True]
     if name == "cannot-launch":
         assert report["reason"] == "cannot-launch"
+    if name == "ready-reported":
+        # Reach was read from the holder's Git rather than stubbed, and the payload follows the decision.
+        assert (report["reason"], report["reach"]["state"]) == ("ready-reported", "clear")
+        payload = json.loads(result.stdout.decode("utf-8").split("builder_route ---\n", 1)[1])
+        assert payload["route"]["name"] == "builder" and payload["handoff_plan"]["reading"] == "composed"
 
 
 def test_the_handoff_carries_the_brief_the_plan_and_the_floor_command(exported):
