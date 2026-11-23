@@ -94,7 +94,8 @@ def _check(entry):
             raise ReadinessError("check " + field + " must be a dispatch id or null")
     if not isinstance(entry["head"], str) or not SHA.match(entry["head"]):
         raise ReadinessError("check head must be a full commit id")
-    if not _row(entry["report"]):
+    # A reach reading that flagged nothing posts no report, so only reach may list a null one.
+    if not _row(entry["report"]) and not (entry["stage"] == "reach" and entry["report"] is None):
         raise ReadinessError("check report must be a comment id")
 
 

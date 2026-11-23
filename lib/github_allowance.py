@@ -218,6 +218,8 @@ def _stated_pattern() -> re.Pattern:
     tail = local[len(head) + len("none"):]
     split = tail.index("Start a Claude session")
     shapes.append((head, tail[:split], tail[split:]))
+    # A stretch sentence ends with the readiness-record clause, not the Write requests one the
+    # local shape's open middle relies on, so it needs shapes of its own.
     for stretch in (sentence({"kind": "stretch"}), sentence({"kind": "stretch"}, hand=True)):
         shapes.append((head, stretch[stretch.index("Start "):]))
     cloud = cloud_sentence("artifact")

@@ -47,6 +47,10 @@ def attributes(**changes):
 def test_1011_a_whole_ready_record_reads():
     assert readiness.payload(body(record()), "ready") == record()
     assert readiness.marker_error(attributes(head="c" * 64), body(record())) is None
+    reach = {**record()["checks"][0], "stage": "reach", "criterion": None, "report": None}
+    assert readiness.payload(body(record(checks=[reach])), "ready")["checks"] == [reach]
+    with pytest.raises(readiness.ReadinessError, match="check report must be a comment id"):
+        readiness.payload(body(record(checks=[{**reach, "stage": "use"}])), "ready")
 
 
 def test_1011_a_stopped_record_carries_its_stop():

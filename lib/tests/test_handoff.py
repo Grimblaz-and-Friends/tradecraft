@@ -142,6 +142,7 @@ def test_1011_record_contract_and_last_post_after_proof():
     finish = text[text.index("## How to finish"):]
     assert "Post proof, then the readiness record at the head you report ready, as the last post." in finish
     assert finish.index("Post proof") < finish.index("readiness record")
+    assert "read your record back with the reach" in finish and "(null for a reach check that flagged nothing)" in record
     assert "holder session named `holder-7`" in finish and "the owner tells the holder" in finish
 
 

@@ -235,12 +235,16 @@ def test_1011_a_hand_started_builder_is_recorded_printed_and_ended(
     assert f"TRADECRAFT_STRETCH_DISPATCH={block['dispatch']}" in out
     assert block["tree"] in out and block["branch"] in out
     assert Path(block["tree"]).is_dir()
-    state.validated_markers = None
-    assert work.decide(state, RULES).stage == "with-builder"
+    from test_route import post, readiness_record
+    post(state, readiness_record(request["dispatch_id"]).split("\n")[0] + "\n\nno record\n", 30)
+    unlawful = json.loads(json.loads(work.decide(state, RULES).detail)["if_ended"]["detail"])["invalid"]
+    assert [entry["comment"] for entry in unlawful] == [str(state.issue_comments[-1]["id"])] and unlawful[0]["reason"]
     assert refused(monkeypatch, holder, state, stage="ready-reviewers") == "with-builder"
+    capsys.readouterr()
     assert run(monkeypatch, holder, state, "handoff", "--ended-reason", "the owner stopped it") == 0
+    assert f'"limit_seconds": {work.DEFAULT_STAGE_TIMEOUT_SECONDS}' in capsys.readouterr().out
     state.validated_markers = None
-    assert work.decide(state, RULES).stage == "stretch-stopped"
+    assert json.loads(work.decide(state, RULES).detail)["invalid"] == unlawful
 
 
 def test_1011_a_codex_machine_builder_is_started_by_hand(tmp_path, monkeypatch, holder, quiet_report, no_spawn):
@@ -303,5 +307,8 @@ def test_1011_a_stopped_hand_started_builder_resumes_only_by_the_holders_reason(
     assert second["handoff"]["resume_of"] == first["dispatch_id"]
     assert second["handoff"]["resume_reason"] == "carry on from the stop"
     assert "carry on from the stop" in out and second["dispatch_id"] in out
+    report = work._builder_route_report(state)
+    assert report["resumes"] == [{"dispatch": second["dispatch_id"], "reason": "carry on from the stop"}]
+    assert report["ended"] == [{"dispatch": first["dispatch_id"], "reason": "the session closed"}]
     state.validated_markers = None
     assert work.decide(state, RULES).stage == "with-builder"

@@ -1971,7 +1971,7 @@ def _launched_builder(builder_bundles: list, seat_bundles: list, card: _Card,
                       projects: Path) -> dict[str, object]:
     builders = [_route_bundle(bundle) for bundle in builder_bundles]
     identities = {request.get("dispatch_id") for request, _run, _path in builders} - {None}
-    # A seat counts only when its request names one of these launches as the one that began it.
+    # A seat the holder launched is the holder's cost, so only one a builder launch began counts here.
     seats = [(request, run, path) for request, run, path in map(_route_bundle, seat_bundles)
              if _mapping(request.get("launched_by")).get("dispatch_id") in identities]
     items, streamed, reasons, counted, seen = [], [], [], [], set()

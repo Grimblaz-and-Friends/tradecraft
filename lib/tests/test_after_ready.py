@@ -95,7 +95,7 @@ def test_1011_the_final_pass_launches_nothing_but_one_send_back(
     second = next(request for request in hand_requests() if request["dispatch_id"] != first["dispatch_id"])
     assert second["handoff"]["resume_of"] == first["dispatch_id"]
     assert second["handoff"]["send_back"]["timeout_seconds"] == 3600
-    assert ("Re-run the checks your changes make stale, answer each point, and post a new readiness record.\n\n"
+    assert ("Re-run the checks your changes make stale, answer each point, post proof and then a new readiness record.\n\n"
             "Point 1: the floor skips lib/new.py.\n") in out and second["dispatch_id"] in out
     [(endpoint, body)] = transport.posted
     assert endpoint == "repos/o/r/issues/5/comments"

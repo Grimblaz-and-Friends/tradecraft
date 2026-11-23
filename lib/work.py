@@ -5738,7 +5738,7 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
         return Decision(
             "cold-reading-post", False, None, "cold-reading-post-owed",
             f"Post the cold reader's account from {latest['id']} whole and verbatim in one comment "
-            f"opening with <!-- tradecraft:cold-reading:v1 head={sha} status=open "
+            f"opening with <!-- tradecraft:cold-reading:v1 head={latest['head']} status=open "
             "staffing_status=... -->, and beneath it, under \"Holder's review against the brief\", each "
             "misreading, the route for each flag worth another round and any `Can tell: no`, and one "
             f"`Accepted: path:lines {cold_reader.EM_DASH} KIND {cold_reader.EM_DASH} reason` line for "
@@ -6352,7 +6352,7 @@ BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and post
                                  "with `author=holder`")
 
 
-def _builder_route_decision(state: WorkState) -> Decision:
+def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Decision:
     """The next stage once the plan is settled on the builder route, from its stretch and readiness record.
 
     Design: lib/DESIGN.md#the-builder-route
@@ -6361,12 +6361,15 @@ def _builder_route_decision(state: WorkState) -> Decision:
     store = state.record_root or records.default_record_root()
     live = [pointer for pointer in launch_tree.live_launches(store)
             if str(pointer.get("work", "")).lower() == work.lower()]
-    if live:
-        return Decision("with-builder", False, None, "builder-live", "; ".join(
+    if live and not as_ended:
+        # What the decision reads once the builder ends, so it can read its own record back.
+        ended = _builder_route_decision(state, as_ended=True)
+        return Decision("with-builder", False, None, "builder-live", json.dumps({"live": "; ".join(
             f"hand-started record {pointer['dispatch_id']} is open, awaiting its readiness record or "
             "run handoff --ended-reason" if pointer.get("hand") is True else
             f"stretch launch {pointer['dispatch_id']} is still running; wait for its readiness record"
-            for pointer in live), status="waiting")
+            for pointer in live), "if_ended": {"stage": ended.stage, "reason": ended.reason,
+                                               "detail": ended.detail}}, ensure_ascii=True), status="waiting")
     term, _lane = _affirmed_review(state)
     if not lifecycle.launch_bundles(store, work, {"stretch"}, after=term.timestamp if term else None):
         return Decision("handoff", False, None, "handoff-due",
@@ -12107,11 +12110,14 @@ def readiness_reading(state: WorkState, checks: dict[str, object] | None) -> dic
     """
     posted = [marker for marker in state.issue_markers if marker.name == "readiness"
               and marker.surface == "issue-comment" and _attribute_error(marker) is None]
-    if not posted:
+    # Validation drops an unlawful record before this reads the markers, so its reason is kept from there.
+    invalid = [{"comment": claim.get("source_id"), "reason": claim.get("reason")}
+               for claim in state.invalid_marker_claims if claim.get("name") == "readiness"]
+    if not posted and not invalid:
         return None
     lawful = [marker for marker in posted if _marker_value_error(marker) is None]
-    invalid = [{"comment": marker.source_id, "reason": _marker_value_error(marker)}
-               for marker in posted if _marker_value_error(marker) is not None]
+    invalid += [{"comment": marker.source_id, "reason": _marker_value_error(marker)}
+                for marker in posted if _marker_value_error(marker) is not None]
     # A resume is its own record under a new dispatch.
     stretches = {request.get("dispatch_id") for request in _term_stretches(state)}
     invalid += [{"comment": marker.source_id, "reason": "dispatch is no stretch of this term"}
@@ -12235,7 +12241,7 @@ DEFAULT_STRETCH_TIMEOUT_SECONDS = 28800.0
 HANDOFF_OPTIONS = ("notify", "by_hand", "resume_reason", "ended_reason")
 RESUME_LINE = ("You are resumed as this change's builder after your stretch stopped. Read your last "
                "readiness record and the change's state, then carry the change on to ready under the "
-               "handoff you were given.")
+               "handoff you were given: post proof and then a new readiness record.")
 LAUNCH_CONFIRM_POLL_SECONDS = 0.2
 # A launcher's own steps before its request record are bounded by its own cap; this is only the
 # entrance's wait for them, cut at the entrance's cap. The exit code goes to a file because a detached
@@ -12623,8 +12629,8 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
 # Design: lib/DESIGN.md#the-builder-route
 
 DEFAULT_SEND_BACK_TIMEOUT_SECONDS = 3600.0
-SEND_BACK_HEADER = (b"Re-run the checks your changes make stale, answer each point, and post a new "
-                    b"readiness record.\n\n")
+SEND_BACK_HEADER = (b"Re-run the checks your changes make stale, answer each point, post proof and then "
+                    b"a new readiness record.\n\n")
 CATCH_UP_LINE = (b"Catch up with the base, re-run what the merge makes stale, post proof and a new "
                  b"readiness record.\n")
 # The holder repeats no check the record shows was run and launches no review after the ready report; its one
@@ -12875,7 +12881,11 @@ def _builder_route_report(state: WorkState) -> dict:
         hand_record=None if hand is None else {"dispatch": hand.get("dispatch_id"),
                                                "ran_under": hand.get("ran_under")},
         check_dispatches=(checks or {}).get("check_dispatches"), check_reports=(checks or {}).get("check_reports"),
-        stretch_outcome=(stretches[-1][3] or {}).get("outcome") if stretches else None)
+        stretch_outcome=(stretches[-1][3] or {}).get("outcome") if stretches else None) | {
+        "resumes": [{"dispatch": request.get("dispatch_id"), "reason": block["resume_reason"]}
+                    for request, block in blocks if block.get("resume_reason") is not None],
+        "ended": [{"dispatch": request.get("dispatch_id"), "reason": run.get("reason")}
+                  for _o, _p, request, run in stretches if (run or {}).get("completed_by") == "ended-reason"]}
 
 
 def run(
@@ -12914,7 +12924,7 @@ def _run_entry(
         except ValueError as exc:
             raise WorkError(str(exc)) from exc
         limit = args.timeout_seconds if args.timeout_seconds is not None else (
-            DEFAULT_STRETCH_TIMEOUT_SECONDS if args.stage == "handoff" else
+            DEFAULT_STRETCH_TIMEOUT_SECONDS if args.stage == "handoff" and args.ended_reason is None else
             DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else DEFAULT_STAGE_TIMEOUT_SECONDS)
         if not math.isfinite(limit) or limit <= 0:
             raise WorkError("--timeout-seconds must be finite and positive")
@@ -12929,8 +12939,7 @@ def _run_entry(
         declaration = (cap_declaration.write(_records_home(None), f"{args.repo}#{args.issue}", args.stage,
                                              deadline, window) if deadline.cap_declared else None)
         window["cap_record"] = str(declaration) if declaration else None
-        if not (args.stage == "handoff" and args.ended_reason is not None):  # it launches nobody
-            print("work: window " + json.dumps(window, ensure_ascii=True), flush=True)
+        print("work: window " + json.dumps(window, ensure_ascii=True), flush=True)
         outcome_token = _CAP_OUTCOME.set(None)
         try:
             with lifecycle.deadline_scope(deadline):

@@ -171,7 +171,7 @@ def _record_section(mechanical: bool, started_by: str) -> list[str]:
         "- `checks`: one entry per check you ran: its `stage` (`use`, `acceptance-criterion`, "
         "`cold-reader`, `floor` or `reach`), its `criterion` id or null (an acceptance-criterion check "
         "always names one), its `row` (the brief row a row check reads) or null, its `dispatch` id or null, the full commit `head` it read, "
-        "its `report` comment id, and `relaunch_of`, the dispatch id of the errored check it relaunches, "
+        "its `report` comment id (null for a reach check that flagged nothing), and `relaunch_of`, the dispatch id of the errored check it relaunches, "
         "or null.",
         "- `findings`: exactly one entry for every finding of every check report, never two: its "
         "`report` comment id, its `finding` (`F1`, `F2` ... as the report numbers them), and a "
@@ -224,6 +224,9 @@ def compose_handoff(*, brief: str, artifact: str | None, lane_reason: str | None
         ]),
         ("How to finish", [
             "Post proof, then the readiness record at the head you report ready, as the last post.",
+            "",
+            "Then read your record back with the reach check's command; where it shows the record "
+            "unlawful or anything still owed at that head, repair it and post the record again.",
             "",
             (f"Then send one message to the holder session named `{notify}`; where your runtime offers "
              "no such message, end, and the owner tells the holder." if notify else

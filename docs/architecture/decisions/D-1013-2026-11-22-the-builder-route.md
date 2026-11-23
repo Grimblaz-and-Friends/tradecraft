@@ -79,6 +79,15 @@ The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/
 - **A `stopped` record completes a hand-started record**, so it reads `stretch-stopped`; `builder-live` refuses `--resume-reason`, which is for a stopped builder.
 - **`placement` is removed:** where each decline goes (C26) is the release-report reference's rule, applied by the holder who writes the report.
 
+## From the holder's reading of the sixth build turn
+
+- **A reach check that flagged nothing is lawful with `report: null`,** since no comment was posted to name.
+- **The builder reads its record back:** after posting it, it runs the read-only decision, whose `if_ended` shows what it will read once the builder has ended, and repairs an unlawful record or anything still owed.
+- **A stopped decision names the record it set aside and why.**
+- **Every resume's fixed line asks for proof before the record.**
+- **The cold reading's hold names the reading's head,** which the validator wants; the text predates this route, which exposed it.
+- **The release report lists each `--resume-reason` and `--ended-reason` with its reason** (E3), and `run handoff --ended-reason` prints its window with that stage's own time.
+
 ## Rejected
 
 - **A Codex cold seat for a Claude holder's plan,** which D-1012's plan recommended. It would change which model the entrance launches, against Not this (C5).
