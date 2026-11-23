@@ -267,6 +267,7 @@ def test_1011_the_release_report_carries_the_builder_route(tmp_path, monkeypatch
     caught = launch(state, "stretch", 60, handoff={"resume_of": resumed, "catch_up_resume": {}})
     post(state, readiness_record(first), 30)
     post(state, f"<!-- tradecraft:send-back:v1 dispatch={resumed} -->\n\nPoint 1.\n", 35)
+    post(state, readiness_record(resumed), 50)
     post(state, readiness_record(caught), 70)
     report = work._builder_route_report(state)
     assert report["route"]["name"] == "builder" and report["readiness"]["dispatch"] == caught

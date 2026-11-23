@@ -75,6 +75,7 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
     def argv(command):
         return _argv(command, repo=repo, issue=issue, holder_root=holder_root, plugin_root=plugin_root)
 
+    markers = "`" + plugin_root.rstrip("/\\") + "/skills/work/references/markers.md`"
     lines = ["Run each check through the entrance, from the change's tree. Each command composes its own "
              "dispatch and tree, launches a fresh reader and posts its report; a check's report is what "
              "your record answers.", "",
@@ -108,8 +109,7 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
         elif stage == "reach":
             title = "reach"
             note = ("This is the read-only decision; it prints the reach report. For every item it flags, "
-                    "post the `reach-reading` comment in the form the work cell's markers reference gives "
-                    "it: an issue comment whose first line is "
+                    "post the `reach-reading` comment in the form " + markers + " gives it: an issue comment whose first line is "
                     "`<!-- tradecraft:reach-reading:v1 head=FULL_COMMIT_SHA -->`, with `head` the full "
                     "commit id the reading covers and no `holder-reading` companion, followed by exactly "
                     "one fenced `json` object holding the integer `schema_version` 1, `turns` (each turn's "
@@ -119,8 +119,9 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
         else:
             title = stage
             note = None if stage != "cold-reader" else (
-                "You post the cold reading's `open`, quoting the counting `cold-reader` report, before `run "
-                "use`, and its `clean` before `run proof`, in the markers reference's `cold-reading` form.")
+                "You post the cold reading's `open`, quoting the counting `cold-reader` report, and then its "
+                "`clean`, in the `cold-reading` form " + markers + " gives. The entrance holds `run use`, "
+                "`run ready-reviewers` and `run proof` until a `clean` stands at your head.")
         lines += [f"{number}. {title}:", ""] + block
         if note:
             lines += ["", note] if block else [note]
@@ -140,7 +141,9 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
         "[unidentified review](https://github.com/OWNER/REPO/pull/N#pullrequestreview-REVIEW_ID)`. "
         "One answer names one source link. Close each reviewer's answers with its "
         "`<!-- tradecraft:connected-reviewer:v1 name=NAME status=complete -->` reply once every comment "
-        "from it is answered.",
+        "from it is answered.", "",
+        "After `ready-reviewers`, wait for each connected reviewer's review and answer it whole; then run "
+        "proof, then post the readiness record.",
     ]
     return lines
 
@@ -150,7 +153,7 @@ def _record_section(started_by: str) -> list[str]:
         "Report ready, or stopped, with one issue comment whose first line is the marker", "",
         "```text", READINESS_MARKER, "```", "",
         "with `head` the full commit id you report, `status` ready or stopped, and `dispatch` your "
-        "launch's dispatch id; and with exactly one fenced json object after it, holding exactly these "
+        "launch's dispatch id, which `" + DISPATCH_VARIABLE + "` in your environment holds; and with exactly one fenced json object after it, holding exactly these "
         "fields and no others:", "",
         RECORD_EXAMPLE.replace("STARTED_BY", started_by), "",
         "- `schema_version`: the integer 1.",
@@ -200,6 +203,8 @@ def compose_handoff(*, brief: str, artifact: str, checks: list[dict],
             "Stop with `status=stopped` and a `shape` stop only when the brief's Shape is wrong for the "
             "change. Where a check cannot be launched, post `status=stopped` with a `cannot-launch` stop "
             "naming the first such check and why.",
+            "",
+            "Record in `decisions` too any departure from the plan a check required, with what you added.",
             "",
             "Write no check's instructions, and choose nothing a check reads.",
         ]),

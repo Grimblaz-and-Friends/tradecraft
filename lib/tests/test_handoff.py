@@ -142,7 +142,8 @@ def test_1011_both_stop_kinds():
 def test_1011_hand_block_only_with_hand():
     plain = compose()
     assert "## Where you work" not in plain and handoff.NO_LAUNCH_BLOCK not in plain
-    assert "TRADECRAFT_STRETCH_DISPATCH" not in plain
+    assert "export TRADECRAFT_STRETCH_DISPATCH" not in plain
+    assert "`dispatch` your launch's dispatch id, which `TRADECRAFT_STRETCH_DISPATCH` in your environment holds" in plain
     text = compose(hand=HAND)
     assert headings(text) == TITLES + ["Where you work"]
     block = text[text.index("## Where you work"):]
@@ -157,7 +158,11 @@ def test_1011_the_closing_line_and_who_posts_the_cold_reading():
     text = compose()
     assert "as a draft from your branch, with `Closes #7` alone on a line" in text
     cold = entry(checks_section(text), "cold-reader")
-    assert cold.index("`open`") < cold.index("`run use`") < cold.index("`clean` before `run proof`")
+    assert cold.index("`open`") < cold.index("`clean`")
+    assert "holds `run use`, `run ready-reviewers` and `run proof` until a `clean` stands at your head" in cold
+    assert "`/plugin/skills/work/references/markers.md`" in cold
+    assert "wait for each connected reviewer's review and answer it whole; then run proof, then post" in text
+    assert "any departure from the plan a check required, with what you added" in text
     assert "implementing-pr" not in text and "builder-session" not in text
 
 
@@ -238,7 +243,7 @@ import work  # noqa: E402
 ENTRANCE_ARTIFACT = (
     "## Use session job\n\n```text\nUse it.\n```\n\n"
     "## Criteria\n\n"
-    "**B1.** Reads the route. *Check:* tests.\n\n"
+    "**B1.** Reads the route. *Check:* tests.\n\n```text\nFresh reader: read tree\n```\n\n"
     "**B2.** The doctrine tells it.\nFresh reader: read tree\n\n"
     "```text\n**B9.** An example inside a fence.\nFresh reader: read tree\n```\n\n"
     "**B3.** The handoff text is whole.\nFresh reader: execute consumer tree use\n"

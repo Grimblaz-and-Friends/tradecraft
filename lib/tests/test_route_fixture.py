@@ -24,11 +24,10 @@ STAGES = {"handoff-due": "handoff", "handoff": "handoff", "with-builder": "with-
 
 @pytest.fixture(scope="module")
 def exported(tmp_path_factory):
-    """lib/ and the plugin manifest it reads its version from, copied outside every registered worktree."""
+    """lib/ alone, copied outside every registered worktree, as the use session's declared tree holds it."""
     export = tmp_path_factory.mktemp("export")
     root = export / "lib"
     shutil.copytree(LIB, root, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-    shutil.copytree(LIB.parent / ".claude-plugin", export / ".claude-plugin")
     return root
 
 
@@ -70,3 +69,22 @@ def test_the_handoff_carries_the_brief_the_plan_and_the_floor_command(exported):
     assert route_fixture.PLAN.strip() in text
     assert "```text\n" + route_fixture.FLOOR + "\n```" in text
     assert "--criterion C2" in text and "--job-from-artifact" in text
+
+
+def test_1011_a_builder_route_proof_takes_its_use_and_floor_from_the_builders_evidence(tmp_path):
+    fixture = route_fixture.Fixture(tmp_path)
+    try:
+        state = route_fixture.ready_at_head(fixture, route_fixture.CLEAR)
+        work = fixture.work
+        state.changed_paths = ["job/job.md"]
+        state.policy_sources = {key: {"repository": route_fixture.REPO, "path": key, "revision": "a" * 40,
+                                      "sha256": "1" * 64} for key in ("work_configuration", "use_rules")}
+        work.validate_marker_claims(state)
+        work._prepare_builder_use(state, None, route_fixture.RULES, state.pr["head"]["sha"])
+        composed = work.compose_proof(state, route_fixture.RULES)
+    finally:
+        fixture.stop()
+    work.proof_document.validate(composed)
+    assert not {item["code"] for item in composed["diagnostics"]} & {"use-missing", "floor-missing"}
+    assert [(item["stage"], item["status"]) for item in composed["declarations"]] == [
+        ("floor", "declared"), ("use", "declared")]

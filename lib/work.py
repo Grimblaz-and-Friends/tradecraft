@@ -1784,7 +1784,7 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "route":
         if values.get("route") not in ROUTES:
             return "route must be relay or builder"
-        if not any(re.match(r"^ {0,3}>", line) for line in marker.body.splitlines()):
+        if not any(re.match(r"^ {0,3}>[ \t]*\S", line) for line in marker.body.splitlines()):
             # The marker carries the owner's own words, so a bare marker is no owner's ask.
             return "route marker quotes no owner's words"
     return None
@@ -2040,8 +2040,11 @@ def _builder_floor_error(state: WorkState, marker: Marker) -> str | None:
     commands = {row[2]["handoff"]["floor_command"] for row in rows if isinstance(row[2].get("handoff"), dict)
                 and isinstance(row[2]["handoff"].get("floor_command"), str) and row[2]["handoff"]["floor_command"]}
     body = MARKER.sub("", marker.body)
-    if any(command in body and re.sub(r"[`~\s]", "", body.replace(command, "", 1)) for command in commands):
-        return None
+    # The command stands in its own block and the output after it, so naming the command proves no run.
+    for command in commands:
+        found = re.search(r"(?m)^```[^\n]*\n" + re.escape(command) + r"\n```[ \t]*$", body)
+        if found and body[found.end():].strip():
+            return None
     return "builder floor does not carry its handoff's floor command and that command's output"
 
 
@@ -6317,8 +6320,10 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
             return made
         # The holder is refused these on the builder route, so the ready record owed them: its final pass
         # names what the builder left, for the holder to send back.
-        owed = {**json.loads(builder.detail),
-                "owed_at_ready": {"stage": made.stage, "reason": made.reason, "detail": made.detail}}
+        # In this route's own words: a version bump is a commit the builder owes, and readying reviewers is its.
+        owed = {**json.loads(builder.detail), "owed_at_ready": {
+            "stage": "builder-commit" if made.stage == "build" else made.stage, "reason": made.reason,
+            "detail": None if made.stage in {"build", "ready-reviewers"} else made.detail}}
         return result("final-pass", False, None, "owed-at-ready", json.dumps(owed, ensure_ascii=True),
                       status="holder-owned")
 
@@ -6371,7 +6376,7 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
 BUILDER_OWED_STAGES = frozenset({"build", "artifact", "floor", "review-disposition", "proof", "use",
                                  "ready-reviewers", "cold-reader", "cold-reading-post", "cold-reading-close"})
 BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and posts it as a draft "
-                                 "with `author=holder`")
+                                 "marked `author=holder vendor=claude` or `vendor=codex`")
 
 
 def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Decision:
@@ -8114,6 +8119,20 @@ def _proof_diagnostics(state: WorkState, floor: Marker | None,
     return diagnostics
 
 
+def _launch_declaration(stage: str, row: tuple | None) -> dict[str, object]:
+    """A declaration read from the launch that made the evidence, where no stage bundle of its own exists."""
+    if row is None:
+        return _unverifiable_declaration(stage, f"no {stage} launch is recorded")
+    _order, _path, request, run = row
+    run, requested = run or {}, request.get("requested") or {}
+    return {**_unverifiable_declaration(stage, ""), "status": "declared", "reason": None,
+            "dispatch_id": request.get("dispatch_id"), "completed_at": run.get("completed_at"),
+            "requested_vendor": requested.get("vendor"), "requested_model": requested.get("model"),
+            "requested_effort": requested.get("effort"), "requested_classification": requested.get("classification"),
+            "actual_vendor": run.get("actual_vendor"), "staffing_status": run.get("staffing_status"),
+            "same_vendor_reason": (run.get("staffing_qualification") or {}).get("same_vendor_reason")}
+
+
 def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, object]:
     if state.pr is None or not isinstance(state.pr.get("number"), int):
         raise WorkError("proof requires one implementing pull request")
@@ -8131,7 +8150,25 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
     application = state.use_application or {}
     reviewers = _reviewer_receipts(state)
     dispositions = _proof_dispositions(state)
-    if bought:
+    # On the builder route use is the counting composed use report, and the floor the builder's own marker,
+    # each declared from the launch that made it, as the route's decision reads them.
+    work, store = f"{state.repo}#{state.issue_number}", state.record_root or records.default_record_root()
+    try:
+        builder_route = _route(state)["name"] == "builder"
+    except WorkError:
+        builder_route = False
+    report = next((entry for entry in _builder_use_reports(state) if entry.get("comment") == application.get("report")),
+                  None) if builder_route and use_marker is None else None
+    if bought and report is not None:
+        comment = next(item for item in state.issue_comments if item.get("id") == report["comment"])
+        use = {"required": True, "classification": "required", "evidence_head": application.get("evidence_head"),
+               "applicability": str(application.get("applicability")),
+               "source": {"kind": "issue-comment", "repository": state.repo, "id": report["comment"],
+                          "url": comment.get("html_url"), "author": _author(comment),
+                          "timestamp": comment.get("created_at"), "revision": report.get("head")},
+               "intervening_commits": application.get("intervening_commits", []),
+               "reason": str(application.get("reason")) if application.get("reason") else None}
+    elif bought:
         use = {
             "required": True, "classification": "required",
             "evidence_head": use_marker.attributes.get("head") if use_marker else None,
@@ -8151,8 +8188,13 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
             "intervening_commits": [], "reason": policy.use_reason,
         }
     builder_owed = not state.floor_public or not (state.floor_public.get("declaration") or {}).get("jobs") or state.floor_public["outcome"] == "fallback"
-    declarations = [_marker_declaration(state, floor, "floor")] if builder_owed else []
-    if bought:
+    stretches = lifecycle.launch_bundles(store, work, {"stretch"}) if builder_route else []
+    declarations = ([(_launch_declaration("floor", stretches[-1] if stretches else None) if builder_route and floor
+                      else _marker_declaration(state, floor, "floor"))] if builder_owed else [])
+    if bought and report is not None:
+        declarations.append(_launch_declaration("use", next((row for row in lifecycle.launch_bundles(
+            store, work, {"use"}) if row[2].get("dispatch_id") == report["dispatch"]), None)))
+    elif bought:
         declarations.append(_marker_declaration(state, use_marker, "use"))
     evidence = {
         "schema_version": 1,
@@ -8173,8 +8215,9 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
         },
         "use": use, "reviewers": reviewers, "dispositions": dispositions,
         "declarations": declarations,
+        # Only whether use has a source matters to the diagnostics, so the counting report stands for a marker.
         "diagnostics": _proof_diagnostics(
-            state, floor, use_marker, bought, reviewers, dispositions
+            state, floor, use_marker or report, bought, reviewers, dispositions
         ),
     }
     try:
@@ -11535,7 +11578,9 @@ def artifact_tree_declaration(artifact: str, name: str) -> dict[str, object]:
 
 def _check_conditions(tree: str, capability: str) -> str:
     """What a check's reader is told of its tree and its return; the folder around the tree is its working space."""
-    lines = [f"Return at most {CHECK_RETURN_BYTES:,} UTF-8 bytes."]
+    # The head is named, but the tree is built fresh: its history is its own and holds no such commit.
+    lines = ["The tree is a snapshot of the head commit with a history of its own.",
+             f"Return at most {CHECK_RETURN_BYTES:,} UTF-8 bytes."]
     if capability == "execute":
         lines.insert(0, f"The tree must stay as built: write nothing in it. Write what you make in "
                         f"{Path(tree).parent}, the folder around it, with shell commands, use your session "
@@ -11571,8 +11616,12 @@ def fresh_reader_criteria(artifact: str) -> list[str]:
     found = []
     for match in CRITERION_OPENING.finditer(artifact):
         identifier = match.group(1)
-        if match.start() in outside and identifier not in found and FRESH_READER.search(
-                artifact_criterion(artifact, identifier)):
+        if match.start() not in outside or identifier in found:
+            continue
+        # Read outside fences, as the reader's own composition reads the directive.
+        text = artifact_criterion(artifact, identifier).splitlines(keepends=True)
+        fence = _fenced_lines(text)
+        if FRESH_READER.search("".join(line for index, line in enumerate(text) if index not in fence)):
             found.append(identifier)
     return found
 
@@ -12267,8 +12316,8 @@ def _refuse_off_route(state: WorkState, stage: str) -> None:
     if stage in RELAY_ONLY_STAGES:
         raise RouteRefused("route-is-builder", f"run {stage}: this change is on the builder route "
                            f"({route['reason']})" + _route_ask(route, "relay"))
-    if stage == "proof":
-        raise RouteRefused("stage-is-the-builders", "run proof: on the builder route the builder posts proof "
+    if stage in ("proof", "ready-reviewers"):
+        raise RouteRefused("stage-is-the-builders", f"run {stage}: on the builder route the builder runs it "
                            "from its own tree")
     if stage == "release-report":
         reading = readiness_reading(state, builder_checks(state)) or {}
@@ -12413,7 +12462,9 @@ def _discard_handoff_tree(holder: Path, made: dict) -> None:
         if remote and pushed:
             listed = _git(["ls-remote", "--heads", remote, f"refs/heads/{branch}"], root)
             tip = (listed.stdout.decode("ascii", "replace").split() or [None])[0] if not listed.returncode else None
-            removed = (_git(["push", remote, "--delete", branch], root)
+            # The lease holds the delete to the tip read, so a branch another writer advanced stays.
+            removed = (_git(["push", f"--force-with-lease=refs/heads/{branch}:{pushed}", remote, "--delete", branch],
+                            root)
                        if tip == pushed else None)
             if removed is None or removed.returncode:
                 print(f"work: the published branch {remote}/{branch} was left; remove it by hand",
@@ -12446,8 +12497,11 @@ def _handoff_tree(state: WorkState, holder: Path, instalment: str | None,
     try:
         made["remote"] = publish_implementation_branch(implementation_root, branch)
         made["published"] = _git_text(["rev-parse", "HEAD"], implementation_root, "read the published head")
-    except BaseException:
+    except BaseException as exc:
         _discard_handoff_tree(canonical_holder_root(holder), made)
+        if isinstance(exc, WorkError) and "remote" not in made:
+            # A push can land and then fail its check, so the branch is named for the owner's cleanup.
+            raise WorkError(f"{exc}; branch {branch} may be published") from exc
         raise
     return implementation_root, branch, made
 
@@ -12901,8 +12955,10 @@ def _builder_route_report(state: WorkState) -> dict:
     checks = builder_checks(state)
     reading = readiness_reading(state, checks)
     marks = _send_back_markers(state)
-    later = [marker for marker in state.issue_markers if marks and marker.name == "readiness"
-             and marker.surface == "issue-comment" and _source_order(marker) > _source_order(marks[0])
+    # The send-back's ready record is the one its own launch posted, whenever its marker was posted.
+    sent = {request.get("dispatch_id") for request in _send_back_launches(state)}
+    later = [marker for marker in state.issue_markers if marker.name == "readiness"
+             and marker.surface == "issue-comment" and marker.attributes.get("dispatch") in sent
              and _attribute_error(marker) is None and _marker_value_error(marker) is None
              and marker.attributes.get("status") == "ready"]
     limits = [{"stage": stage, "dispatch": request.get("dispatch_id"), "timeout_seconds": part["timeout_seconds"],

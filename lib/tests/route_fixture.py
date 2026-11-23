@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -318,7 +319,19 @@ def scenario(name: str, fixture: Fixture) -> int:
     raise ValueError(f"unknown scenario: {name}")
 
 
+def _remove(path: Path) -> None:
+    """Remove what the run made, read-only Git objects included, which Windows won't delete as they are."""
+    def writable(function, name, _error):
+        try:
+            os.chmod(name, stat.S_IWRITE)
+            function(name)
+        except OSError:
+            pass
+    shutil.rmtree(path, **({"onexc": writable} if sys.version_info >= (3, 12) else {"onerror": writable}))
+
+
 def main(argv: list[str] | None = None) -> int:
+    global LIB
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("scenario", nargs="?", choices=sorted(SCENARIOS))
     parser.add_argument("--list", action="store_true", help="print the scenario names, one per line")
@@ -329,13 +342,19 @@ def main(argv: list[str] | None = None) -> int:
     base = Path(tempfile.mkdtemp(prefix="route-fixture-")).resolve()
     try:
         isolate(base)
+        if not (LIB.parent / ".claude-plugin" / "plugin.json").is_file():
+            # A tree of the practice's paths alone has no plugin manifest to read a version from, so the run
+            # works on a copy beside a stand-in one.
+            LIB = shutil.copytree(LIB, base / "practice" / "lib", ignore=shutil.ignore_patterns("__pycache__"))
+            (LIB.parent / ".claude-plugin").mkdir()
+            (LIB.parent / ".claude-plugin" / "plugin.json").write_text('{"version": "0.0.0"}', encoding="utf-8")
         fixture = Fixture(base)
         try:
             return scenario(args.scenario, fixture)
         finally:
             fixture.stop()
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        _remove(base)
 
 
 if __name__ == "__main__":

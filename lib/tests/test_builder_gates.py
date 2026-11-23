@@ -23,6 +23,14 @@ from test_route import (  # noqa: E402
 )
 
 RELAY = route_marker("relay")
+
+
+@pytest.fixture(autouse=True)
+def measured(monkeypatch):
+    """Reach reads Git history these fixtures don't keep, and these tests are of the gates after it."""
+    monkeypatch.setattr(work, "_evaluate_reach", lambda state: setattr(state, "reach", {"state": "not-due"}))
+
+
 ASK = route_marker("builder")
 
 
@@ -196,10 +204,11 @@ def test_1011_a_builder_floor_counts_with_its_handoff_command_and_output(tmp_pat
     floor = f"<!-- tradecraft:floor:v1 head={HEAD} status=pass -->\n\n"
     command = "python -B -m pytest -q"
     state = with_pull_request(fixture(tmp_path, *PLANNED, floor + f"```\n{command}\n```\n\n3 passed\n",
-                                      floor + f"```\n{command}\n```\n", floor + "3 passed\n"))
+                                      floor + f"```\n{command}\n```\n", floor + "3 passed\n",
+                                      floor + f"Ran `{command}`: 3 passed\n"))
     launch(state, "stretch", 5, handoff={"floor_command": command})
     reasons = [claim["reason"] for claim in work.validate_marker_claims(state)[1] if claim["name"] == "floor"]
-    assert len(reasons) == 2 and all("handoff's floor command" in reason for reason in reasons)
+    assert len(reasons) == 3 and all("handoff's floor command" in reason for reason in reasons)
     assert [marker.body.endswith("3 passed\n") for marker in state.markers if marker.name == "floor"] == [True]
     # On the relay the same marker still needs its floor bundle.
     relay = with_pull_request(fixture(tmp_path / "relay", MECHANICAL, RELAY,

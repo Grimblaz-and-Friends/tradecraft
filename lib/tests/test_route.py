@@ -163,7 +163,7 @@ def test_1011_the_report_carries_the_route(tmp_path, monkeypatch, capsys):
 
 def test_1011_an_invalid_route_marker_is_invalid(tmp_path):
     unknown = fixture(tmp_path, BRIEF, route_marker("cloud"))
-    bare = fixture(tmp_path, BRIEF, "<!-- tradecraft:route:v1 route=relay -->\n\nNo quotation here.\n")
+    bare = fixture(tmp_path, BRIEF, "<!-- tradecraft:route:v1 route=relay -->\n\nNo quotation here.\n>\n")
     for state, reason in ((unknown, "route must be relay or builder"), (bare, "route marker quotes no owner's words")):
         work.validate_marker_claims(state)
         assert [claim["reason"] for claim in state.invalid_marker_claims if claim["name"] == "route"] == [reason]
@@ -284,7 +284,7 @@ def test_1011_a_base_that_moved_after_the_ready_record_is_caught_up(tmp_path):
 def test_1011_the_builder_route_artifact_is_the_holders_to_write(tmp_path):
     made = work.decide(fixture(tmp_path, CONNECTED, route_marker("builder")), RULES)
     assert (made.stage, made.dispatch, made.status) == ("artifact", False, "holder-owned")
-    assert "`author=holder`" in made.detail
+    assert "`author=holder vendor=claude`" in made.detail
 
 
 def test_1011_a_relay_change_keeps_todays_chain(tmp_path):
@@ -368,7 +368,8 @@ def test_1011_the_route_names_the_ask_it_answers_in_flight(tmp_path):
 
 
 def test_1011_proof_is_the_builders_on_the_builder_route(tmp_path, monkeypatch, stored):
-    assert named(tmp_path, monkeypatch, stored(CONNECTED, route_marker("builder")), "proof")[0] == "stage-is-the-builders"
+    for stage in ("proof", "ready-reviewers"):
+        assert named(tmp_path, monkeypatch, stored(CONNECTED, route_marker("builder")), stage)[0] == "stage-is-the-builders"
 
 
 def test_1011_the_release_report_waits_for_a_ready_record_at_the_head(tmp_path, monkeypatch, stored):

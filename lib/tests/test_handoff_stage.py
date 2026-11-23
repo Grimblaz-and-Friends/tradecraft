@@ -239,7 +239,7 @@ def test_1011_a_hand_started_builder_is_recorded_printed_and_ended(
     post(state, readiness_record(request["dispatch_id"]).split("\n")[0] + "\n\nno record\n", 30)
     unlawful = json.loads(json.loads(work.decide(state, RULES).detail)["if_ended"]["detail"])["invalid"]
     assert [entry["comment"] for entry in unlawful] == [str(state.issue_comments[-1]["id"])] and unlawful[0]["reason"]
-    assert refused(monkeypatch, holder, state, stage="ready-reviewers") == "with-builder"
+    assert refused(monkeypatch, holder, state, stage="use") == "with-builder"
     capsys.readouterr()
     assert run(monkeypatch, holder, state, "handoff", "--ended-reason", "the owner stopped it") == 0
     assert f'"limit_seconds": {work.DEFAULT_STAGE_TIMEOUT_SECONDS}' in capsys.readouterr().out
@@ -281,7 +281,7 @@ def test_1011_a_claude_builder_is_launched_detached_and_the_holder_waits_for_it(
     assert argv[argv.index("--work") + 1] == "o/r#5"
     state.validated_markers = None
     assert work.decide(state, RULES).stage == "with-builder"
-    assert refused(monkeypatch, holder, state, stage="ready-reviewers") == "with-builder"
+    assert refused(monkeypatch, holder, state, stage="use") == "with-builder"
     assert refused(monkeypatch, holder, state) == "builder-live"
 
 
