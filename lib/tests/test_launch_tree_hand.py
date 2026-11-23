@@ -218,3 +218,25 @@ def test_1011_the_entrance_takes_a_hand_started_claude_session_as_declared(tmp_p
     with pytest.raises(work.BuilderRefused) as refused:
         identity(tmp_path, monkeypatch)
     assert refused.value.code == "builder-identity-unproved"
+
+
+def test_1011_a_hand_started_builder_runs_proof_in_builder_mode_until_its_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(work.records, "default_record_root", lambda: tmp_path)
+    written, holder = hand(tmp_path), tmp_path / "holder"
+    holder.mkdir()
+    work.write_registry({"schema_version": 1, "worktrees": [
+        {"root": str(tmp_path / "tree"), "holder_root": str(holder), "instalment": None}]})
+    monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, written["dispatch_id"])
+    args = work.parser().parse_args(["run", "proof", "--repo", "o/r", "--issue", "5", "--root", str(holder)])
+    token = work._enter_builder_mode(args)
+    try:
+        assert (work.builder_mode()["dispatch_id"], work.builder_mode()["identity"]) == (
+            written["dispatch_id"], "declared")
+    finally:
+        work._BUILDER.reset(token)
+    # The readiness record, posted after proof, completes the record; no later run is that builder's.
+    launch_tree.complete_hand_record(tmp_path, written["dispatch_id"], completed_by="readiness")
+    monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, written["dispatch_id"])
+    with pytest.raises(work.BuilderRefused, match="builder-identity-unproved"):
+        work._enter_builder_mode(args)

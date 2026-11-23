@@ -2985,3 +2985,27 @@ def test_1011_the_launcher_names_a_limit_its_holder_declared(monkeypatch, flag, 
     deadline = seen[0]
     deadline.called_epoch = 0.0
     assert implementer.lifecycle.window_line(deadline)["limit_source"] == source
+
+
+def test_1011_a_stretch_that_recovered_from_refusals_reaches_the_final_pass_with_them(job, tmp_path, monkeypatch):
+    import work
+    from test_route import HEAD, PLANNED, RULES, fixture, post, readiness_record, with_pull_request
+    args = stretch_job(job, monkeypatch, {})
+    outside = str(tmp_path / "home" / ".claude" / "settings.json")
+    job[1].write_bytes(json.dumps({"claude": {
+        "stdout": refused_stream(outside),
+        "guard_decisions": [{"tool": "Write", "raw": outside, "canonical": outside,
+                             "decision": "deny", "reason": "launch write bound: outside"}],
+        "github_decisions": [{"tool": "Bash", "command": "gh issue comment 6 --body x", "decision": "deny",
+                              "reason": "a comment on o/r#6"}]}}).encode())
+    assert implementer.run_implementer(args) == 0 and record(args)["outcome"] == "success"
+    dispatch_id = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())["dispatch_id"]
+    state = with_pull_request(fixture(tmp_path / "issue", *PLANNED))
+    state.record_root, state.pr["draft"] = args.output.parent, False
+    state.floor_public = {"outcome": "ci-met", "head": HEAD}
+    monkeypatch.setattr(work, "_cold_reading_decision", lambda *_a: None)  # This test is of the refusals.
+    post(state, readiness_record(dispatch_id), 30)
+    made = work.decide(state, RULES)
+    assert made.stage == "final-pass" and json.loads(made.detail)["record"] is not None
+    assert [entry["command"] for entry in work._github_write_report(state)["refusals"]] == [
+        "gh issue comment 6 --body x"]
