@@ -53,7 +53,7 @@ The reading tree is built in a temporary folder of its own, holding only the tre
 
 A builder's reading, run from inside a stretch launch's tree, adds three things: its tree is checked again when the reader returns (`cold_reader.tree_held`); its return travels in the seat launcher's frame; and its report is posted from that frame, as A builder's own checks and writes sets out. On the builder route a `clean` after its `open` needs no later builder turn, because the builder writes the `open` itself; on the relay route the rule above stands.
 
-**Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons; D-968, a consumer tree keeps its record elsewhere; D-997, a flag may name several lines; D-1012, a builder's reading is checked again, framed and posted; D-1013.
+**Decisions in force:** D-795, seat defaults follow the owner's rulings; D-944, code carries its reasons; D-952, the cold reader reads each change for its reasons; D-968, a consumer tree keeps its record elsewhere; D-997, a flag may name several lines; D-1012, a builder's reading is checked again, framed and posted; D-1013, on the builder route the builder posts the `open` and its `clean`.
 
 ## The cloud route
 
