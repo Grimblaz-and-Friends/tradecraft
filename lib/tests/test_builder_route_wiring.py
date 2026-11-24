@@ -91,7 +91,8 @@ def test_a_reach_entry_counts_as_launched_only_with_its_own_reading_at_that_head
 
 
 def test_each_connected_reviewers_declined_finding_is_listed_with_its_reason_and_link(tmp_path):
-    state = fixture(tmp_path, MECHANICAL)
+    # The answers link the pull request's own reviews, which the gates' readers take by its number.
+    state = with_pull_request(fixture(tmp_path, MECHANICAL))
     state.config = work.WorkConfig(marker_producers=frozenset({PRODUCER}),
                                    connected_reviewers=frozenset({"reviewer-bot"}))
     bot, producer = {"login": "reviewer-bot"}, {"login": PRODUCER}
@@ -150,6 +151,14 @@ def test_one_handoff_holds_the_lock_and_a_stale_lock_is_removed(tmp_path):
     with work._handoff_lock(store, "o/r#5") as again:
         assert again == held and again.stat().st_mtime > old
     assert not held.exists()
+
+
+def test_a_handoff_releases_only_the_lock_it_still_holds(tmp_path):
+    store = tmp_path / "store"
+    with work._handoff_lock(store, "o/r#5") as held:
+        # Another call took the lock over while this one ran: this call's release leaves that holding alone.
+        held.write_bytes(b"another holding")
+    assert held.read_bytes() == b"another holding"
 
 
 def test_the_handed_allowance_is_the_one_the_handoff_carried_not_todays_pull_request(tmp_path):

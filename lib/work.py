@@ -456,6 +456,8 @@ class WorkState:
     proof_version_obligation: dict[str, object] | None = None
     readiness_policy: tuple[Path, bytes] | None = None
     reach: dict[str, object] | None = None
+    # The run's own decision, kept so a stage reading it, such as the release report, reads the state it was made on.
+    recommendation: object | None = None
 
     @property
     def issue_sources(self) -> list[tuple[str, str]]:
@@ -6376,10 +6378,14 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
         rest = _owed_unnamed(state, {"checks": reading.get("checks") or [], "rows": reading.get("rows") or []},
                              str(reading.get("head")), _record_launch(state, str(reading.get("dispatch")))[0],
                              use_owed=effective_policy(state, rules).use_required) if reading.get("record") else []
+        # A handoff that can't give its owed checks leaves the list unread, never clear: the final pass says so.
+        unread = rest if isinstance(rest, dict) else None
         rest = rest if isinstance(rest, list) else []
         if made.stage == "release-report" and not rest:
             # The final pass stands until the holder runs release-report, so its send-back stays open.
-            return result("final-pass", False, None, "ready-reported", builder.detail, status="holder-owned")
+            detail = builder.detail if unread is None else json.dumps(
+                {**json.loads(builder.detail), "owed_list": unread}, ensure_ascii=True)
+            return result("final-pass", False, None, "ready-reported", detail, status="holder-owned")
         if made.stage not in BUILDER_OWED_STAGES and made.stage != "release-report" and not rest:
             return made
         # The holder is refused these on the builder route, so the ready record owed them: its final pass
@@ -6390,8 +6396,8 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
                    if made.stage in BUILDER_OWED_STAGES else [])
         listed = chained + rest
         # `owed_chain` is the chain's own stage alone, so a reader adding the unnamed checks counts each once.
-        owed = {**json.loads(builder.detail), "owed_at_ready": listed[0], "owed_list": listed,
-                "owed_chain": chained[0] if chained else None}
+        owed = {**json.loads(builder.detail), "owed_at_ready": listed[0], "owed_list": listed if unread is None
+                else {**unread, "listed": listed}, "owed_chain": chained[0] if chained else None}
         return result("final-pass", False, None, "owed-at-ready", json.dumps(owed, ensure_ascii=True),
                       status="holder-owned")
 
@@ -12205,6 +12211,12 @@ def recompose_check(state: WorkState, request: dict) -> tuple[bytes | None, str 
                 raise
             # A criterion read on the change's own tree has a reading record instead.
             head = cold_reader.load_metadata(cold_reader.reading_record(Path(root), home)).get("head")
+        if stage == "acceptance-criterion":
+            dispatch = _bundle_file(Path(request["_run_path"]), ".dispatch.bin").read_bytes().decode(
+                "utf-8", "replace")
+            # A row reader's change is on the mechanical lane, which has no settled artifact to look up.
+            if dispatch.startswith(ROW_PREAMBLE):
+                return _recompose_row(state, dispatch, head, Path(root))
         artifact, _comment = _settled_artifact_text(state, "artifact-use-job-absent")
         if stage == "use":
             stale = _stale_declaration(artifact, Path(root), home, "use")
@@ -12212,9 +12224,6 @@ def recompose_check(state: WorkState, request: dict) -> tuple[bytes | None, str 
                 return None, head, stale
             return compose_check_dispatch("use", {"job": artifact_use_job(artifact), "head": head,
                                                   "tree": Path(root)}), head, ""
-        dispatch = _bundle_file(Path(request["_run_path"]), ".dispatch.bin").read_bytes().decode("utf-8", "replace")
-        if dispatch.startswith(ROW_PREAMBLE):
-            return _recompose_row(state, dispatch, head, Path(root))
         named = CRITERION_OPENING.search(dispatch.split("\nCriterion:\n\n", 1)[-1])
         if named is None:
             return None, head, "the dispatch names no criterion"
@@ -12303,6 +12312,8 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
     quotations = [_report_quotation(state, c) for c in mentions if not _posts_check_report(c["body"])]
     rows = lifecycle.launch_bundles(store, work, CHECK_STAGES | {"stretch"})
     stretches = {request.get("dispatch_id") for _o, _p, request, _r in rows if request.get("stage") == "stretch"}
+    hand_started = {request.get("dispatch_id") for _o, _p, request, _r in rows
+                    if request.get("stage") == "stretch" and request.get("started_by") == "hand"}
     bundles = {}
     for _order, run_path, request, run in rows:
         if request.get("stage") in CHECK_STAGES and isinstance(request.get("launched_by"), dict):
@@ -12349,6 +12360,19 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
                         # Absent on both sides where the bundle has no reason, as the frame posts it.
                         "same_vendor_reason": (run.get("staffing_qualification") or {}).get("same_vendor_reason")}
             reasons.extend(f"{key} differs" for key, value in expected.items() if attributes.get(key) != value)
+            # The row and criterion a report names are its dispatch's own, as the composed dispatch states them.
+            dispatched = (composed.decode("utf-8", "replace")
+                          if composed is not None and request.get("stage") == "acceptance-criterion" else "")
+            row = ROW_DISPATCH.search(dispatched) if dispatched.startswith(ROW_PREAMBLE) else None
+            criterion = (CRITERION_OPENING.search(dispatched.split("\nCriterion:\n\n", 1)[-1])
+                         if "\nCriterion:\n\n" in dispatched else None)
+            if attributes.get("row") != (row.group(1) if row else None):
+                reasons.append("row differs")
+            if attributes.get("criterion") != (criterion.group(1) if criterion else None):
+                reasons.append("criterion differs")
+            # A declared builder vendor is lawful only where the seat was staffed against a hand-started record.
+            if "builder_vendor" in attributes and request["launched_by"].get("dispatch_id") not in hand_started:
+                reasons.append("builder_vendor outside a hand-started record")
             if attributes.get("tree") != "held":
                 reasons.append("tree=changed")
             try:
@@ -12586,6 +12610,27 @@ def _owed_unnamed(state: WorkState, payload: dict, head: str, request: dict, *,
     return listed
 
 
+def _owed_line(recommendation: Decision) -> str:
+    """What a final pass's detail says the ready record left owed, or that its owed list couldn't be read."""
+    if recommendation.stage != "final-pass" or not recommendation.detail:
+        return ""
+    try:
+        detail = json.loads(recommendation.detail)
+    except ValueError:
+        return ""
+    owed = detail.get("owed_list")
+    unread = owed if isinstance(owed, dict) else None
+    listed = (unread or {}).get("listed") or [] if unread is not None else (
+        owed or ([detail["owed_at_ready"]] if detail.get("owed_at_ready") else []))
+    parts = ["{stage}{name} ({reason})".format(
+        stage=entry.get("stage"), reason=entry.get("reason"),
+        name=f" {entry['criterion']}" if entry.get("criterion") else
+        f" row {entry['row']}" if entry.get("row") is not None else "") for entry in listed]
+    if unread is not None:
+        parts.append(f"the handoff's owed checks could not be read ({unread.get('reason')})")
+    return "; owed at ready: " + "; ".join(parts) if parts else ""
+
+
 def _builder_route_owed(state: WorkState, payload: dict, head: str, request: dict, *,
                         chain_entry: dict | None, use_owed: bool) -> list[dict] | dict:
     """What a ready record left owed at its head: the chain's first owed stage, then each owed check it
@@ -12686,37 +12731,55 @@ def _holder_windows(state: WorkState, first: dict | None) -> tuple[dict, dict]:
     return quiet, {"bundles": bundles, "transcript": transcript}
 
 
-# An answer's dash may be a hyphen, an en dash or an em dash; built here so the constants stay ASCII.
-DECLINE_ANSWER = re.compile(r"\A\s*declined\s*[-" + chr(0x2013) + chr(0x2014) + r"]\s*(.*?)\s*(?:;\s*\[|\Z)",
-                            re.I | re.S)
-ANSWER_LINK = re.compile(r"\[(cr-comment:v1:[^\]]+|unidentified review)\]\((https://[^)\s]+)\)")
+def _decline_reason(body: str) -> str | None:
+    """The reason after the dash of an answer that opens `declined`, its source link left out, or None."""
+    first = next((line.strip() for line in body.splitlines() if line.strip()), "")
+    # The dash may be a hyphen, an en dash or an em dash, as the gates' own reading takes it.
+    first = first.replace(chr(0x2013), "-").replace(chr(0x2014), "-")
+    if not first.lower().startswith("declined -"):
+        return None
+    return review_findings.MARKDOWN_LINK.sub("", first.partition("-")[2]).strip(" ;:.,-") or None
 
 
 def _reviewer_declines(state: WorkState) -> list[dict]:
-    """Every connected reviewer's finding the pull request answers `declined`, with the reason after the dash."""
+    """Every connected reviewer's finding the pull request answers `declined`, with the reason after the dash.
+
+    An answer counts only where the disposition gates read it as one, through their own readers, so the
+    report and the gates can't disagree about which answers stand.
+    """
     producers = {login.lower() for login in state.config.marker_producers}
     reviewers = {login.lower() for login in state.config.connected_reviewers}
     roots = {comment.get("id"): comment for comment in state.review_comments}
-    reviews = {str(review.get("id")): review for review in state.reviews}
+    reviews = {review.get("id"): review for review in state.reviews}
+    number = (state.pr or {}).get("number")
     declines = []
     for reply in state.review_comments:
-        root = roots.get(reply.get("in_reply_to_id"))
-        found = DECLINE_ANSWER.match(str(reply.get("body") or ""))
-        if root is None or found is None or _author(reply) not in producers or _author(root) not in reviewers:
+        root, body = roots.get(reply.get("in_reply_to_id")), str(reply.get("body") or "")
+        reason = _decline_reason(body)
+        if (root is None or reason is None or not _disposition(body) or _author(reply) not in producers
+                or _author(root) not in reviewers):
             continue
         declines.append({"kind": "inline", "reviewer": _author(root), "finding": f"thread {root.get('id')}",
-                         "reason": found.group(1), "link": reply.get("html_url")})
+                         "reason": reason, "link": reply.get("html_url")})
     for comment in state.pr_comments:
-        found = DECLINE_ANSWER.match(str(comment.get("body") or ""))
-        link = ANSWER_LINK.search(str(comment.get("body") or ""))
-        if found is None or link is None or _author(comment) not in producers:
+        body = str(comment.get("body") or "")
+        reason = _decline_reason(body)
+        if (reason is None or _author(comment) not in producers
+                or not review_findings._bare_disposition(body, _disposition)):
             continue
-        review = reviews.get(link.group(2).rsplit("pullrequestreview-", 1)[-1])
-        whole = link.group(1) == "unidentified review"
-        declines.append({"kind": "whole-review" if whole else "body-finding",
+        text = review_findings.live_markup(body)
+        links = [link for link in review_findings.REVIEW_LINK.finditer(text)
+                 if link[1].lower() == state.repo.lower() and int(link[2]) == number]
+        if len(links) != 1:
+            continue  # the gates take an answer naming one source review, and so does this
+        label = next((label for label, url in review_findings.MARKDOWN_LINK.findall(text) if url == links[0][0]),
+                     None)
+        identity = label is not None and review_findings.IDENTITY.fullmatch(label)
+        review = reviews.get(int(links[0][3]))
+        declines.append({"kind": "body-finding" if identity else "whole-review",
                          "reviewer": _author(review) if review else None,
-                         "finding": link.group(2) if whole else link.group(1),
-                         "reason": found.group(1), "link": comment.get("html_url")})
+                         "finding": label if identity else links[0][0],
+                         "reason": reason, "link": comment.get("html_url")})
     return declines
 
 
@@ -12988,24 +13051,39 @@ def _handoff_lock(store: Path, work: str):
     directory = store / "handoff-locks"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / (hashlib.sha256(work.lower().encode("utf-8")).hexdigest() + ".lock")
-    try:
-        if time.time() - path.stat().st_mtime > HANDOFF_LOCK_STALE_SECONDS:
-            path.unlink()
-            print(f"work: removed a stale handoff lock {path}", file=sys.stderr)
-    except FileNotFoundError:
-        pass
+    # Each holding names itself in the file, so only the call that holds the lock releases it.
+    token = f"{os.getpid()} {uuid.uuid4().hex}".encode("ascii")
+    refused = HandoffRefused("handoff-in-progress", f"run handoff: another handoff of {work} holds {path}; "
+                             "wait for it to return")
     try:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as exc:
-        raise HandoffRefused("handoff-in-progress", f"run handoff: another handoff of {work} holds {path}; "
-                             "wait for it to return") from exc
-    try:
-        os.write(descriptor, str(os.getpid()).encode("ascii"))
+        os.write(descriptor, token)
         os.close(descriptor)
+    except FileExistsError:
+        try:
+            stale = time.time() - path.stat().st_mtime > HANDOFF_LOCK_STALE_SECONDS
+        except FileNotFoundError:
+            stale = False  # released as this call looked; another call's handoff may begin, so this one waits
+        if not stale:
+            raise refused from None
+        # A stale lock is taken over in one step, by replacing it with this holding; where two calls both take
+        # it over, the one whose holding stands keeps it and the other is refused.
+        staged = path.with_name(path.name + f".{uuid.uuid4().hex}")
+        staged.write_bytes(token)
+        os.replace(staged, path)
+        try:
+            held = path.read_bytes() == token
+        except FileNotFoundError:
+            held = False
+        if not held:
+            raise refused from None
+        print(f"work: took over a stale handoff lock {path}", file=sys.stderr)
+    try:
         yield path
     finally:
         try:
-            path.unlink()
+            if path.read_bytes() == token:
+                path.unlink()
         except FileNotFoundError:
             pass
 
@@ -13633,7 +13711,8 @@ def _builder_route_report(state: WorkState, rules: dict[str, object] | None = No
             entry for entry in (run or {}).get("refusals") or () if isinstance(entry, dict)]})
     chain_entry, use_owed = None, True
     if rules is not None:
-        made = decide(state, rules)
+        # The run's decision, where it made one, so the report and the decision read one state.
+        made = getattr(state, "recommendation", None) or decide(state, rules)
         if made.reason == "owed-at-ready":
             chain_entry = json.loads(made.detail).get("owed_chain")
         use_owed = effective_policy(state, rules).use_required
@@ -13972,6 +14051,7 @@ def _run(
         state.proof_current = False
     state.collection_diagnostics.extend(policy_diagnostics)
     recommendation = decide(state, rules)
+    state.recommendation = recommendation
     if args.command == "allowance":
         if getattr(args, "cloud", False) and args.grant:
             # No grant rides the cloud route, so that is the refusal, not the grant's own validity.
@@ -14021,14 +14101,7 @@ def _run(
         + (f"; {recommendation.detail}" if recommendation.reason.startswith("governing-record-")
            and recommendation.detail else "")
         # A named run at the final pass says what the ready record left owed, as the read-only decision does.
-        + ("; owed at ready: " + "; ".join(
-            "{stage}{name} ({reason})".format(
-                stage=entry.get("stage"), reason=entry.get("reason"),
-                name=f" {entry['criterion']}" if entry.get("criterion") else
-                f" row {entry['row']}" if entry.get("row") is not None else "")
-            for entry in json.loads(recommendation.detail).get("owed_list")
-            or [json.loads(recommendation.detail)["owed_at_ready"]])
-           if recommendation.reason == "owed-at-ready" else ""),
+        + _owed_line(recommendation),
     ))
     grants = validated_grants(state, getattr(args, "grant", None), decision.stage, decision.continuity)
     try:
