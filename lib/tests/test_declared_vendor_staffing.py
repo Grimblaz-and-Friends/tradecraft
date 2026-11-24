@@ -52,6 +52,14 @@ def seated(composed, tmp_path, monkeypatch, capfd):
     return state, seen
 
 
+@pytest.fixture(autouse=True)
+def builder_mode_restored():
+    """A test here holds this process as a builder; the next test, in this file or another, starts as none."""
+    token = work._BUILDER.set(None)
+    yield
+    work._BUILDER.reset(token)
+
+
 def hand_builder(monkeypatch, root, vendor):
     """Hold this process as a builder the owner started by hand, declaring ``vendor``, as the entrance reads one."""
     made = launch_tree.write_hand_record(work.records.default_record_root(), work="o/r#5", vendor=vendor,
