@@ -24,7 +24,11 @@ RESOLVE_THREAD_COMMAND = (
     "{thread{isResolved}}}' -f id=THREAD_ID"
 )
 ROW_NOTE = ("Every row of the brief has its own reader here, whatever else carries it: launch every row "
-            "through its command; map each row in the record's `rows` to what carries it.")
+            "through its command; map each row in the record's `rows` to what carries it. ")
+# Said again under the floor again, where a late commit meets it.
+ROW_AGAIN = ("Every row's reader must have a counting report at the head you report ready, so a commit made after "
+             "the row readers ran makes every row owed again: run their readers again at the new head.")
+ROW_NOTE += ROW_AGAIN
 
 # The record's payload, spelled out field by field; lib/readiness.py's payload() is what reads it.
 RECORD_EXAMPLE = """```json
@@ -70,7 +74,8 @@ RESOLVE_THREADS = (
     "THREAD_ID:\n\n```text\n" + RESOLVE_THREAD_COMMAND + "\n```\n\n"
     "Resolving is owed when the read-only decision names `reviewer-thread-answered-unresolved`, or the "
     "merge reads `merge-blocked-unresolved-review-threads`; a body finding has no thread. The entrance "
-    "names it after the floor stands at your head, so take it after the floor again.")
+    "names it once the floor and the cold reading's `clean` both stand at your head, so take it after the "
+    "floor again.")
 
 
 class Step:
@@ -92,7 +97,9 @@ CLEAN_AND_REACH_HOLD = ("The entrance holds it until the cold reading's `clean` 
 # entrance returns a builder to the step that answers it, so the text keeps in step with the entrance.
 BUILDER_STEPS = (
     Step("open-pull-request", "open the pull request",
-         "Push your branch and open the draft pull request, as \"What you may write\" says."),
+         "Push your branch and open the draft pull request, as \"What you may write\" says. Its body carries a "
+         "paragraph beginning `**Path departures:**` that names each stage the change skipped, bypassed or stalled "
+         "at and why, or says the expected path ran without a departure; keep it true up to proof."),
     Step("floor", "floor", "Run the floor at the pull request's head."),
     Step("cold-reader", "cold-reader",
          "Run the cold reader and answer its reading until a `clean` stands at your head.", FLOOR_HOLD),
@@ -311,6 +318,8 @@ def _checks_section(checks, *, mechanical, repo, issue, holder_root, plugin_root
         owed = [check for check in checks if CHECK_STEPS.get(check["stage"]) == step.key]
         if step.key == "criteria" and mechanical and owed:
             lines += ["", ROW_NOTE]
+        elif step.key == "floor-again" and mechanical:
+            lines += ["", ROW_AGAIN]
         elif step.key in ("criteria", "use") and not owed:
             lines += ["", "None is listed for this change."]
         for check in owed:
@@ -341,8 +350,8 @@ def _record_section(mechanical: bool, started_by: str) -> list[str]:
         "acceptance-criterion check names exactly one: a criterion check its `criterion` with `row` null, "
         "a row check its `row` with `criterion` null), its `dispatch` id or null, the full commit `head` it "
         "read, its `report` comment id, and `relaunch_of`, the dispatch id of the errored check it "
-        "relaunches, or null. For reach, `report` is your `reach-reading` comment's id, or null when reach "
-        "flagged nothing.",
+        "relaunches, or null. For the floor, `report` is its floor marker comment's id; for reach, your "
+        "`reach-reading` comment's id, or null when reach flagged nothing.",
         "- `findings`: exactly one entry for every finding of every check report, never two: its "
         "`report` comment id, its `finding` (`F1`, `F2` ... as the report numbers them; the read-only "
         "decision lists each report's under `builder_checks`), and a "
@@ -354,7 +363,8 @@ def _record_section(mechanical: bool, started_by: str) -> list[str]:
                         "each row you map: its `row`, `carried_by` (`test`, `check` or `fresh-reader`) and "
                         "`where`; leave it empty when you map none."),
         "- `decisions`: each thing the " + ("brief" if mechanical else "plan") + " left open that you "
-        "decided: its `text`, your `recommendation`, and the brief `row` it would change, or null.",
+        "decided: its `text`, your `recommendation`, and `row`, the brief row the decision would change, or null "
+        "where it changes none.",
         "- `refusals`: each command the entrance refused you: the `command`, its `reason`, and what "
         "you did `then`.",
         "- `stop`: null when ready; when stopped, its `kind` (`shape` or `cannot-launch`), its "
@@ -419,12 +429,13 @@ def compose_handoff(*, brief: str, checks: list[dict], allowance: str, repo: str
             "unlawful, or a ready record with anything still owed at that head, repair it and post the record "
             "again.",
             "",
+            # One rule for both records, so a stopped builder's last act is the same as a ready one's.
             (f"Then, whether the record is ready or stopped, send one message to the holder session named "
-             f"`{notify}`; where your runtime offers no such message, end, and the owner tells the holder."
+             f"`{notify}` (where your runtime offers no such message, end, and the owner tells the holder) and "
+             "take no further step: the holder resumes you if the change goes on."
              if notify else
-             "Then, whether the record is ready or stopped, end; the owner tells the holder."),
-            "",
-            "After a stopped record, take no further step: the holder resumes you if the change goes on.",
+             "Then, whether the record is ready or stopped, end and take no further step: the owner tells the "
+             "holder, who resumes you if the change goes on."),
         ]),
     ]
     if hand:

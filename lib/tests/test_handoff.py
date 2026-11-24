@@ -127,8 +127,9 @@ def test_1011_record_contract_and_last_post_after_proof():
     assert "post proof, then the readiness record at the head you report ready, as the last post." in finish
     assert finish.index("post proof") < finish.index("readiness record")
     assert "read your record back with the reach" in finish
-    assert ("For reach, `report` is your `reach-reading` comment's id, or null when reach flagged nothing."
-            in record)
+    assert ("For the floor, `report` is its floor marker comment's id; for reach, your `reach-reading` "
+            "comment's id, or null when reach flagged nothing.") in record
+    assert "`row`, the brief row the decision would change, or null where it changes none." in record
     assert "holder session named `holder-7`" in finish and "the owner tells the holder" in finish
 
 
@@ -173,6 +174,7 @@ def test_1011_the_closing_line_and_who_posts_the_cold_reading():
     assert "holds `run use`, `run ready-reviewers` and `run proof` until a `clean` stands at your head" in cold
     assert "staffing_status=STATUS same_vendor_reason=REASON -->" in cold and "status=clean" in cold and "Accepted: path:lines" in cold
     assert "Push your branch and open the draft pull request" in text and "proof are not." in text
+    assert "a paragraph beginning `**Path departures:**`" in text and "keep it true up to proof." in text
     assert "Run the floor at the pull request's head." in text
     assert "`own-turn` with `added_by`" in text and "`.tradecraft/work.json` `connected_reviewers`" in text
     assert "Wait for each connected reviewer's review and answer it whole" in text
@@ -391,6 +393,7 @@ def test_the_resolve_step_names_resolving_each_answered_thread_and_when_it_is_ow
     assert "```text\n" + handoff.RESOLVE_THREAD_COMMAND + "\n```" in answer
     assert "`reviewer-thread-answered-unresolved`" in answer
     assert "`merge-blocked-unresolved-review-threads`" in answer
+    assert "names it once the floor and the cold reading's `clean` both stand at your head" in answer
     # The form is the entrance's own, repeated here because this module imports nothing of the entrance.
     assert handoff.RESOLVE_THREAD_COMMAND == work.RESOLVE_THREAD_COMMAND
 
@@ -400,6 +403,10 @@ def test_the_floor_runs_again_after_a_later_commit_before_proof():
     assert "After any commit made after the floor ran, run the floor again at the new head" in again
     assert "posting its marker" in again and "before you resolve threads or run proof" in again
     assert "The cold reading's `clean` and reach must stand at that new head too before proof" in again
+    # On the mechanical lane a late commit makes every row owed again, said at the row step and here.
+    section = checks_section(compose(mechanical=True))
+    assert handoff.ROW_AGAIN not in again and handoff.ROW_AGAIN in entry(section, "the floor again")
+    assert handoff.ROW_AGAIN in entry(section, "acceptance-criterion")
 
 
 def test_the_stop_rule_and_how_to_finish_say_the_same_about_a_stopped_record():
@@ -408,9 +415,9 @@ def test_the_stop_rule_and_how_to_finish_say_the_same_about_a_stopped_record():
     finish = text[text.index("## How to finish"):]
     assert "Where you stop, the stopped record is the last post instead." in finish
     assert "whether the record is ready or stopped, send one message to the holder session named `holder-7`" in finish
-    assert "After a stopped record, take no further step: the holder resumes you if the change goes on." in finish
+    assert "and take no further step: the holder resumes you if the change goes on." in finish
     alone = compose(notify=None)
-    assert "whether the record is ready or stopped, end; the owner tells the holder." in alone
+    assert "whether the record is ready or stopped, end and take no further step: the owner tells" in alone
 
 
 def test_a_reason_meaning_stop_points_at_the_stop_rule_the_text_carries():
@@ -450,5 +457,5 @@ def test_the_mechanical_and_staged_texts_are_the_same_bytes_on_every_call():
 def test_the_stretch_allowance_says_a_body_file_is_named_outright_and_made_first():
     sentence = work.github_allowance.sentence(work.github_allowance.allowance_for(
         "stretch", repository="o/r", branch="tradecraft/5-ab", pull_request=None, issue=5))
-    assert ("write a body file's path out in the command, never as a variable, and create the file before "
-            "the command that posts it.") in sentence
+    assert ("write a body file's path out in the command, never as a variable, and create the file in an "
+            "earlier command of its own, not in the command that posts it.") in sentence

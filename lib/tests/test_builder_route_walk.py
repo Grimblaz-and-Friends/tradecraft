@@ -2,7 +2,7 @@
 
 Guards that the handoff's table and the entrance agree on the order: driven through ``handoff.BUILDER_STEPS`` with a
 base that requires resolved review threads and a fixed commit after the floor ran, the read-back at each step names
-the table's next step, except for the two the test names with their reasons, and the walk ends at `final-pass` /
+the table's next step, except for the steps the test names with their reasons, and the walk ends at `final-pass` /
 `ready-reported`. Every decision it reads is one the drift guard's flag watches.
 Design: lib/DESIGN.md#the-builder-route
 """

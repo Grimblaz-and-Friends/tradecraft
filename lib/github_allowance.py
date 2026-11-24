@@ -156,7 +156,7 @@ STRETCH_HOW = ("Reply on a review thread with the comment's numeric id written a
                "with its node id written literally. An id held in a shell variable is refused. Give a "
                "comment body as a file (`--body-file FILE`, or `-F body=@FILE` with gh api): "
                "write a body file's path out in the command, never as a variable, and create the file "
-               "before the command that posts it. A body holding `$` or a command substitution, or "
+               "in an earlier command of its own, not in the command that posts it. A body holding `$` or a command substitution, or "
                "piped in, is refused. Name the pull request "
                "number unless the current branch is {branch} with one open pull request. Launch "
                "checks only through the entrance (`work.py run STAGE`); a direct call of a dispatch "

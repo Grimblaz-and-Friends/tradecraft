@@ -38,7 +38,7 @@ ROW_CHECKS = {
     "6.2": "a builder started by hand reached ready, or named the first check it could not launch",
     "6.3": "the vendor and model that built are observed in the run's own log",
     "7.1": "with no word from the owner, the change took the builder route by default",
-    "7.2": "a change the owner asked to keep on today's route took the relay route",
+    "7.2": "a change the owner asked to keep on the relay route took it",
     "7.3": "the holder's cost before and after the handoff and the builder's cost are priced",
 }
 # What a row check asserts on the mechanical lane, where it differs from ``ROW_CHECKS``.

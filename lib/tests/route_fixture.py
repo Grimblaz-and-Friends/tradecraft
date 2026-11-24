@@ -43,7 +43,7 @@ PLAN = ("\n## Plan\n\nBuild row 1 and prove it by use.\n\n"
         "```json\n{\"mode\": \"adopter\", \"paths\": [\"job\"], \"loading_surfaces\": [\"skill/SKILL.md\"]}\n```\n\n"
         "## Criteria\n\n**C1.** Row 1 is built. *Check:* a test.\n\n"
         "**C2.** The job runs.\nFresh reader: execute consumer tree use\n")
-# The owner-affirmed mechanical lane: a determinate correction in seven rows, with no plan owed.
+# The owner-affirmed mechanical lane: a determinate correction in rows, with no plan owed.
 MECHANICAL_BRIEF = ("<!-- tradecraft:affirmed-brief:v1 -->\nReview risk: ordinary\nReview lane: mechanical\n\n"
                     "**Shape:** seven of the job's lines corrected as written, and nothing else.\n\n"
                     "## Purpose\n\nA stand-in correction to the job's wording.\n\n## Rows\n\n"

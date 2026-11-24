@@ -1,6 +1,6 @@
 """The release report's builder_route on a launched, a hand-started and a mechanical-lane builder ready at head.
 
-Guards what the report adds for the default's first runs: what a ready record left owed, the holder's quiet and
+Guards what the report's builder_route carries: what a ready record left owed, the holder's quiet and
 later launches, the reviewers' declines, each stretch's length and the vendor and model, read from the launch's
 or the hand record's own fields, and row 2's checks on the mechanical lane.
 Design: lib/DESIGN.md#the-builder-route
@@ -155,6 +155,7 @@ def test_a_ready_record_whose_handoff_names_no_owed_checks_reads_them_unread_not
         assert "the handoff's owed checks could not be read" in line
         report = work._builder_route_report(state, route_fixture.RULES)
         assert report["owed_at_ready"]["last"]["status"] == "unknown"
+        assert "no lower bound" in report["cost_split"]["holder_before"]["window"]
         [one_one] = [entry for entry in report["row_checks"] if entry["check"] == "1.1"]
         assert one_one["reading"] == "unknown"
     finally:

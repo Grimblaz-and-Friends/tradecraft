@@ -411,7 +411,7 @@ def test_the_preview_is_the_text_the_handoff_then_hands_and_the_launch_plan_the_
     assert due.reason == "handoff-due"
     assert run(monkeypatch, holder, state, "handoff", "--preview") == 0
     report, preview = capsys.readouterr().out.split("work: handoff text preview follows\n", 1)
-    plan = printed_report(report, "preview")["launch_plan"]
+    plan = printed_report(report, "preview")["launch_settings"]
     assert plan["started_by"] == "hand"
     assert run(monkeypatch, holder, state) == 0
     pasted = capsys.readouterr().out.split("work: handoff text for the owner to paste follows\n", 1)[1]
@@ -433,7 +433,7 @@ def test_a_launched_stretch_records_the_source_that_chose_its_vendor(
     state = stored(tmp_path, *PLANNED)
     _vendor, machine_source = work.dispatch_implementer.read_machine_vendor(None)
     assert run(monkeypatch, holder, state, "handoff", "--preview") == 0
-    plan = printed_report(capsys.readouterr().out, "preview")["launch_plan"]
+    plan = printed_report(capsys.readouterr().out, "preview")["launch_settings"]
     assert (plan["started_by"], plan["vendor"], plan["sources"]["vendor"]) == ("launch", "claude", machine_source)
     assert run(monkeypatch, holder, state) == 0
     [pointer] = [json.loads(path.read_bytes()) for path in

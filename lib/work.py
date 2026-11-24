@@ -12848,7 +12848,8 @@ def _route_chosen(asks: list[Marker], first: dict, name: str) -> str:
     """How a change in flight came to its route, read from what the issue shows at its first launch.
 
     Once a change has launched its route reads `in-flight`, which can't tell a default from an ask; the asks
-    posted before the first launch can. An ask in the issue body stood from the start.
+    posted before the first launch can. The issue body is there from the issue's opening, so its ask stood before
+    any launch; a comment whose time can't be read is counted as before it, since a launch reads no comment's time.
     """
     launched = _aware_time(first.get("launched_at"))
     before = [marker for marker in asks if marker.surface == "issue" or (
@@ -12856,7 +12857,7 @@ def _route_chosen(asks: list[Marker], first: dict, name: str) -> str:
     asked = max(before, key=_source_order) if before else None
     if asked is not None:
         return "owner-asked" if asked.attributes["route"] == name else "overruled"
-    # With no ask, a builder launch took the default; a relay launch was made before the builder was it.
+    # With no ask, a builder launch took the default; a relay launch with none was taken by no rule here.
     return "default" if name == "builder" else "unasked"
 
 
@@ -13072,28 +13073,28 @@ def _handoff_lock(store: Path, work: str):
     token = f"{os.getpid()} {uuid.uuid4().hex}".encode("ascii")
     refused = HandoffRefused("handoff-in-progress", f"run handoff: another handoff of {work} holds {path}; "
                              "wait for it to return")
-    try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+
+    def create() -> bool:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
         os.write(descriptor, token)
         os.close(descriptor)
-    except FileExistsError:
+        return True
+
+    if not create():
         try:
             stale = time.time() - path.stat().st_mtime > HANDOFF_LOCK_STALE_SECONDS
+            # Renaming the stale lock away is a step only one call can take; the others find it gone.
+            if stale:
+                moved = path.with_name(path.name + f".stale-{uuid.uuid4().hex}")
+                os.rename(path, moved)
+                moved.unlink()
         except FileNotFoundError:
-            stale = False  # released as this call looked; another call's handoff may begin, so this one waits
-        if not stale:
-            raise refused from None
-        # A stale lock is taken over in one step, by replacing it with this holding; where two calls both take
-        # it over, the one whose holding stands keeps it and the other is refused.
-        staged = path.with_name(path.name + f".{uuid.uuid4().hex}")
-        staged.write_bytes(token)
-        os.replace(staged, path)
-        try:
-            held = path.read_bytes() == token
-        except FileNotFoundError:
-            held = False
-        if not held:
-            raise refused from None
+            stale = False
+        if not stale or not create():
+            raise refused
         print(f"work: took over a stale handoff lock {path}", file=sys.stderr)
     try:
         yield path
@@ -13116,7 +13117,7 @@ def _preview_handoff(state: WorkState, args: argparse.Namespace, store: Path, ho
     allowance = github_allowance.sentence(github_allowance.allowance_for(
         "stretch", repository=state.repo, branch="BRANCH",
         pull_request=state.pr.get("number") if state.pr else None, issue=state.issue_number), hand=hand is not None)
-    _emit_report({"stage": "handoff", "status": "preview", "launch_plan": plan, "allowance": allowance}, state,
+    _emit_report({"stage": "handoff", "status": "preview", "launch_settings": plan, "allowance": allowance}, state,
                  flush=True)
     sys.stdout.flush()
     sys.stdout.buffer.write(b"work: handoff text preview follows\n" + composed)
@@ -13708,6 +13709,9 @@ def _builder_route_report(state: WorkState, rules: dict[str, object] | None = No
             holder_transcript.TranscriptError) as exc:
         cost = {name: {"status": "unknown", "reason": f"the route's cost could not be read: {exc}"}
                 for name in route_report.COST_FIGURES}
+    if isinstance(cost.get("holder_before"), dict):
+        # Said beside the figure, so no reader takes it for the plan's cost alone.
+        cost["holder_before"]["window"] = "the holder session's whole history before the handoff, with no lower bound"
     try:
         comparison = change_cost.route_comparison(work)
     except (OSError, ValueError, change_cost.CostError) as exc:
