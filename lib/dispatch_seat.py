@@ -760,12 +760,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                     dispatch_id=request["dispatch_id"], refs=True)
             except (OSError, ValueError, TypeError) as exc:
                 plan_error = f"coverage could not be planned: {exc}"
-            request["write_bound"] = {
-                "file_tools": None, "memory": None,
-                "comparison": ({"coverage": comparison.planned()} if comparison is not None
-                               else {"coverage": [], "unavailable_reason": plan_error}),
-                "shell": launch_bound.SHELL,
-            }
+            request["write_bound"] = launch_bound.write_bound_record(
+                file_tools=None, memory=None, comparison=comparison, comparison_error=plan_error)
         request["comparison_vendor"] = args.own_vendor
         request["comparison_vendor_source"] = args.own_vendor_source or "caller-selected"
         if args.builder_vendor_source is not None:

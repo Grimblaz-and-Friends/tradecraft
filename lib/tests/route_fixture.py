@@ -177,8 +177,9 @@ class Fixture:
         """
         import launch_bound
         dispatch_id, output, request = self._request("stretch", minutes, root=self.base / "implementation")
-        request["write_bound"] = {"file_tools": None, "memory": launch_bound.memory_record(),
-                                  "comparison": {"coverage": []}, "shell": launch_bound.SHELL}
+        request["write_bound"] = launch_bound.write_bound_record(
+            file_tools=None, memory=launch_bound.memory_record(), comparison=None,
+            comparison_error="the stand-in launch planned no comparison")
         self.records.write_json(self.records.sidecar(output, ".request.json"), request)
         self.records.write_json(self.records.sidecar(output, ".run.json"), {
             "schema_version": self.records.SCHEMA_VERSION, "dispatch_id": dispatch_id, "lifecycle": "completed",

@@ -1121,14 +1121,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         own_pointer=pointer, own_row_resnapshot=args.stage == STRETCH)
                 except (OSError, ValueError, TypeError) as exc:
                     comparison, comparison_error = None, f"coverage could not be planned: {exc}"
-                request["write_bound"] = {
-                    "file_tools": launch_bound.file_tools_record(
-                        intent["write_guard"], intent["override_sha256"]),
-                    "memory": launch_bound.memory_record(),
-                    "comparison": ({"coverage": comparison.planned()} if comparison is not None
-                                   else {"coverage": [], "unavailable_reason": comparison_error}),
-                    "shell": launch_bound.SHELL,
-                }
+                request["write_bound"] = launch_bound.write_bound_record(
+                    file_tools=launch_bound.file_tools_record(intent["write_guard"], intent["override_sha256"]),
+                    memory=launch_bound.memory_record(), comparison=comparison, comparison_error=comparison_error)
             # Codex gets no write-bound notice, so its allowance is appended and recorded alone.
             if github_bound is not None and args.vendor == "codex" and github_notice:
                 effective_prompt = effective_prompt + b"\n\n" + github_notice
