@@ -25,7 +25,7 @@
 **On the builder route (`the-stretch.md`), `run release-report` adds `builder_route` to its payload, and the report places it within the order above.** The holder gives each decline its view, `agrees`, `differs` or `cannot-judge`, because where a decline goes turns on it; a decline given no view needs the owner.
 
 - **Needs your decision** adds, in this order:
-  1. the final-pass block: each spot check the holder made and what it found, what it sent back and what came of it, and what stays open after the send-back, including anything the last ready record still owed (`owed_at_ready.last`);
+  1. the final-pass block: each spot check the holder made and what it found, what it sent back and what came of it, and what stays open after the send-back, including anything the last ready record still owed (`owed_at_ready.last`; the first record's list carries no chain stage where a later record stands, and `first_chain` says so);
   2. each decline, from a check report or a connected reviewer, where the holder's view differs from the builder's or the holder can't judge it. The readiness record supplies the checks' declines, and `reviewer_declines` the connected reviewers';
   3. every builder decision that would change a brief row, or whose text asks for the owner's choice;
   4. a handoff whose text differs from the composed one (`handoff_plan` reads `differs`, holder-written or altered);

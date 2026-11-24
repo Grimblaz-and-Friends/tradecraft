@@ -1,0 +1,34 @@
+# D-1017 — The builder route is the default
+
+**Purpose:** record why the third of #1011's three pull requests makes the builder route the default and completes it, and what was chosen over what. **Audience:** a future session changing the builder route. **Success:** that reader can recover each choice without the issue.
+
+The second pull request ([D-1013](D-1013-2026-11-22-the-builder-route.md)) landed the route and left today's route the default. This one completes the route and makes it the default, by row 7 of the [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7071427121) and the owner's ruling for [three pull requests](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7103159518). Its plan was [settled on the cap route](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7122471665); its decisions are G1 to G16. The readers the second pull request removed came back from `189795d312493ce6348cdd73b22a046594412e32`.
+
+It supersedes D-1013 C1's "else today's route" and its keeping the mechanical lane on today's route, and C6's "its seats are staffed as the machine says and its cost reads `unknown`". D-1013 is otherwise in force and isn't edited.
+
+## Calls
+
+- **C1. The builder route is the default** (G1). A work's first launch still fixes its route; cloud builds keep today's route; a `route=relay` marker keeps a change on it. The mechanical lane takes the default like any other change, because its rows now have readers. Chosen over a default kept until asked, which row 7 rules out.
+- **C2. On the mechanical lane every brief row gets its own reader** (G2), `run acceptance-criterion --row N`, reading the change's own tree at head with `read`. The builder maps each row but chooses neither which rows are read nor what a reader reads, since a check is independent only while the party it judges can't aim it. Chosen over readers for the rows the builder maps, and over a capability or tree chosen per row. It costs a reader per row.
+- **C3. A hand-started builder's seats keep today's vendor and model, and only their staffing follows the declared vendor** (G3), compared ignoring case: equal reads `degraded` for `declared-builder-vendor`. The seat launcher takes any vendor name to compare against and falls back only to a vendor it can launch, because a Gemini builder has no launcher here. Chosen over moving the seat's vendor, which the brief's Not this rules out.
+- **C4. A hand-started builder is priced from its usage log, and each record names the vendor and model observed in its own log, else declared** (G4). The holder's cost splits at the handoff: a launch's start, or the hand record's `handed_off_at`.
+- **C5. A fixed finding's commit is asked of GitHub against the head** (G5), so the holder's checkout needn't hold the builder's commits; an unanswered ask is `unverified`, never reachable. A commit equal to the head counts without asking.
+- **C6. A reach entry names its own reach reading** (G6), which counts at the same head.
+- **C7. What a ready record left owed is listed in full** (G7): the chain's first owed stage, each check the handoff owed that the record doesn't name, and on the mechanical lane each row unread or unmapped. An owed check the record doesn't name makes the final pass read `owed-at-ready`, under a merge block too, because row 1's first check excepts only the merge. Merge readiness stays the holder's. The first ready record's chain stage isn't read, since the chain is read at the current head only, and the report says so.
+- **C8. The hand record names the holder's session and when it handed off** (G8), so the holder's quiet before ready and its launches after it read the same window for a hand-started builder as for a launched one.
+- **C9. Connected reviewers' declines are read from the pull request** (G9).
+- **C10. The handoff's steps are one ordered table, and the suite ties it to the reasons the entrance returns a builder** (G10): a reason returned in builder mode that `BUILDER_MODE_REASONS` doesn't hold is flagged on the decision, and the test suite fails on the flag; a real builder's run never does. A vanished brief is one of those reasons, answered by a stopped record. Chosen over a constant kept by hand alone, which a reason added without a step would pass.
+- **C11. Small items the second pull request left** (G11 to G15): a fenced `Fresh reader:` example is read past; `allowance stretch` prints the sentence the handoff carried; one handoff of a work runs at a time, under a lock; a resume prints its own window; `run handoff --preview` and the `handoff-due` decision show the launch plan with its sources, and the stretch records its vendor's source. A launch's write bound has one writer.
+- **C12. A change asked onto the route before this merge doesn't count toward the five** (G16), because the comparison's ledger records nothing until its switch file exists.
+
+## Rejected
+
+Readers only for the rows the builder maps (C2); a seat moved to differ from a declared vendor (C3); reachability read from the holder's checkout (C5); an owed list that a merge block hides (C7); a drift guard on a hand-kept constant alone (C10); raising the cold seat's bar for a holder-written plan, which row 2 keeps at today's.
+
+## Held
+
+The floor's output isn't judged; a registration isn't kept after an unverifiable push; the holder's cost window waits on #916; two merged instalments still read `ambiguous-pr`; a launched Codex builder's pricing stays fixture-tested; an invalid post's diagnostic at a required gate is read, not failed.
+
+## Not this
+
+No change to a seat's refusal rule, the vendor switch, model selection, cloud builds or panels; #962 stays open. No check is removed or made optional. Today's route is kept whole, taken by a `route=relay` marker.
