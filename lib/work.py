@@ -12712,8 +12712,9 @@ def _holder_windows(state: WorkState, first: dict | None) -> tuple[dict, dict]:
         return unknown, unknown
     session, start, why = _handoff_window(first)
     end = ready[0].timestamp if ready else datetime.now(timezone.utc).isoformat()
-    change = (state.repo, state.issue_number)
-    quiet = (holder_transcript.handoff_quiet(session, start, end, change=change) if why is None
+    change = (state.repo, state.issue_number, (state.pr or {}).get("number"))
+    builder = [first.get("dispatch_id"), first.get("session_id")]
+    quiet = (holder_transcript.handoff_quiet(session, start, end, builder=builder, change=change) if why is None
              else {"status": "unknown", "reason": why})
     if not ready:
         return quiet, {"status": "unknown", "reason": "no ready record"}
@@ -12725,10 +12726,14 @@ def _holder_windows(state: WorkState, first: dict | None) -> tuple[dict, dict]:
                for _order, path, request, _run in lifecycle.launch_bundles(store, work, None, after=ready[0].timestamp)
                if (request.get("launched_by") or {}).get("dispatch_id") not in builders
                and request.get("started_by") != "hand"]
-    transcript = (holder_transcript.launch_calls(session, ready[0].timestamp,
-                                                 datetime.now(timezone.utc).isoformat()) if why is None
-                  else {"status": "unknown", "reason": why})
-    return quiet, {"bundles": bundles, "transcript": transcript}
+    if why is not None:
+        return quiet, {"bundles": bundles, "transcript": {"status": "unknown", "reason": why}}
+    transcript = holder_transcript.launch_calls(session, ready[0].timestamp, datetime.now(timezone.utc).isoformat())
+    # A stage or launcher the holder runs leaves a bundle of its own, classed above, or none where it launches
+    # nobody or names another change, so only a session no bundle accounts for counts here.
+    calls = [call for call in transcript["calls"] if {"agent", "session"} & set(call["kinds"])]
+    status = "found" if calls else "none" if transcript["status"] == "found" else transcript["status"]
+    return quiet, {"bundles": bundles, "transcript": {**transcript, "status": status, "calls": calls}}
 
 
 def _decline_reason(body: str) -> str | None:

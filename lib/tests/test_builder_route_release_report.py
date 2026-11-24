@@ -7,7 +7,8 @@ Design: lib/DESIGN.md#the-builder-route
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
+import json
 from pathlib import Path
 import sys
 
@@ -158,5 +159,35 @@ def test_a_ready_record_whose_handoff_names_no_owed_checks_reads_them_unread_not
         assert "no lower bound" in report["cost_split"]["holder_before"]["window"]
         [one_one] = [entry for entry in report["row_checks"] if entry["check"] == "1.1"]
         assert one_one["reading"] == "unknown"
+    finally:
+        fixture.stop()
+
+
+def test_a_stage_the_holder_runs_after_ready_is_not_a_launch_and_a_subagent_is(tmp_path, restored, monkeypatch):
+    fixture = route_fixture.Fixture(tmp_path)
+    try:
+        state = route_fixture.ready_launched(fixture)
+        after = datetime.fromisoformat(work._ready_records(state)[0].timestamp) + timedelta(minutes=1)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        session = tmp_path / "claude" / "projects" / "slug" / f"{route_fixture.HOLDER_SESSION}.jsonl"
+        session.parent.mkdir(parents=True)
+
+        def said(identity, seconds, name, tool_input):
+            when = (after + timedelta(seconds=seconds)).isoformat()
+            return [{"type": "assistant", "sessionId": route_fixture.HOLDER_SESSION, "timestamp": when,
+                     "message": {"id": identity, "model": "claude-opus-5-5", "stop_reason": "tool_use", "content": [
+                         {"type": "tool_use", "id": identity, "name": name, "input": tool_input}]}},
+                    {"type": "user", "sessionId": route_fixture.HOLDER_SESSION, "timestamp": when, "message": {
+                        "role": "user", "content": [{"type": "tool_result", "tool_use_id": identity, "content": "ok"}]},
+                     "toolUseResult": {"stdout": "ok"}}]
+
+        lines = said("r", 1, "Bash", {"command": "python -B lib/work.py run release-report 5 --repo acme/widget"})
+        session.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+        check = readings(work._builder_route_report(state, route_fixture.RULES))["4.1"]
+        assert check["reading"] == "holds", check
+        lines += said("a", 2, "Agent", {"description": "probe", "prompt": "x"})
+        session.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+        check = readings(work._builder_route_report(state, route_fixture.RULES))["4.1"]
+        assert (check["reading"], check["reason"]) == ("fails", "1 transcript call(s)")
     finally:
         fixture.stop()

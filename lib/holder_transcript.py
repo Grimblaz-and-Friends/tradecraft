@@ -1,6 +1,7 @@
 """Token-only Claude transcript snapshots, serialized holder close evidence, and a holder's acts over a window."""
 from __future__ import annotations
 
+from collections.abc import Collection
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -715,6 +716,8 @@ _GH_WRITES = {"pr": {"create", "comment", "edit", "ready", "merge", "close", "re
               "issue": {"create", "comment", "edit", "close", "reopen"}}
 _INTERPRETER = re.compile(r"^(?:py|pythonw?(?:3(?:\.\d+)?)?)(?:\.exe)?$", re.I)
 _SEGMENT = re.compile(r"\|\||&&|[;|\n]")
+# A dispatch id or a session id; a recipient written as either is told apart from the builder's own.
+_RECIPIENT_ID = re.compile(r"^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$")
 # A coding-agent command line run directly, outside the dispatch launchers, starts a session.
 _SESSION_PROGRAMS = frozenset({"claude", "claude.exe", "claude.cmd", "codex", "codex.exe", "codex.cmd"})
 # Their first arguments that inspect or configure the program and start no session.
@@ -779,16 +782,20 @@ def _gh_write(arguments):
     if "graphql" in arguments[1:2]:
         # A GraphQL query is POSTed too; only a mutation writes.
         return any("mutation" in field for field in fields)
+    # gh sends a call that has fields and names no method as a POST.
     return bool(fields)
 
 
 def _names_change(words, change):
     if change is None:
         return True
-    repository, number = change
+    repository, *numbers = change
     repository = str(repository).lower()
-    exact = re.compile(rf"^#?{int(number)}$")
-    path = re.compile(rf"/(?:issues|pulls|pull)/{int(number)}(?:$|[/?#])")
+    # An issue and its pull request share the repository's one number sequence, and the issues endpoints also
+    # write to a pull request, so either number names this change.
+    number = "|".join(str(int(value)) for value in numbers if value is not None)
+    exact = re.compile(rf"^#?(?:{number})$")
+    path = re.compile(rf"/(?:issues|pulls|pull)/(?:{number})(?:$|[/?#])")
     owners = re.compile(r"(?:repos/|github\.com/)([^/\s]+/[^/\s]+?)(?:/|$)")
     named = False
     for index, word in enumerate(words):
@@ -811,7 +818,14 @@ def _call_kinds(name, tool_input, builder, change):
         return {"agent"}, f"{name}: {tool_input.get('description') or tool_input.get('subagent_type') or 'agent'}"
     if name == "SendMessage":
         to = tool_input.get("to")
-        return ({"message"} if builder is None or to == builder else set()), f"SendMessage to {to}"
+        recipient = to.strip().lower() if isinstance(to, str) else None
+        if recipient in builder:
+            kinds = {"message"}
+        elif builder and recipient is not None and _RECIPIENT_ID.match(recipient):
+            kinds = set()
+        else:
+            kinds = {"unresolved"}  # A name, or no builder identity to compare, might still be the builder.
+        return kinds, f"SendMessage to {to}"
     command = tool_input.get("command")
     if name not in SHELL_TOOLS or not isinstance(command, str):
         return set(), name
@@ -888,7 +902,9 @@ def _activity(session, start, end, home, builder=None, change=None):
     projects, _ = projects_directory(home)
     paths = _transcript_paths(projects, identity)
     main = paths[0]
-    calls, unprompted, gaps, seen = [], [], [], set()
+    builder = {builder} if isinstance(builder, str) else set(builder or ())
+    builder = {value.strip().lower() for value in builder if isinstance(value, str) and value.strip()}
+    calls, unprompted, gaps, seen, referenced = [], [], [], set(), set()
     previous, turn_open, prompted = None, False, False
     for path in paths:
         try:
@@ -904,6 +920,9 @@ def _activity(session, start, end, home, builder=None, change=None):
                 continue
             if path == main and record.get("isSidechain") is True:
                 continue
+            result = record.get("toolUseResult")
+            if path == main and isinstance(result, dict) and isinstance(result.get("agentId"), str):
+                referenced.add(result["agentId"])
             if record.get("type") == "user" and path == main:
                 # Prompts before the window still answer the window's first reply.
                 prompted = prompted or _prompt_kind(record) is not None
@@ -942,11 +961,14 @@ def _activity(session, start, end, home, builder=None, change=None):
                                        "description": "assistant reply with no owner or peer message before it"})
                 previous, prompted = message_id, False
             turn_open = message.get("stop_reason") == "tool_use"
+    # A subagent the main transcript names but whose own transcript is gone may have made the call looked for.
+    for agent in sorted(referenced - {path.stem.removeprefix("agent-") for path in paths[1:]}):
+        gaps.append(f"referenced subagent {agent} has no transcript")
     return calls, unprompted, gaps
 
 
 def _listed(calls, wanted):
-    order = ("work-run", "launcher", "agent", "session", "message", "github-write")
+    order = ("work-run", "launcher", "agent", "session", "message", "github-write", "unresolved")
     return [{**call, "kinds": [kind for kind in order if kind in call["kinds"] and kind in wanted]}
             for call in calls if call["kinds"] & wanted]
 
@@ -961,29 +983,35 @@ LAUNCHING = frozenset({"work-run", "launcher", "agent", "session"})
 
 # The window readers the builder route's release report reads. Design: lib/DESIGN.md#the-builder-route
 def handoff_quiet(session: str | None, start: datetime | str | None, end: datetime | str | None, *,
-                  builder: str | None = None, change: tuple[str, int] | None = None, home=None) -> dict:
+                  builder: str | Collection[str] | None = None,
+                  change: tuple[str, int] | tuple[str, int, int | None] | None = None, home=None) -> dict:
     """Whether the holder stayed out of a handed-off change over [start, end).
 
     ``calls`` lists each call that ran a stage or launcher, messaged the
     builder or wrote to the change on GitHub; ``launches`` is ``launch_calls``
     over the same window, whatever message came before each; ``unprompted``
-    lists each reply no owner or peer message asked for. A stage or launcher
-    call is in both lists, because it both acts on the change and starts
-    something. The bounds are datetimes or a record's ISO-8601 text, and
-    ``home`` is the Claude projects root, as ``close`` takes ``projects``.
+    lists each reply no owner or peer message asked for; ``unresolved`` lists
+    each message whose recipient cannot be told apart from the builder. A
+    stage or launcher call is in both of the first lists, because it both
+    acts on the change and starts something. ``builder`` is the builder's
+    identities, its session id and dispatch id; ``change`` is (repository,
+    issue, pull request or None). The bounds are datetimes or a record's
+    ISO-8601 text, and ``home`` is the Claude projects root, as ``close``
+    takes ``projects``.
     """
     try:
         found, unprompted, gaps = _activity(session, start, end, home, builder, change)
     except (OSError, TranscriptError) as exc:
-        return {"status": "unknown", "calls": [], "launches": [], "unprompted": [], "reason": str(exc)}
+        return {"status": "unknown", "calls": [], "launches": [], "unprompted": [], "unresolved": [],
+                "reason": str(exc)}
     calls, launches = _listed(found, QUIET_BREAKING), _listed(found, LAUNCHING)
-    reason = "; ".join(gaps) or None
-    if calls or launches or unprompted:
-        return {"status": "not-quiet", "calls": calls, "launches": launches, "unprompted": unprompted,
-                "reason": reason}
-    # A record that could not be read might be the act this reader looks for.
-    return {"status": "unknown" if gaps else "quiet", "calls": [], "launches": [], "unprompted": [],
-            "reason": reason}
+    unresolved = _listed(found, {"unresolved"})
+    # A record that could not be read, or a recipient that might be the builder, might be the act looked for.
+    reason = "; ".join([*gaps, *(f"cannot tell whether {call['description']} reached the builder"
+                                 for call in unresolved)]) or None
+    status = "not-quiet" if calls or launches or unprompted else "unknown" if reason else "quiet"
+    return {"status": status, "calls": calls, "launches": launches, "unprompted": unprompted,
+            "unresolved": unresolved, "reason": reason}
 
 
 def launch_calls(session: str | None, start: datetime | str | None, end: datetime | str | None, *,

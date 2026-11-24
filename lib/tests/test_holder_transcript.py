@@ -434,26 +434,30 @@ def transcript(tmp_path, records):
     return projects
 
 
+BUILDER = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+
 def test_handoff_quiet_lists_stage_launcher_message_write_and_unprompted_reply(tmp_path):
     projects = transcript(tmp_path, [
         heard(1, {"kind": "human"}),
         said("a", 2, shell(r'python -B "C:\plugin\lib\work.py" run use 12')),
         heard(3, result="a-0"),
-        said("b", 4, shell("python -B lib/dispatch_seat.py --stage review"), ("SendMessage", {"to": "builder-12"})),
+        said("b", 4, shell("python -B lib/dispatch_seat.py --stage review"), ("SendMessage", {"to": BUILDER})),
         heard(5, result="b-0"),
         said("c", 6, shell("gh pr comment 12 --repo acme/widget --body done"), shell("gh issue comment 99 -b x"),
-             ("SendMessage", {"to": "someone-else"})),
+             ("SendMessage", {"to": "0" * 32})),
         heard(7, result="c-0"),
         said("d", 8),
         heard(9, {"kind": "task-notification"}, "<task-notification>done</task-notification>"),
         said("e", 10),
     ])
-    found = ht.handoff_quiet("holder", at(0), at(20), builder="builder-12", change=("acme/widget", 12), home=projects)
-    assert found["status"] == "not-quiet" and found["reason"] is None
+    found = ht.handoff_quiet("holder", at(0), at(20), builder=(BUILDER, "f" * 32), change=("acme/widget", 12),
+                             home=projects)
+    assert found["status"] == "not-quiet" and found["reason"] is None and found["unresolved"] == []
     assert [(call["timestamp"], call["kinds"]) for call in found["calls"]] == [
         (at(2).isoformat(), ["work-run"]), (at(4).isoformat(), ["launcher"]),
         (at(4).isoformat(), ["message"]), (at(6).isoformat(), ["github-write"])]
-    assert found["calls"][2]["description"] == "SendMessage to builder-12"
+    assert found["calls"][2]["description"] == f"SendMessage to {BUILDER}"
     assert found["calls"][0]["description"].endswith('work.py" run use 12')
     assert [item["timestamp"] for item in found["unprompted"]] == [at(10).isoformat()]
 
@@ -474,11 +478,12 @@ def test_owner_and_peer_answers_and_the_decision_are_quiet(tmp_path):
         said("d", 10),
     ])
     found = ht.handoff_quiet("holder", at(0), at(20), builder="builder-12", change=("acme/widget", 12), home=projects)
-    assert found == {"status": "quiet", "calls": [], "launches": [], "unprompted": [], "reason": None}
+    assert found == {"status": "quiet", "calls": [], "launches": [], "unprompted": [], "unresolved": [],
+                     "reason": None}
     assert ht.launch_calls("holder", at(0), at(20), home=projects)["status"] == "none"
 
 
-@pytest.mark.parametrize("problem", ["missing", "unreadable", "malformed"])
+@pytest.mark.parametrize("problem", ["missing", "unreadable", "malformed", "missing-subagent"])
 def test_unreadable_transcript_is_unknown_with_reason(tmp_path, problem):
     projects = transcript(tmp_path, [heard(1, {"kind": "human"}), said("a", 2)])
     main = projects / "slug" / "holder.jsonl"
@@ -486,12 +491,19 @@ def test_unreadable_transcript_is_unknown_with_reason(tmp_path, problem):
         main.unlink()
     elif problem == "unreadable":
         main.write_bytes(b"\xff\n")
-    else:
+    elif problem == "malformed":
         with main.open("ab") as stream:
             stream.write(b'{"type":"assistant"')
+    else:
+        # Present beside the gone one, this child is read and names no gap.
+        write_lines(main.parent / "holder" / "subagents" / "agent-kept.jsonl", [said("k", 3, session="holder")])
+        write_lines(main, [heard(3, result="x") | {"toolUseResult": {"agentId": agent}} for agent in ("kept", "gone")],
+                    append=True)
     found = ht.handoff_quiet("holder", at(0), at(20), home=projects)
     assert found["status"] == "unknown" and found["reason"]
-    assert {"missing": "not found", "unreadable": "cannot read", "malformed": "malformed"}[problem] in found["reason"]
+    assert {"missing": "not found", "unreadable": "cannot read", "malformed": "malformed",
+            "missing-subagent": "subagent gone has no transcript"}[problem] in found["reason"]
+    assert "kept" not in found["reason"]
     assert ht.launch_calls("holder", at(0), at(20), home=projects)["status"] == "unknown"
 
 
@@ -544,11 +556,29 @@ def test_launch_calls_finds_agent_and_launcher_and_nothing_in_a_quiet_window(tmp
     ("gh api graphql -f query='mutation { x }' -F number=12", True),
     ("gh pr edit '#12' --add-label x", True),
     ("gh pr comment 13 --body x", False),
+    ("gh pr comment 7 --body x", True),
+    ("gh api repos/acme/widget/pulls/7/comments -f body=x", True),
 ])
 def test_github_write_must_write_and_name_the_change(tmp_path, command, writes):
     projects = transcript(tmp_path, [heard(1, {"kind": "human"}), said("a", 2, shell(command))])
-    found = ht.handoff_quiet("holder", at(0), at(20), change=("acme/widget", 12), home=projects)
+    found = ht.handoff_quiet("holder", at(0), at(20), change=("acme/widget", 12, 7), home=projects)
     assert bool(found["calls"]) is writes
+    assert ht.handoff_quiet("holder", at(0), at(20), change=("acme/widget", 12), home=projects)["calls"] == (
+        found["calls"] if "7" not in command else [])
+
+
+@pytest.mark.parametrize("builder,to,status", [
+    ((BUILDER, "f" * 32), BUILDER.upper(), "not-quiet"),
+    ((BUILDER, "f" * 32), "1" * 32, "quiet"),
+    ((BUILDER, "f" * 32), "builder", "unknown"),
+    (None, BUILDER, "unknown"),
+])
+def test_a_message_breaks_quiet_only_to_the_builder_and_reads_unknown_when_untold(tmp_path, builder, to, status):
+    projects = transcript(tmp_path, prompted_call({"kind": "human"}, ("SendMessage", {"to": to})))
+    found = ht.handoff_quiet("holder", at(0), at(20), builder=builder, home=projects)
+    assert found["status"] == status
+    assert len(found["calls"]) == (status == "not-quiet") and len(found["unresolved"]) == (status == "unknown")
+    assert (found["reason"] == f"cannot tell whether SendMessage to {to} reached the builder") is (status == "unknown")
 
 
 PEER = {"kind": "peer", "name": "Steward"}
@@ -606,7 +636,7 @@ def test_the_window_bounds_read_from_record_timestamps_and_a_missing_one_is_unkn
     found = ht.handoff_quiet("holder", at(0).isoformat().replace("+00:00", "Z"), at(20).isoformat(), home=projects)
     assert found["status"] == "not-quiet" and [call["kinds"] for call in found["calls"]] == [["work-run"]]
     missing = ht.handoff_quiet("holder", None, at(20), home=projects)
-    assert missing == {"status": "unknown", "calls": [], "launches": [], "unprompted": [],
+    assert missing == {"status": "unknown", "calls": [], "launches": [], "unprompted": [], "unresolved": [],
                        "reason": "the window's start is not named"}
     unparsed = ht.launch_calls("holder", "yesterday", at(20), home=projects)
     assert unparsed == {"status": "unknown", "calls": [], "reason": "the window's start is not a timestamp"}
