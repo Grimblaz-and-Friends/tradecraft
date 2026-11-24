@@ -12689,7 +12689,9 @@ def _ready_records(state: WorkState) -> list[Marker]:
 
 def _owed_at_ready(state: WorkState, chain_entry: dict | None, use_owed: bool) -> dict:
     """``owed_at_ready`` at the term's first and last ready records; the chain is read at the current head
-    only, so the first record's list holds what its own record and handoff show."""
+    only, so the first record's list holds what its own record and handoff show. Each record is read by the
+    reports posted before it, so a reader launched after it doesn't clear a row from it; the decision reads
+    what is owed now."""
     ready = _ready_records(state)
     if not ready:
         return {"first": None, "last": None}
@@ -12703,10 +12705,11 @@ def _owed_at_ready(state: WorkState, chain_entry: dict | None, use_owed: bool) -
         return _builder_route_owed(state, payload, marker.attributes["head"], request, chain_entry=chain,
                                    use_owed=use_owed, before=before)
 
-    # An earlier record is read by what stood when it posted, so a reader launched after it doesn't clear it.
-    first = (at(ready[0], chain_entry) if len(ready) == 1
-             else at(ready[0], None, ready[0].source_id if str(ready[0].source_id).isdigit() else None))
-    owed = {"first": first, "last": at(ready[-1], chain_entry)}
+    def posted(marker):
+        return marker.source_id if str(marker.source_id).isdigit() else None
+
+    owed = {"first": at(ready[0], chain_entry if len(ready) == 1 else None, posted(ready[0])),
+            "last": at(ready[-1], chain_entry, posted(ready[-1]))}
     if len(ready) > 1:
         # Said, not left empty: the first record's list holds its unnamed checks and rows, never a chain stage.
         owed["first_chain"] = {"status": "not-read", "reason": "the chain is read at the current head only, so "
@@ -13090,11 +13093,11 @@ def _handoff_launch_plan(state: WorkState, by_hand: str | None, *, safe: bool = 
     model, effort = dispatch_implementer.PROFILES["implementer"].get(vendor, (None, None))
     model_source = effort_source = "handoff default"
     try:
-        settings = setting_resolution.resolve("implementer", vendor, model, effort, "handoff default",
-                                              "handoff default", bridge=setting_resolution.read_bridge())
+        # Resolved as a relay build's are, so an issue's model-override reaches the builder too.
+        settings = _launch_settings(state, "implementer", vendor)
         model, effort = settings.model, settings.effort
         model_source, effort_source = settings.model_source, settings.effort_source
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, WorkError) as exc:
         if vendor == "codex" and not safe:
             raise WorkError(f"the Codex builder's model could not be resolved: {exc}") from exc
     return {"started_by": "hand" if vendor == "codex" else "launch", "vendor": vendor, "model": str(model),

@@ -432,20 +432,27 @@ def test_the_preview_is_the_text_the_handoff_then_hands_and_the_launch_plan_the_
     assert due.launch_settings == plan
 
 
+@pytest.mark.parametrize("override", [None, "<!-- tradecraft:model-override:v1 implementer=claude:custom-model:high -->"])
 def test_a_launched_stretch_records_the_source_that_chose_its_vendor(
-        tmp_path, monkeypatch, holder, quiet_report, stub, capsys):
+        tmp_path, monkeypatch, holder, quiet_report, stub, capsys, override):
     claude_machine()
     stub()
-    state = stored(tmp_path, *PLANNED)
+    state = stored(tmp_path, *PLANNED, *([override] if override else []))
     _vendor, machine_source = work.dispatch_implementer.read_machine_vendor(None)
     assert run(monkeypatch, holder, state, "handoff", "--preview") == 0
     plan = printed_report(capsys.readouterr().out, "preview")["launch_settings"]
-    assert (plan["started_by"], plan["vendor"], plan["sources"]["vendor"]) == ("launch", "claude", machine_source)
+    assert (plan["started_by"], plan["vendor"]) == ("launch", "claude")
+    if override:
+        # An issue's model-override chooses the builder's model and effort, as it does a relay build's.
+        assert plan["sources"]["vendor"].startswith("model-override implementer")
+        assert (plan["model"], plan["effort"]) == ("custom-model", "high")
+    else:
+        assert plan["sources"]["vendor"] == machine_source
     assert run(monkeypatch, holder, state) == 0
     [pointer] = [json.loads(path.read_bytes()) for path in
                  work.launch_tree.pointer_directory(work.records.default_record_root()).glob("*.json")]
     request = json.loads(Path(pointer["request"]).read_bytes())
-    assert request["settings_source"] == machine_source
+    assert request["settings_source"] == plan["sources"]["vendor"]
     assert request["settings_source"] not in ("handoff default", "work entrance handoff route")
     # The launch carries the plan's model and effort with their sources, as the preview printed them.
     argv = json.loads((Path(pointer["request"]).parent / "argv.json").read_text(encoding="utf-8"))

@@ -62,6 +62,8 @@ An owner's ask that a rule above it overrules is reported as overruled.
 
 The holder writes no check's instructions, and supplies the floor command only here, with `--floor-command`. A holder-written `--dispatch` reaches the builder byte for byte, and the release report shows that it differs from the composed text. The builder's limit is the stretch's own, 28,800 seconds by default; a larger figure needs `--budget-override-reason`.
 
+Where `run handoff` reports `launch-unconfirmed`, its launcher wrote no request record or pointer within the cap and may still be starting a builder, so the holder reads that bundle's `launcher.out`, `launcher.err` and `launcher.exit` before handing off again.
+
 **The builder's run.** In its own session, the builder takes its steps in the entrance's own order, which is fixed wherever an entrance hold names the step before it. The entrance reads the floor before the cold reading and the rest of its chain, and names thread resolution only once the floor stands again after a late commit, so the order is:
 
 1. pushes its branch and opens the pull request as a draft, its body carrying the `**Path departures:**` paragraph the builder keeps true up to proof, with the issue's closing reference alone on a line of its body, by which the entrance finds it; where the change lands in instalments, no instalment's pull request carries that reference: the builder posts the `implementing-pr` marker for it on the issue, and the issue is closed by hand after the last instalment merges. It posts no `builder-session`, for which the stretch's record stands;

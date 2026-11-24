@@ -191,3 +191,15 @@ def test_a_stage_the_holder_runs_after_ready_is_not_a_launch_and_a_subagent_is(t
         assert (check["reading"], check["reason"]) == ("fails", "1 transcript call(s)")
     finally:
         fixture.stop()
+
+
+def test_each_ready_record_is_read_by_the_reports_posted_before_it(tmp_path, restored, monkeypatch):
+    fixture = route_fixture.Fixture(tmp_path)
+    try:
+        state = route_fixture.ready_launched(fixture)
+        cutoffs = []
+        monkeypatch.setattr(work, "_builder_route_owed", lambda *_a, before=None, **_k: cutoffs.append(before) or [])
+        work._owed_at_ready(state, None, False)
+        assert cutoffs == [work._ready_records(state)[0].source_id] * 2 and cutoffs[0] is not None
+    finally:
+        fixture.stop()
