@@ -41,6 +41,11 @@ PLAN = ("\n## Plan\n\nBuild row 1 and prove it by use.\n\n"
         "```json\n{\"mode\": \"adopter\", \"paths\": [\"job\"], \"loading_surfaces\": [\"skill/SKILL.md\"]}\n```\n\n"
         "## Criteria\n\n**C1.** Row 1 is built. *Check:* a test.\n\n"
         "**C2.** The job runs.\nFresh reader: execute consumer tree use\n")
+# The owner-affirmed mechanical lane: a determinate correction in seven rows, with no plan owed.
+MECHANICAL_BRIEF = ("<!-- tradecraft:affirmed-brief:v1 -->\nReview risk: ordinary\nReview lane: mechanical\n\n"
+                    "## Purpose\n\nA stand-in correction to the job's wording.\n\n## Rows\n\n"
+                    + "".join(f"**{number}. The job's line {number} reads as corrected.** It says what it does.\n\n"
+                              for number in range(1, 8)))
 QUOTED = "\n" + "\n".join("> " + line for line in BRIEF.splitlines())
 DRAFT = "<!-- tradecraft:artifact:v1 status=draft -->" + QUOTED + PLAN
 # Settled where no cold seat could be obtained, so the settlement stands without a seat's bundle.
@@ -54,7 +59,8 @@ SAME_VENDOR = "owner-selected-claude-implementer"
 
 SCENARIOS = {
     "handoff-due": "an affirmed brief and a settled plan, nothing launched",
-    "handoff": "the same state, with the handoff the entrance composes for its builder",
+    "handoff": "the same state, with the handoff the entrance composes for its builder (--mechanical: a "
+               "seven-row brief on the mechanical lane and no plan)",
     "with-builder": "a live stretch launch of the change",
     "stretch-stopped": "a completed stretch and no readiness record",
     "cannot-launch": "a stopped readiness record whose builder could not launch a check",
@@ -64,6 +70,7 @@ SCENARIOS = {
     "relay-in-flight": "a first build launch, so today's relay chain",
     "owner-asked-relay": "the owner's route=relay marker, nothing launched",
     "hand-started": "a builder the owner started by hand, its record still open",
+    "launch-account-held": "a completed stretch launched under a write bound whose comparison no launch-account names",
 }
 
 
@@ -95,7 +102,7 @@ def isolate(base: Path) -> None:
 class Fixture:
     """One scenario's issue, store and holder checkout, and the entrance's report of them."""
 
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, *, mechanical: bool = False):
         sys.path.insert(0, str(LIB))
         import work
         import dispatch_record as records
@@ -112,7 +119,8 @@ class Fixture:
         self.synchronization = None
         self.children = []
         self.cold_reading_clean = False
-        for text in (BRIEF, DRAFT, SETTLED, HOLDER_READING):
+        self.reports = []
+        for text in ((MECHANICAL_BRIEF,) if mechanical else (BRIEF, DRAFT, SETTLED, HOLDER_READING)):
             self.post(text)
 
     def post(self, body: str) -> int:
@@ -155,6 +163,22 @@ class Fixture:
     def completed(self, stage: str, minutes: int) -> str:
         """A bundle of STAGE launched MINUTES after the start and completed a minute later."""
         dispatch_id, output, request = self._request(stage, minutes)
+        self.records.write_json(self.records.sidecar(output, ".request.json"), request)
+        self.records.write_json(self.records.sidecar(output, ".run.json"), {
+            "schema_version": self.records.SCHEMA_VERSION, "dispatch_id": dispatch_id, "lifecycle": "completed",
+            "outcome": "success", "completed_at": (START + timedelta(minutes=minutes + 1)).isoformat()})
+        return dispatch_id
+
+    def bounded_stretch(self, minutes: int) -> str:
+        """A completed stretch launched under a write bound whose run ended before its comparison was recorded.
+
+        The bound is the one the seat launcher records when it has no file-tool guard to record, so the
+        entrance owes the holder's launch-account for the unrecorded comparison before anything else.
+        """
+        import launch_bound
+        dispatch_id, output, request = self._request("stretch", minutes, root=self.base / "implementation")
+        request["write_bound"] = {"file_tools": None, "memory": launch_bound.memory_record(),
+                                  "comparison": {"coverage": []}, "shell": launch_bound.SHELL}
         self.records.write_json(self.records.sidecar(output, ".request.json"), request)
         self.records.write_json(self.records.sidecar(output, ".run.json"), {
             "schema_version": self.records.SCHEMA_VERSION, "dispatch_id": dispatch_id, "lifecycle": "completed",
@@ -256,12 +280,40 @@ class Fixture:
             work._cold_reading_decision = lambda *_args: None
             if self.cold_reading_clean != "reach-read":
                 work._evaluate_reach = lambda checked: setattr(checked, "reach", {"state": "not-due"})
-        return work.main(["--repo", REPO, "--issue", str(ISSUE), "--root", str(self.holder)])
+        emit, self.reports = work._emit_report, []
+
+        def recorded(payload, *args, **kwargs):
+            self.reports.append(payload)
+            return emit(payload, *args, **kwargs)
+
+        work._emit_report = recorded
+        try:
+            code = work.main(["--repo", REPO, "--issue", str(ISSUE), "--root", str(self.holder)])
+        finally:
+            work._emit_report = emit
+        # A reason the entrance returned a builder that its list lacks fails the run, as it fails the suite.
+        flagged = [reason for reason in map(unlisted_builder_reason, self.reports) if reason]
+        if flagged:
+            sys.stderr.write(f"route_fixture: the decision carries unlisted_builder_reason {flagged[0]}\n")
+            return code or 1
+        return code
 
     def stop(self) -> None:
         for child in self.children:
             child.kill()
             child.wait()
+
+
+def unlisted_builder_reason(report: dict) -> str | None:
+    """The flag a printed decision carries, on the decision itself or on its detail's ``if_ended``."""
+    if report.get("unlisted_builder_reason"):
+        return report["unlisted_builder_reason"]
+    try:
+        detail = json.loads(report.get("detail") or "")
+    except (TypeError, ValueError):
+        return None
+    ended = detail.get("if_ended") if isinstance(detail, dict) else None
+    return ended.get("unlisted_builder_reason") if isinstance(ended, dict) else None
 
 
 def ready_at_head(fixture: Fixture, synchronization: dict, live=lambda head: None) -> object:
@@ -386,6 +438,10 @@ def scenario(name: str, fixture: Fixture) -> int:
     if name == "catch-up":
         return fixture.decision(ready_at_head(fixture, {**CLEAR, "behind": True, "strict": True,
                                                         "merge_state": "behind"}))
+    if name == "launch-account-held":
+        fixture.pull_request(head, CLEAR)
+        fixture.bounded_stretch(5)
+        return fixture.decision(fixture.state())
     if name == "relay-in-flight":
         fixture.completed("build", 5)
         return fixture.decision(fixture.state())
@@ -411,7 +467,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("scenario", nargs="?", choices=sorted(SCENARIOS))
     parser.add_argument("--list", action="store_true", help="print the scenario names, one per line")
+    parser.add_argument("--mechanical", action="store_true",
+                        help="with handoff or handoff-due: the change is on the ordinary / mechanical lane, no plan")
     args = parser.parse_args(argv)
+    if args.mechanical and args.scenario not in ("handoff", "handoff-due"):
+        parser.error("--mechanical applies to handoff and handoff-due")
     if args.list or args.scenario is None:
         sys.stdout.buffer.write("".join(f"{name}\n" for name in SCENARIOS).encode("ascii"))
         return 0 if args.list else 2
@@ -425,7 +485,7 @@ def main(argv: list[str] | None = None) -> int:
             LIB = shutil.copytree(LIB, base / "p" / "lib", ignore=shutil.ignore_patterns("__pycache__"))
             (LIB.parent / ".claude-plugin").mkdir()
             (LIB.parent / ".claude-plugin" / "plugin.json").write_text('{"version": "0.0.0"}', encoding="utf-8")
-        fixture = Fixture(base)
+        fixture = Fixture(base, mechanical=args.mechanical)
         try:
             return scenario(args.scenario, fixture)
         finally:

@@ -58,9 +58,12 @@ time.sleep(60)
 GIT_LOCATORS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR")
 
 
+def without_git_locators():
+    return {key: value for key, value in os.environ.items() if key not in GIT_LOCATORS}
+
+
 def git(root, *arguments):
-    return subprocess.run(["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL,
-                          env={key: value for key, value in os.environ.items() if key not in GIT_LOCATORS},
+    return subprocess.run(["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL, env=without_git_locators(),
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout.decode().strip()
 
 
@@ -77,7 +80,7 @@ def holder(tmp_path):
     git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-qm", "fixture")
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, stdin=subprocess.DEVNULL,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                   env=without_git_locators(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     git(root, "remote", "add", "origin", str(remote))
     git(root, "push", "-q", "--set-upstream", "origin", "HEAD")
     return root
@@ -127,7 +130,10 @@ def nothing_made(holder):
 
 def no_bundle():
     store = work.records.default_record_root()
-    return not store.exists() or not list(store.glob("handoff-*"))
+    locks = store / "handoff-locks"
+    # The handoff's lock folder is no bundle, but a lock left in it after the run returned would be.
+    return not store.exists() or not ([path for path in store.glob("handoff-*") if path != locks]
+                                      or (locks.exists() and list(locks.iterdir())))
 
 
 @pytest.fixture()
@@ -342,3 +348,43 @@ def test_1011_a_stopped_hand_started_builder_resumes_only_by_the_holders_reason(
     assert report["ended"] == [{"dispatch": first["dispatch_id"], "reason": "the session closed"}]
     state.validated_markers = None
     assert work.decide(state, RULES).stage == "with-builder"
+
+
+def test_the_holders_bare_remote_is_made_with_the_callers_git_locators_stripped(tmp_path, monkeypatch, request):
+    elsewhere = tmp_path / "callers.git"
+    monkeypatch.setenv("GIT_DIR", str(elsewhere))
+    holder = request.getfixturevalue("holder")
+    assert (tmp_path / "remote.git" / "HEAD").is_file() and not elsewhere.exists()
+    assert git(holder, "ls-remote", "--heads", "origin") != ""
+
+
+# A mechanical-lane brief of seven rows: no plan is owed, and every row is owed its own reader.
+ROWS = MECHANICAL + "\n" + "".join(f"**{number}. Row {number} of the correction.** It holds.\n\n"
+                                   for number in range(1, 8))
+
+
+def test_a_mechanical_change_hands_off_without_a_plan_and_with_a_reader_per_row(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
+    state = stored(tmp_path, ROWS)
+    assert work.decide(state, RULES).reason == "handoff-due"
+    assert run(monkeypatch, holder, state) == 0
+    out = capsys.readouterr().out
+    [request] = hand_requests()
+    assert request["handoff"]["artifact_comment"] is None
+    assert "## The mechanical lane" in out and "## The settled plan" not in out and "--job-from-artifact" not in out
+    rows = [line.rsplit(" --row ", 1)[1] for line in out.splitlines() if "run acceptance-criterion" in line]
+    assert rows == [str(number) for number in range(1, 8)]
+
+
+def test_a_handoff_preview_prints_the_text_and_makes_nothing(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
+    state = stored(tmp_path, *PLANNED)
+    assert run(monkeypatch, holder, state, "handoff", "--preview") == 0
+    out = capsys.readouterr().out
+    assert "work: handoff text preview follows\n" in out
+    assert "## The settled plan" in out.split("work: handoff text preview follows\n", 1)[1]
+    nothing_made(holder)
+    assert no_bundle() and hand_requests() == []
+    store = work.records.default_record_root()
+    assert not store.exists() or not list(store.rglob("*.request.json"))
+    assert not (store / "handoff-locks").exists()
