@@ -447,6 +447,11 @@ def test_a_launched_stretch_records_the_source_that_chose_its_vendor(
     request = json.loads(Path(pointer["request"]).read_bytes())
     assert request["settings_source"] == machine_source
     assert request["settings_source"] not in ("handoff default", "work entrance handoff route")
+    # The launch carries the plan's model and effort with their sources, as the preview printed them.
+    argv = json.loads((Path(pointer["request"]).parent / "argv.json").read_text(encoding="utf-8"))
+    for key in ("model", "effort"):
+        assert argv[argv.index(f"--{key}") + 1] == str(plan[key])
+        assert argv[argv.index(f"--{key}-source") + 1] == plan["sources"][key]
 
 
 def test_a_resume_with_no_limit_prints_its_window_from_the_stopped_launchs_limit(

@@ -217,6 +217,13 @@ def test_C3_composed_entrance_still_refuses_a_holder_dispatch_and_wrong_selected
         work.execute_stage(fixture, decision, args.root, None)
 
 
+def test_an_own_vendor_with_no_launcher_is_refused_unless_declared(job):
+    args, _ = job
+    args.own_vendor = "codx"
+    with pytest.raises(seat.DispatchError, match="no launcher"): seat.run_dispatch(args)
+    assert not seat.sidecar(args.output, ".request.json").exists()
+
+
 @pytest.mark.parametrize("option", ["draft_comment", "draft_producer"])
 def test_E1_direct_draft_option_is_cold_specific(job, option):
     args, _ = job

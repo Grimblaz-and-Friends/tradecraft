@@ -698,6 +698,11 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
             raise DispatchError(str(exc)) from exc
     elif getattr(args, "draft_comment", None) is not None or getattr(args, "draft_producer", None) is not None:
         raise DispatchError("--draft-comment and --draft-producer apply only to cold-seat")
+    # Only a hand-started builder's declared vendor may lack a launcher, so a mistyped name is refused rather
+    # than read as a different vendor that qualifies a same-vendor seat.
+    if args.own_vendor not in VENDORS and getattr(args, "builder_vendor_source", None) != "declared":
+        raise DispatchError(
+            f"--own-vendor {args.own_vendor} has no launcher without --builder-vendor-source declared")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise DispatchError("--timeout-seconds must be finite and positive")
     read_holds(hold_file)

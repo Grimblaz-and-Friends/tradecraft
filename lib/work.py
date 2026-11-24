@@ -12052,13 +12052,14 @@ def _seat_staffing(builder: dict | None, own_vendor: str, seat_vendor: str,
                    launched_reason: str | None) -> tuple[str, list[str]]:
     """The seat's comparison vendor and its staffing arguments against the builder's vendor.
 
-    A declared vendor is compared ignoring case: equal to the seat's, the seat is degraded for that reason.
+    A declared vendor is compared ignoring case: equal to the seat's, the seat is degraded for that reason. The
+    reason is always passed, since a seat that falls back to the declared vendor is degraded for it too, and the
+    launcher records a reason only for a degraded seat.
     """
     if not _declared_builder(builder):
         return own_vendor, ["--same-vendor-reason", launched_reason] if launched_reason else []
-    declared = own_vendor.strip().lower()
-    return declared, ["--builder-vendor-source", "declared",
-                      *(["--same-vendor-reason", "declared-builder-vendor"] if declared == seat_vendor else [])]
+    return own_vendor.strip().lower(), ["--builder-vendor-source", "declared",
+                                        "--same-vendor-reason", "declared-builder-vendor"]
 
 
 def _row_to_read(state: WorkState, args: argparse.Namespace, builder: dict | None) -> tuple[int, str] | None:
@@ -12605,11 +12606,14 @@ def _owed_unnamed(state: WorkState, payload: dict, head: str, request: dict, *,
         elif stage == "use":
             missing = use_owed and not has("use")
         elif stage == "floor":
+            # Without a floor command the floor is the declared CI jobs, which the chain reads; the record has
+            # no floor marker to name.
             missing = check.get("floor_command") is not None and not has("floor")
         elif stage == "reach":
             missing = _reach_flagged(state) and not any(entry.get("stage") == "reach" and entry.get("report")
                                                         for entry in named)
         else:
+            # Readying reviewers and proof are the chain's to name at the head, and a record can't name either.
             missing = stage == "cold-reader" and not has(stage)
         if missing:
             listed.append({"stage": stage, "criterion": check.get("criterion"), "row": check.get("row"),
@@ -13093,7 +13097,7 @@ def _handoff_launch_plan(state: WorkState, by_hand: str | None, *, safe: bool = 
 def _handoff_vendor(state: WorkState, args: argparse.Namespace) -> tuple[str, str, bool]:
     """The builder's vendor, model and whether the owner starts it by hand; the vendor's source is kept on args."""
     plan = _handoff_launch_plan(state, args.by_hand)
-    args.handoff_vendor_source = plan["sources"]["vendor"]
+    args.handoff_vendor_source, args.handoff_plan = plan["sources"]["vendor"], plan
     return plan["vendor"], plan["model"], plan["started_by"] == "hand"
 
 
@@ -13452,10 +13456,14 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
                                 recovery_restart_bundle=block["recovery_restart_bundle"])
     metadata.write_bytes(records.json_bytes(lifecycle_fields))
     exit_file, out, err = bundle / "launcher.exit", bundle / "launcher.out", bundle / "launcher.err"
+    plan = getattr(args, "handoff_plan", None) or {}
     command = [*_stretch_launcher(), "--dispatch", str(dispatch), "--root", str(implementation_root),
                "--work", work, "--stage", "stretch",
-               # The vendor's own source: the machine file or the owner's override that chose it.
+               # The launch spends what the preview and the decision showed, so its record names the source of
+               # each value the plan chose: the vendor's machine file or override, and the model's and effort's.
                "--settings-source", getattr(args, "handoff_vendor_source", None) or "work entrance handoff route",
+               *(arg for key in ("model", "effort") if plan.get(key)
+                 for arg in (f"--{key}", str(plan[key]), f"--{key}-source", plan["sources"][key])),
                "--settings-scope", "implementer", "--timeout-seconds", f"{limit:g}", "--vendor", "claude",
                "--holder-session-id", holder_identity, "--lineage-branch", branch, "--output", str(output),
                "--lifecycle-input", str(metadata),

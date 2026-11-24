@@ -124,7 +124,9 @@ def test_a_seat_under_a_hand_builder_declaring_another_vendor_stays_on_claude_an
     marker = run_seat(state, stage)
     command = seen["command"]
     assert option(command, "--vendor") == "claude" and option(command, "--own-vendor") == compared
-    assert "--same-vendor-reason" not in command and option(command, "--builder-vendor-source") == "declared"
+    # The reason is passed, and recorded only where the seat is degraded, which it isn't here.
+    assert option(command, "--same-vendor-reason") == "declared-builder-vendor"
+    assert option(command, "--builder-vendor-source") == "declared"
     request, run = seat_records(stage)
     assert request["builder_vendor_source"] == "declared" and request["comparison_vendor"] == compared
     assert (run["actual_vendor"], run["staffing_status"]) == ("claude", "qualified")
@@ -162,8 +164,8 @@ def test_a_seat_under_a_launched_claude_builder_keeps_the_owner_selected_reason_
 @pytest.mark.parametrize("declared, seat, staffing", [
     ("claude", "claude", ["--builder-vendor-source", "declared", "--same-vendor-reason", "declared-builder-vendor"]),
     ("Claude", "claude", ["--builder-vendor-source", "declared", "--same-vendor-reason", "declared-builder-vendor"]),
-    ("Gemini", "claude", ["--builder-vendor-source", "declared"]),
-    ("codex", "claude", ["--builder-vendor-source", "declared"]),
+    ("Gemini", "claude", ["--builder-vendor-source", "declared", "--same-vendor-reason", "declared-builder-vendor"]),
+    ("codex", "claude", ["--builder-vendor-source", "declared", "--same-vendor-reason", "declared-builder-vendor"]),
     # A cold reader the owner moved to Codex is degraded under a builder declaring Codex.
     ("Codex", "codex", ["--builder-vendor-source", "declared", "--same-vendor-reason", "declared-builder-vendor"]),
 ])
@@ -288,7 +290,8 @@ def test_a_hand_builders_cold_reading_is_staffed_against_its_declared_vendor(
         change, monkeypatch, capfd, declared, compared, status, reason):
     command, request, run, marker = builder_reading(change, monkeypatch, capfd, declared)
     assert option(command, "--vendor") == "claude" and option(command, "--own-vendor") == compared
-    assert option(command, "--same-vendor-reason") == reason
+    # Passed whatever the vendors, so a seat that falls back to the declared vendor is degraded for it.
+    assert option(command, "--same-vendor-reason") == "declared-builder-vendor"
     assert option(command, "--builder-vendor-source") == "declared"
     assert request["builder_vendor_source"] == "declared" and request["comparison_vendor"] == compared
     assert (run["actual_vendor"], run["staffing_status"]) == ("claude", status)
