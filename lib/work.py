@@ -13069,13 +13069,18 @@ HANDOFF_LOCK_STALE_SECONDS = lifecycle.PREFLIGHT_CAP_SECONDS + lifecycle.MINIMUM
 def _handoff_lock(store: Path, work: str):
     """One handoff of a work at a time: a lock file made exclusively, held until this call returns.
 
-    A lock older than the entrance's cap and reserve was left by a run that never released it.
+    A lock past the expiry it carries was left by a run that can no longer launch.
     """
     directory = store / "handoff-locks"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / (hashlib.sha256(work.lower().encode("utf-8")).hexdigest() + ".lock")
+    # The run can launch until its cap ends and clean up for its reserve after, so its lock stands until then.
+    deadline = lifecycle.current_deadline()
+    left = (deadline.cap_left() + deadline.reserve if deadline is not None and deadline.cap is not None
+            else HANDOFF_LOCK_STALE_SECONDS)
     # Each holding names itself in the file, so only the call that holds the lock releases it.
-    token = f"{os.getpid()} {uuid.uuid4().hex}".encode("ascii")
+    token = json.dumps({"holding": f"{os.getpid()} {uuid.uuid4().hex}",
+                        "expires_at": time.time() + max(left, 0.0)}).encode("ascii")
     refused = HandoffRefused("handoff-in-progress", f"run handoff: another handoff of {work} holds {path}; "
                              "wait for it to return")
 
@@ -13090,11 +13095,23 @@ def _handoff_lock(store: Path, work: str):
 
     if not create():
         try:
-            stale = time.time() - path.stat().st_mtime > HANDOFF_LOCK_STALE_SECONDS
-            # Renaming the stale lock away is a step only one call can take; the others find it gone.
+            judged = path.read_bytes()
+            try:
+                expires = float(json.loads(judged)["expires_at"])
+            except (ValueError, TypeError, KeyError):
+                expires = path.stat().st_mtime + HANDOFF_LOCK_STALE_SECONDS
+            stale = time.time() > expires
             if stale:
+                # Renaming the lock away is a step only one call can take. A lock that isn't the one judged
+                # stale was made fresh since, so it goes back and this call refuses.
                 moved = path.with_name(path.name + f".stale-{uuid.uuid4().hex}")
                 os.rename(path, moved)
+                if moved.read_bytes() != judged:
+                    try:
+                        os.link(moved, path)
+                    except FileExistsError:
+                        pass
+                    stale = False
                 moved.unlink()
         except FileNotFoundError:
             stale = False

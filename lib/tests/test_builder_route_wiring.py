@@ -145,12 +145,37 @@ def test_one_handoff_holds_the_lock_and_a_stale_lock_is_removed(tmp_path):
                 pass
         assert caught.value.code == "handoff-in-progress"
     assert not held.exists()
-    held.write_text("1", encoding="ascii")
+    # A lock is judged by the expiry it carries, not by its age: one still able to launch stands.
     old = time.time() - work.HANDOFF_LOCK_STALE_SECONDS - 60
+    held.write_text(json.dumps({"holding": "1", "expires_at": time.time() + 600}), encoding="ascii")
     os.utime(held, (old, old))
+    with pytest.raises(work.HandoffRefused):
+        with work._handoff_lock(store, "o/r#5"):
+            pass
+    held.write_text(json.dumps({"holding": "1", "expires_at": old}), encoding="ascii")
     with work._handoff_lock(store, "o/r#5") as again:
-        assert again == held and again.stat().st_mtime > old
+        assert again == held and json.loads(again.read_text(encoding="ascii"))["expires_at"] > time.time()
     assert not held.exists()
+
+
+def test_a_stale_lock_taker_puts_back_a_lock_it_did_not_judge_and_refuses(tmp_path, monkeypatch):
+    store = tmp_path / "store"
+    with work._handoff_lock(store, "o/r#5") as held:
+        pass
+    held.write_text(json.dumps({"holding": "1", "expires_at": 0}), encoding="ascii")
+    fresh = json.dumps({"holding": "2", "expires_at": time.time() + 600}).encode("ascii")
+    rename = os.rename
+
+    def taken_meanwhile(source, target):
+        # Another call took the stale lock over between this call's judging and its rename.
+        Path(source).write_bytes(fresh)
+        rename(source, target)
+
+    monkeypatch.setattr(work.os, "rename", taken_meanwhile)
+    with pytest.raises(work.HandoffRefused):
+        with work._handoff_lock(store, "o/r#5"):
+            pass
+    assert held.read_bytes() == fresh and list(held.parent.iterdir()) == [held]
 
 
 def test_a_handoff_releases_only_the_lock_it_still_holds(tmp_path):
