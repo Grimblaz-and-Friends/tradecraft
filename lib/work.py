@@ -5886,14 +5886,16 @@ def _owed_cold_reading(state: WorkState) -> Marker | None:
 
 
 def _cold_reading_measures(state: WorkState) -> dict[str, object]:
-    """Each reading's flags, the holder's acceptances and the run's settings, for the release report.
+    """Each reading's flags, the acceptances and the run's settings, for the release report.
 
-    The owner judges the holder's acceptances from this, so it is read from the records, not recounted.
+    The owner judges the acceptances from this, so it is read from the records, not recounted. On the builder
+    route the builder writes them, so each reading names whose they are.
     """
     if state.validated_markers is None:
         validate_marker_claims(state)
     try:
         readings = _cold_readings(state)
+        accepted_by = "builder" if _route(state)["name"] == "builder" else "holder"
     except WorkError as exc:
         return {"status": "unverifiable", "detail": str(exc), "readings": []}
     opened = _opened_readings(state, readings)
@@ -5909,7 +5911,7 @@ def _cold_reading_measures(state: WorkState) -> dict[str, object]:
             "posted": marker is not None, "can_tell": reading["account"]["can_tell"],
             "flags": [cold_reader.flag_line(flag) for flag in flags],
             "accepted": [{"flag": cold_reader.flag_line(flags[position]), "reason": reason}
-                         for position, reason in sorted(accepted.items())],
+                         for position, reason in sorted(accepted.items())], "accepted_by": accepted_by,
             "routed": [cold_reader.flag_line(flag) for position, flag in enumerate(flags)
                        if position not in accepted],
             "vendor": attempt.get("vendor"), "model": attempt.get("model"), "effort": attempt.get("effort"),
