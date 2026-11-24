@@ -158,9 +158,10 @@ def rows(text: str) -> list[tuple[int, str]]:
             continue
         if heading:
             level, end = len(heading.group(1)), index + 1
-            # A heading row runs to the next heading of its own level or higher.
+            # A heading row runs to the next heading of its own level or higher, or to `Not this` at any depth.
             while end < len(outside) and not (
-                    (match := HEADING.match(outside[end].strip())) and len(match.group(1)) <= level):
+                    (match := HEADING.match(outside[end].strip())) and len(match.group(1)) <= level
+                    or _has_label(outside[end], "Not this")):
                 end += 1
             found.append((int(heading.group(2)), _row_text(original[index:end])))
             index = end

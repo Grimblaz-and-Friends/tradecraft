@@ -11685,7 +11685,9 @@ def criterion_reader(criterion: str) -> tuple[str, str | None]:
     """
     lines = criterion.splitlines(keepends=True)
     fenced = _fenced_lines(lines)
-    match = FRESH_READER.search("".join(line for index, line in enumerate(lines) if index not in fenced))
+    # Read line by line, so a directive is never joined across a fenced block.
+    match = next(filter(None, (FRESH_READER.search(line.rstrip("\n"))
+                               for index, line in enumerate(lines) if index not in fenced)), None)
     if match is None:
         raise BuilderRefused("criterion-owes-no-fresh-reader", "the criterion names no `Fresh reader:` line")
     return match.group(1), match.group(3)
@@ -11754,10 +11756,11 @@ def fresh_reader_criteria(artifact: str) -> list[str]:
         if match.start() not in outside or identifier in found:
             continue
         # Read outside fences, as the reader's own composition reads the directive.
-        text = artifact_criterion(artifact, identifier).splitlines(keepends=True)
-        fence = _fenced_lines(text)
-        if FRESH_READER.search("".join(line for index, line in enumerate(text) if index not in fence)):
-            found.append(identifier)
+        try:
+            criterion_reader(artifact_criterion(artifact, identifier))
+        except BuilderRefused:
+            continue
+        found.append(identifier)
     return found
 
 
@@ -11775,7 +11778,12 @@ def _handoff_inputs(state: WorkState, floor_command: str | None):
     if brief is None:
         raise BuilderRefused("brief-absent", "the change has no affirmed brief")
     if lane == ("ordinary", "mechanical"):
-        checks = handoff.owed_checks(criteria=[], mechanical=True, rows=brief_rows.rows(brief.body),
+        rows = brief_rows.rows(brief.body)
+        numbers = [number for number, _text in rows]
+        if len(numbers) != len(set(numbers)):
+            raise BuilderRefused("brief-rows-repeated", "the affirmed brief numbers two rows alike, so a "
+                                 "row's reader can't be told which it reads")
+        checks = handoff.owed_checks(criteria=[], mechanical=True, rows=rows,
                                      use_owed=False, floor_command=floor_command)
         return brief, None, None, checks
     artifact, comment = _settled_artifact_text(state, "plan-unsettled")
@@ -12365,7 +12373,7 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
                           if composed is not None and request.get("stage") == "acceptance-criterion" else "")
             row = ROW_DISPATCH.search(dispatched) if dispatched.startswith(ROW_PREAMBLE) else None
             criterion = (CRITERION_OPENING.search(dispatched.split("\nCriterion:\n\n", 1)[-1])
-                         if "\nCriterion:\n\n" in dispatched else None)
+                         if dispatched.startswith(CRITERION_PREAMBLE) else None)
             if attributes.get("row") != (row.group(1) if row else None):
                 reasons.append("row differs")
             if attributes.get("criterion") != (criterion.group(1) if criterion else None):
@@ -12562,8 +12570,9 @@ def _reach_flagged(state: WorkState) -> bool:
 
 
 def _owed_unnamed(state: WorkState, payload: dict, head: str, request: dict, *,
-                  use_owed: bool) -> list[dict] | dict:
-    """Each check the handoff owed that the record doesn't name, and on the mechanical lane each row left unread.
+                  use_owed: bool, before: str | None = None) -> list[dict] | dict:
+    """Each check the handoff owed that the record doesn't name, and on the mechanical lane each row left unread,
+    by reports posted before the comment ``before`` where it is given; each row is listed once.
 
     The owed checks come from the handoff block the builder's launch or hand record carries.
     """
@@ -12600,13 +12609,20 @@ def _owed_unnamed(state: WorkState, payload: dict, head: str, request: dict, *,
     if lane == ("ordinary", "mechanical") and brief is not None:
         numbers = [number for number, _text in brief_rows.rows(brief.body)]
         reports = (builder_checks(state) or {}).get("check_reports", [])
+        # A row is read only by a reader that returned, and only by a report that stood when the record posted.
         read = {entry.get("row") for entry in reports if entry.get("counts") and entry.get("head") == head
-                and entry.get("stage") == "acceptance-criterion"}
+                and entry.get("stage") == "acceptance-criterion" and entry.get("outcome") == "success"
+                and (before is None or str(entry.get("comment")).isdigit() and int(entry["comment"]) < int(before))}
         # Every row is owed its own reader at the record's head, whatever the builder's mapping says.
         listed += [{"stage": "acceptance-criterion", "criterion": None, "row": number, "reason": "row-unread"}
                    for number in numbers if number not in read]
         listed += [{"stage": "rows", "criterion": None, "row": number, "reason": "row-unmapped"}
                    for number in readiness.unmapped_rows(payload, numbers)]
+        rank = {"row-unread": 0, "owed-unnamed": 1, "row-unmapped": 2}
+        first = {}
+        for entry in sorted((entry for entry in listed if entry["row"] is not None), key=lambda e: rank[e["reason"]]):
+            first.setdefault(entry["row"], entry)
+        listed = [entry for entry in listed if entry["row"] is None or first[entry["row"]] is entry]
     return listed
 
 
@@ -12632,13 +12648,13 @@ def _owed_line(recommendation: Decision) -> str:
 
 
 def _builder_route_owed(state: WorkState, payload: dict, head: str, request: dict, *,
-                        chain_entry: dict | None, use_owed: bool) -> list[dict] | dict:
+                        chain_entry: dict | None, use_owed: bool, before: str | None = None) -> list[dict] | dict:
     """What a ready record left owed at its head: the chain's first owed stage, then each owed check it
     doesn't name, then on the mechanical lane each unread or unmapped row. Merge readiness is the holder's.
 
     Design: lib/DESIGN.md#the-builder-route
     """
-    rest = _owed_unnamed(state, payload, head, request, use_owed=use_owed)
+    rest = _owed_unnamed(state, payload, head, request, use_owed=use_owed, before=before)
     if isinstance(rest, dict):
         return rest
     return ([{**chain_entry, "reason": chain_entry.get("reason")}] if chain_entry else []) + rest
@@ -12659,16 +12675,19 @@ def _owed_at_ready(state: WorkState, chain_entry: dict | None, use_owed: bool) -
     if not ready:
         return {"first": None, "last": None}
 
-    def at(marker, chain):
+    def at(marker, chain, before=None):
         try:
             payload = readiness.payload(marker.body, "ready")
         except readiness.ReadinessError as exc:
             return {"status": "unknown", "reason": f"the ready record could not be read: {exc}"}
         request, _path = _record_launch(state, marker.attributes["dispatch"])
         return _builder_route_owed(state, payload, marker.attributes["head"], request, chain_entry=chain,
-                                   use_owed=use_owed)
+                                   use_owed=use_owed, before=before)
 
-    owed = {"first": at(ready[0], chain_entry if len(ready) == 1 else None), "last": at(ready[-1], chain_entry)}
+    # An earlier record is read by what stood when it posted, so a reader launched after it doesn't clear it.
+    first = (at(ready[0], chain_entry) if len(ready) == 1
+             else at(ready[0], None, ready[0].source_id if str(ready[0].source_id).isdigit() else None))
+    owed = {"first": first, "last": at(ready[-1], chain_entry)}
     if len(ready) > 1:
         # Said, not left empty: the first record's list holds its unnamed checks and rows, never a chain stage.
         owed["first_chain"] = {"status": "not-read", "reason": "the chain is read at the current head only, so "
@@ -13476,8 +13495,8 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
 DEFAULT_SEND_BACK_TIMEOUT_SECONDS = 3600.0
 SEND_BACK_HEADER = (b"Re-run the checks your changes make stale, answer each point, post proof and then "
                     b"a new readiness record.\n\n")
-CATCH_UP_LINE = (b"Catch up with the base, re-run what the merge makes stale, post proof and a new "
-                 b"readiness record.\n")
+CATCH_UP_LINE = (b"Catch up with the base, re-run what the merge makes stale, and on the mechanical lane every "
+                 b"row's reader at the new head, post proof and a new readiness record.\n")
 # The holder repeats no check the record shows was run and launches no review after the ready report; its one
 # further word to the builder is the send-back. The catch-up resume, release report and a bought panel stay open.
 FINAL_PASS_LAUNCHES = frozenset({"cold-seat", "use", "cold-reader", "acceptance-criterion"})

@@ -134,6 +134,15 @@ def test_a_fenced_fresh_reader_line_is_an_example_never_the_criterions_reader():
     criterion = ("**C1.** The row holds.\n\n```text\nFresh reader: execute consumer tree x\n```\n\n"
                  "Fresh reader: read tree\n")
     assert work.criterion_reader(criterion) == ("read", None)
+    # Nor is a directive joined across a fenced block.
+    with pytest.raises(work.BuilderRefused):
+        work.criterion_reader("**C1.** x\n\nFresh reader: read\n```text\nexample\n```\nconsumer tree x\n")
+
+
+def test_a_brief_that_numbers_two_rows_alike_is_refused_before_a_handoff_is_composed(tmp_path):
+    with pytest.raises(work.BuilderRefused) as caught:
+        work._handoff_inputs(fixture(tmp_path, ROWS + "**2. Row 2 again.** Its words.\n"), None)
+    assert caught.value.code == "brief-rows-repeated"
 
 
 def test_one_handoff_holds_the_lock_and_a_stale_lock_is_removed(tmp_path):
@@ -256,16 +265,25 @@ def test_a_mechanical_record_owes_each_unread_row_and_each_row_it_maps_to_nothin
     monkeypatch.setattr(work, "builder_checks", lambda _state: None)
     listed = work._owed_unnamed(state, {"checks": [], "rows": mapped(1, 2, 4, 5, 6, 7)}, HEAD, request,
                                 use_owed=False)
-    assert [(entry["row"], entry["reason"]) for entry in listed if entry["reason"] == "row-unmapped"] == [
-        (3, "row-unmapped")]
-    assert [entry["row"] for entry in listed if entry["reason"] == "row-unread"] == list(range(1, 8))
+    # A row neither read nor mapped is listed once.
+    assert [(entry["row"], entry["reason"]) for entry in listed] == [(row, "row-unread") for row in range(1, 8)]
     # A report at another head reads no row at the record's.
     monkeypatch.setattr(work, "builder_checks", lambda _state: row_reports(range(1, 8), head="c" * 40))
     listed = work._owed_unnamed(state, {"checks": [], "rows": mapped(*range(1, 8))}, HEAD, request, use_owed=False)
     assert [entry["row"] for entry in listed if entry["reason"] == "row-unread"] == list(range(1, 8))
+    # A reader that didn't return reads no row, and a record reads only reports posted before it.
+    failed = row_reports(range(1, 8))
+    failed["check_reports"][1]["outcome"] = "error"
+    monkeypatch.setattr(work, "builder_checks", lambda _state: failed)
+    listed = work._owed_unnamed(state, {"checks": [], "rows": mapped(*range(1, 8))}, HEAD, request,
+                                use_owed=False, before="504")
+    assert [entry["row"] for entry in listed if entry["reason"] == "row-unread"] == [2, 4, 5, 6, 7]
     monkeypatch.setattr(work, "builder_checks", lambda _state: row_reports(range(1, 8)))
     assert work._owed_unnamed(state, {"checks": [], "rows": mapped(*range(1, 8))}, HEAD, request,
                               use_owed=False) == []
+    listed = work._owed_unnamed(state, {"checks": [], "rows": mapped(1, 2, 4, 5, 6, 7)}, HEAD, request,
+                                use_owed=False)
+    assert [(entry["row"], entry["reason"]) for entry in listed] == [(3, "row-unmapped")]
 
 
 @pytest.mark.parametrize("merge", [

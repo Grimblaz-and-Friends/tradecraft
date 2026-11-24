@@ -348,10 +348,11 @@ def test_a_heading_row_runs_to_the_next_heading_of_its_level_or_higher():
     assert found[1] == (2, "### Row 2 - Next\nWhy two.")
 
 
-@pytest.mark.parametrize("label", ["## Not this", "**Not this:**", "Not this:", "**Not this.** None."])
-def test_a_bold_row_runs_to_the_not_this_label(label):
-    text = "**1. Keep it small.**\nWhy.\n\n" + label + "\n- nothing\n"
-    assert brief.rows(text) == [(1, "**1. Keep it small.**\nWhy.")]
+@pytest.mark.parametrize("label", ["## Not this", "#### Not this", "**Not this:**", "Not this:", "**Not this.** None."])
+@pytest.mark.parametrize("start", ["**1. Keep it small.**", "## Row 1 - Keep it small"])
+def test_a_bold_or_heading_row_runs_to_the_not_this_label(start, label):
+    text = start + "\nWhy.\n\n" + label + "\n- nothing\n"
+    assert brief.rows(text) == [(1, start + "\nWhy.")]
 
 
 def test_a_brief_without_rows_has_none():

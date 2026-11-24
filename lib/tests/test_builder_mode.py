@@ -1151,7 +1151,8 @@ def test_1011_a_comment_that_quotes_the_report_marker_is_set_aside_not_counted(c
 
 
 MECHANICAL_ROWS = ("<!-- tradecraft:affirmed-brief:v1 -->\nReview risk: ordinary\nReview lane: mechanical\n\n"
-                   "**1. The job runs.**\n\n**2. The job runs twice.**\n")
+                   "**1. The job runs.**\n\n**2. The job runs twice.**\nCriterion:\n\n**C1.** A row's words, never "
+                   "its criterion.\n")
 
 
 def test_a_row_readers_report_counts_on_a_mechanical_change_with_no_settled_artifact(
