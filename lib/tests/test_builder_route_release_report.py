@@ -138,3 +138,24 @@ def test_what_a_ready_record_left_owed_names_each_owed_check_once(tmp_path, rest
     owed = release_report(tmp_path, "hand")["owed_at_ready"]["last"]
     named = [(entry["stage"], entry["criterion"], entry["row"]) for entry in owed]
     assert len(named) == len(set(named)), named
+
+
+def test_a_ready_record_whose_handoff_names_no_owed_checks_reads_them_unread_not_clear(tmp_path, restored):
+    fixture = route_fixture.Fixture(tmp_path)
+    try:
+        # The hand record's block leaves out its owed checks, as one written before they were recorded would.
+        state = route_fixture.ready_at_head(fixture, route_fixture.CLEAR)
+        fixture.decision(state)
+        made = fixture.reports[0]
+        # Whatever the chain still owes, the checks the handoff owed are said unread, never counted clear.
+        assert made["stage"] == "final-pass" and made["reason"] in ("ready-reported", "owed-at-ready")
+        owed = __import__("json").loads(made["detail"])["owed_list"]
+        assert owed["status"] == "unknown" and "names no owed checks" in owed["reason"]
+        line = work._owed_line(work.Decision(made["stage"], False, None, made["reason"], made["detail"]))
+        assert "the handoff's owed checks could not be read" in line
+        report = work._builder_route_report(state, route_fixture.RULES)
+        assert report["owed_at_ready"]["last"]["status"] == "unknown"
+        [one_one] = [entry for entry in report["row_checks"] if entry["check"] == "1.1"]
+        assert one_one["reading"] == "unknown"
+    finally:
+        fixture.stop()

@@ -327,9 +327,11 @@ def _route_is(check, route, name, reason):
         return _missing(check, field)
     if route.get("name") == UNKNOWN:
         return _entry(check, UNKNOWN, field, route.get("error") or "the route is unknown")
-    if route["name"] == name and route.get("reason") == reason:
+    # A change in flight reads `in-flight`; how its first launch's route was chosen is `chosen`.
+    if route["name"] == name and reason in (route.get("reason"), route.get("chosen")):
         return _entry(check, HOLDS, field)
-    return _entry(check, NOT_APPLICABLE, field, f"route {route['name']}/{route.get('reason')}")
+    return _entry(check, NOT_APPLICABLE, field,
+                  f"route {route['name']}/{route.get('reason')}, chosen {route.get('chosen')}")
 
 
 def _cost(cost_split, route_comparison):

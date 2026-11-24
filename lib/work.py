@@ -12821,7 +12821,7 @@ def _route(state: WorkState) -> dict[str, object]:
     # An ask in the issue body has no comment id, so the reading names the body.
     ask_id = (int(ask.source_id) if ask.source_id and ask.source_id.isdigit() else ask.source_id or ask.surface
               ) if ask is not None else None
-    name = reason = None
+    name = reason = chosen = None
     cloud = cloud_build.launch_route("build", None, work)
     if cloud is not None:
         refusal = cloud[2]
@@ -12833,14 +12833,31 @@ def _route(state: WorkState) -> dict[str, object]:
                                         set(ROUTE_STAGES))
         if rows:
             name, reason = ROUTE_STAGES[rows[0][2]["stage"]], "in-flight"
+            chosen = _route_chosen(asks, rows[0][2], name)
     if name is None:
         name, reason = (ask.attributes["route"], "owner-asked") if ask is not None else ("builder", "default")
     overruled = ({"asked": ask.attributes["route"], "marker": ask_id}
                  if ask is not None and reason != "owner-asked" and ask.attributes["route"] != name else None)
     # The marker names the ask the change's route answers, in flight too, so a release report shows it.
-    return {"name": name, "reason": reason,
+    return {"name": name, "reason": reason, "chosen": chosen or reason,
             "marker": ask_id if ask is not None and ask.attributes["route"] == name else None,
             "overruled": overruled}
+
+
+def _route_chosen(asks: list[Marker], first: dict, name: str) -> str:
+    """How a change in flight came to its route, read from what the issue shows at its first launch.
+
+    Once a change has launched its route reads `in-flight`, which can't tell a default from an ask; the asks
+    posted before the first launch can. An ask in the issue body stood from the start.
+    """
+    launched = _aware_time(first.get("launched_at"))
+    before = [marker for marker in asks if marker.surface == "issue" or (
+        launched is not None and (_aware_time(marker.timestamp) or launched) <= launched)]
+    asked = max(before, key=_source_order) if before else None
+    if asked is not None:
+        return "owner-asked" if asked.attributes["route"] == name else "overruled"
+    # With no ask, a builder launch took the default; a relay launch was made before the builder was it.
+    return "default" if name == "builder" else "unasked"
 
 
 class RouteRefused(WorkError):
@@ -13673,7 +13690,7 @@ def _builder_route_report(state: WorkState, rules: dict[str, object] | None = No
         usage = change_cost.default_holder_usage(state.repo, state.issue_number)
         replies = [reply for row in change_cost._read_jsonl(usage)
                    for reply in (row.get("holder") or {}).get("replies") or ()]
-        # The holder's cost splits at the handoff: a launch's start, or the hand record's handoff time.
+        # A hand-started builder has no launch to start at, so its hand record says when the holder handed off.
         split = (first[1].get("handed_off_at") if first[1].get("started_by") == "hand"
                  else first[1].get("launched_at")) if first else None
         usage_log = ((reading or {}).get("builder") or {}).get("usage_log") if hand is not None else None

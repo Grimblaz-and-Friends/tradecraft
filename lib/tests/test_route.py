@@ -60,12 +60,12 @@ def reading(state):
 
 def test_nothing_launched_reads_the_builder_by_default(tmp_path):
     assert reading(fixture(tmp_path, BRIEF)) == {
-        "name": "builder", "reason": "default", "marker": None, "overruled": None}
+        "name": "builder", "reason": "default", "chosen": "default", "marker": None, "overruled": None}
 
 
 def test_1011_an_owners_relay_marker_with_nothing_launched_reads_relay(tmp_path):
     assert reading(fixture(tmp_path, BRIEF, route_marker("relay"))) == {
-        "name": "relay", "reason": "owner-asked", "marker": 101, "overruled": None}
+        "name": "relay", "reason": "owner-asked", "chosen": "owner-asked", "marker": 101, "overruled": None}
 
 
 def test_1011_an_ask_in_the_issue_body_names_the_body(tmp_path):
@@ -89,7 +89,8 @@ def test_1011_a_first_stretch_launch_holds_the_builder_route(tmp_path):
     launch(state, "build", 90)
     state.issue_comments.append({"id": 201, "body": BRIEF, "user": {"login": PRODUCER},
                                  "created_at": (START + timedelta(hours=2)).isoformat()})
-    assert reading(state) == {"name": "builder", "reason": "in-flight", "marker": None, "overruled": None}
+    assert reading(state) == {"name": "builder", "reason": "in-flight", "chosen": "default", "marker": None,
+                              "overruled": None}
 
 
 def test_1011_a_hand_started_record_reads_as_a_stretch(tmp_path):
@@ -104,7 +105,8 @@ def test_1011_a_first_build_launch_holds_the_relay_route_after_an_amended_brief(
     launch(state, "stretch", 30)
     state.issue_comments.append({"id": 201, "body": BRIEF.replace("A change.", "An amended change."),
                                  "user": {"login": PRODUCER}, "created_at": (START + timedelta(hours=2)).isoformat()})
-    assert reading(state) == {"name": "relay", "reason": "in-flight", "marker": None, "overruled": None}
+    assert reading(state) == {"name": "relay", "reason": "in-flight", "chosen": "unasked", "marker": None,
+                              "overruled": None}
 
 
 def test_1011_a_first_artifact_author_launch_is_the_relay_and_seats_decide_nothing(tmp_path):
@@ -124,7 +126,7 @@ def test_1011_a_builder_session_marker_without_a_build_does_not_make_the_relay(t
 def test_1011_an_ask_for_the_builder_on_a_relay_change_is_overruled(tmp_path):
     state = fixture(tmp_path, BRIEF, route_marker("builder"))
     launch(state, "build", 5)
-    assert reading(state) == {"name": "relay", "reason": "in-flight", "marker": None,
+    assert reading(state) == {"name": "relay", "reason": "in-flight", "chosen": "overruled", "marker": None,
                               "overruled": {"asked": "builder", "marker": 101}}
 
 
@@ -140,7 +142,7 @@ def test_1011_a_cloud_repository_keeps_the_relay(tmp_path, monkeypatch):
                         lambda work_value: ({"practice": {"repository": "x/y"}}, "fixture"))
     state = fixture(tmp_path, BRIEF, route_marker("builder"))
     launch(state, "stretch", 5)
-    assert reading(state) == {"name": "relay", "reason": "cloud", "marker": None,
+    assert reading(state) == {"name": "relay", "reason": "cloud", "chosen": "cloud", "marker": None,
                               "overruled": {"asked": "builder", "marker": 101}}
 
 
@@ -227,7 +229,7 @@ def ended_stretch(tmp_path, *texts):
 
 def test_a_mechanical_change_with_nothing_launched_is_handed_off_on_the_default_route(tmp_path):
     assert reading(fixture(tmp_path, MECHANICAL)) == {
-        "name": "builder", "reason": "default", "marker": None, "overruled": None}
+        "name": "builder", "reason": "default", "chosen": "default", "marker": None, "overruled": None}
     stage, status, reason, _detail = decision(fixture(tmp_path, MECHANICAL))
     assert (stage, status, reason) == ("handoff", "holder-owned", "handoff-due")
 
@@ -352,7 +354,7 @@ def test_1011_the_relays_launches_are_refused_on_the_builder_route(tmp_path, mon
 def test_a_default_change_is_refused_a_build_and_told_the_relay_marker(tmp_path, monkeypatch, stored):
     # A planned lane with no word from the owner: the builder route by default, so the relay's build is refused.
     state = stored(CONNECTED)
-    assert work._route(state) == {"name": "builder", "reason": "default", "marker": None, "overruled": None}
+    assert work._route(state) == {"name": "builder", "reason": "default", "chosen": "default", "marker": None, "overruled": None}
     code, message = named(tmp_path, monkeypatch, state, "build")
     assert code == "route-is-builder" and "<!-- tradecraft:route:v1 route=relay -->" in message
 
@@ -376,7 +378,8 @@ def test_1011_the_route_names_the_ask_it_answers_in_flight(tmp_path):
     for route, stage in (("builder", "stretch"), ("relay", "build")):
         state = fixture(tmp_path / route, BRIEF, route_marker(route))
         launch(state, stage, 5)
-        assert reading(state) == {"name": route, "reason": "in-flight", "marker": 101, "overruled": None}
+        assert reading(state) == {"name": route, "reason": "in-flight", "chosen": "owner-asked", "marker": 101,
+                                  "overruled": None}
 
 
 def test_1011_proof_is_the_builders_on_the_builder_route(tmp_path, monkeypatch, stored):
@@ -459,3 +462,21 @@ def test_a_builder_reads_and_settles_its_own_live_launchs_reach(tmp_path, monkey
     work._evaluate_reach(state)
     assert state.reach["state"] == "clear"
     assert work._reach_refusal(state, "ready-reviewers") is None
+
+
+def test_a_change_in_flight_says_how_its_first_launch_took_its_route(tmp_path):
+    """The route reads `in-flight` once a change launches; `chosen` keeps the default or ask it launched under."""
+    default = fixture(tmp_path / "default", BRIEF)
+    launch(default, "stretch", 5)
+    asked = fixture(tmp_path / "asked", BRIEF, route_marker("relay"))
+    launch(asked, "build", 5)
+    # An ask posted only after the first launch didn't choose its route.
+    late = fixture(tmp_path / "late", BRIEF)
+    launch(late, "stretch", 5)
+    post(late, route_marker("relay"), 30)
+    assert [(reading(state)["name"], reading(state)["chosen"]) for state in (default, asked, late)] == [
+        ("builder", "default"), ("relay", "owner-asked"), ("builder", "default")]
+    payloads = [work.route_report.builder_route(route=reading(state)) for state in (default, asked)]
+    readings = [{entry["check"]: entry["reading"] for entry in payload["row_checks"]} for payload in payloads]
+    assert [(entry["7.1"], entry["7.2"]) for entry in readings] == [
+        ("holds", "not-applicable"), ("not-applicable", "holds")]
