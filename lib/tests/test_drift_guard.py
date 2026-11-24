@@ -35,7 +35,7 @@ def composed(*, mechanical: bool) -> str:
 
 def test_every_listed_builder_reason_has_a_step_whose_sentence_the_handoff_carries():
     assert set(work.BUILDER_MODE_REASONS) <= set(handoff.ANSWERS)
-    assert set(handoff.ANSWERS.values()) <= {step.key for step in handoff.BUILDER_STEPS}
+    assert set(handoff.ANSWERS.values()) <= set(handoff.STEPS)
     texts = {"plan": composed(mechanical=False), "mechanical": composed(mechanical=True)}
     missing = [(lane, reason) for reason in sorted(work.BUILDER_MODE_REASONS) for lane, text in texts.items()
                # Use is never owed on the mechanical lane, so its step is the plan lane's alone.

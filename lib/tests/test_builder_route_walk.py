@@ -1,9 +1,9 @@
-"""A builder who takes the handoff's steps in order is led by the entrance's read-back from each to a later one.
+"""A builder who takes the handoff's steps in order is led by the entrance's read-back from each to the next.
 
 Guards the walk G10 asks of the handoff's table: driven through ``handoff.BUILDER_STEPS`` with a base that requires
-resolved review threads and a fixed commit after the floor ran, the read-back never names a step the builder has
-already taken, names thread resolution and the floor again where they fall due, and ends at `final-pass` /
-`ready-reported`. Every decision it reads is one the drift guard's flag watches.
+resolved review threads and a fixed commit after the floor ran, the read-back at each step names the table's next
+step, except for the two the test names with their reasons, and the walk ends at `final-pass` / `ready-reported`.
+Every decision it reads is one the drift guard's flag watches.
 Design: lib/DESIGN.md#the-builder-route
 """
 from __future__ import annotations
@@ -57,21 +57,27 @@ class Walk:
         """The record the builder posts, then reads back, at HEAD with what it has run so far."""
         self.fixture.readiness(builder, head, checks=self.checks, findings=self.findings, started_by="hand")
 
-    def read_back(self) -> tuple[str, dict]:
-        """The step the read-back names: the decision's own reason, or its `if_ended` while the builder is live."""
+    def read_back(self, taken: list[str]) -> tuple[str, dict]:
+        """The step the read-back names: from the decision's own reason, or its `if_ended` while the builder is
+        live. Where it lists several owed steps the builder takes the earliest in the table's order, as the
+        read-back step says; a floor missing at the head is the floor step until the floor has first run."""
         fixture = self.fixture
         fixture.decision(self.state())
         report = fixture.reports[0]
         if report["stage"] == "with-builder":
             report = json.loads(report["detail"])["if_ended"]
         reason = report["reason"].split(";", 1)[0]
-        if reason == "owed-at-ready":
-            first = json.loads(report["detail"])["owed_at_ready"]
+        entries = ([{"reason": reason}] if reason != "owed-at-ready" else
+                   json.loads(report["detail"]).get("owed_list") or [json.loads(report["detail"])["owed_at_ready"]])
+        steps = []
+        for entry in entries:
             # An owed check the record doesn't name is answered at the step that launches it.
-            step = (handoff.CHECK_STEPS[first["stage"]] if first["reason"] == "owed-unnamed"
-                    else handoff.ANSWERS[first["reason"]])
-            return step, {"stage": report["stage"], "reason": reason, "why": first["reason"]}
-        return handoff.ANSWERS[reason], {"stage": report["stage"], "reason": reason, "why": reason}
+            step = (handoff.CHECK_STEPS[entry["stage"]] if entry["reason"] in ("owed-unnamed", "row-unread")
+                    else handoff.ANSWERS[entry["reason"]])
+            steps.append("floor" if step == "floor-again" and "floor" not in taken else step)
+        step = min(steps, key=KEYS.index)
+        why = entries[[*steps].index(step)]["reason"]
+        return step, {"stage": report["stage"], "reason": reason, "why": why}
 
 
 @pytest.fixture
@@ -111,56 +117,48 @@ def floor(fixture, head: str) -> dict:
 def test_a_builder_taking_the_handoffs_steps_in_order_is_led_to_ready_reported(walk, capsys):
     fixture = walk.fixture
     source, head = fixture.source()
-    builder = fixture.hand_stretch(source)["dispatch_id"]
+    # The record names the owed checks the handoff gave it, so the entrance names each where it falls.
+    builder = fixture.hand_stretch(source, owed=True)["dispatch_id"]
     fixture.connected_reviewers = frozenset({REVIEWER})
     taken, named = [], []
 
     def took(key: str, head: str) -> tuple[str, dict]:
-        """Record KEY as taken, post the record at HEAD and read it back: the step named is one not yet taken."""
+        """Take KEY, post the record at HEAD and read it back."""
         taken.append(key)
         walk.ready(builder, head)
-        step, decision = walk.read_back()
-        if step == "floor-again" and "floor" not in taken:
-            # One reason names a floor missing at the head, which before the first floor run is step 5's.
-            step = "floor"
-        named.append((key, step, decision))
-        # Resolving an answered thread is step 8's second half, owed once the decision names it.
-        unfinished = step == "answer-reviewers" and decision["why"] == "reviewer-thread-answered-unresolved"
-        assert step not in taken or unfinished, named
+        step, decision = walk.read_back(taken)
+        named.append((key, step, decision["why"]))
         return step, decision
 
+    def check(stage: str, at: str, **fields) -> None:
+        """A check the builder ran at AT, named in its record with the report it answered."""
+        report = fixture.post(f"the {stage} report")
+        walk.checks.append({"stage": stage, "criterion": None, "row": None, "dispatch": None, "head": at,
+                            "report": report, "relaunch_of": None, **fields})
+
     fixture.pull_request(head, route_fixture.CLEAR)
-    assert took("open-pull-request", head)[0] == "floor"
-
+    took("open-pull-request", head)
+    walk.checks.append(floor(fixture, head))
+    took("floor", head)
     walk.cold_clean = True
+    check("cold-reader", head)
     took("cold-reader", head)
-    # The stand-in plan's criterion C2 is owed a fresh reader only through the handoff's owed checks, which this
-    # record's hand block leaves out (route_fixture.hand_stretch), so the step posts nothing the entrance reads.
+    check("acceptance-criterion", head, criterion="C2")
     took("criteria", head)
-
     report, dispatch = fixture.use_report(fixture.state(), source, builder)
     walk.checks.append({"stage": "use", "criterion": None, "row": None, "dispatch": dispatch, "head": head,
                         "report": report, "relaunch_of": None})
     walk.findings.append({"report": report, "finding": "F1", "disposition": "fixed", "commit": head})
     took("use", head)
-
-    walk.checks.append(floor(fixture, head))
-    assert took("floor", head)[0] == "reach"
-
     walk.reach_clear = True
-    assert took("reach", head)[0] == "ready-reviewers"
-
+    took("reach", head)
     fixture.pr["draft"] = False
-    # The connected reviewer posts one inline finding on the readied pull request, its thread open.
     fixture.review_comments.append({"id": 501, "in_reply_to_id": None, "user": {"login": REVIEWER},
                                     "body": "The job's line is wrong.", "path": "job/job.md",
                                     "html_url": f"https://github.invalid/{route_fixture.REPO}/pull/7#discussion_r501"})
     walk.threads.append({"comment_id": 501, "thread_id": "PRRT_fixture", "resolved": False, "outdated": False,
                          "author": REVIEWER})
-    step, decision = took("ready-reviewers", head)
-    assert (step, decision["why"]) == ("answer-reviewers", "reviewer-thread-lacks-disposition"), named
-
-    # The builder fixes the finding in a commit after the floor ran, and answers the thread.
+    took("ready-reviewers", head)
     (source / "job" / "job.md").write_bytes(b"run the job as corrected\n")
     route_fixture.git(source, "commit", "-q", "-am", "fix the job's line")
     fixed = route_fixture.git(source, "rev-parse", "HEAD")
@@ -168,38 +166,30 @@ def test_a_builder_taking_the_handoffs_steps_in_order_is_led_to_ready_reported(w
     fixture.review_comments.append({"id": 502, "in_reply_to_id": 501, "user": {"login": route_fixture.PRODUCER},
                                     "body": f"fixed - corrected in {fixed}",
                                     "html_url": f"https://github.invalid/{route_fixture.REPO}/pull/7#discussion_r502"})
-    step, decision = took("answer-reviewers", fixed)
-    # The fixed commit came after the floor ran, so the floor is owed again at the new head first.
-    assert (step, decision["why"]) == ("floor-again", "current-head-floor-missing-or-red"), named
-
+    took("answer-reviewers", fixed)
     walk.checks.append(floor(fixture, fixed))
-    step, decision = took("floor-again", fixed)
-    # The thread is answered but open, and the base requires resolution: the read-back names resolving it.
-    assert (step, decision["why"]) == ("answer-reviewers", "reviewer-thread-answered-unresolved"), named
+    took("floor-again", fixed)
     walk.threads[0]["resolved"] = True  # the resolve command's effect, which only GitHub records
-    step, decision = took("answer-reviewers", fixed)
-    assert (step, decision["why"]) == ("proof", "current-head-proof-absent-or-outdated"), named
-
+    took("resolve-threads", fixed)
     walk.proof = True
-    step, decision = took("proof", fixed)
-    # Nothing is owed at the head: the read-back reads what the final pass will, while the builder is still live.
-    assert (step, decision["stage"], decision["why"]) == ("read-back", "final-pass", "ready-reported"), named
+    took("proof", fixed)
     took("readiness-record", fixed)
 
+    # Each read-back names the table's next step, but where the entrance never names one: use, which this
+    # fixture's paths don't owe, so criteria are followed by reach; and the readiness record, which the walk
+    # posts at every step, so proof is followed by the read-back.
+    skipped = {"use": "the change's paths owe no use", "readiness-record": "the record already stands"}
+    order = [key for key in KEYS if key not in skipped]
+    expected = [(key, order[order.index(key) + 1]) for key in order[:-1]] + [("readiness-record", "read-back")]
+    assert [(key, step) for key, step, _why in named if key != "use"] == expected, named
+    assert dict((key, why) for key, _step, why in named)["floor-again"] == "reviewer-thread-answered-unresolved"
+    assert dict((key, why) for key, _step, why in named)["answer-reviewers"] == "current-head-floor-missing-or-red"
+    # Every step of the table was taken, in the table's order.
+    assert taken == KEYS[:-1]
+
     # The builder's record stands and its hand record completes; the holder's decision is the final pass itself.
-    taken.append("read-back")
     fixture.launch_tree.complete_hand_record(fixture.store, builder, completed_by="the builder's readiness record")
     fixture.decision(walk.state())
     assert (fixture.reports[0]["stage"], fixture.reports[0]["reason"]) == ("final-pass", "ready-reported")
     assert "unlisted_builder_reason" not in fixture.reports[0]
-    # Every step of the table was taken, in the table's order.
-    assert [key for key in dict.fromkeys(taken)] == KEYS
-    # The entrance holds the floor before the cold reading and the chain, so until the floor runs every read-back
-    # names it; from there each names the table's next step, the floor again after the fix, and the thread's
-    # resolution once that floor stands.
-    assert [(key, step) for key, step, _decision in named] == [
-        ("open-pull-request", "floor"), ("cold-reader", "floor"), ("criteria", "floor"), ("use", "floor"),
-        ("floor", "reach"), ("reach", "ready-reviewers"), ("ready-reviewers", "answer-reviewers"),
-        ("answer-reviewers", "floor-again"), ("floor-again", "answer-reviewers"), ("answer-reviewers", "proof"),
-        ("proof", "read-back"), ("readiness-record", "read-back")]
     capsys.readouterr()

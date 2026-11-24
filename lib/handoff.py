@@ -64,11 +64,13 @@ ANSWER_REVIEWERS = (
     "One answer names one source link. Close each reviewer's answers with its "
     "`<!-- tradecraft:connected-reviewer:v1 name=NAME status=complete -->` reply once every comment "
     "from it is answered, NAME being its name in the repository's `.tradecraft/work.json` "
-    "`connected_reviewers`, the list of those configured; the read-only decision names any not yet run. "
-    "Then resolve each thread you answered with exactly this command, its node id written in place of "
+    "`connected_reviewers`, the list of those configured; the read-only decision names any not yet run.")
+RESOLVE_THREADS = (
+    "Resolve each review thread you answered, with exactly this command, its node id written in place of "
     "THREAD_ID:\n\n```text\n" + RESOLVE_THREAD_COMMAND + "\n```\n\n"
     "Resolving is owed when the read-only decision names `reviewer-thread-answered-unresolved`, or the "
-    "merge reads `merge-blocked-unresolved-review-threads`; a body finding has no thread.")
+    "merge reads `merge-blocked-unresolved-review-threads`; a body finding has no thread. The entrance "
+    "names it after the floor stands at your head, so take it after the floor again.")
 
 
 class Step:
@@ -81,6 +83,9 @@ class Step:
 
 
 CLEAN_HOLD = "The entrance holds it until the cold reading's `clean` stands at your head."
+# The entrance reads the floor before the cold reading and the rest of its chain, so nothing after the floor is
+# named until the floor stands at the head.
+FLOOR_HOLD = "The entrance names it only once the floor stands at your head."
 CLEAN_AND_REACH_HOLD = ("The entrance holds it until the cold reading's `clean` stands at your head and reach "
                         "is settled there.")
 # The order the builder takes its steps in. The handoff renders it, and ANSWERS ties each reason the
@@ -88,33 +93,43 @@ CLEAN_AND_REACH_HOLD = ("The entrance holds it until the cold reading's `clean` 
 BUILDER_STEPS = (
     Step("open-pull-request", "open the pull request",
          "Push your branch and open the draft pull request, as \"What you may write\" says."),
+    Step("floor", "floor", "Run the floor at the pull request's head."),
     Step("cold-reader", "cold-reader",
-         "Run the cold reader and answer its reading until a `clean` stands at your head."),
+         "Run the cold reader and answer its reading until a `clean` stands at your head.", FLOOR_HOLD),
     Step("criteria", "acceptance-criterion",
          "Launch every reader listed here through its command, and answer each report in your record."),
     Step("use", "use", "Run use where it is owed.", CLEAN_HOLD),
-    Step("floor", "floor", "Run the floor at the pull request's head."),
     Step("reach", "reach",
          "Run the read-only decision and post the `reach-reading` for every item its reach report flags."),
     Step("ready-reviewers", "ready-reviewers", "Mark the pull request ready for its reviewers.",
          CLEAN_AND_REACH_HOLD),
     Step("answer-reviewers", "answer the reviewers", ANSWER_REVIEWERS),
     Step("floor-again", "the floor again",
-         "After any commit made after the floor ran, run the floor again at the new head as step 5 gives it, "
-         "posting its marker where step 5 gives a command, before you run proof."),
+         "After any commit made after the floor ran, run the floor again at the new head as step 2 gives it, "
+         "posting its marker where step 2 gives a command, before you resolve threads or run proof."),
+    Step("resolve-threads", "resolve the answered threads", RESOLVE_THREADS),
     Step("proof", "proof", "Run proof at your head.", CLEAN_AND_REACH_HOLD),
     Step("readiness-record", "the readiness record",
          "Post the readiness record at the head you report ready, as the last post, after proof."),
     Step("read-back", "read the record back",
          "Read your record back with the read-only decision: its `if_ended` is what the holder's final pass "
          "will read. Where it names the record unlawful or a step still owed at that head, take that step and "
-         "every later step its commit makes stale, then post the record again. Where it orders a catch-up, run "
+         "every later step its commit makes stale, then post the record again; where its `owed_list` names "
+         "several, take the earliest of them in this order first. Where it orders a catch-up, run "
          "the catch-up command below; where it names launch findings, post their launch-account first. Where "
          "it names only a wait, a check run, a gate or a reviewer still running, wait and read it again. You "
          "are done when it reads `final-pass` with `ready-reported`, or names only what stays the holder's: "
          "the merge's own verdict, a required gate on the merge, or a bought panel."),
 )
-STEPS = {step.key: step for step in BUILDER_STEPS}
+# Not a step in the order: what a builder does when the change can't go on, which a reason meaning "stop"
+# points at.
+STOP = Step("stop", "stop",
+            "Stop with `status=stopped` and a `shape` stop only when what the brief's Shape sentence says the "
+            "change is proves wrong for the change, or the affirmed brief is no longer there to say it. Where a "
+            "check cannot be launched, post `status=stopped` with a `cannot-launch` stop naming the first such "
+            "check and why. A stopped record is your last post: tell the holder as \"How to finish\" says, and "
+            "wait to be resumed.")
+STEPS = {step.key: step for step in (*BUILDER_STEPS, STOP)}
 # The step at which each owed check is launched.
 CHECK_STEPS = {"cold-reader": "cold-reader", "acceptance-criterion": "criteria", "use": "use", "floor": "floor",
                "reach": "reach", "ready-reviewers": "ready-reviewers", "proof": "proof"}
@@ -123,8 +138,8 @@ CHECK_STEPS = {"cold-reader": "cold-reader", "acceptance-criterion": "criteria",
 # itself or in its `if_ended`, and the step that answers it.
 ANSWERS = {
     "builder-live": "read-back",
-    "builder-stopped": "readiness-record",
-    "cannot-launch": "readiness-record",
+    "builder-stopped": "stop",
+    "cannot-launch": "stop",
     "ready-record-not-at-head": "readiness-record",
     "builder-returned-without-pull-request": "open-pull-request",
     "base-moved-after-ready": "read-back",
@@ -148,8 +163,8 @@ ANSWERS = {
     "required-connected-reviewer-has-not-run": "answer-reviewers",
     "reviewer-thread-lacks-disposition": "answer-reviewers",
     "reviewer-body-lacks-disposition": "answer-reviewers",
-    "reviewer-thread-answered-unresolved": "answer-reviewers",
-    "merge-blocked-unresolved-review-threads": "answer-reviewers",
+    "reviewer-thread-answered-unresolved": "resolve-threads",
+    "merge-blocked-unresolved-review-threads": "resolve-threads",
     "bought-panel-incomplete": "read-back",
     "current-head-use-report-absent": "use",
     "current-head-proof-absent-or-outdated": "proof",
@@ -169,7 +184,7 @@ ANSWERS = {
     "merge-verdict-unknown": "read-back",
     "merge-blocked-required-gate": "read-back",
     "merge-blocked-unattributed": "read-back",
-    "affirmed-brief-marker-absent": "readiness-record",
+    "affirmed-brief-marker-absent": "stop",
 }
 
 
@@ -389,9 +404,7 @@ def compose_handoff(*, brief: str, checks: list[dict], allowance: str, repo: str
             f"Where the {source} did not settle something, go on with your recommendation, record it in the "
             "record's `decisions`, and name any brief row it would change.",
             "",
-            "Stop with `status=stopped` and a `shape` stop only when what the brief's Shape sentence says the "
-            "change is proves wrong for the change. Where a check cannot be launched, post `status=stopped` "
-            "with a `cannot-launch` stop naming the first such check and why.",
+            STOP.sentence,
             "",
             f"Record in `decisions` too any departure from the {source} a check required, with what you added.",
             "",

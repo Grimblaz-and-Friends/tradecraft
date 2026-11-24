@@ -62,20 +62,23 @@ An owner's ask that a rule above it overrules is reported as overruled.
 
 The holder writes no check's instructions, and supplies the floor command only here, with `--floor-command`. A holder-written `--dispatch` reaches the builder byte for byte, and the release report shows that it differs from the composed text. The builder's limit is the stretch's own, 28,800 seconds by default; a larger figure needs `--budget-override-reason`.
 
-**The builder's run.** In its own session, the builder takes its steps in this order, which is fixed wherever an entrance hold names the step before it:
+**The builder's run.** In its own session, the builder takes its steps in the entrance's own order, which is fixed wherever an entrance hold names the step before it. The entrance reads the floor before the cold reading and the rest of its chain, and names thread resolution only once the floor stands again after a late commit, so the order is:
 
 1. pushes its branch and opens the pull request as a draft, with the issue's closing reference alone on a line of its body, by which the entrance finds it; where the work already has a merged implementing pull request, it opens the new one with no closing reference and posts the `implementing-pr` marker for it on the issue. It posts no `builder-session`, for which the stretch's record stands;
-2. `run cold-reader`, until the reading is `clean`;
-3. `run acceptance-criterion --criterion ID` for each criterion with a `Fresh reader:` line, or on the mechanical lane `run acceptance-criterion --row N` for every row of the brief;
-4. `run use --job-from-artifact`, where the entrance finds use owed at its head;
-5. the holder's floor command at the head, run itself;
+2. the holder's floor command at the head, run itself;
+3. `run cold-reader`, until the reading is `clean`;
+4. `run acceptance-criterion --criterion ID` for each criterion with a `Fresh reader:` line, or on the mechanical lane `run acceptance-criterion --row N` for every row of the brief;
+5. `run use --job-from-artifact`, where the entrance finds use owed at its head;
 6. reach, posting a `reach-reading` for each item it flags;
 7. `run ready-reviewers`;
-8. answers every connected reviewer's threads, body findings and unidentified reviews, and resolves each answered thread where the decision names thread resolution;
+8. answers every connected reviewer's threads, body findings and unidentified reviews;
 9. after any commit made once the floor ran, the floor again at the new head, with its marker;
-10. proof;
-11. the readiness record;
-12. the read-only decision, to read the record back.
+10. resolves each answered thread where the decision names thread resolution;
+11. proof;
+12. the readiness record;
+13. the read-only decision, to read the record back; where its owed list names several steps, the builder takes the earliest in this order first.
+
+Where the change can't go on, the builder stops instead, by the stop rule the handoff carries; a reason the entrance returns that means stop points at that rule.
 
 Throughout, the entrance composes each check and posts its report, and the builder chooses nothing a check reads. The builder also:
 

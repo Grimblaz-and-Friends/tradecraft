@@ -368,10 +368,13 @@ def test_the_steps_render_in_their_fixed_order_with_their_holds():
         for step in handoff.BUILDER_STEPS:
             assert step.sentence in section and (step.hold is None or step.hold in section)
     keys = [step.key for step in handoff.BUILDER_STEPS]
-    assert keys == ["open-pull-request", "cold-reader", "criteria", "use", "floor", "reach", "ready-reviewers",
-                    "answer-reviewers", "floor-again", "proof", "readiness-record", "read-back"]
-    # Use comes before readying the reviewers and before proof, and the floor runs again before proof.
+    # The entrance's own order: it reads the floor before the cold reading and the rest of its chain, and names
+    # thread resolution only once the floor stands again after a late commit.
+    assert keys == ["open-pull-request", "floor", "cold-reader", "criteria", "use", "reach", "ready-reviewers",
+                    "answer-reviewers", "floor-again", "resolve-threads", "proof", "readiness-record", "read-back"]
     assert keys.index("use") < keys.index("ready-reviewers") < keys.index("floor-again") < keys.index("proof")
+    # A sentence naming the floor by its number names the floor's own place in the table.
+    assert keys.index("floor") + 1 == 2 and "as step 2 gives it" in handoff.STEPS["floor-again"].sentence
 
 
 def test_each_owed_check_sits_under_the_step_that_launches_it():
@@ -383,8 +386,8 @@ def test_each_owed_check_sits_under_the_step_that_launches_it():
     assert "None is listed for this change." in entry(checks_section(compose(use_owed=False)), "use")
 
 
-def test_the_answer_step_names_resolving_each_answered_thread_and_when_it_is_owed():
-    answer = entry(checks_section(compose()), "answer the reviewers")
+def test_the_resolve_step_names_resolving_each_answered_thread_and_when_it_is_owed():
+    answer = entry(checks_section(compose()), "resolve the answered threads")
     assert "```text\n" + handoff.RESOLVE_THREAD_COMMAND + "\n```" in answer
     assert "`reviewer-thread-answered-unresolved`" in answer
     assert "`merge-blocked-unresolved-review-threads`" in answer
@@ -395,7 +398,14 @@ def test_the_answer_step_names_resolving_each_answered_thread_and_when_it_is_owe
 def test_the_floor_runs_again_after_a_later_commit_before_proof():
     again = entry(checks_section(compose(floor_command=FLOOR)), "the floor again")
     assert "After any commit made after the floor ran, run the floor again at the new head" in again
-    assert "posting its marker" in again and "before you run proof" in again
+    assert "posting its marker" in again and "before you resolve threads or run proof" in again
+
+
+def test_a_reason_meaning_stop_points_at_the_stop_rule_the_text_carries():
+    text = compose()
+    assert handoff.STOP.sentence in text and handoff.STOP not in handoff.BUILDER_STEPS
+    for reason in ("affirmed-brief-marker-absent", "builder-stopped", "cannot-launch"):
+        assert handoff.ANSWERS[reason] == "stop"
 
 
 def test_the_cold_reader_account_is_pasted_as_plain_lines_not_a_blockquote():
