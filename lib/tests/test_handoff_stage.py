@@ -381,7 +381,11 @@ def test_a_mechanical_change_hands_off_without_a_plan_and_with_a_reader_per_row(
 def test_a_handoff_preview_prints_the_text_and_makes_nothing(
         tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
     state = stored(tmp_path, *PLANNED)
-    assert run(monkeypatch, holder, state, "handoff", "--preview") == 0
+    for extra in (("--ended-reason", "x"), ("--resume-reason", "x"), ("--dispatch", str(tmp_path / "text.md"))):
+        with pytest.raises(work.WorkError, match="--preview makes nothing"):
+            run(monkeypatch, holder, state, "handoff", "--preview", *extra)
+    assert run(monkeypatch, holder, state, "handoff", "--preview", "--preflight-cap-seconds", "1200",
+               "--preflight-cap-reason", "a long read") == 0
     out = capsys.readouterr().out
     assert "work: handoff text preview follows\n" in out
     assert "## The settled plan" in out.split("work: handoff text preview follows\n", 1)[1]
@@ -390,6 +394,8 @@ def test_a_handoff_preview_prints_the_text_and_makes_nothing(
     store = work.records.default_record_root()
     assert not store.exists() or not list(store.rglob("*.request.json"))
     assert not (store / "handoff-locks").exists()
+    # Nor does it write a cap record.
+    assert not list(store.parent.rglob("*-handoff-*.json"))
 
 
 def printed_report(out, status):

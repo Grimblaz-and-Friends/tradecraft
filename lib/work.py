@@ -13003,6 +13003,9 @@ def _handoff_flags(args: argparse.Namespace) -> None:
             raise WorkError("--" + name.replace("_", "-") + " must be nonempty")
     if args.resume_reason is not None and args.ended_reason is not None:
         raise WorkError("--resume-reason and --ended-reason are two different acts; give one")
+    if args.preview and (args.resume_reason or args.ended_reason or args.dispatch) is not None:
+        raise WorkError("--preview makes nothing and prints the composed text; it takes no --resume-reason, "
+                        "--ended-reason or --dispatch")
     if args.by_hand is not None and (":" not in args.by_hand or not all(
             part.strip() for part in args.by_hand.split(":", 1))):
         raise WorkError("--by-hand takes VENDOR:MODEL")
@@ -13837,7 +13840,8 @@ def _run_entry(
         # The stage's first output names the latest time it can return, before any read.
         window = lifecycle.window_line(deadline)
         declaration = (cap_declaration.write(_records_home(None), f"{args.repo}#{args.issue}", args.stage,
-                                             deadline, window) if deadline.cap_declared else None)
+                                             deadline, window)
+                       if deadline.cap_declared and not getattr(args, "preview", False) else None)
         window["cap_record"] = str(declaration) if declaration else None
         print("work: window " + json.dumps(window, ensure_ascii=True), flush=True)
         outcome_token = _CAP_OUTCOME.set(None)
@@ -14015,7 +14019,8 @@ def _run(
     state.readiness_policy = (use_rules_path, selected_policy_bytes)
     if args.command == "run" and builder_mode() is None:
         try:
-            _complete_readied_hand_records(state)
+            if not getattr(args, "preview", False):  # A preview makes and closes nothing.
+                _complete_readied_hand_records(state)
             _refuse_off_route(state, args.stage)
             _refuse_with_builder(state, args)
         except WorkError as exc:
