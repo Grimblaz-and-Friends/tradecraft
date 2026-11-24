@@ -6033,13 +6033,6 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     frame = dispatch_seat.read_return_frame(bytes(captured)) if builder is not None else None
     if builder is not None:
         returned = frame["return"].decode("utf-8", "replace") if frame and frame.get("return") else None
-        held = cold_reader.tree_held(metadata, state.holder_root)
-        posted = _post_check_report(transport or GitHubREST(), state, check_report_body(
-            stage="cold-reader", frame=frame, head=sha, tree="held" if held else "changed", criterion=None,
-            declared=_declared_builder(builder)))
-        if posted["status"] in REPORT_NOT_COUNTED:
-            # A reading whose report never landed counts for nothing, so its run says so, as a composed check's does.
-            code = code or 1
     else:
         try:
             returned = output.read_text("utf-8")
@@ -6047,6 +6040,17 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
             returned = None
     errors = (["the seat returned no account"] if returned is None
               else cold_reader.form_errors(returned, cold_reader.flaggable(metadata)))
+    if builder is not None:
+        # Posted only once its form holds, so a reading refused for its form is never posted as a reading.
+        posted = {"status": "not-posted", "reason": "the reading failed its form check"}
+        if not errors:
+            held = cold_reader.tree_held(metadata, state.holder_root)
+            posted = _post_check_report(transport or GitHubREST(), state, check_report_body(
+                stage="cold-reader", frame=frame, head=sha, tree="held" if held else "changed", criterion=None,
+                declared=_declared_builder(builder)))
+        if posted["status"] in REPORT_NOT_COUNTED:
+            # A reading whose report never landed counts for nothing, so its run says so, as a composed check's does.
+            code = code or 1
     _emit_report({
         "schema_version": 1, "work": work, "stage": "cold-reader", "bundle": str(output),
         "head": sha, "covered": covered, "whole": metadata["whole"], "residue": metadata["residue"],
@@ -12426,7 +12430,8 @@ def _report_quotation(state: WorkState, comment: dict[str, object]) -> dict[str,
 
 
 def _head_contains(state: WorkState) -> tuple[Callable[[str], bool | None], dict[str, str]]:
-    """Whether a commit is the pull request's head or an ancestor of it, asked of GitHub once per commit.
+    """Whether a commit is the pull request's head or an ancestor of it, asked of GitHub once per commit in
+    a reading.
 
     The builder's commits live on its pushed branch, so the holder's checkout needn't hold them. An answer
     GitHub can't give is None, never True, and its error is kept by commit.
@@ -12439,7 +12444,10 @@ def _head_contains(state: WorkState) -> tuple[Callable[[str], bool | None], dict
         if commit not in answers:
             try:
                 compared = GitHubREST().get(f"repos/{state.repo}/compare/{commit}...{head}")
-                answers[commit] = isinstance(compared, dict) and compared.get("status") in ("ahead", "identical")
+                status = compared.get("status") if isinstance(compared, dict) else None
+                answers[commit] = status in ("ahead", "identical") if status else None
+                if status is None:
+                    errors[commit] = "GitHub's comparison named no status"
             except WorkError as exc:
                 # GitHub knows no such commit on this repository: it can't be in the head.
                 answers[commit] = False if getattr(exc, "http_status", None) in (404, 422) else None
@@ -12565,8 +12573,9 @@ def readiness_reading(state: WorkState, checks: dict[str, object] | None) -> dic
 
 
 def _reach_flagged(state: WorkState) -> bool:
-    """Whether reach flagged anything at the head, so the builder owed a reach reading."""
-    return (state.reach or {}).get("state") not in (None, "clear", "not-due")
+    """Whether reach flagged anything at the head, so the builder owed a reach reading; a pending or
+    unmeasurable reach flagged nothing a reading could answer."""
+    return (state.reach or {}).get("state") == "reading-required"
 
 
 def _owed_unnamed(state: WorkState, payload: dict, head: str, request: dict, *,
@@ -12758,8 +12767,8 @@ def _holder_windows(state: WorkState, first: dict | None) -> tuple[dict, dict]:
 def _decline_reason(body: str) -> str | None:
     """The reason after the dash of an answer that opens `declined`, its source link left out, or None."""
     first = next((line.strip() for line in body.splitlines() if line.strip()), "")
-    # The dash may be a hyphen, an en dash or an em dash, as the gates' own reading takes it.
-    first = first.replace(chr(0x2013), "-").replace(chr(0x2014), "-")
+    # Read as the gates read an answer: the opening word's formatting dropped, an em dash taken as a hyphen.
+    first = _strip_opening_word_formatting(first).replace(chr(0x2014), "-")
     if not first.lower().startswith("declined -"):
         return None
     return review_findings.MARKDOWN_LINK.sub("", first.partition("-")[2]).strip(" ;:.,-") or None
@@ -12800,6 +12809,8 @@ def _reviewer_declines(state: WorkState) -> list[dict]:
                      None)
         identity = label is not None and review_findings.IDENTITY.fullmatch(label)
         review = reviews.get(int(links[0][3]))
+        if review is None or _author(review) not in reviewers:
+            continue  # only a connected reviewer's finding is a reviewer's decline
         declines.append({"kind": "body-finding" if identity else "whole-review",
                          "reviewer": _author(review) if review else None,
                          "finding": label if identity else links[0][0],

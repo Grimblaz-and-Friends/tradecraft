@@ -93,9 +93,13 @@ def _check(entry):
         raise ReadinessError("check criterion must be named or null")
     if entry["row"] is not None and not _row(entry["row"]):
         raise ReadinessError("check row must be a positive integer or null")
-    # A reader judges one named criterion, or on the mechanical lane one brief row, so it names exactly one.
-    if entry["stage"] == "acceptance-criterion" and (criterion is None) == (entry["row"] is None):
-        raise ReadinessError("an acceptance-criterion check names exactly one of its criterion and its row")
+    # A reader judges one named criterion, or on the mechanical lane one brief row. A record written under the
+    # earlier handoff text may put a row beside the criterion; the criterion names the check, so the row reads null.
+    if entry["stage"] == "acceptance-criterion":
+        if criterion is None and entry["row"] is None:
+            raise ReadinessError("an acceptance-criterion check names its criterion or its row")
+        if criterion is not None:
+            entry["row"] = None
     for field in ("dispatch", "relaunch_of"):
         if entry[field] is not None and not (isinstance(entry[field], str) and DISPATCH.match(entry[field])):
             raise ReadinessError("check " + field + " must be a dispatch id or null")

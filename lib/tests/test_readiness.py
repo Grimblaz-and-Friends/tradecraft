@@ -90,7 +90,6 @@ BROKEN = {
     "check criterion empty": mutate(("checks", 0, "criterion"), " "),
     "check row": mutate(("checks", 0, "row"), "2"),
     "check row bool": mutate(("checks", 0, "row"), True),
-    "criterion check naming a row too": mutate(("checks", 0, "row"), 2),
     "check dispatch": mutate(("checks", 0, "dispatch"), DISPATCH.upper()),
     "check relaunch_of": mutate(("checks", 0, "relaunch_of"), "x"),
     "check head": mutate(("checks", 0, "head"), "abc"),
@@ -314,9 +313,14 @@ def test_1011_a_relaunch_must_come_after_the_failure():
 def test_a_row_reader_names_its_row_and_leaves_the_criterion_null():
     row = {**record()["checks"][0], "criterion": None, "row": 3}
     assert readiness.payload(body(record(checks=[row])), "ready")["checks"] == [row]
-    for criterion, number in ((None, None), ("B3", 3), (None, 0), (None, True)):
+    for criterion, number in ((None, None), (None, 0), (None, True)):
         with pytest.raises(readiness.ReadinessError):
             readiness.payload(body(record(checks=[{**row, "criterion": criterion, "row": number}])), "ready")
+
+
+def test_a_criterion_check_with_a_row_beside_it_reads_as_the_criterions_check():
+    named = record()["checks"][0]
+    assert readiness.payload(body(record(checks=[{**named, "row": 2}])), "ready")["checks"] == [named]
 
 
 def test_unmapped_rows_are_the_affirmed_rows_nothing_carries():

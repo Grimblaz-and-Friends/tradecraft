@@ -14,6 +14,7 @@ from test_route import BRIEF, decision, ended_stretch, fixture, launch, post, re
 HEAD = "a" * 40
 COMMIT = "b" * 40
 ELSEWHERE = "e" * 40
+NO_STATUS = "9" * 40
 
 
 class CompareGitHub:
@@ -30,6 +31,8 @@ class CompareGitHub:
             return {"status": "ahead"}
         if commit == ELSEWHERE:
             return {"status": "diverged"}
+        if commit == NO_STATUS:
+            return {}
         error = work.WorkError("gh: Not Found (HTTP 404)")
         error.http_status = 404
         raise error
@@ -107,6 +110,9 @@ def test_a_fixed_findings_commit_outside_the_head_or_unknown_to_github_is_unreac
 
 
 def test_a_compare_github_cannot_answer_is_unverified_never_reachable(tmp_path):
+    # An answer naming no status is no answer either.
+    reading = fixed_findings(tmp_path / "none", NO_STATUS)
+    assert [entry["problem"] for entry in reading["unreconciled"]] == ["unverified"]
     CompareGitHub.failing = True
     reading = fixed_findings(tmp_path, COMMIT)
     assert reading["reconciled"] is False and reading["reachability"] == "incomplete"

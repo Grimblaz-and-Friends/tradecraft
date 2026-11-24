@@ -97,10 +97,11 @@ def test_each_connected_reviewers_declined_finding_is_listed_with_its_reason_and
                                    connected_reviewers=frozenset({"reviewer-bot"}))
     bot, producer = {"login": "reviewer-bot"}, {"login": PRODUCER}
     review = "https://github.com/o/r/pull/7#pullrequestreview-"
-    state.reviews = [{"id": 55, "user": bot}, {"id": 56, "user": bot}]
+    state.reviews = [{"id": 55, "user": bot}, {"id": 56, "user": bot}, {"id": 57, "user": {"login": "someone"}}]
+    # The opening word's formatting is read past as the gates read it.
     state.review_comments = [
         {"id": 10, "user": bot, "body": "This line is wrong."},
-        {"id": 11, "user": producer, "in_reply_to_id": 10, "body": "declined - not in scope",
+        {"id": 11, "user": producer, "in_reply_to_id": 10, "body": "**Declined** - not in scope",
          "html_url": "https://github.com/o/r/pull/7#discussion_r11"}]
     state.pr_comments = [
         {"id": 20, "user": producer, "body": f"declined - wrong; [cr-comment:v1:abc]({review}55)",
@@ -108,7 +109,10 @@ def test_each_connected_reviewers_declined_finding_is_listed_with_its_reason_and
         {"id": 21, "user": producer, "body": f"declined - fine; [unidentified review]({review}56)",
          "html_url": "https://github.com/o/r/pull/7#issuecomment-21"},
         {"id": 22, "user": producer, "body": f"fixed - done; [cr-comment:v1:def]({review}55)",
-         "html_url": "https://github.com/o/r/pull/7#issuecomment-22"}]
+         "html_url": "https://github.com/o/r/pull/7#issuecomment-22"},
+        # A review by no connected reviewer makes no reviewer's decline.
+        {"id": 23, "user": producer, "body": f"declined - no; [cr-comment:v1:ghi]({review}57)",
+         "html_url": "https://github.com/o/r/pull/7#issuecomment-23"}]
     declines = work._reviewer_declines(state)
     assert [(entry["kind"], entry["reviewer"], entry["finding"], entry["reason"]) for entry in declines] == [
         ("inline", "reviewer-bot", "thread 10", "not in scope"),
@@ -336,3 +340,12 @@ def test_a_later_ready_record_says_the_first_records_chain_stage_was_not_read(tm
     both = work._owed_at_ready(state, chain, use_owed=False)
     assert both["first"] == [] and both["last"] == [chain]
     assert both["first_chain"]["status"] == "not-read" and "current head only" in both["first_chain"]["reason"]
+
+
+@pytest.mark.parametrize("reach, owed", [(None, False), ({"state": "pending"}, False),
+                                         ({"state": "unmeasurable"}, False), ({"state": "clear"}, False),
+                                         ({"state": "reading-required"}, True)])
+def test_only_a_reach_that_flagged_something_owes_a_reach_reading(tmp_path, reach, owed):
+    state = fixture(tmp_path, MECHANICAL)
+    state.reach = reach
+    assert work._reach_flagged(state) is owed

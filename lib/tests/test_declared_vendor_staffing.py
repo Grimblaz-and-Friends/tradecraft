@@ -208,13 +208,14 @@ def test_the_launcher_takes_any_declared_vendor_lower_cased_and_never_falls_back
 from test_cold_reader import change, clean  # noqa: E402,F401
 
 
-def builder_reading(change, monkeypatch, capfd, declared):
+def builder_reading(change, monkeypatch, capfd, declared, form_fails=False):
     """A builder runs a whole `run cold-reader`: one started by hand declaring ``declared``, or with None a launched
     Claude builder. Returns its seat's command, its request and run records, and its posted report's marker."""
     import preflight
     import run_lifecycle as lifecycle
     scenario = change.tmp / "scenario.json"
-    scenario.write_text(json.dumps({"claude": {"message": clean()}}), encoding="utf-8")
+    scenario.write_text(json.dumps({"claude": {"message": "No account." if form_fails else clean()}}),
+                        encoding="utf-8")
     output = change.store / "seat-reading" / "result.md"
     # The entrance resolves each vendor before launch, so a machine without either CLI still reaches the stand-in.
     monkeypatch.setattr(work, "_runtime_argument", lambda vendor, _explicit=None: [f"--{vendor}", str(STAND_IN)])
@@ -267,10 +268,12 @@ def builder_reading(change, monkeypatch, capfd, declared):
                 assert work._execute_cold_reader(
                     fixture, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
                     dispatch_path=None, tree_metadata=None, timeout_seconds=1800,
-                    claude_path=None, codex_path=None, transport=Posting()) == 0
+                    claude_path=None, codex_path=None, transport=Posting()) == (1 if form_fails else 0)
     finally:
         work._BUILDER.reset(token)
     [command] = commands
+    if form_fails:
+        return posts
     [body] = posts
     return (command, json.loads(output.with_name("result.md.request.json").read_bytes()),
             json.loads(output.with_name("result.md.run.json").read_bytes()), body.split("\n\n", 1)[0])
@@ -292,6 +295,11 @@ def test_a_hand_builders_cold_reading_is_staffed_against_its_declared_vendor(
     assert run["staffing_qualification"]["same_vendor_reason"] == reason
     assert "stage=cold-reader" in marker and "builder_vendor=declared" in marker
     assert f"staffing_status={status}" in marker and ("same_vendor_reason=" in marker) is (reason is not None)
+
+
+@pytest.mark.cold_reading
+def test_a_builders_reading_refused_for_its_form_is_never_posted(change, monkeypatch, capfd):
+    assert builder_reading(change, monkeypatch, capfd, "codex", form_fails=True) == []
 
 
 @pytest.mark.cold_reading
