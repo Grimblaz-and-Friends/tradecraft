@@ -20,11 +20,18 @@ TITLES = ["Your role", "The affirmed brief", "The settled plan", "The checks you
           "What you may write", "The readiness record", "Where the plan settles nothing", "How to finish"]
 
 
-def compose(*, criteria=("AC1",), use_owed=True, floor_command=None, hand=None, notify="holder-7"):
-    checks = handoff.owed_checks(criteria=list(criteria), use_owed=use_owed, floor_command=floor_command)
+LANE_REASON = "A rename with nothing left to choose."
+SEVEN_ROWS = [(number, f"**{number}. Row {number}.**") for number in range(1, 8)]
+
+
+def compose(*, criteria=("AC1",), use_owed=True, floor_command=None, hand=None, notify="holder-7",
+            mechanical=False, rows=SEVEN_ROWS, staged=False):
+    checks = handoff.owed_checks(criteria=list(criteria), use_owed=use_owed, floor_command=floor_command,
+                                 mechanical=mechanical, rows=rows if mechanical else None)
     return handoff.compose_handoff(
-        brief=BRIEF, artifact=ARTIFACT, checks=checks, allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/holder/root",
-        plugin_root="/plugin", notify=notify, hand=hand).decode("utf-8")
+        brief=BRIEF, artifact=None if mechanical else ARTIFACT, lane_reason=LANE_REASON if mechanical else None,
+        checks=checks, allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/holder/root",
+        plugin_root="/plugin", notify=notify, hand=hand, staged=staged).decode("utf-8")
 
 
 def headings(text):
@@ -73,9 +80,9 @@ def test_1011_owed_checks_order_and_shape():
     assert [check["criterion"] for check in checks[1:3]] == ["AC1", "AC3"]
     assert checks[1]["command"] == ["run", "acceptance-criterion", "--criterion", "AC1"]
     assert checks[3]["command"] == ["run", "use", "--job-from-artifact"]
-    assert checks[4] == {"stage": "floor", "criterion": None, "command": [], "floor_command": FLOOR}
-    assert all(set(check) == {"stage", "criterion", "command"} for check in checks
-               if check["stage"] != "floor")
+    assert checks[4] == {"stage": "floor", "criterion": None, "row": None, "command": [], "floor_command": FLOOR}
+    assert all(set(check) == {"stage", "criterion", "row", "command"} and check["row"] is None
+               for check in checks if check["stage"] != "floor")
 
 
 def test_1011_one_criterion_command_per_criterion_and_none_otherwise():
@@ -93,7 +100,7 @@ def test_1011_use_command_only_when_owed():
 
 
 def test_1011_every_command_names_repo_issue_and_holder_root_and_no_session_id():
-    for kwargs in ({}, {"hand": HAND, "floor_command": FLOOR}):
+    for kwargs in ({}, {"mechanical": True}, {"hand": HAND, "floor_command": FLOOR}):
         text = compose(**kwargs)
         assert "--holder-session-id" not in text
         lines = command_lines(text)
@@ -119,7 +126,9 @@ def test_1011_record_contract_and_last_post_after_proof():
     finish = text[text.index("## How to finish"):]
     assert "Post proof, then the readiness record at the head you report ready, as the last post." in finish
     assert finish.index("Post proof") < finish.index("readiness record")
-    assert "read your record back with the reach" in finish and "(null for a reach check that flagged nothing)" in record
+    assert "read your record back with the reach" in finish
+    assert ("For reach, `report` is your `reach-reading` comment's id, or null when reach flagged nothing."
+            in record)
     assert "holder session named `holder-7`" in finish and "the owner tells the holder" in finish
 
 
@@ -135,7 +144,8 @@ def test_1011_both_stop_kinds():
     text = compose()
     stop = text[text.index("## Where the plan settles nothing"):text.index("## How to finish")]
     assert "`decisions`" in stop and "brief row" in stop
-    assert "`shape` stop only when the brief's Shape is wrong" in stop
+    assert ("`shape` stop only when what the brief's Shape sentence says the change is proves wrong for the "
+            "change") in stop
     assert "`cannot-launch` stop naming the first such check and why" in stop
     assert "Write no check's instructions, and choose nothing a check reads." in stop
 
@@ -159,13 +169,13 @@ def test_1011_the_closing_line_and_who_posts_the_cold_reading():
     text = compose()
     assert "as a draft from your branch, with `Closes #7` alone on a line" in text
     cold = entry(checks_section(text), "cold-reader")
-    assert cold.index("`open`") < cold.index("`clean`")
+    assert cold.index("`open`") < cold.index("`status=clean`")
     assert "holds `run use`, `run ready-reviewers` and `run proof` until a `clean` stands at your head" in cold
     assert "staffing_status=STATUS same_vendor_reason=REASON -->" in cold and "status=clean" in cold and "Accepted: path:lines" in cold
-    assert "First push your branch and open the draft pull request" in text and "proof are not." in text
-    assert "Run the floor at the pull request's head before ready-reviewers" in text
+    assert "Push your branch and open the draft pull request" in text and "proof are not." in text
+    assert "Run the floor at the pull request's head." in text
     assert "`own-turn` with `added_by`" in text and "`.tradecraft/work.json` `connected_reviewers`" in text
-    assert "wait for each connected reviewer's review and answer it whole; then run proof, then post" in text
+    assert "Wait for each connected reviewer's review and answer it whole" in text
     assert "any departure from the plan a check required, with what you added" in text
     assert "implementing-pr" not in text and "builder-session" not in text
     assert "`<!-- tradecraft:launch-account:v1 dispatch=DISPATCH_ID -->`" in text and "`none-found`" in text
@@ -197,17 +207,13 @@ def test_1011_use_line_says_the_entrance_decides_use_at_the_builders_head():
     assert "Use session job" not in checks_section(compose(use_owed=False))
 
 
-def test_1011_reach_is_listed_before_ready_reviewers_and_proof_and_the_list_is_not_a_sequence():
+def test_1011_reach_is_listed_before_ready_reviewers_and_proof():
     for kwargs in ({}, {"floor_command": FLOOR}):
         stages = [check["stage"] for check in handoff.owed_checks(
             criteria=["AC1"], use_owed=True, floor_command=kwargs.get("floor_command"))]
         assert stages.index("reach") < stages.index("ready-reviewers") < stages.index("proof")
         section = checks_section(compose(**kwargs))
         assert section.index(". reach:") < section.index(". ready-reviewers:") < section.index(". proof:")
-        assert section.count("not a fixed sequence") == 1
-        assert ("except where a check is held on another: use, ready-reviewers and proof are held until "
-                "the cold reading's `clean`") in section
-        assert "in this order" not in section
 
 
 def test_1011_reach_entry_names_the_read_only_decision_and_the_reach_reading_form():
@@ -302,3 +308,125 @@ def test_1011_the_entrance_carries_the_holders_floor_command_or_names_the_ci_job
     none = _entrance_text(state, floor_command=None).decode("utf-8")
     assert "The declared CI jobs are the floor; the holder supplied no floor command." in none
     assert "make check" not in none
+
+
+# The mechanical lane: the lane's reason in place of the plan, and one reader for every row of the brief.
+
+def test_owed_checks_on_the_mechanical_lane_give_one_row_reader_per_brief_row():
+    checks = handoff.owed_checks(criteria=["AC1"], use_owed=False, floor_command=None, mechanical=True,
+                                 rows=SEVEN_ROWS)
+    readers = [check for check in checks if check["stage"] == "acceptance-criterion"]
+    assert [check["row"] for check in readers] == list(range(1, 8))
+    assert all(check["criterion"] is None for check in readers)
+    assert [check["command"] for check in readers] == [
+        ["run", "acceptance-criterion", "--row", str(number)] for number in range(1, 8)]
+    # Row numbers alone give the same checks, and a row listed twice is owed once.
+    assert handoff.owed_checks(criteria=[], use_owed=False, floor_command=None, mechanical=True,
+                               rows=[1, 2, 3, 4, 5, 6, 7, 7]) == checks
+    assert not hasattr(handoff, "ROW_PLACEHOLDER")
+
+
+def test_the_mechanical_handoff_carries_the_lane_reason_every_row_command_and_no_plan_or_use():
+    text = compose(mechanical=True, use_owed=False)
+    assert headings(text)[2] == "The mechanical lane" and "The settled plan" not in headings(text)
+    assert BRIEF in text and LANE_REASON in text and ARTIFACT not in text
+    rows = [line for line in command_lines(text) if " acceptance-criterion " in line]
+    assert rows == ["python -B /plugin/lib/work.py run acceptance-criterion --repo acme/app --issue 7 "
+                    f"--root /holder/root --row {number}" for number in range(1, 8)]
+    assert "--criterion" not in text and "--job-from-artifact" not in text
+    assert "launch every row through its command; map each row in the record's `rows` to what carries it" in text
+    record = text[text.index("## The readiness record"):text.index("## Where the brief settles nothing")]
+    assert "a mapping of every row of the brief" in record and "Map every row" in record
+    assert "a row check its `row` with `criterion` null" in record
+    assert '"criterion": null, "row": 1' in record
+
+
+def test_exactly_one_of_the_plan_and_the_lane_reason_is_handed_off():
+    for artifact, reason in ((None, None), ("plan", "reason")):
+        with pytest.raises(ValueError):
+            handoff.compose_handoff(brief=BRIEF, artifact=artifact, lane_reason=reason, checks=[],
+                                    allowance=ALLOWANCE, repo="acme/app", issue=7, holder_root="/h",
+                                    plugin_root="/p", notify=None)
+
+
+def test_both_record_examples_read_as_records():
+    import readiness
+    for example in (handoff.RECORD_EXAMPLE, handoff.MECHANICAL_RECORD_EXAMPLE):
+        example = example.replace("STARTED_BY", "hand").replace("FULL_COMMIT_SHA", "a" * 40)
+        readiness.payload(example.replace('"DISPATCH_ID"', f'"{DISPATCH}"'), "ready")
+
+
+# The builder's steps: one fixed order, each step's hold, and the reasons the entrance returns tied to them.
+
+def test_the_steps_render_in_their_fixed_order_with_their_holds():
+    for kwargs in ({}, {"mechanical": True, "use_owed": False}, {"floor_command": FLOOR, "hand": HAND}):
+        section = checks_section(compose(**kwargs))
+        titles = re.findall(r"(?m)^(\d+)\. (.+):$", section)
+        assert titles == [(str(number), step.title) for number, step in enumerate(handoff.BUILDER_STEPS, 1)]
+        assert "The order is fixed wherever a hold names it" in section
+        assert "not a fixed sequence" not in section
+        for step in handoff.BUILDER_STEPS:
+            assert step.sentence in section and (step.hold is None or step.hold in section)
+    keys = [step.key for step in handoff.BUILDER_STEPS]
+    assert keys == ["open-pull-request", "cold-reader", "criteria", "use", "floor", "reach", "ready-reviewers",
+                    "answer-reviewers", "floor-again", "proof", "readiness-record", "read-back"]
+    # Use comes before readying the reviewers and before proof, and the floor runs again before proof.
+    assert keys.index("use") < keys.index("ready-reviewers") < keys.index("floor-again") < keys.index("proof")
+
+
+def test_each_owed_check_sits_under_the_step_that_launches_it():
+    section = checks_section(compose(floor_command=FLOOR))
+    assert "run cold-reader" in entry(section, "cold-reader")
+    assert "--criterion AC1" in entry(section, "acceptance-criterion")
+    assert "run use" in entry(section, "use") and FLOOR in entry(section, "floor")
+    assert "run ready-reviewers" in entry(section, "ready-reviewers") and "run proof" in entry(section, "proof")
+    assert "None is listed for this change." in entry(checks_section(compose(use_owed=False)), "use")
+
+
+def test_the_answer_step_names_resolving_each_answered_thread_and_when_it_is_owed():
+    answer = entry(checks_section(compose()), "answer the reviewers")
+    assert "```text\n" + handoff.RESOLVE_THREAD_COMMAND + "\n```" in answer
+    assert "`reviewer-thread-answered-unresolved`" in answer
+    assert "`merge-blocked-unresolved-review-threads`" in answer
+    # The form is the entrance's own, repeated here because this module imports nothing of the entrance.
+    assert handoff.RESOLVE_THREAD_COMMAND == work.RESOLVE_THREAD_COMMAND
+
+
+def test_the_floor_runs_again_after_a_later_commit_before_proof():
+    again = entry(checks_section(compose(floor_command=FLOOR)), "the floor again")
+    assert "After any commit made after the floor ran, run the floor again at the new head" in again
+    assert "posting its marker" in again and "before you run proof" in again
+
+
+def test_the_cold_reader_account_is_pasted_as_plain_lines_not_a_blockquote():
+    cold = entry(checks_section(compose()), "cold-reader")
+    assert ("Paste the report's account whole, as plain lines, not as a blockquote: the entrance matches the "
+            "account line for line.") in cold
+
+
+def test_a_staged_change_opens_without_a_closing_reference_and_posts_the_implementing_marker():
+    text = compose(staged=True)
+    write = text[text.index("## What you may write"):text.index("## The readiness record")]
+    assert "Closes #" not in text and "with no closing reference in its body" in write
+    assert "post on issue #7 a comment whose first line is `<!-- tradecraft:implementing-pr:v1 number=NUMBER -->`" in write
+    assert "`Closes #7` alone on a line" in compose(staged=False)
+
+
+def test_every_answered_reason_names_a_step_whose_sentence_the_text_carries():
+    texts = [compose(), compose(mechanical=True, use_owed=False), compose(floor_command=FLOOR, staged=True)]
+    assert set(handoff.ANSWERS.values()) <= set(handoff.STEPS)
+    for reason, key in handoff.ANSWERS.items():
+        for text in texts:
+            assert handoff.step_sentence(key) in text, reason
+
+
+def test_the_mechanical_and_staged_texts_are_the_same_bytes_on_every_call():
+    for kwargs in ({"mechanical": True, "use_owed": False}, {"staged": True, "hand": HAND}):
+        assert compose(**kwargs) == compose(**kwargs)
+
+
+def test_the_stretch_allowance_says_a_body_file_is_named_outright_and_made_first():
+    sentence = work.github_allowance.sentence(work.github_allowance.allowance_for(
+        "stretch", repository="o/r", branch="tradecraft/5-ab", pull_request=None, issue=5))
+    assert ("write a body file's path out in the command, never as a variable, and create the file before "
+            "the command that posts it.") in sentence

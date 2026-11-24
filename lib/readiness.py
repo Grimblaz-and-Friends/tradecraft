@@ -91,11 +91,11 @@ def _check(entry):
     criterion = entry["criterion"]
     if criterion is not None and not _nonempty(criterion):
         raise ReadinessError("check criterion must be named or null")
-    # A criterion check judges one named criterion, so it cannot leave that name out.
-    if entry["stage"] == "acceptance-criterion" and criterion is None:
-        raise ReadinessError("an acceptance-criterion check names its criterion")
     if entry["row"] is not None and not _row(entry["row"]):
         raise ReadinessError("check row must be a positive integer or null")
+    # A reader judges one named criterion, or on the mechanical lane one brief row, so it names exactly one.
+    if entry["stage"] == "acceptance-criterion" and (criterion is None) == (entry["row"] is None):
+        raise ReadinessError("an acceptance-criterion check names exactly one of its criterion and its row")
     for field in ("dispatch", "relaunch_of"):
         if entry[field] is not None and not (isinstance(entry[field], str) and DISPATCH.match(entry[field])):
             raise ReadinessError("check " + field + " must be a dispatch id or null")
@@ -250,7 +250,21 @@ def report_findings(stage: str, text: str) -> list[dict]:
 
 
 def reconcile(record: dict, reports: list[dict], reachable) -> dict:
-    """Hold every finding of every counting report to exactly one answered entry in the record."""
+    """Hold every finding of every counting report to exactly one answered entry in the record.
+
+    ``reachable(commit)`` answers whether a fixed finding's commit is in the head: True, False, or
+    None when it could not be asked. Each distinct commit is asked once. False lists the entry
+    ``unreachable`` and None ``unverified``; neither reconciles. ``reachability`` reads ``checked``
+    when every commit asked was answered, and ``incomplete`` otherwise.
+    """
+    answers: dict[str, bool | None] = {}
+
+    def answer(commit):
+        if commit not in answers:
+            value = reachable(commit)
+            answers[commit] = None if value is None else bool(value)
+        return answers[commit]
+
     unreconciled = []
     entries: dict[tuple, list[dict]] = {}
     for entry in record["findings"]:
@@ -268,7 +282,8 @@ def reconcile(record: dict, reports: list[dict], reachable) -> dict:
                 problem = "missing"
             elif found[0].get("disposition") == "fixed":
                 commit = found[0].get("commit")
-                problem = None if isinstance(commit, str) and reachable(commit) else "unreachable"
+                known = answer(commit) if isinstance(commit, str) else False
+                problem = None if known else "unverified" if known is None else "unreachable"
             elif found[0].get("disposition") == "declined":
                 problem = None if _nonempty(found[0].get("reason")) else "reasonless"
             else:
@@ -280,7 +295,8 @@ def reconcile(record: dict, reports: list[dict], reachable) -> dict:
     for (number, finding), found in entries.items():
         if (number, finding) not in expected:
             unreconciled.extend({"report": number, "finding": finding, "problem": "extra"} for _ in found)
-    return {"reconciled": not unreconciled, "unreconciled": unreconciled}
+    return {"reconciled": not unreconciled, "unreconciled": unreconciled,
+            "reachability": "incomplete" if None in answers.values() else "checked"}
 
 
 def relaunches(checks: list[dict], errored: list[str]) -> dict:
@@ -297,3 +313,8 @@ def relaunches(checks: list[dict], errored: list[str]) -> dict:
         (pairs.append([failed, later]) if later else unpaired.append(failed))
     return {"pairs": pairs, "unpaired": unpaired}
 
+
+def unmapped_rows(record: dict, brief_rows: list[int]) -> list[int]:
+    """The affirmed rows no entry of the record's `rows` carries, in the brief's order."""
+    mapped = {entry["row"] for entry in record["rows"]}
+    return list(dict.fromkeys(row for row in brief_rows if row not in mapped))

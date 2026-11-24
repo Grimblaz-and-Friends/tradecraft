@@ -24,6 +24,7 @@ import holder_transcript as transcripts
 from winio import utf8_stdio
 from vendor_cli import CliError, resolve_command
 from dispatch_record import _change
+import dispatch_record as records
 import run_lifecycle as lifecycle
 
 
@@ -1999,27 +2000,106 @@ def _launched_builder(builder_bundles: list, seat_bundles: list, card: _Card,
     return _route_figure(values, dispatch_ids=counted)
 
 
-def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles: list,
-                seat_bundles: list, rates=None, claude_projects: Path | None = None) -> dict[str, dict]:
+# The vendors whose own usage log a hand-started builder's cost and vendor and model can be read from.
+HAND_LOG_VENDORS = ("claude", "codex")
+
+
+def _hand_vendor(vendor: object) -> str | None:
+    """A declared vendor as the readers name it: the owner may write it in any case."""
+    return vendor.strip().lower() if isinstance(vendor, str) and vendor.strip() else None
+
+
+def _read_hand_log(log: Path, vendor: str | None) -> tuple[dict | None, str | None]:
+    """What a hand-started builder's own usage log shows, read by its vendor's reader, or why it can't be read.
+
+    The reading is ``{"vendor", "model", "models", ...}`` plus the reader's own evidence: ``replies`` and
+    ``gaps`` for a Claude transcript, ``observed`` for a Codex JSON event stream.
+    """
+    if vendor == "claude":
+        # The session's transcript, <projects>/<project>/<session>.jsonl, with its subagents beside it.
+        try:
+            _source, replies, gaps, _sources = transcripts.snapshot(log.parent.parent, log.stem)
+        except (OSError, transcripts.TranscriptError) as exc:
+            return None, f"cannot read the hand-started builder's Claude transcript: {log}: {exc}"
+        # The session's own model is its main thread's; a subagent may run another.
+        main = sorted({reply["model"] for reply in replies if reply.get("agent_id") is None})
+        return {"vendor": "claude", "model": main[0] if len(main) == 1 else None,
+                "models": sorted({reply["model"] for reply in replies}), "replies": replies, "gaps": gaps}, None
+    if vendor == "codex":
+        try:
+            raw = log.read_bytes()
+        except OSError as exc:
+            return None, f"cannot read the hand-started builder's Codex log: {log}: {exc}"
+        observed = records.runtime_evidence("codex", raw, "fresh")
+        if not observed.get("stream_valid"):
+            return None, f"the hand-started builder's log is not a Codex JSON event stream: {log}"
+        models = list(observed.get("reported_models") or [])
+        return {"vendor": "codex", "model": models[0] if len(models) == 1 else None, "models": models,
+                "observed": observed}, None
+    return None, f"no usage reader for vendor {vendor}; the hand-started builder's log cannot be read"
+
+
+def hand_started_vendor_model(log: Path | str | None, vendor: str | None) -> dict[str, object]:
+    """The vendor and model a hand-started builder's own usage log shows, read without pricing it.
+
+    ``vendor`` is the hand record's declared vendor, compared lower-cased; only ``HAND_LOG_VENDORS`` have
+    readers. Returns ``{"status": "observed", "vendor", "model", "models"}``, where ``model`` is None when the
+    session's main thread named more than one, or ``{"status": "unknown", "reason"}``.
+    """
+    if log is None:
+        return unknown("the hand-started builder names no usage log")
+    reading, reason = _read_hand_log(Path(log), _hand_vendor(vendor))
+    if reading is None:
+        return unknown(reason)
+    return {"status": "observed", "vendor": reading["vendor"], "model": reading["model"],
+            "models": reading["models"]}
+
+
+def _hand_started_builder(log: Path, vendor: str | None, start: datetime | None, card: _Card) -> dict[str, object]:
+    """A builder begun by hand, priced from its session's own usage log by that vendor's reader."""
+    reading, reason = _read_hand_log(log, vendor)
+    if reading is None:
+        return unknown(reason)
+    observed = {"vendor": reading["vendor"], "model": reading["model"], "models": reading["models"]}
+    if reading["vendor"] == "claude":
+        return _route_figure([_replies_price(reading["replies"], card, reading["gaps"])], **observed)
+    if start is None:
+        # A Codex stream carries no times, so the handoff's is what dates its list price.
+        return {**unknown("no handoff time to date the hand-started builder's Codex list price"), **observed}
+    model = reading["model"]
+    request = {"dispatch_id": "hand-started", "stage": "stretch", "launched_at": start.isoformat(),
+               "requested": {"vendor": "codex", "model": model, "continuity": "fresh"}}
+    attempt = {"observed": reading["observed"], "vendor": "codex", "model": model, "stdout": str(log)}
+    usage = records.usage_record(attempt, request, completed_at=start.isoformat(), staffing_status="hand-started")
+    return _route_figure([_price(_Attempt(usage, request, attempt), card)], **observed)
+
+
+def route_split(*, holder_replies: list[dict], start: datetime | None, builder_bundles: list,
+                seat_bundles: list, hand_usage_log: Path | str | None = None, hand_vendor: str | None = None,
+                rates=None, claude_projects: Path | None = None) -> dict[str, dict]:
     """Three list-price figures for a stretch: the holder before it began, the holder after, the builder.
 
     holder_replies: reply-ledger entries as a transcript holder close keeps them, ``row["holder"]["replies"]``
         of each close (``id``, ``timestamp``, ``model``, ``tokens``, ``additional_native_classes``, ``agent_id``).
         A reply strictly before ``start`` is the holder's before; one at or after it, after.
-    start: the stretch launch's start, timezone-aware.
+    start: the handoff's time, timezone-aware: a launched builder's stretch ``launched_at``, or a hand record's
+        ``handed_off_at``. None reads both holder figures ``unknown``, since nothing divides them.
     builder_bundles: the builder's own launches (stretch, send-back, catch-up resume), each a row as
         ``run_lifecycle.launch_bundles`` returns it, ``(order, run_path, request, run)``, or a ``*.run.json`` path.
     seat_bundles: candidate seat launches in either shape; only those whose request's
         ``launched_by.dispatch_id`` names a builder bundle are counted.
+    hand_usage_log, hand_vendor: with no builder bundle, the hand-started session's own usage log, a Claude
+        transcript or a Codex JSON event stream, read by the reader of the declared vendor, compared lower-cased.
     rates: a rate list or card; the shipped card when omitted.
     claude_projects: where a launched Claude builder's session transcript lives, the ``projects`` directory
         the Claude configuration in force names when omitted. Each local Claude builder launch, fresh or
         resumed, is priced by the replies its own stdout stream names, at the usage that transcript records
         for them; a stream or transcript that cannot be read leaves the builder figure unknown.
 
-    Each figure is ``{"status": "priced", "usd", "amount", ...}`` or ``{"status": "unknown", "reason"}``.
+    Each figure is ``{"status": "priced", "usd", "amount", ...}`` or ``{"status": "unknown", "reason"}``; a
+    builder figure read from a hand-started log also carries the ``vendor``, ``model`` and ``models`` it observed.
     """
-    if start.utcoffset() is None:
+    if start is not None and start.utcoffset() is None:
         raise CostError("route split start must carry a timezone")
     card = _card(rates if rates is not None else load_rates(Path(__file__).with_name("rates.json")))
     before, after, unplaced = [], [], []
@@ -2032,9 +2112,11 @@ def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles:
         when = _timestamp(_mapping(reply).get("timestamp"))
         if when is None:
             unplaced.append(f"holder reply {_mapping(reply).get('id')} has no readable time to place it by the launch")
-        else:
+        elif start is not None:
             (before if when < start else after).append(reply)
-    if unplaced:
+    if start is None:
+        holder_before = holder_after = unknown("no handoff time to divide the holder's cost at")
+    elif unplaced:
         holder_before = holder_after = unknown("; ".join(unplaced))
     else:
         holder_before = _route_figure([_replies_price(before, card)], replies=len(before))
@@ -2042,12 +2124,14 @@ def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles:
     if builder_bundles:
         projects = Path(claude_projects) if claude_projects is not None else transcripts.projects_directory()[0]
         builder = _launched_builder(builder_bundles, seat_bundles, card, projects)
+    elif hand_usage_log is not None:
+        builder = _hand_started_builder(Path(hand_usage_log), _hand_vendor(hand_vendor), start, card)
     else:
-        # A builder started by hand leaves no launch record to price, and this split reads no other log.
-        builder = unknown("no launched builder bundle: a hand-started builder's cost is not read")
+        builder = unknown("no launched builder bundle and no usage log for a hand-started builder")
     # The holder's own seats are priced in the change's cost report, as on the relay route, not in this split.
     return {"holder_before": holder_before, "holder_after": holder_after, "builder": builder,
-            "start": start.isoformat(), "leaves_out": "seats the holder launched, which the cost report prices"}
+            "start": None if start is None else start.isoformat(),
+            "leaves_out": "seats the holder launched, which the cost report prices"}
 
 
 def route_comparison(work: str, *, home: Path | None = None) -> dict[str, object] | None:

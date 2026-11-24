@@ -40,7 +40,7 @@ The Steward holds the cross-change read at its cadence, intake under that standa
 
 ## The builder route's comparison
 
-**At the merge of #1011's third pull request, the one that makes the builder route the default, the Steward writes `~/.tradecraft/route-comparison.json` on the owner's machine** as `{"issue": "Grimblaz-and-Friends/tradecraft#1011", "count": 5}`. The five changes are counted from then, when the rows' real-change checks first run. Without that file the release report counts nothing, because the shipped practice carries no lab-specific comparison (#1011, row 7).
+**At the merge of #1011's third pull request, the one that makes the builder route the default, the Steward writes `~/.tradecraft/route-comparison.json` on the owner's machine** as `{"issue": "Grimblaz-and-Friends/tradecraft#1011", "count": 5}`. The five changes are counted from then, when the rows' real-change checks first run. A change asked onto the route before this merge doesn't count toward the five, because the ledger records nothing until the file exists. Without that file the release report counts nothing, because the shipped practice carries no lab-specific comparison (#1011, row 7).
 
 **When a release report says the comparison is due, the Steward posts it on #1011 at its next read across changes,** so the owner can decide whether the builder route stays the default. It holds the five builder-route changes, measured with [the probe that produced the baseline](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7069465335); the baseline figures; the builder's and the checks' cost with the holder's; and each send-back and each defect found after merge.
 
