@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tomllib
 from contextlib import ExitStack
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -2907,3 +2908,106 @@ def test_1011_one_command_refused_twice_with_different_descriptions_is_two_place
     assert [(entry["sources"], entry["denial"]["tool_use_id"]) for entry in record_value["refusals"]] == [
         (["github-write-bound", "permission-denial"], "toolu_1"),
         (["github-write-bound", "permission-denial"], "toolu_3")]
+
+
+def _hook(script, config, payload):
+    """Run a launch's own PreToolUse hook once, as the runtime does, so it writes its own log line."""
+    path = config["log"] + ".config.json"
+    Path(path).write_text(json.dumps(config), encoding="utf-8")
+    flags = ["--hook"] if script == "github_write_guard.py" else []
+    subprocess.run([sys.executable, str(LIB / script), *flags, "--config", path],
+                   input=json.dumps(payload).encode(), capture_output=True, timeout=60, check=True)
+    return json.loads(Path(config["log"]).read_bytes().splitlines()[-1])["at"]
+
+
+def _logged_refusals(tmp_path, stream, calls, denials):
+    """Each call goes through the hook that judges it; the launcher reads both logs as it does after a run."""
+    root = tmp_path / "tree"
+    root.mkdir(exist_ok=True)
+    github_log, file_log = tmp_path / "github.jsonl", tmp_path / "guard.jsonl"
+    github_log.write_bytes(b"")
+    file_log.write_bytes(b"")
+    github = implementer.github_allowance._config(
+        implementer.github_allowance.allowance_for("none", repository="o/r", branch=None, pull_request=None),
+        scope="build", root=root, log=github_log, child_settings=tmp_path / "child.json")
+    guard = implementer.launch_bound.guard_config(root, STRETCH_SESSION, dict(os.environ), file_log, [])
+    times = [_hook("github_write_guard.py" if tool == "Bash" else "tree_write_guard.py",
+                   github if tool == "Bash" else guard,
+                   {"tool_name": tool, "tool_input": tool_input, "cwd": str(root), "session_id": "s",
+                    **({"tool_use_id": identity} if identity else {})})
+             for tool, tool_input, identity in calls]
+    record_value = {}
+    implementer.github_allowance.record_refusals(record_value, github_log)
+    record_value["write_guard"], _ = implementer.launch_bound.guard_outcome(stream, file_log)
+    implementer._stretch_refusals(record_value, {"permission_denials": denials},
+                                  Namespace(stretch_guard_log=file_log, stretch_stream=stream))
+    return record_value["refusals"], times
+
+
+def test_1011_each_refusal_carries_the_time_its_source_logged_and_a_denial_alone_none(tmp_path):
+    outside = str(tmp_path / "outside" / "settings.json")
+    stream = refused_stream(outside).encode()
+    refusals, (github_at, file_at) = _logged_refusals(tmp_path, stream, [
+        ("Bash", {"command": "gh issue comment 6 --body x"}, "toolu_1"),
+        ("Write", {"file_path": outside.replace("\\", "/")}, "toolu_2")],
+        [{"tool_name": "Bash", "tool_use_id": "toolu_1"}, {"tool_name": "Write", "tool_use_id": "toolu_2"},
+         {"tool_name": "WebFetch", "tool_use_id": "toolu_3"}])
+    assert [(entry["sources"], entry["at"]) for entry in refusals] == [
+        (["github-write-bound", "permission-denial"], github_at),
+        (["file-write-guard", "permission-denial"], file_at), (["permission-denial"], None)]
+    for at in (github_at, file_at):
+        assert datetime.fromisoformat(at).utcoffset() == timedelta(0)
+
+
+def test_1011_a_call_two_sources_refused_takes_the_earlier_time_whichever_reported_first(tmp_path):
+    outside = (tmp_path / "outside" / "body.md").as_posix()
+    command = f"gh issue comment 6 --body-file {outside}"
+    stream = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": command}}]}}).encode()
+    # The file guard decides first, but the GitHub bound's report is listed first.
+    refusals, (file_at, github_at) = _logged_refusals(tmp_path, stream, [
+        ("Write", {"file_path": outside}, None), ("Bash", {"command": command}, None)],
+        [{"tool_name": "Bash", "tool_use_id": "toolu_1"}])
+    assert file_at < github_at
+    [entry] = refusals
+    assert entry["sources"] == ["github-write-bound", "file-write-guard", "permission-denial"]
+    assert entry["at"] == file_at
+
+
+@pytest.mark.parametrize("flag, source", [([], "default"), (["--limit-declared"], "declared")])
+def test_1011_the_launcher_names_a_limit_its_holder_declared(monkeypatch, flag, source):
+    args = implementer.parser().parse_args(["--dispatch", "d", "--root", ".", "--stage", "stretch", "--work", "o/r#5",
+                                            "--settings-source", "s", "--settings-scope", "implementer",
+                                            "--timeout-seconds", "30000", *flag])
+    seen = []
+    monkeypatch.setattr(implementer.cap_declaration, "launcher_run", lambda _a, deadline, *_r: seen.append(deadline))
+    implementer.run_implementer(args)
+    deadline = seen[0]
+    deadline.called_epoch = 0.0
+    assert implementer.lifecycle.window_line(deadline)["limit_source"] == source
+
+
+def test_1011_a_stretch_that_recovered_from_refusals_reaches_the_final_pass_with_them(job, tmp_path, monkeypatch):
+    import work
+    from test_route import HEAD, PLANNED, RULES, fixture, post, readiness_record, with_pull_request
+    args = stretch_job(job, monkeypatch, {})
+    outside = str(tmp_path / "home" / ".claude" / "settings.json")
+    job[1].write_bytes(json.dumps({"claude": {
+        "stdout": refused_stream(outside),
+        "guard_decisions": [{"tool": "Write", "raw": outside, "canonical": outside,
+                             "decision": "deny", "reason": "launch write bound: outside"}],
+        "github_decisions": [{"tool": "Bash", "command": "gh issue comment 6 --body x", "decision": "deny",
+                              "reason": "a comment on o/r#6"}]}}).encode())
+    assert implementer.run_implementer(args) == 0 and record(args)["outcome"] == "success"
+    dispatch_id = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())["dispatch_id"]
+    state = with_pull_request(fixture(tmp_path / "issue", *PLANNED))
+    state.record_root, state.pr["draft"] = args.output.parent, False
+    state.floor_public = {"outcome": "ci-met", "head": HEAD}
+    # This test is of the refusals, so the cold reading and reach, read from Git history, stand clear.
+    monkeypatch.setattr(work, "_cold_reading_decision", lambda *_a: None)
+    monkeypatch.setattr(work, "_evaluate_reach", lambda checked: setattr(checked, "reach", {"state": "not-due"}))
+    post(state, readiness_record(dispatch_id), 30)
+    made = work.decide(state, RULES)
+    assert made.stage == "final-pass" and json.loads(made.detail)["record"] is not None
+    assert [entry["command"] for entry in work._github_write_report(state)["refusals"]] == [
+        "gh issue comment 6 --body x"]

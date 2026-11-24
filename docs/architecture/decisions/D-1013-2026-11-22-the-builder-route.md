@@ -1,0 +1,33 @@
+# D-1013 — The builder route
+
+**Purpose:** record why the second of #1011's three pull requests routes a change through one handoff to a builder that answers for readiness, and what was chosen over what. **Audience:** a future session changing the builder route. **Success:** that reader can recover each choice without the issue.
+
+Every product change paid for the holder relaying each step on the lab's largest context: in the 30 days measured, holders spent 83% of their cost from the first build on, and 71% of what they sent builders was a process step or a check's finding a builder can take from the source. So the builder takes the checks as its tools, and the holder returns for one final pass.
+
+The [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7071427121) governs, with the owner's ruling of 2026-11-23 for [three pull requests](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7103159518), because the route didn't fit the lab reviewer's 600,000-byte input. This one lands the route and leaves today's route the default. The third adds the row reader for a change with no plan, a hand-started builder's staffing and cost, the vendor and model each record names, a fixed commit's reachability, the release report's four remaining fields, and the default. The readers removed for it stand at `189795d312493ce6348cdd73b22a046594412e32`. The plan was [settled on the cap route](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1011#issuecomment-7085587515); its decisions are E1 to E12. It builds on [D-1012](D-1012-2026-11-21-a-builders-own-checks-and-writes.md).
+
+## Calls
+
+- **C1. The work's first launch fixes its route** (E1), over the whole work, so an amended brief can't move a change in flight; cloud builds and the mechanical lane, which has no plan to name a builder's checks, stay on today's route. Otherwise the owner's latest `route` marker governs, in a comment or the issue body, else today's route. The reading names the ask for the route the change is on, in flight too. A `builder-session` marker decides nothing, since one may stand on either route.
+- **C2. Stages are confined to their route** (E1, E7). `run build`, `artifact`, `floor` and `review-disposition` on the builder route, or a handoff on the relay, would start a second writer or move a change unasked. A refusal advises the marker only where one moves the route.
+- **C3. The cold seat keeps today's vendor and model** (E2): a Claude holder's plan is judged `degraded`, `holder-written-plan`, the producer read from the draft's `author=holder vendor=…`. No holder reading counts on this route, since the holder wrote the plan.
+- **C4. The handoff is one composed text, started once and detached** (E3), so a builder never gets instructions the entrance didn't compose, the text recomposes byte for byte with the roots its block records, and the holder doesn't wait. The tree is made first, because the launcher needs it; once the launcher starts the tree may be a builder's, so only its exit before its pointer gives it back. The plan names every check by carrying it.
+- **C5. The stretch's limit is its own 28,800 s** (E3): a working day's unattended run, above the four-hour budget for build turns and below the ten hours the first pull request took with its relays; longer takes an override reason. A stopped stretch resumes only on the owner's word, by `--resume-reason`, or by the recovery restart where no session can resume.
+- **C6. A hand-started builder is taken at its word** (E4): its identity and session are declared, never its holder's; its seats are staffed as the machine says and its cost reads `unknown`. A `cannot-launch` stop and `--ended-reason` are its lawful exits.
+- **C7. Builder mode takes the holder session from the builder's own launch** (E4), which a builder's command line can't supply.
+- **C8. Findings are counted from a fixed return tail** (E5), an unreadable one as `F0`, so none can vanish; `reconciled` reads every report the term's builders launched, so a record can't drop one unseen.
+- **C9. No gate before ready reads the record, and the record is the builder's last post** (E5, E6), read back through the decision's `if_ended`. Only the term's last launch's record governs, so a send-back that stopped silent can't be reported over.
+- **C10. The builder posts the markers the holder used to** (E6), checked as before, except `implementing-pr` and `builder-session`, for which the closing reference and the stretch's record stand; the counting use report stands for the `use` note, and proof on this route takes its use and floor from the builder's own evidence, the floor declared from the launch's request, so a posted proof outlives the launch. Reach counts stretch launches.
+- **C11. The final pass is a decision state** (E7) that runs the floor and cold-reading holds and the chain, launches nothing, and allows one send-back, spent by its launch, and catch-up resumes, which carry no holder text and spend none.
+- **C12. The holder accounts for the stretch's own launch findings,** #1009's bytecode included, since no other party remains.
+- **C13. The release report** (E9) carries `handoff_plan` (`unknown` across a practice update), refusals paired in order per launch, every resume and end with its reason, and row checks that say what they assert. Declines go where row 4's owner cell puts them; a connected reviewer's are read from its threads.
+- **C14. A resumed builder is priced reply by reply** (E10): each launch's stream names its replies and the transcript prices them, because a stream's output count is the count as a reply began. The comparison is switched on by a file on the machine, written at the third's merge, so nothing lab-specific ships.
+- **C15. Store against posted stays exact, and quoted report markers are set aside** (E11).
+
+## Rejected
+
+A Codex cold seat for a Claude holder's plan (C3); a stretch cut to the build budget (C5); a gate before ready that waits on the record (C9); a digest-only `handoff_plan`, which reads an altered or holder-written handoff true (C13); reconciling only the reports the record names (C8); a launch-account party for bytecode (C12); normalising a posted report (C15); a catch-up that spends the send-back or that the holder merges (C11); a claim against two overlapping handoffs, which is a mechanism left to the third.
+
+## Not this
+
+No change to a seat's refusal rule, the Codex paths, the vendor switch, model selection, cloud builds or panels; #962 stays open. No check is removed or made optional. Nothing resumes a builder on its own. No plan writer and no second builder. Today's route is kept whole.

@@ -2107,3 +2107,238 @@ def test_the_reload_lists_first_call_takes_the_last_event_of_its_message():
         first, problem = cost._first_call(str(log))
     assert problem is None and first == {"input": 3, "cache_read": 0, "cache_creation": 40}
 
+
+# The route split and the comparison ledger.
+def route_moment(second):
+    return datetime(2026, 10, 10, 12, 0, second, tzinfo=timezone.utc)
+
+
+# A second before the launch, exactly at its start, and after it.
+ROUTE_HOLDER_REPLIES = (("early", 4, {"input": 1000, "output": 100}), ("edge", 5, {"output": 1000}),
+                        ("late", 8, {"cache_read": 100000, "cache_write_1h": 1000}))
+
+
+def route_reply_price(tokens, model="claude-opus-5-5"):
+    """Tokens by class priced at the shipped card's rates for MODEL, a holder reply's by default."""
+    rates = next(row for row in cost.load_rates(LIB / "rates.json") if row["model"] == model)
+    return sum((Decimal(count) * Decimal(str(rates["classes"][name])) for name, count in tokens.items()),
+               Decimal(0)) / Decimal(1_000_000)
+
+
+def route_holder_replies(tmp_path):
+    from test_holder_transcript import reply, write_lines
+    projects = tmp_path / "projects"
+    write_lines(projects / "slug" / "holder.jsonl", [
+        reply(name, second=second, input=tokens.get("input", 0), output=tokens.get("output", 0),
+              read=tokens.get("cache_read", 0), five=0, hour=tokens.get("cache_write_1h", 0))
+        for name, second, tokens in ROUTE_HOLDER_REPLIES])
+    row = cost.holder_close("acme/widget", 12, "claude", None, None, None, tmp_path / "holder.jsonl",
+                            now=route_moment(50), session_id="holder", claude_projects=projects,
+                            state_root=tmp_path / "holder-state")
+    return row["holder"]["replies"]
+
+
+def codex_stream(thread, input, cached, output, model=None):
+    started = {"type": "thread.started", "thread_id": thread, **({"model": model} if model else {})}
+    completed = {"type": "turn.completed", "usage": {"input_tokens": input, "cached_input_tokens": cached,
+                                                     "output_tokens": output, "reasoning_output_tokens": 0}}
+    return b"".join((json.dumps(event) + "\n").encode() for event in (started, completed))
+
+
+def route_bundle(store, name, stage, vendor, model, stdout, *, launched, completed, session=None,
+                 launched_by=None):
+    output = store / name / "answer.v2.txt"
+    request = records.request_record(
+        dispatch_id=name, work="acme/widget#12", stage=stage, settings_source="fixture",
+        settings_scope=stage, vendor=vendor, model=model, effort="high",
+        continuity="resume" if session else "fresh", requested_session_id=session,
+        permission_boundary="fixture", root=None, now=route_moment(launched))
+    if launched_by:
+        request["launched_by"] = {"role": "builder", "dispatch_id": launched_by, "session_id": "s",
+                                  "identity": "proved"}
+    attempt = {"vendor": vendor, "model": model, "stdout": str(output) + ".stdout.log"}
+    records.add_runtime_evidence(attempt, vendor, stdout, request["requested"]["continuity"], 1.0)
+    records.add_usage_record(attempt, request, completed_at=route_moment(completed).isoformat(),
+                             staffing_status="qualified")
+    write_json(records.sidecar(output, ".request.json"), request)
+    write_json(records.sidecar(output, ".run.json"), {
+        "schema_version": 2, "dispatch_id": name, "completed_at": route_moment(completed).isoformat(),
+        "attempts": [attempt]})
+
+
+def claude_result(model, input, output):
+    return json.dumps({"type": "result", "modelUsage": {model: {
+        "inputTokens": input, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
+        "outputTokens": output}}}).encode()
+
+
+@pytest.fixture
+def route_store(tmp_path):
+    import run_lifecycle
+    store = tmp_path / "dispatches"
+    stretch = "a" * 32
+    # 100000 input of which 40000 cached, and 10000 output.
+    route_bundle(store, stretch, "stretch", "codex", "gpt-6-sol", codex_stream("t1", 100000, 40000, 10000),
+                 launched=5, completed=20)
+    # The send-back resumes the session; its share is 50000 input of which 20000 cached, and 5000 output.
+    route_bundle(store, "b" * 32, "stretch", "codex", "gpt-6-sol", codex_stream("t1", 150000, 60000, 15000),
+                 launched=30, completed=40, session="t1")
+    # The builder's seat: 1000 input and 1000 output on Sonnet 5.5.
+    route_bundle(store, "c" * 32, "cold-reader", "claude", "claude-sonnet-5-5",
+                 claude_result("claude-sonnet-5-5", 1000, 1000), launched=21, completed=25, launched_by=stretch)
+    # Seats another launch began, or the holder's own, are no part of the builder's cost.
+    route_bundle(store, "d" * 32, "cold-reader", "claude", "claude-sonnet-5-5",
+                 claude_result("claude-sonnet-5-5", 10 ** 6, 10 ** 6), launched=21, completed=25,
+                 launched_by="e" * 32)
+    route_bundle(store, "f" * 32, "cold-reader", "claude", "claude-sonnet-5-5",
+                 claude_result("claude-sonnet-5-5", 10 ** 6, 10 ** 6), launched=21, completed=25)
+    rows = run_lifecycle.launch_bundles(store, "acme/widget#12", None, exact_work=True)
+    return ([row for row in rows if row[2]["stage"] == "stretch"],
+            [row for row in rows if row[2]["stage"] != "stretch"])
+
+
+# What route_store's builder launches and its own seat spent, by the card's classes.
+ROUTE_BUILDER_TOKENS = [("gpt-6-sol", {"input": 60000, "cached_input": 40000, "output": 10000}),
+                        ("gpt-6-sol", {"input": 30000, "cached_input": 20000, "output": 5000}),
+                        ("claude-sonnet-5-5", {"input": 1000, "output": 1000})]
+
+
+def route_builder_price():
+    return sum((route_reply_price(tokens, model) for model, tokens in ROUTE_BUILDER_TOKENS), Decimal(0))
+
+
+def test_route_split_prices_holder_before_after_and_the_builder_with_its_own_seats(tmp_path, route_store):
+    builders, seats = route_store
+    split = cost.route_split(holder_replies=route_holder_replies(tmp_path), start=route_moment(5),
+                             builder_bundles=builders, seat_bundles=seats)
+    assert split["holder_before"]["status"] == "priced"
+    early, edge, late = (route_reply_price(tokens) for _name, _second, tokens in ROUTE_HOLDER_REPLIES)
+    assert Decimal(split["holder_before"]["amount"]) == early
+    # The reply exactly at the start falls after it.
+    assert split["holder_before"]["replies"] == 1 and split["holder_after"]["replies"] == 2
+    assert Decimal(split["holder_after"]["amount"]) == edge + late
+    builder = split["builder"]
+    assert builder["status"] == "priced", builder
+    assert Decimal(builder["amount"]) == route_builder_price() and builder["usd"] == pytest.approx(
+        float(route_builder_price()))
+    assert sorted(builder["dispatch_ids"]) == ["a" * 32, "b" * 32, "c" * 32]
+
+
+def test_route_split_takes_bundles_by_their_run_record_paths(route_store):
+    builders, seats = route_store
+    split = cost.route_split(holder_replies=[], start=route_moment(5),
+                             builder_bundles=[Path(row[1]) for row in builders],
+                             seat_bundles=[Path(row[1]) for row in seats])
+    assert Decimal(split["builder"]["amount"]) == route_builder_price()
+    assert split["holder_before"]["usd"] == split["holder_after"]["usd"] == 0
+
+
+def claude_builder_stream(session, *replies):
+    """A Claude stream-json log: each reply's event carries its usage as it began, output not yet counted."""
+    events = [{"type": "system", "subtype": "init", "session_id": session}]
+    for identity, input, read, five, hour in replies:
+        events.append({"type": "assistant", "session_id": session, "parent_tool_use_id": None, "message": {
+            "id": identity, "model": "claude-opus-5-5", "usage": {
+                "input_tokens": input, "output_tokens": 1, "cache_read_input_tokens": read,
+                "cache_creation_input_tokens": five + hour,
+                "cache_creation": {"ephemeral_5m_input_tokens": five, "ephemeral_1h_input_tokens": hour}}}})
+    events.append({"type": "result", "session_id": session, "modelUsage": {"claude-opus-5-5": {
+        "inputTokens": 1, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "outputTokens": 1}}})
+    return b"".join((json.dumps(event) + "\n").encode() for event in events)
+
+
+@pytest.fixture
+def claude_builder(tmp_path):
+    import run_lifecycle
+    from test_holder_transcript import reply, write_lines
+    store, projects, session = tmp_path / "dispatches", tmp_path / "projects", "builder-session"
+    stretch = claude_builder_stream(session, ("m1", 1000, 0, 0, 0), ("m2", 0, 0, 0, 0))
+    send_back = claude_builder_stream(session, ("m3", 0, 100000, 0, 1000))
+    route_bundle(store, "a" * 32, "stretch", "claude", "claude-opus-5-5", stretch, launched=5, completed=20)
+    route_bundle(store, "b" * 32, "stretch", "claude", "claude-opus-5-5", send_back, launched=30, completed=40,
+                 session=session)
+    for name, stream in (("a" * 32, stretch), ("b" * 32, send_back)):
+        (store / name / "answer.v2.txt.stdout.log").write_bytes(stream)
+    write_lines(projects / "slug" / f"{session}.jsonl", [
+        reply("m1", second=6, session=session, input=1000, output=100, read=0, five=0, hour=0),
+        # 1000 output, of which the stream's event carried only 1.
+        reply("m2", second=7, session=session, input=0, output=1000, read=0, five=0, hour=0),
+        # The send-back's one reply.
+        reply("m3", second=31, session=session, input=0, output=0, read=100000, five=0, hour=1000),
+        # A reply no builder launch's stream names is no part of the builder's cost.
+        reply("m9", second=50, session=session, input=0, output=10 ** 6, read=0, five=0, hour=0)])
+    rows = run_lifecycle.launch_bundles(store, "acme/widget#12", None, exact_work=True)
+    return store, projects, rows
+
+
+def test_1011_a_launched_claude_builder_and_its_resumed_send_back_price_from_their_own_replies(claude_builder):
+    store, projects, rows = claude_builder
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=rows, seat_bundles=[],
+                               claude_projects=projects)["builder"]
+    assert builder["status"] == "priced", builder
+    replies = ({"input": 1000, "output": 100}, {"output": 1000}, {"cache_read": 100000, "cache_write_1h": 1000})
+    assert Decimal(builder["amount"]) == sum(map(route_reply_price, replies), Decimal(0)) and not builder.get("floor")
+    assert sorted(builder["dispatch_ids"]) == ["a" * 32, "b" * 32]
+    # The dispatch report's pricing of the same resumed launch is unchanged.
+    send_back = next(row for row in rows if row[2]["dispatch_id"] == "b" * 32)
+    value = cost.rate_card_equivalent(send_back[3]["attempts"][0]["usage"], SHIPPED)
+    assert value["status"] == "unknown" and "resumed Claude usage scope is not established" in value["reasons"]
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("stream", "cannot read stdout log"),
+    ("transcript", "cannot read the builder's Claude transcript for session builder-session"),
+    ("empty", "the launch's stream names no reply with usage"),
+])
+def test_1011_a_launched_claude_builder_whose_usage_cannot_be_read_is_unknown(claude_builder, fault, reason):
+    store, projects, rows = claude_builder
+    if fault == "stream":
+        (store / ("b" * 32) / "answer.v2.txt.stdout.log").unlink()
+    elif fault == "empty":
+        (store / ("b" * 32) / "answer.v2.txt.stdout.log").write_bytes(b"")
+    else:
+        shutil.rmtree(projects)
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=rows, seat_bundles=[],
+                               claude_projects=projects)["builder"]
+    assert builder["status"] == "unknown" and reason in builder["reason"] and "usd" not in builder
+
+
+def test_route_split_without_any_builder_evidence_is_unknown():
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[],
+                               seat_bundles=[])["builder"]
+    assert builder["status"] == "unknown" and "no launched builder bundle" in builder["reason"]
+
+
+def comparison_file(home, value):
+    path = home / ".tradecraft" / "route-comparison.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
+
+
+def test_route_comparison_is_absent_without_its_file_and_writes_nothing(tmp_path):
+    assert cost.route_comparison("acme/widget#1", home=tmp_path) is None
+    assert not (tmp_path / ".tradecraft").exists()
+
+
+def test_route_comparison_is_due_once_on_the_counted_work(tmp_path):
+    comparison_file(tmp_path, {"issue": "acme/lab#7", "count": 5})
+    answers = [cost.route_comparison(f"acme/widget#{n}", home=tmp_path) for n in range(1, 5)]
+    assert [answer["ordinal"] for answer in answers] == [1, 2, 3, 4]
+    assert not any(answer["due"] for answer in answers)
+    assert cost.route_comparison("acme/widget#2", home=tmp_path) == {
+        "ordinal": 2, "count": 5, "issue": "acme/lab#7", "due": False}
+    fifth = cost.route_comparison("acme/widget#5", home=tmp_path)
+    assert fifth == {"ordinal": 5, "count": 5, "issue": "acme/lab#7", "due": True}
+    assert cost.route_comparison("acme/widget#5", home=tmp_path)["due"] is False
+    ledger = tmp_path / ".tradecraft" / "route-comparison" / "ledger.jsonl"
+    assert len(ledger.read_bytes().splitlines()) == 5
+
+
+@pytest.mark.parametrize("value", [b"{not json", [], {"issue": "acme/lab#7"}, {"issue": "", "count": 5},
+                                   {"issue": "acme/lab#7", "count": 0}, {"issue": "acme/lab#7", "count": True}])
+def test_a_malformed_route_comparison_file_is_unknown_and_writes_nothing(tmp_path, value):
+    comparison_file(tmp_path, value)
+    answer = cost.route_comparison("acme/widget#1", home=tmp_path)
+    assert answer["status"] == "unknown" and answer["reason"]
+    assert not (tmp_path / ".tradecraft" / "route-comparison").exists()
+

@@ -433,6 +433,9 @@ def test_a_check_dispatch_is_composed_from_its_inputs_alone():
         "criterion": criterion, "capability": "execute", "head": "abc", "tree": "T"}).decode("utf-8")
     assert composed.startswith(work.CRITERION_PREAMBLE) and composed.endswith(criterion)
     assert "Head: abc" in composed and "Capability: execute" in composed
+    # Each ends its conditions with the return tail its findings are counted from.
+    assert work.readiness.RETURN_TAILS["acceptance-criterion"] in composed
+    assert work.readiness.RETURN_TAILS["use"].encode("utf-8") in use
 
 
 @pytest.mark.parametrize("extra, code", [
@@ -675,14 +678,22 @@ def test_a_report_the_entrance_posted_for_a_recomposed_check_counts(counted):
     state, _output, _body = counted
     checks = work.builder_checks(state)
     assert checks["check_dispatches"][0]["status"] == "composed"
-    assert checks["check_reports"] == [{"comment": 1, "dispatch": checks["check_reports"][0]["dispatch"],
-                                        "counts": True, "invalid": []}]
+    report = checks["check_reports"][0]
+    # A counting report carries its stage, its builder and the findings its return tail gives; this
+    # stand-in return has no `Findings:` tail, so it counts as the one unreadable finding.
+    assert report == {"comment": 1, "dispatch": report["dispatch"], "counts": True, "invalid": [],
+                      "stage": "use", "builder": report["builder"], "head": report["head"], "criterion": None,
+                      "outcome": report["outcome"], "findings": ["F0"]}
+    assert report["builder"]
 
 
 def test_a_store_copy_rewritten_after_the_post_stops_the_report_counting(counted):
     state, output, _body = counted
     work.records.sidecar(output, ".source.bin").write_bytes(b"A better story.\n")
-    assert work.builder_checks(state)["check_reports"][0]["invalid"] == ["store-and-posted-differ"]
+    report = work.builder_checks(state)["check_reports"][0]
+    assert report["invalid"] == ["store-and-posted-differ"] and report["builder"]
+    # The builder is named, so the release report's row check 3.2 fails on it.
+    assert work.route_report._store_and_posted([report])["reading"] == "fails"
 
 
 def test_a_caller_supplied_dispatch_differs_and_never_counts(counted):
@@ -1119,3 +1130,21 @@ def test_a_check_whose_tree_cant_be_built_leaves_no_folder_behind(composed, tmp_
     with pytest.raises(work.WorkError, match="could not be built"):
         run_check(state, "use", "--job-from-artifact", transport=PostingTransport())
     assert "dispatch" not in seen and not list((tmp_path / "temp").iterdir())
+
+
+def test_1011_a_comment_that_quotes_the_report_marker_is_set_aside_not_counted(counted):
+    state, _output, body = counted
+    marker = body.split("\n", 1)[0]
+    quoting = {
+        2: f"The entrance posted `{marker}` above.\n",
+        3: f"```text\n{marker}\n```\n",
+        4: f"An example:\n\n    {marker}\n",
+        5: f"> {marker}\n>\n> The job ran.\n",
+    }
+    state.issue_comments = [{"id": 1, "body": body, "user": {"login": "producer"}}] + [
+        {"id": identity, "body": text, "user": {"login": "producer"}} for identity, text in quoting.items()]
+    checks = work.builder_checks(state)
+    assert [report["comment"] for report in checks["check_reports"]] == [1]
+    assert checks["check_reports"][0]["counts"] is True
+    assert [quotation["source"]["id"] for quotation in checks["quotations"]] == [2, 3, 4, 5]
+    assert {quotation["name"] for quotation in checks["quotations"]} == {"check-report"}

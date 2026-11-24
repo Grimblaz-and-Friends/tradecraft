@@ -479,3 +479,19 @@ def test_1011_the_allowance_command_prints_a_stretch_builders_sentence(tmp_path,
     with pytest.raises(work.WorkError, match="launches no stretch"):
         work.run(work.parser().parse_args(["run", "stretch", "--repo", "example/product", "--issue", "12",
                                            "--root", str(tmp_path)]))
+
+
+def test_1011_a_stretch_allowance_read_from_the_registration_matches_the_named_tree(tmp_path, monkeypatch,
+                                                                                  capsys):
+    assert _allowance_at(tmp_path, monkeypatch, ["allowance", "stretch", "--implementation-root", "{tree}"]) == 0
+    named = capsys.readouterr().out
+    assert _allowance_at(tmp_path, monkeypatch, ["allowance", "stretch"]) == 0
+    assert capsys.readouterr().out == named
+    # Every other stage still names its tree.
+    with pytest.raises(work.WorkError, match="requires --implementation-root"):
+        _allowance_at(tmp_path, monkeypatch, ["allowance", "build"])
+    monkeypatch.setattr(work, "resolve_implementation_root", lambda *_a, **_k: None)
+    args = work.parser().parse_args(["allowance", "stretch", "--repo", "example/product", "--issue", "12",
+                                     "--root", str(tmp_path)])
+    with pytest.raises(work.WorkError, match="no registered implementation tree"):
+        work._allowance_command(args, state=state(pr=True), root=tmp_path)

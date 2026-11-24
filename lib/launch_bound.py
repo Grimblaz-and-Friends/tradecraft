@@ -279,7 +279,8 @@ def guard_outcome(stdout: bytes, log: Path | str) -> tuple[dict[str, object], st
             elif block.get("type") == "tool_result" and block.get("tool_use_id"):
                 results[block["tool_use_id"]] = block.get("is_error") is True
     refusals = [{"tool": d.get("tool"), "raw": d.get("raw"), "canonical": d.get("canonical"),
-                 "reason": d.get("reason")} for d in decisions if d.get("decision") == "deny"]
+                 "reason": d.get("reason"), "at": d.get("at")}
+                for d in decisions if d.get("decision") == "deny"]
     unmatched = list(decisions)
     unguarded, rejected = [], []
 

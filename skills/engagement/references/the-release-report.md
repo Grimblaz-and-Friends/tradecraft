@@ -20,6 +20,21 @@
 5. **Worth a look.** At most three excerpts, each cut from the added or changed lines of the change's diff at the report's head (`git diff <base>...<head>`) rather than retyped, and each carrying a link to its lines and one line on why it is worth reading. The holder chooses them from the nominations in the cold reader's account.
 6. **Settled by checks.** One collapsed `<details>` section, grouped by affirmed row. First, each row's checks and their outcomes: the row's named checks where it names them, and the criterion results with their evidence. Then, for a change that wrote no decision record, the cold reader's account of why the change was made, which judges whether it decided nothing and is understood without its brief (`the-stretch.md`). Then the process evidence: the required gate and its verdict, answered reviewer findings, comments from other authors noted unanswered (`change-paths.md`), uses, reach, size, cost (with keep-warm as its own line, carrying its price and outcome counts, and the turns that reloaded anyway, both from the cost report's `keep_warm` and `reloads`), the cold readings, the launch write bound the launch-findings reference has the report quote, every GitHub write granted to a step with the brief comment and row it rests on and every write a step was refused (the `grants` and `refusals` of `run release-report`'s `github_write_bound`, which says `unknown` when a launch's record could not be read), and departures that need no decision. The cold readings are listed one per reading, rereads included: its head, whether it read the whole change, the flags it raised, which the holder routed and which it accepted with each acceptance's reason, and its model, effort, duration and list-price cost; `run release-report` returns all but the cost under `cold_readings`, from the readings and `open` comments the gate holds, and the cost comes from that run's dispatch record. The owner judges the holder's acceptances from this list. Check outcomes and process evidence never appear above this section.
 
+## On the builder route
+
+**On the builder route (`the-stretch.md`), `run release-report` adds `builder_route` to its payload, and the report places it within the order above.** The holder gives each decline its view, `agrees`, `differs` or `cannot-judge`, because where a decline goes turns on it; a decline given no view needs the owner.
+
+- **Needs your decision** adds, in this order:
+  1. the final-pass block: each spot check the holder made and what it found, what it sent back and what came of it, and what stays open after the send-back;
+  2. each decline, from a check report or a connected reviewer, where the holder's view differs from the builder's or the holder can't judge it. The readiness record supplies the checks' declines; the holder reads a connected reviewer's from the pull request's threads and answers, as on the relay route;
+  3. every builder decision that would change a brief row;
+  4. a handoff whose text differs from the composed one (`handoff_plan` reads `differs`, holder-written or altered);
+  5. one line counting the remaining declines and pointing at their list.
+- **Declined findings** is an uncollapsed entry directly after "Your decisions, and what they did". It lists every other decline, check reports' and connected reviewers' alike, each with the builder's reason and the holder's view, and declines sharing a reason are listed together under it. No decline appears only in the collapsed section.
+- **Settled by checks** adds the route and its reason, the cost split (the holder before the handoff, the holder after it, and the builder), every limit above its default with its reason, each catch-up resume, and each row check's reading.
+
+The payload's other fields (the readiness reading, the send-back, plan-writer launches and refusals) are the evidence these placements draw on, and stay in the collapsed section.
+
 ## What it leaves where it is
 
 **The pull request body keeps its existing record and its `**Path departures:**` paragraph** (`change-paths.md`), because the report is the owner's surface and the body is the change's record.

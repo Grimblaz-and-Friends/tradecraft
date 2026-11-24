@@ -1820,6 +1820,274 @@ def holder_close(repo: str, issue: int, vendor: str, model: str | None,
     return row
 
 
+# The route split: what the holder spent before and after a stretch launch began, and what its
+# builder spent, each at list price; and the ledger that says when a comparison is due.
+# Design: lib/DESIGN.md#the-builder-route
+def _route_figure(values: list[dict], **extra) -> dict[str, object]:
+    """Priced values summed into one USD figure; one unknown value makes the whole figure unknown."""
+    reasons, floors, total = [], [], Decimal(0)
+    for value in values:
+        if value.get("status") == "not-launched":
+            continue
+        if value.get("status") == "known" and value.get("currency") == "USD":
+            total += Decimal(value["amount"])
+            floors.extend(value.get("floor_reasons") or [])
+        else:
+            reasons.extend(value.get("reasons") or [value.get("reason") or "contribution currency is not USD"])
+    if reasons:
+        return {**unknown("; ".join(dict.fromkeys(str(reason) for reason in reasons))), **extra}
+    figure = {"status": "priced", "usd": float(total), "amount": format(total, "f"),
+              "basis": "API list-price equivalence", **extra}
+    if floors:
+        # A model the card does not price leaves the figure a floor, as it does in the report.
+        figure.update(floor=True, floor_reasons=list(dict.fromkeys(floors)))
+    return figure
+
+
+def _replies_price(replies: list[dict], card: _Card, gaps: list | None = None) -> dict:
+    holder = {"schema_version": 1, "source_kind": "transcript", "window": {},
+              "replies": replies, "gaps": list(gaps or [])}
+    return _transcript_price(_Attempt({"holder": holder}), card)
+
+
+def _route_bundle(bundle) -> tuple[dict, dict, str]:
+    """A launch row ``(order, run_path, request, run)`` or a ``*.run.json`` path, as (request, run, path)."""
+    if isinstance(bundle, (str, Path)):
+        run_path = Path(bundle)
+        request_path = run_path.with_name(run_path.name.removesuffix(".run.json") + ".request.json")
+        request, request_failure = _dispatch_json(request_path, "dispatch request")
+        run, run_failure = _dispatch_json(run_path, "dispatch completion")
+        if request_failure or not isinstance(request, dict):
+            request = {"recovery_error": request_failure or "dispatch request is not a JSON object"}
+        if run_failure or not isinstance(run, dict):
+            run = {"recovery_error": run_failure or "dispatch completion is not a JSON object"}
+        return request, run, str(run_path)
+    _order, run_path, request, run = bundle
+    return _mapping(request), _mapping(run), str(run_path)
+
+
+def _bundle_attempts(request: dict, run: dict, path: str) -> tuple[list[_Attempt], list[str]]:
+    problem = request.get("recovery_error") or run.get("recovery_error")
+    if not problem and run.get("schema_version") != 2:
+        problem = "unsupported dispatch completion schema"
+    elif not problem and (not isinstance(run.get("attempts"), list) or not run["attempts"]):
+        problem = "dispatch completion has no readable attempts"
+    elif not problem and not run.get("completed_at"):
+        problem = "dispatch has no completion write; interrupted usage is unknown"
+    if problem:
+        return [], [f"{path}: {problem}"]
+    items, reasons = [], []
+    for position, attempt in enumerate(run["attempts"]):
+        usage = attempt.get("usage") if isinstance(attempt, dict) else None
+        if (not isinstance(usage, dict) or not isinstance(usage.get("dispatch"), dict)
+                or not isinstance(usage.get("model"), dict)):
+            reasons.append(f"{path}: attempt {position} has no readable normalized usage")
+            continue
+        items.append(_Attempt(usage, request, attempt, position=position, bundle_id=request.get("dispatch_id")))
+    return items, reasons
+
+
+def _stream_reply_ids(path: object) -> tuple[dict[str, dict] | None, str | None]:
+    """Each usage-bearing reply id in a Claude stream-json log, with that reply's input-side counts.
+
+    A reply's events in the stream carry its usage as the reply began: the input-side counts are its
+    own, but the output count is not its whole output, so the stream names a launch's replies and the
+    session transcript supplies what each one spent.
+    """
+    if not isinstance(path, str) or not path:
+        return None, "attempt records no stdout log"
+    try:
+        lines = Path(path).read_bytes().splitlines()
+    except OSError as exc:
+        return None, f"cannot read stdout log: {path}: {exc}"
+    replies = {}
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (UnicodeError, ValueError):
+            continue
+        message = event.get("message") if isinstance(event, dict) and event.get("type") == "assistant" else None
+        if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
+            continue
+        identity = message.get("id")
+        if not isinstance(identity, str) or not identity:
+            return None, f"stdout log has a usage-bearing reply with no message id: {path}"
+        try:
+            counts, _ = transcripts.call_classes(message["usage"])
+        except transcripts.TranscriptError as exc:
+            return None, f"reply {identity} usage is unreadable: {path}: {exc}"
+        replies[identity] = {name: counts[name] for name in ("input", "cache_read", "cache_creation")}
+    return replies, None
+
+
+def _claude_builder_replies(items: list[_Attempt], projects: Path) -> tuple[list[dict], list, list[str]]:
+    """The replies the builder's Claude launches made, named by each launch's stream, from its transcript.
+
+    A resumed launch's stream holds only that launch's replies, so joining each stream's reply ids to
+    the session transcript counts every reply once; an id met twice is still counted once.
+    """
+    named: dict[str, dict[str, tuple[dict, str]]] = {}
+    reasons = []
+    for item in items:
+        sessions = _session_ids(item)
+        stdout = item.evidence.get("stdout")
+        if len(sessions) != 1:
+            reasons.append(f"{stdout}: the launch does not name exactly one Claude session")
+            continue
+        found, failure = _stream_reply_ids(stdout)
+        if failure or not found:
+            # A launch with recorded usage and no reply named is unread, not free.
+            reasons.append(failure or f"{stdout}: the launch's stream names no reply with usage")
+            continue
+        session = sessions.pop()
+        for identity, counts in found.items():
+            named.setdefault(session, {}).setdefault(identity, (counts, str(stdout)))
+    replies, gaps = [], []
+    for session, wanted in named.items():
+        try:
+            _source, transcript, session_gaps, _sources = transcripts.snapshot(projects, session)
+        except (OSError, transcripts.TranscriptError) as exc:
+            reasons.append(f"cannot read the builder's Claude transcript for session {session}: {exc}")
+            continue
+        by_id = {reply["id"]: reply for reply in transcript}
+        for gap in session_gaps:
+            if gap.get("reply_id") is None:
+                gaps.append(gap)  # Unplaceable, as in the holder's ledger: the figure becomes a floor.
+            elif gap["reply_id"] in wanted:
+                reasons.append(f"reply {gap['reply_id']}: {gap['reason']}")
+        for identity, (counts, stdout) in wanted.items():
+            reply = by_id.get(identity)
+            if reply is None:
+                if not any(gap.get("reply_id") == identity for gap in session_gaps):
+                    reasons.append(f"reply {identity} in {stdout} is not in session {session}'s transcript")
+            elif any(reply["tokens"][name] != count for name, count in counts.items()):
+                reasons.append(f"reply {identity} in {stdout} disagrees with the transcript's input-side counts")
+            else:
+                replies.append(reply)
+    return replies, gaps, reasons
+
+
+def _launched_builder(builder_bundles: list, seat_bundles: list, card: _Card,
+                      projects: Path) -> dict[str, object]:
+    builders = [_route_bundle(bundle) for bundle in builder_bundles]
+    identities = {request.get("dispatch_id") for request, _run, _path in builders} - {None}
+    # A seat the holder launched is the holder's cost, so only one a builder launch began counts here.
+    seats = [(request, run, path) for request, run, path in map(_route_bundle, seat_bundles)
+             if _mapping(request.get("launched_by")).get("dispatch_id") in identities]
+    items, streamed, reasons, counted, seen = [], [], [], [], set()
+    for position, (request, run, path) in enumerate([*builders, *seats]):
+        identity = request.get("dispatch_id") or path
+        if identity in seen:
+            continue
+        seen.add(identity)
+        counted.append(identity)
+        found, problems = _bundle_attempts(request, run, path)
+        for item in found:
+            # A local Claude builder launch is priced per reply, so a resume of its session can be priced.
+            local_claude = (position < len(builders) and not _cloud_attempt(item) and not _not_launched(item)
+                            and _mapping(item.usage.get("dispatch")).get("actual_vendor") == "claude")
+            (streamed if local_claude else items).append(item)
+        reasons.extend(problems)
+    # A resumed Codex send-back is priced as its share of the session the stretch began.
+    _session_shares(items)
+    values = [_price(item, card) for item in items]
+    if streamed:
+        replies, gaps, problems = _claude_builder_replies(streamed, projects)
+        reasons.extend(problems)
+        values.append(_replies_price(replies, card, gaps))
+    values.extend(_unknown_price([reason]) for reason in reasons)
+    return _route_figure(values, dispatch_ids=counted)
+
+
+def route_split(*, holder_replies: list[dict], start: datetime, builder_bundles: list,
+                seat_bundles: list, rates=None, claude_projects: Path | None = None) -> dict[str, dict]:
+    """Three list-price figures for a stretch: the holder before it began, the holder after, the builder.
+
+    holder_replies: reply-ledger entries as a transcript holder close keeps them, ``row["holder"]["replies"]``
+        of each close (``id``, ``timestamp``, ``model``, ``tokens``, ``additional_native_classes``, ``agent_id``).
+        A reply strictly before ``start`` is the holder's before; one at or after it, after.
+    start: the stretch launch's start, timezone-aware.
+    builder_bundles: the builder's own launches (stretch, send-back, catch-up resume), each a row as
+        ``run_lifecycle.launch_bundles`` returns it, ``(order, run_path, request, run)``, or a ``*.run.json`` path.
+    seat_bundles: candidate seat launches in either shape; only those whose request's
+        ``launched_by.dispatch_id`` names a builder bundle are counted.
+    rates: a rate list or card; the shipped card when omitted.
+    claude_projects: where a launched Claude builder's session transcript lives, the ``projects`` directory
+        the Claude configuration in force names when omitted. Each local Claude builder launch, fresh or
+        resumed, is priced by the replies its own stdout stream names, at the usage that transcript records
+        for them; a stream or transcript that cannot be read leaves the builder figure unknown.
+
+    Each figure is ``{"status": "priced", "usd", "amount", ...}`` or ``{"status": "unknown", "reason"}``.
+    """
+    if start.utcoffset() is None:
+        raise CostError("route split start must carry a timezone")
+    card = _card(rates if rates is not None else load_rates(Path(__file__).with_name("rates.json")))
+    before, after, unplaced = [], [], []
+    seen = set()
+    for reply in holder_replies:
+        key = json.dumps(reply, sort_keys=True)
+        if key in seen:
+            continue  # The same reply kept by a close and its late receipt is one reply.
+        seen.add(key)
+        when = _timestamp(_mapping(reply).get("timestamp"))
+        if when is None:
+            unplaced.append(f"holder reply {_mapping(reply).get('id')} has no readable time to place it by the launch")
+        else:
+            (before if when < start else after).append(reply)
+    if unplaced:
+        holder_before = holder_after = unknown("; ".join(unplaced))
+    else:
+        holder_before = _route_figure([_replies_price(before, card)], replies=len(before))
+        holder_after = _route_figure([_replies_price(after, card)], replies=len(after))
+    if builder_bundles:
+        projects = Path(claude_projects) if claude_projects is not None else transcripts.projects_directory()[0]
+        builder = _launched_builder(builder_bundles, seat_bundles, card, projects)
+    else:
+        # A builder started by hand leaves no launch record to price, and this split reads no other log.
+        builder = unknown("no launched builder bundle: a hand-started builder's cost is not read")
+    # The holder's own seats are priced in the change's cost report, as on the relay route, not in this split.
+    return {"holder_before": holder_before, "holder_after": holder_after, "builder": builder,
+            "start": start.isoformat(), "leaves_out": "seats the holder launched, which the cost report prices"}
+
+
+def route_comparison(work: str, *, home: Path | None = None) -> dict[str, object] | None:
+    """Where this work falls in the owner's route comparison; None, writing nothing, when none is set up.
+
+    ``<home>/.tradecraft/route-comparison.json`` (``{"issue": "owner/repo#n", "count": 5}``) switches it on;
+    each work is entered once in ``route-comparison/ledger.jsonl`` beside it, and the comparison is
+    ``due`` only on the call that enters the count-th work, so a re-run never reports it twice.
+    """
+    if not isinstance(work, str) or not work:
+        raise CostError("route comparison needs a work identifier")
+    base = (home if home is not None else Path.home()) / ".tradecraft"
+    switch = base / "route-comparison.json"
+    try:
+        value = json.loads(switch.read_bytes())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        return unknown(f"cannot read the route comparison file: {switch}: {exc}")
+    if not isinstance(value, dict):
+        return unknown(f"the route comparison file is not a JSON object: {switch}")
+    issue, count = value.get("issue"), value.get("count")
+    if not isinstance(issue, str) or not issue.strip():
+        return unknown(f"the route comparison file names no issue: {switch}")
+    if type(count) is not int or count < 1:
+        return unknown(f"the route comparison file's count is not a positive whole number: {switch}")
+    ledger = base / "route-comparison" / "ledger.jsonl"
+    try:
+        rows = _read_jsonl(ledger)
+    except CostError as exc:
+        return unknown(f"the route comparison ledger is unreadable: {exc}")
+    works = list(dict.fromkeys(row.get("work") for row in rows if isinstance(row.get("work"), str)))
+    entered = work not in works
+    if entered:
+        _append_jsonl(ledger, {"work": work, "entered_at": datetime.now(timezone.utc).isoformat()})
+        works.append(work)
+    ordinal = works.index(work) + 1
+    return {"ordinal": ordinal, "count": count, "issue": issue, "due": entered and ordinal == count}
+
+
 def gauge_from_codex_response(result: dict[str, object], captured_at: datetime) -> dict[str, object]:
     rate_limits = result.get("rateLimits")
     if not isinstance(rate_limits, dict):

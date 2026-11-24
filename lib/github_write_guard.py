@@ -451,8 +451,9 @@ def decide(command: str, cwd: str | None, config: dict) -> dict[str, object]:
     findings.extend(_variable_findings(ctx))
     if findings:
         first = findings[0]
-        reason = (f"{REFUSED}: {first.reason}. This step's allowance is "
-                  f"{describe(config['allowance'])}; {REQUEST_ROUTE}.")
+        route = ("record this write in your readiness record's `decisions`, with why the work needs it and what it "
+                 "would leave behind" if config["allowance"].get("kind") == "stretch" else REQUEST_ROUTE)
+        reason = f"{REFUSED}: {first.reason}. This step's allowance is {describe(config['allowance'])}; {route}."
         return {"decision": "deny", "reason": reason, "write": first.write}
     return {"decision": "allow", "reason": "no GitHub write outside the allowance", "write": None}
 
@@ -1333,20 +1334,14 @@ def judge_gh_api(positional: list[str], values: dict[str, list[str]], ctx: Conte
     return [Finding(write, f"`{write}`")]
 
 
-def _graphql_document(fields: dict[str, str], cwd: str | None) -> str | None:
+def _graphql_document(fields: dict[str, str], ctx: Context) -> str | None:
     query = fields.get("query")
     if query is None:
         return None
     if query.startswith("@"):
-        # gh reads the file from the command's own directory, after any cd, not the hook's;
-        # with no directory known, a relative file cannot be read as gh would read it.
-        path = _resolve_dir(cwd, query[1:])
-        if path is None:
-            return None
-        try:
-            return Path(path).read_text(encoding="utf-8")
-        except OSError:
-            return None
+        # gh reads the file from the command's own directory, after any cd, not the hook's, so it
+        # is read as a body file is: a regular file only, and none when no directory is known.
+        return _body_file(ctx, query[1:])[0]
     return query
 
 
@@ -1405,7 +1400,7 @@ def _mutation_fields(document: str) -> list[tuple[str, str]] | None:
 def judge_graphql(fields: dict[str, str], ctx: Context,
                   values: dict[str, list[str]] | None = None) -> list[Finding]:
     allowance = ctx.config["allowance"]
-    document = _graphql_document(fields, ctx.cwd)
+    document = _graphql_document(fields, ctx)
     if document is None:
         return [Finding("gh api graphql", "a GraphQL request whose document could not be read")]
     if not re.search(r"\bmutation\b", document):
@@ -1482,6 +1477,9 @@ LAUNCHER_REFUSED = ("a builder launches checks through the entrance (work.py run
 REPORT_MARKER = "tradecraft:check-report"
 REPORT_REFUSED = ("a comment carrying tradecraft:check-report, which only the entrance posts from "
                   "the run that launched the check")
+SEND_BACK_MARKER = "tradecraft:send-back"
+SEND_BACK_REFUSED = ("a comment carrying tradecraft:send-back, which only the entrance posts when it "
+                     "returns a change to its builder")
 EDIT_REFUSED = "editing or deleting a comment, which keeps a posted report as the entrance posted it"
 # Every name Python runs a script under: a versioned or windowless interpreter (`python3.12`,
 # `pythonw`, `pyw`) runs one as `python` and `py` do.
@@ -1680,7 +1678,9 @@ def _body_file(ctx: Context, name: str) -> tuple[str | None, str | None]:
     if name == "-":
         return _stdin_body(ctx)
     if _expands(name):
-        return None, BODY_EXPANDED
+        # It is the path that would expand, not the body, so the refusal names the path.
+        return None, (f"a comment body file whose path {name} holds `$` or a command substitution, which the "
+                      f"check can't resolve; write the path out: {BODY_ROUTE}")
     path = _resolve_dir(ctx.cwd, name)
     unread = (f"a comment body read from {name}, which the check could not read as a file; pass a "
               "readable file holding the body")
@@ -1721,7 +1721,7 @@ def _json_strings(text: str) -> list[str]:
 
 def _body_refusal(ctx: Context, texts=(), files=(), inputs=(), scanned=()) -> str | None:
     """Why the body a comment would post is refused, or None when the check can read it and it
-    carries no report marker.
+    carries no marker only the entrance posts.
 
     ``texts`` are bodies written in the command, ``files`` names whose text gh posts as it is
     (``-`` for standard input), ``inputs`` --input request bodies, whose JSON GitHub decodes, and
@@ -1740,7 +1740,9 @@ def _body_refusal(ctx: Context, texts=(), files=(), inputs=(), scanned=()) -> st
         if problem:
             return problem
         bodies.extend([text, *_json_strings(text)])
-    return REPORT_REFUSED if any(REPORT_MARKER in body for body in bodies) else None
+    if any(REPORT_MARKER in body for body in bodies):
+        return REPORT_REFUSED
+    return SEND_BACK_REFUSED if any(SEND_BACK_MARKER in body for body in bodies) else None
 
 
 def _field_entries(values: dict[str, list[str]]) -> list[tuple[str, str, str]]:
@@ -1767,7 +1769,11 @@ def _graphql_body_refusal(fields: dict[str, str], values: dict[str, list[str]], 
     texts, files = _field_bodies(values, skip={"query"})
     query = fields.get("query", "")
     if query.startswith("@"):
-        return _body_refusal(ctx, texts, files)
+        # A query file is sent as written, so its strings are read as an inline query's are.
+        document, problem = _body_file(ctx, query[1:])
+        if problem:
+            return problem
+        return _body_refusal(ctx, texts, files, scanned=[document, _unescaped(document)])
     # A `$` in a string, or a `$name` no field supplies, is the shell's expansion, not a variable.
     outside = GRAPHQL_STRING.sub(" ", query)
     if (SUBSTITUTION_WORD in query or any("$" in found.group(0) for found in GRAPHQL_STRING.finditer(query))

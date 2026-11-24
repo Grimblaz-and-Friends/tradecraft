@@ -83,9 +83,12 @@ def resolve_draft(work: str, comment_id: str | None, *, get=None,
         remedy = f"; {prerequisite}" if marker_producers is None else ""
         raise BindingError(f"named draft comment {comment_id} producer is not authorized{remedy}")
     claims = _classify_sources([(body, author, "issue-comment", comment_id)]).claims
+    # A holder-written draft names itself and its writer's vendor; nothing else rides on a draft.
     if (len(claims) != 1 or claims[0].name != "artifact"
-            or claims[0].attributes != {"status": "draft"}
-            or attribute_error(claims[0], {"required": {"status"}, "optional": set()}) is not None):
+            or claims[0].attributes.get("status") != "draft"
+            or claims[0].attributes.get("author", "holder") != "holder"
+            or claims[0].attributes.get("vendor", "claude") not in {"claude", "codex"}
+            or attribute_error(claims[0], {"required": {"status"}, "optional": {"author", "vendor"}}) is not None):
         raise BindingError(f"named comment {comment_id} is not a lawful artifact draft")
     return comment_id, body
 
