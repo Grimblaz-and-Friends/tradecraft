@@ -21,7 +21,7 @@ from test_handoff_stage import (  # noqa: E402,F401
     HOLDER_SESSION, claude_machine, hand_requests, holder, no_spawn, quiet_report, stored, stub,
 )
 from test_route import (  # noqa: E402
-    CLEAR, MECHANICAL, PLANNED, RULES, START, launch, post, readiness_record, route_marker, with_pull_request,
+    CLEAR, HEAD, MECHANICAL, PLANNED, RULES, START, launch, post, readiness_record, route_marker, with_pull_request,
 )
 
 SESSION = "77777777-7777-7777-7777-777777777777"
@@ -70,7 +70,12 @@ def ready_hand(tmp_path, monkeypatch, holder):
     state.floor_public = {"outcome": "ci-met", "head": state.pr["head"]["sha"]}  # The CI floor passed.
     assert run(monkeypatch, holder, state, "handoff", "--by-hand", "gemini:any-model") == 0
     [request] = hand_requests()
-    post(state, readiness_record(request["dispatch_id"]), 30)
+    # The record names each check its handoff owed, so the final pass reads nothing unnamed.
+    named = [{"stage": check["stage"], "criterion": check["criterion"], "row": check.get("row"), "dispatch": None,
+              "head": HEAD, "report": 800 + number, "relaunch_of": None}
+             for number, check in enumerate(request["handoff"]["owed_checks"])
+             if check["stage"] in ("cold-reader", "acceptance-criterion", "use", "floor")]
+    post(state, readiness_record(request["dispatch_id"], checks=named), 30)
     work._complete_readied_hand_records(state)
     return state, request
 

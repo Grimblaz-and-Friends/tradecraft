@@ -109,8 +109,11 @@ def write_hand_record(store: Path, *, work: str, vendor: str, model: str, handof
         settings_scope="implementer", vendor=vendor, model=model, effort="not recorded",
         continuity="fresh", permission_boundary="the owner's session", root=Path(tree) if tree else None,
         now=when)
+    # The holder's own command writes this, so it names the holder's session and when it handed off: the
+    # window its quiet is read over, and where its cost splits.
     request.update({"started_by": "hand", "launch_block": "none", "identity": "declared",
-                    "ran_under": HAND_RAN_UNDER, "handoff": handoff})
+                    "ran_under": HAND_RAN_UNDER, "handoff": handoff,
+                    "holder_session_id": handoff.get("holder_session_id"), "handed_off_at": when.isoformat()})
     stamp = when.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = Path(store) / f"{stamp}-stretch-hand-{dispatch_id}" / "result.md"
     output.parent.mkdir(parents=True)

@@ -194,10 +194,10 @@ CLEAR = {"behind": False, "strict": False, "conflict": False, "mergeability_know
          "merge_state": "clean", "uncertainties": []}
 
 
-def readiness_record(dispatch, *, status="ready", head=HEAD, stop=None):
+def readiness_record(dispatch, *, status="ready", head=HEAD, stop=None, checks=()):
     payload = {"schema_version": 1,
                "builder": {"vendor": "claude", "model": "m", "started_by": "launch", "usage_log": None},
-               "checks": [], "findings": [], "rows": [], "decisions": [], "refusals": [], "stop": stop}
+               "checks": list(checks), "findings": [], "rows": [], "decisions": [], "refusals": [], "stop": stop}
     return (f"<!-- tradecraft:readiness:v1 head={head} status={status} dispatch={dispatch} -->\n\n"
             f"```json\n{json.dumps(payload)}\n```\n")
 

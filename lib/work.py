@@ -6324,17 +6324,25 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         made = (Decision("floor", True, "resume", "current-head-floor-missing-or-red", _floor_detail(evaluation) or None)
                 if outcome in {"fallback", "builder-missing", "builder-red"} else
                 _cold_reading_decision(state, sha) or chain(sha))
-        if made.stage == "release-report":
+        # Each check the handoff owed that the record doesn't name is owed whatever the chain or merge reads.
+        reading = readiness_reading(state, builder_checks(state)) or {}
+        rest = _owed_unnamed(state, {"checks": reading.get("checks") or [], "rows": reading.get("rows") or []},
+                             str(reading.get("head")), _record_launch(state, str(reading.get("dispatch")))[0],
+                             use_owed=effective_policy(state, rules).use_required) if reading.get("record") else []
+        rest = rest if isinstance(rest, list) else []
+        if made.stage == "release-report" and not rest:
             # The final pass stands until the holder runs release-report, so its send-back stays open.
             return result("final-pass", False, None, "ready-reported", builder.detail, status="holder-owned")
-        if made.stage not in BUILDER_OWED_STAGES:
+        if made.stage not in BUILDER_OWED_STAGES and made.stage != "release-report" and not rest:
             return made
         # The holder is refused these on the builder route, so the ready record owed them: its final pass
         # names what the builder left, for the holder to send back.
         # In this route's own words: a version bump is a commit the builder owes, and readying reviewers is its.
-        owed = {**json.loads(builder.detail), "owed_at_ready": {
-            "stage": "builder-commit" if made.stage == "build" else made.stage, "reason": made.reason,
-            "detail": None if made.stage in {"build", "ready-reviewers"} else made.detail}}
+        chained = ([{"stage": "builder-commit" if made.stage == "build" else made.stage, "reason": made.reason,
+                     "detail": None if made.stage in {"build", "ready-reviewers"} else made.detail}]
+                   if made.stage in BUILDER_OWED_STAGES else [])
+        listed = chained + rest
+        owed = {**json.loads(builder.detail), "owed_at_ready": listed[0], "owed_list": listed}
         return result("final-pass", False, None, "owed-at-ready", json.dumps(owed, ensure_ascii=True),
                       status="holder-owned")
 
@@ -10546,7 +10554,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "declared_caps": declared_caps(f"{state.repo}#{state.issue_number}", state.record_root),
         })
         if _route(state)["name"] == "builder":
-            payload["builder_route"] = _builder_route_report(state)
+            payload["builder_route"] = _builder_route_report(state, rules)
         _emit_report(payload, state)
         return 0
     if decision.stage == "use" and decision.dispatch:
@@ -12434,7 +12442,209 @@ def readiness_reading(state: WorkState, checks: dict[str, object] | None) -> dic
             "stop": payload["stop"], "declines": [entry for entry in payload["findings"]
                                                   if entry["disposition"] == "declined"],
             "decisions": payload["decisions"], "refusals": payload["refusals"],
-            "builder": payload["builder"], "invalid": invalid}
+            "builder": payload["builder"], "checks": payload["checks"], "rows": payload["rows"],
+            "invalid": invalid}
+
+
+def _reach_flagged(state: WorkState) -> bool:
+    """Whether reach flagged anything at the head, so the builder owed a reach reading."""
+    return (state.reach or {}).get("state") not in (None, "clear", "not-due")
+
+
+def _owed_unnamed(state: WorkState, payload: dict, head: str, request: dict, *,
+                  use_owed: bool) -> list[dict] | dict:
+    """Each check the handoff owed that the record doesn't name, and on the mechanical lane each row left unread.
+
+    The owed checks come from the handoff block the builder's launch or hand record carries.
+    """
+    block = request.get("handoff") if isinstance(request.get("handoff"), dict) else None
+    owed = block.get("owed_checks") if block is not None else None
+    if not isinstance(owed, list) or not all(isinstance(check, dict) for check in owed):
+        source = "hand record's" if request.get("started_by") == "hand" else "launch's"
+        return {"status": "unknown", "reason": f"the {source} handoff block names no owed checks"}
+    named = payload.get("checks") or []
+
+    def has(stage: str, **match) -> bool:
+        return any(entry.get("stage") == stage and all(entry.get(key) == value for key, value in match.items())
+                   for entry in named)
+
+    listed = []
+    for check in owed:
+        stage = check.get("stage")
+        if stage == "acceptance-criterion":
+            row = check.get("row")
+            missing = not (has(stage, row=row) if row is not None else has(stage, criterion=check.get("criterion")))
+        elif stage == "use":
+            missing = use_owed and not has("use")
+        elif stage == "floor":
+            missing = check.get("floor_command") is not None and not has("floor")
+        elif stage == "reach":
+            missing = _reach_flagged(state) and not any(entry.get("stage") == "reach" and entry.get("report")
+                                                        for entry in named)
+        else:
+            missing = stage == "cold-reader" and not has(stage)
+        if missing:
+            listed.append({"stage": stage, "criterion": check.get("criterion"), "row": check.get("row"),
+                           "reason": "owed-unnamed"})
+    brief, lane = _affirmed_review(state)
+    if lane == ("ordinary", "mechanical") and brief is not None:
+        numbers = [number for number, _text in brief_rows.rows(brief.body)]
+        reports = (builder_checks(state) or {}).get("check_reports", [])
+        read = {entry.get("row") for entry in reports if entry.get("counts") and entry.get("head") == head
+                and entry.get("stage") == "acceptance-criterion"}
+        # Every row is owed its own reader at the record's head, whatever the builder's mapping says.
+        listed += [{"stage": "acceptance-criterion", "criterion": None, "row": number, "reason": "row-unread"}
+                   for number in numbers if number not in read]
+        listed += [{"stage": "rows", "criterion": None, "row": number, "reason": "row-unmapped"}
+                   for number in readiness.unmapped_rows(payload, numbers)]
+    return listed
+
+
+def _builder_route_owed(state: WorkState, payload: dict, head: str, request: dict, *,
+                        chain_entry: dict | None, use_owed: bool) -> list[dict] | dict:
+    """What a ready record left owed at its head: the chain's first owed stage, then each owed check it
+    doesn't name, then on the mechanical lane each unread or unmapped row. Merge readiness is the holder's.
+
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    rest = _owed_unnamed(state, payload, head, request, use_owed=use_owed)
+    if isinstance(rest, dict):
+        return rest
+    return ([{**chain_entry, "reason": chain_entry.get("reason")}] if chain_entry else []) + rest
+
+
+def _ready_records(state: WorkState) -> list[Marker]:
+    stretches = {request.get("dispatch_id") for request in _term_stretches(state)}
+    return sorted((marker for marker in state.issue_markers if marker.name == "readiness"
+                   and marker.surface == "issue-comment" and _attribute_error(marker) is None
+                   and _marker_value_error(marker) is None and marker.attributes.get("status") == "ready"
+                   and marker.attributes.get("dispatch") in stretches), key=_source_order)
+
+
+def _owed_at_ready(state: WorkState, chain_entry: dict | None, use_owed: bool) -> dict:
+    """``owed_at_ready`` at the term's first and last ready records; the chain is read at the current head
+    only, so the first record's list holds what its own record and handoff show."""
+    ready = _ready_records(state)
+    if not ready:
+        return {"first": None, "last": None}
+
+    def at(marker, chain):
+        try:
+            payload = readiness.payload(marker.body, "ready")
+        except readiness.ReadinessError as exc:
+            return {"status": "unknown", "reason": f"the ready record could not be read: {exc}"}
+        request, _path = _record_launch(state, marker.attributes["dispatch"])
+        return _builder_route_owed(state, payload, marker.attributes["head"], request, chain_entry=chain,
+                                   use_owed=use_owed)
+
+    return {"first": at(ready[0], chain_entry if len(ready) == 1 else None), "last": at(ready[-1], chain_entry)}
+
+
+def _handoff_window(request: dict) -> tuple[str | None, str | None, str | None]:
+    """The holder's session and when it handed off, from a launch's request or a hand record; else the reason."""
+    if request.get("started_by") == "hand":
+        session, start = request.get("holder_session_id"), request.get("handed_off_at")
+        if not session or not start:
+            return None, None, "the hand record names no holder session or handoff time"
+        return session, start, None
+    session = request.get("holder_session_id") or (request.get("handoff") or {}).get("holder_session_id")
+    if not session or not request.get("launched_at"):
+        return None, None, "the stretch's request names no holder session or launch time"
+    return session, request["launched_at"], None
+
+
+def _after_ready_class(request: dict) -> str:
+    """Which launch the holder may make after a ready record this bundle is, by its stage or role."""
+    handed = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
+    stage = str(request.get("stage") or "")
+    if "send_back" in handed:
+        return "send-back"
+    if "catch_up_resume" in handed:
+        return "catch-up-resume"
+    if stage == "panel" or stage.startswith("panel-") or str(request.get("role") or "").startswith("panel"):
+        return "bought-panel"
+    if stage == "source-verification" or request.get("settings_scope") == "source-verification":
+        return "source-verification"
+    return "other"
+
+
+def _holder_windows(state: WorkState, first: dict | None) -> tuple[dict, dict]:
+    """``holder_quiet`` between the handoff and the first ready record, and ``holder_after_ready`` after it."""
+    ready = _ready_records(state)
+    if first is None:
+        unknown = {"status": "unknown", "reason": "no handoff of this term"}
+        return unknown, unknown
+    session, start, why = _handoff_window(first)
+    end = ready[0].timestamp if ready else datetime.now(timezone.utc).isoformat()
+    change = (state.repo, state.issue_number)
+    quiet = (holder_transcript.handoff_quiet(session, start, end, change=change) if why is None
+             else {"status": "unknown", "reason": why})
+    if not ready:
+        return quiet, {"status": "unknown", "reason": "no ready record"}
+    store = state.record_root or records.default_record_root()
+    work = f"{state.repo}#{state.issue_number}"
+    builders = {request.get("dispatch_id") for request in _term_stretches(state)}
+    bundles = [{"dispatch": request.get("dispatch_id"), "stage": request.get("stage"), "bundle": str(path),
+                "class": _after_ready_class(request)}
+               for _order, path, request, _run in lifecycle.launch_bundles(store, work, None, after=ready[0].timestamp)
+               if (request.get("launched_by") or {}).get("dispatch_id") not in builders
+               and request.get("started_by") != "hand"]
+    transcript = (holder_transcript.launch_calls(session, ready[0].timestamp,
+                                                 datetime.now(timezone.utc).isoformat()) if why is None
+                  else {"status": "unknown", "reason": why})
+    return quiet, {"bundles": bundles, "transcript": transcript}
+
+
+DECLINE_ANSWER = re.compile(r"\A\s*declined\s*[-–—]\s*(.*?)\s*(?:;\s*\[|\Z)", re.I | re.S)
+ANSWER_LINK = re.compile(r"\[(cr-comment:v1:[^\]]+|unidentified review)\]\((https://[^)\s]+)\)")
+
+
+def _reviewer_declines(state: WorkState) -> list[dict]:
+    """Every connected reviewer's finding the pull request answers `declined`, with the reason after the dash."""
+    producers = {login.lower() for login in state.config.marker_producers}
+    reviewers = {login.lower() for login in state.config.connected_reviewers}
+    roots = {comment.get("id"): comment for comment in state.review_comments}
+    reviews = {str(review.get("id")): review for review in state.reviews}
+    declines = []
+    for reply in state.review_comments:
+        root = roots.get(reply.get("in_reply_to_id"))
+        found = DECLINE_ANSWER.match(str(reply.get("body") or ""))
+        if root is None or found is None or _author(reply) not in producers or _author(root) not in reviewers:
+            continue
+        declines.append({"kind": "inline", "reviewer": _author(root), "finding": f"thread {root.get('id')}",
+                         "reason": found.group(1), "link": reply.get("html_url")})
+    for comment in state.pr_comments:
+        found = DECLINE_ANSWER.match(str(comment.get("body") or ""))
+        link = ANSWER_LINK.search(str(comment.get("body") or ""))
+        if found is None or link is None or _author(comment) not in producers:
+            continue
+        review = reviews.get(link.group(2).rsplit("pullrequestreview-", 1)[-1])
+        whole = link.group(1) == "unidentified review"
+        declines.append({"kind": "whole-review" if whole else "body-finding",
+                         "reviewer": _author(review) if review else None,
+                         "finding": link.group(2) if whole else link.group(1),
+                         "reason": found.group(1), "link": comment.get("html_url")})
+    return declines
+
+
+def _stretch_seconds(stretches: list) -> list[dict]:
+    """Each stretch launch's elapsed seconds beside its limit; a hand-started builder's no launch measured."""
+    measured = []
+    for _order, _path, request, run in stretches:
+        if request.get("started_by") == "hand":
+            measured.append({"dispatch": request.get("dispatch_id"), "status": "not-applicable",
+                             "reason": "a builder started by hand has no launch whose length the entrance measured"})
+            continue
+        try:
+            elapsed = (datetime.fromisoformat(str((run or {}).get("completed_at")))
+                       - datetime.fromisoformat(str(request.get("launched_at")))).total_seconds()
+        except (TypeError, ValueError):
+            elapsed = None
+        measured.append({"dispatch": request.get("dispatch_id"), "elapsed_seconds": elapsed,
+                         "limit_seconds": request.get("caller_limit_seconds"),
+                         **({} if elapsed is not None else {"status": "unknown",
+                                                            "reason": "the launch has not completed"})})
+    return measured
 
 
 # The launches whose first one fixes a change's route for good; seats and readers decide nothing.
@@ -13154,7 +13364,7 @@ def _handoff_plan_reading(state: WorkState, first: tuple | None) -> dict:
     return {"reading": "differs", "reason": "altered"}
 
 
-def _builder_route_report(state: WorkState) -> dict:
+def _builder_route_report(state: WorkState, rules: dict[str, object] | None = None) -> dict:
     """The release report's ``builder_route`` from what the entrance holds; what it doesn't read is None,
     which route_report reads as unknown with a reason. Design: lib/DESIGN.md#the-builder-route"""
     work = f"{state.repo}#{state.issue_number}"
@@ -13166,6 +13376,7 @@ def _builder_route_report(state: WorkState) -> dict:
               for _order, _path, request, _run in stretches]
     first = next(((row[1], row[2]) for row, (_request, block) in zip(stretches, blocks)
                   if not block.get("resume_of")), None)
+    hand = next((request for request, _block in reversed(blocks) if request.get("started_by") == "hand"), None)
     checks = builder_checks(state)
     reading = readiness_reading(state, checks)
     marks = _send_back_markers(state)
@@ -13191,10 +13402,16 @@ def _builder_route_report(state: WorkState) -> dict:
         usage = change_cost.default_holder_usage(state.repo, state.issue_number)
         replies = [reply for row in change_cost._read_jsonl(usage)
                    for reply in (row.get("holder") or {}).get("replies") or ()]
+        # The holder's cost splits at the handoff: a launch's start, or the hand record's handoff time.
+        split = (first[1].get("handed_off_at") if first[1].get("started_by") == "hand"
+                 else first[1].get("launched_at")) if first else None
+        usage_log = ((reading or {}).get("builder") or {}).get("usage_log") if hand is not None else None
         cost = change_cost.route_split(
-            holder_replies=replies, start=datetime.fromisoformat(first[1]["launched_at"]) if first else None,
+            holder_replies=replies, start=datetime.fromisoformat(str(split).replace("Z", "+00:00")) if split else None,
             builder_bundles=[row for row in stretches if row[2].get("started_by") != "hand"],
-            seat_bundles=lifecycle.launch_bundles(store, work, None))
+            seat_bundles=lifecycle.launch_bundles(store, work, None),
+            hand_usage_log=Path(usage_log) if isinstance(usage_log, str) and Path(usage_log).is_file() else None,
+            hand_vendor=str((hand.get("requested") or {}).get("vendor") or "").lower() if hand else None)
         if not usage.is_file():
             # No closed holder transcript is not a holder that spent nothing.
             cost.update({name: {"status": "unknown", "reason": f"no holder usage record: {usage}"}
@@ -13207,7 +13424,6 @@ def _builder_route_report(state: WorkState) -> dict:
         comparison = change_cost.route_comparison(work)
     except (OSError, ValueError, change_cost.CostError) as exc:
         comparison = {"status": "unknown", "reason": str(exc)}
-    hand = next((request for request, _block in reversed(blocks) if request.get("started_by") == "hand"), None)
     records_by_launch = {}
     for marker in sorted((marker for marker in state.issue_markers if marker.name == "readiness"
                           and marker.surface == "issue-comment" and _attribute_error(marker) is None
@@ -13222,8 +13438,19 @@ def _builder_route_report(state: WorkState) -> dict:
             reported = []
         launches.append({"dispatch": request.get("dispatch_id"), "reported": reported, "logged": [
             entry for entry in (run or {}).get("refusals") or () if isinstance(entry, dict)]})
+    chain_entry, use_owed = None, True
+    if rules is not None:
+        made = decide(state, rules)
+        if made.reason == "owed-at-ready":
+            chain_entry = json.loads(made.detail)["owed_at_ready"]
+        use_owed = effective_policy(state, rules).use_required
+    quiet, after_ready = _holder_windows(state, first[1] if first else None)
     return route_report.builder_route(
         route=_route(state), readiness=reading,
+        owed_at_ready=_owed_at_ready(state, chain_entry, use_owed), holder_quiet=quiet,
+        holder_after_ready=after_ready, reviewer_declines=_reviewer_declines(state),
+        stretch_seconds=_stretch_seconds(stretches),
+        lane=route_report.MECHANICAL_LANE if _lane == ("ordinary", "mechanical") else None,
         send_back={"count": len(_send_back_launches(state)), "marker": marks[-1].source_id if marks else None,
                    "second_ready_head": max(later, key=_source_order).attributes["head"] if later else None},
         catch_up_resumes=[{"dispatch": request.get("dispatch_id"), "resume_of": block.get("resume_of"),
@@ -13601,7 +13828,13 @@ def _run(
         + (f"; {recommendation.detail}" if recommendation.reason.startswith("governing-record-")
            and recommendation.detail else "")
         # A named run at the final pass says what the ready record left owed, as the read-only decision does.
-        + ("; owed at ready: {stage} ({reason})".format(**json.loads(recommendation.detail)["owed_at_ready"])
+        + ("; owed at ready: " + "; ".join(
+            "{stage}{name} ({reason})".format(
+                stage=entry.get("stage"), reason=entry.get("reason"),
+                name=f" {entry['criterion']}" if entry.get("criterion") else
+                f" row {entry['row']}" if entry.get("row") is not None else "")
+            for entry in json.loads(recommendation.detail).get("owed_list")
+            or [json.loads(recommendation.detail)["owed_at_ready"]])
            if recommendation.reason == "owed-at-ready" else ""),
     ))
     grants = validated_grants(state, getattr(args, "grant", None), decision.stage, decision.continuity)
