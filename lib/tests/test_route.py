@@ -476,6 +476,10 @@ def test_a_change_in_flight_says_how_its_first_launch_took_its_route(tmp_path):
     post(late, route_marker("relay"), 30)
     assert [(reading(state)["name"], reading(state)["chosen"]) for state in (default, asked, late)] == [
         ("builder", "default"), ("relay", "owner-asked"), ("builder", "default")]
+    # Where the handoff recorded how the route was chosen, that record is read rather than the issue's asks.
+    recorded = fixture(tmp_path / "recorded", BRIEF)
+    launch(recorded, "stretch", 5, handoff={"route_chosen": "owner-asked"})
+    assert reading(recorded)["chosen"] == "owner-asked"
     payloads = [work.route_report.builder_route(route=reading(state)) for state in (default, asked)]
     readings = [{entry["check"]: entry["reading"] for entry in payload["row_checks"]} for payload in payloads]
     assert [(entry["7.1"], entry["7.2"]) for entry in readings] == [

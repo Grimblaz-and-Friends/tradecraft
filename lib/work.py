@@ -12857,7 +12857,9 @@ def _route(state: WorkState) -> dict[str, object]:
                                         set(ROUTE_STAGES))
         if rows:
             name, reason = ROUTE_STAGES[rows[0][2]["stage"]], "in-flight"
-            chosen = _route_chosen(asks, rows[0][2], name)
+            # A handoff records how its route was chosen; a launch with no such record has it inferred.
+            chosen = ((rows[0][2].get("handoff") or {}).get("route_chosen") if isinstance(
+                rows[0][2].get("handoff"), dict) else None) or _route_chosen(asks, rows[0][2], name)
     if name is None:
         name, reason = (ask.attributes["route"], "owner-asked") if ask is not None else ("builder", "default")
     overruled = ({"asked": ask.attributes["route"], "marker": ask_id}
@@ -13045,7 +13047,7 @@ def _handoff_block(state: WorkState, args: argparse.Namespace, composed: bytes, 
             "pull_request": state.pr.get("number") if state.pr else None,
             "timeout_seconds": limit, "override_reason": args.budget_override_reason,
             "floor_command": args.floor_command, "holder_root": str(common["holder_root"]),
-            "plugin_root": str(common["plugin_root"])}
+            "plugin_root": str(common["plugin_root"]), "route_chosen": _route(state)["chosen"]}
 
 
 def _handoff_launch_plan(state: WorkState, by_hand: str | None, *, safe: bool = False) -> dict[str, object]:
@@ -13757,7 +13759,10 @@ def _builder_route_report(state: WorkState, rules: dict[str, object] | None = No
         # Said beside the figure, so no reader takes it for the plan's cost alone.
         cost["holder_before"]["window"] = "the holder session's whole history before the handoff, with no lower bound"
     try:
-        comparison = change_cost.route_comparison(work)
+        # Counted from the switch file's start, so a change first handed off before it isn't entered.
+        opened = next(iter(lifecycle.launch_bundles(store, work, {"stretch"})), None)
+        comparison = change_cost.route_comparison(work, first_launch=opened and (
+            opened[2].get("handed_off_at") if opened[2].get("started_by") == "hand" else opened[2].get("launched_at")))
     except (OSError, ValueError, change_cost.CostError) as exc:
         comparison = {"status": "unknown", "reason": str(exc)}
     records_by_launch = {}

@@ -2441,8 +2441,20 @@ def test_route_comparison_is_due_once_on_the_counted_work(tmp_path):
     assert len(ledger.read_bytes().splitlines()) == 5
 
 
+def test_route_comparison_counts_only_work_first_launched_from_its_since(tmp_path):
+    comparison_file(tmp_path, {"issue": "acme/lab#7", "count": 2, "since": "2026-11-01T00:00:00Z"})
+    before = cost.route_comparison("acme/widget#1", home=tmp_path, first_launch="2026-10-31T23:59:00+00:00")
+    unknown_launch = cost.route_comparison("acme/widget#2", home=tmp_path)
+    assert before["status"] == unknown_launch["status"] == "not-counted" and before["reason"] and unknown_launch["reason"]
+    assert not (tmp_path / ".tradecraft" / "route-comparison").exists()
+    after = cost.route_comparison("acme/widget#3", home=tmp_path,
+                                  first_launch=datetime(2026, 11, 2, tzinfo=timezone.utc))
+    assert after == {"ordinal": 1, "count": 2, "issue": "acme/lab#7", "due": False}
+
+
 @pytest.mark.parametrize("value", [b"{not json", [], {"issue": "acme/lab#7"}, {"issue": "", "count": 5},
-                                   {"issue": "acme/lab#7", "count": 0}, {"issue": "acme/lab#7", "count": True}])
+                                   {"issue": "acme/lab#7", "count": 0}, {"issue": "acme/lab#7", "count": True},
+                                   {"issue": "acme/lab#7", "count": 1, "since": "2026-11-01"}])
 def test_a_malformed_route_comparison_file_is_unknown_and_writes_nothing(tmp_path, value):
     comparison_file(tmp_path, value)
     answer = cost.route_comparison("acme/widget#1", home=tmp_path)

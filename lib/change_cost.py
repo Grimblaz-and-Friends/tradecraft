@@ -2143,12 +2143,15 @@ def route_split(*, holder_replies: list[dict], start: datetime | None, builder_b
             "leaves_out": "seats the holder launched, which the cost report prices"}
 
 
-def route_comparison(work: str, *, home: Path | None = None) -> dict[str, object] | None:
+def route_comparison(work: str, *, home: Path | None = None,
+                     first_launch: datetime | str | None = None) -> dict[str, object] | None:
     """Where this work falls in the owner's route comparison; None, writing nothing, when none is set up.
 
     ``<home>/.tradecraft/route-comparison.json`` (``{"issue": "owner/repo#n", "count": 5}``) switches it on;
     each work is entered once in ``route-comparison/ledger.jsonl`` beside it, and the comparison is
-    ``due`` only on the call that enters the count-th work, so a re-run never reports it twice.
+    ``due`` only on the call that enters the count-th work, so a re-run never reports it twice. An
+    optional ``"since"`` time starts the count: a work not yet entered whose ``first_launch`` (its first
+    builder launch or handoff) is earlier or unknown is answered ``not-counted`` and not entered.
     """
     if not isinstance(work, str) or not work:
         raise CostError("route comparison needs a work identifier")
@@ -2167,6 +2170,9 @@ def route_comparison(work: str, *, home: Path | None = None) -> dict[str, object
         return unknown(f"the route comparison file names no issue: {switch}")
     if type(count) is not int or count < 1:
         return unknown(f"the route comparison file's count is not a positive whole number: {switch}")
+    since = value.get("since")
+    if since is not None and _timestamp(since) is None:
+        return unknown(f"the route comparison file's since is not a time with its zone: {switch}")
     ledger = base / "route-comparison" / "ledger.jsonl"
     try:
         rows = _read_jsonl(ledger)
@@ -2174,6 +2180,13 @@ def route_comparison(work: str, *, home: Path | None = None) -> dict[str, object
         return unknown(f"the route comparison ledger is unreadable: {exc}")
     works = list(dict.fromkeys(row.get("work") for row in rows if isinstance(row.get("work"), str)))
     entered = work not in works
+    if entered and since is not None:
+        launched = _timestamp(first_launch.isoformat() if isinstance(first_launch, datetime) else first_launch)
+        # A change already under way when counting began would compare a route it did not wholly take.
+        if launched is None:
+            return {"status": "not-counted", "reason": f"its first launch is unknown and counting starts at {since}"}
+        if launched < _timestamp(since):
+            return {"status": "not-counted", "reason": f"its first launch {launched.isoformat()} is before {since}"}
     if entered:
         _append_jsonl(ledger, {"work": work, "entered_at": datetime.now(timezone.utc).isoformat()})
         works.append(work)
