@@ -240,3 +240,14 @@ def test_1011_a_hand_started_builder_runs_proof_in_builder_mode_until_its_record
     monkeypatch.setenv(launch_tree.DISPATCH_VARIABLE, written["dispatch_id"])
     with pytest.raises(work.BuilderRefused, match="builder-identity-unproved"):
         work._enter_builder_mode(args)
+
+
+@pytest.mark.parametrize("holder", ["h", None])
+def test_the_hand_record_names_the_holder_session_and_when_it_handed_off(tmp_path, holder):
+    written = hand(tmp_path, holder_session_id=holder)
+    request = json.loads(written["request"].read_bytes())
+    assert (request["holder_session_id"], request["handed_off_at"]) == (holder, NOW.isoformat())
+    # The holder's quiet is read from the handoff on, so a record naming no session has no window.
+    expected = (("h", NOW.isoformat(), None) if holder else
+                (None, None, "the hand record names no holder session or handoff time"))
+    assert work._handoff_window(request) == expected

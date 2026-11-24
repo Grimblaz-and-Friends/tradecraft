@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -37,7 +39,7 @@ if {fail!r}:
 metadata = json.loads(Path(option("--lifecycle-input")).read_bytes())
 dispatch_id = uuid.uuid4().hex
 request = records.request_record(
-    dispatch_id=dispatch_id, work=option("--work"), stage="stretch", settings_source="stub launcher",
+    dispatch_id=dispatch_id, work=option("--work"), stage="stretch", settings_source=option("--settings-source"),
     settings_scope="implementer", vendor="claude", model="stub", effort="stub",
     continuity="resume" if "--resume" in arguments else "fresh", permission_boundary="stub",
     root=Path(option("--root")), requested_session_id=option("--resume") if "--resume" in arguments else None)
@@ -388,3 +390,79 @@ def test_a_handoff_preview_prints_the_text_and_makes_nothing(
     store = work.records.default_record_root()
     assert not store.exists() or not list(store.rglob("*.request.json"))
     assert not (store / "handoff-locks").exists()
+
+
+def printed_report(out, status):
+    """The entrance's one-line JSON report of STATUS among what a run printed."""
+    for line in out.splitlines():
+        try:
+            report = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(report, dict) and report.get("status") == status:
+            return report
+    raise AssertionError(f"no {status} report in {out!r}")
+
+
+def test_the_preview_is_the_text_the_handoff_then_hands_and_the_launch_plan_the_decision_names(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
+    state = stored(tmp_path, *PLANNED)
+    due = work.decide(state, RULES)
+    assert due.reason == "handoff-due"
+    assert run(monkeypatch, holder, state, "handoff", "--preview") == 0
+    report, preview = capsys.readouterr().out.split("work: handoff text preview follows\n", 1)
+    plan = printed_report(report, "preview")["launch_plan"]
+    assert plan["started_by"] == "hand"
+    assert run(monkeypatch, holder, state) == 0
+    pasted = capsys.readouterr().out.split("work: handoff text for the owner to paste follows\n", 1)[1]
+    [request] = hand_requests()
+    block = request["handoff"]
+    assert (request["requested"]["vendor"], request["requested"]["model"]) == (plan["vendor"], plan["model"])
+    # Whole words only: the dispatch variable's own name ends in DISPATCH.
+    filled = re.sub(r"\b(BRANCH|TREE|DISPATCH)\b",
+                    lambda found: block[found.group(1).lower()], preview)
+    assert filled.rstrip("\n") == pasted.rstrip("\n") and block["dispatch"] in filled
+    # The read-only entrance names the same plan before anything is handed off.
+    assert due.launch_settings == plan
+
+
+def test_a_launched_stretch_records_the_source_that_chose_its_vendor(
+        tmp_path, monkeypatch, holder, quiet_report, stub, capsys):
+    claude_machine()
+    stub()
+    state = stored(tmp_path, *PLANNED)
+    _vendor, machine_source = work.dispatch_implementer.read_machine_vendor(None)
+    assert run(monkeypatch, holder, state, "handoff", "--preview") == 0
+    plan = printed_report(capsys.readouterr().out, "preview")["launch_plan"]
+    assert (plan["started_by"], plan["vendor"], plan["sources"]["vendor"]) == ("launch", "claude", machine_source)
+    assert run(monkeypatch, holder, state) == 0
+    [pointer] = [json.loads(path.read_bytes()) for path in
+                 work.launch_tree.pointer_directory(work.records.default_record_root()).glob("*.json")]
+    request = json.loads(Path(pointer["request"]).read_bytes())
+    assert request["settings_source"] == machine_source
+    assert request["settings_source"] not in ("handoff default", "work entrance handoff route")
+
+
+def test_a_resume_with_no_limit_prints_its_window_from_the_stopped_launchs_limit(
+        tmp_path, monkeypatch, holder, quiet_report, stub, capsys):
+    from test_after_ready import SESSION
+    from test_route import START, with_pull_request
+    claude_machine()
+    stub()
+    state = with_pull_request(stored(tmp_path, *PLANNED))
+    # A launched stretch under a 1200-second limit that ended with no record, its session observed.
+    stopped = launch(state, "stretch", 5, root=str(tmp_path / "implementation"), lineage_branch="tradecraft/5-fixture",
+                     holder_session_id=HOLDER_SESSION, caller_limit_seconds=1200.0)
+    run_path = work.records.sidecar(state.record_root / f"stretch-{stopped}" / "result.md", ".run.json")
+    run_path.unlink()
+    work.records.write_json(run_path, {
+        "schema_version": work.records.SCHEMA_VERSION, "dispatch_id": stopped, "outcome": "success",
+        "actual_vendor": "claude", "attempts": [{"observed": {"session_id": SESSION}}],
+        "completed_at": (START + timedelta(minutes=6)).isoformat()})
+    capsys.readouterr()
+    assert run(monkeypatch, holder, state, "handoff", "--resume-reason", "carry on") == 0
+    windows = [json.loads(line.split("work: window ", 1)[1]) for line in capsys.readouterr().out.splitlines()
+               if line.startswith("work: window ")]
+    # The first window assumed the stretch default; the second is the one this resume launches under.
+    assert [(window["limit_seconds"], window["limit_source"]) for window in windows] == [
+        (work.DEFAULT_STRETCH_TIMEOUT_SECONDS, "default"), (1200, "default")]

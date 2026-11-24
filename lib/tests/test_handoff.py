@@ -207,7 +207,7 @@ def test_1011_use_line_says_the_entrance_decides_use_at_the_builders_head():
     assert "Use session job" not in checks_section(compose(use_owed=False))
 
 
-def test_1011_reach_is_listed_before_ready_reviewers_and_proof():
+def test_reach_is_listed_before_ready_reviewers_and_proof():
     for kwargs in ({}, {"floor_command": FLOOR}):
         stages = [check["stage"] for check in handoff.owed_checks(
             criteria=["AC1"], use_owed=True, floor_command=kwargs.get("floor_command"))]

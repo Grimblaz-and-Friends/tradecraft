@@ -56,6 +56,8 @@ CLEAR = {"behind": False, "strict": False, "conflict": False, "mergeability_know
          "merge_state": "clean", "uncertainties": []}
 USE_RETURN = "The job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
 SAME_VENDOR = "owner-selected-claude-implementer"
+# The holder's session a handoff records, in a stretch's request or a hand record; no transcript of it exists.
+HOLDER_SESSION = "fixture-holder-session"
 
 SCENARIOS = {
     "handoff-due": "an affirmed brief and a settled plan, nothing launched",
@@ -120,6 +122,9 @@ class Fixture:
         self.children = []
         self.cold_reading_clean = False
         self.reports = []
+        # The pull request's inline review comments and the reviewers configured to post them.
+        self.review_comments = []
+        self.connected_reviewers = frozenset()
         for text in ((MECHANICAL_BRIEF,) if mechanical else (BRIEF, DRAFT, SETTLED, HOLDER_READING)):
             self.post(text)
 
@@ -141,7 +146,9 @@ class Fixture:
         state = work.WorkState(REPO, ISSUE, {"number": ISSUE, "state": "open", "body": "", "labels": [],
                                              "user": {"login": PRODUCER}},
                                issue_comments=[dict(comment) for comment in self.comments], pr=self.pr,
-                               config=work.WorkConfig(marker_producers=frozenset({PRODUCER})),
+                               review_comments=[dict(comment) for comment in self.review_comments],
+                               config=work.WorkConfig(marker_producers=frozenset({PRODUCER}),
+                                                      connected_reviewers=self.connected_reviewers),
                                record_root=self.store)
         state.synchronization = self.synchronization
         state.version_obligation = work._assess_version(state, RULES, "fixture change-proof policy", None)
@@ -149,13 +156,13 @@ class Fixture:
 
     # --- launch records, each written by its launcher's own writers ---------------------------------
 
-    def _request(self, stage: str, minutes: int, root=None) -> tuple[str, Path, dict]:
+    def _request(self, stage: str, minutes: int, root=None, holder_session=None) -> tuple[str, Path, dict]:
         dispatch_id = uuid.uuid4().hex
         request = self.records.request_record(
             dispatch_id=dispatch_id, work=WORK, stage=stage, settings_source="route fixture",
             settings_scope="implementer", vendor="claude", model="fixture", effort="fixture",
             continuity="fresh", permission_boundary="route fixture", root=root,
-            now=START + timedelta(minutes=minutes))
+            now=START + timedelta(minutes=minutes), holder_session_id=holder_session)
         output = self.store / f"{stage}-{dispatch_id}" / "result.md"
         output.parent.mkdir(parents=True)
         return dispatch_id, output, request
@@ -200,17 +207,27 @@ class Fixture:
                                        root=self.base / "implementation")
         return dispatch_id
 
-    def hand_stretch(self, tree: Path) -> dict:
-        """A hand-started record whose handoff block is the one `run handoff --by-hand` writes, digest included."""
+    def hand_stretch(self, tree: Path, *, owed: bool = False) -> dict:
+        """A hand-started record whose handoff block is the one `run handoff --by-hand` writes, digest and the
+        holder's session included.
+
+        The scenarios' stand-in builder launches no cold reader or criterion reader, so its block leaves out the
+        owed checks unless ``owed`` asks for them, as a release report reading what a record left owed does.
+        """
+        work = self.work
         hand = {"tree": str(tree), "branch": "tradecraft/5-fixture", "store": str(self.store),
                 "dispatch": uuid.uuid4().hex}
-        text = self.work.compose_handoff_for(self.state(), branch=hand["branch"], holder_root=self.holder,
-                                             plugin_root=LIB.parent, notify=None, floor_command=FLOOR, hand=hand)
-        return self.launch_tree.write_hand_record(
-            self.store, work=WORK, vendor="claude", model="fixture", now=START + timedelta(minutes=5), handoff={
-                **hand, "floor_command": FLOOR, "notify": None, "holder_root": str(self.holder),
-                "plugin_root": str(LIB.parent), "pull_request": (self.pr or {}).get("number"),
-                "composed_sha256": hashlib.sha256(text).hexdigest()})
+        state = self.state()
+        common = {"branch": hand["branch"], "holder_root": self.holder, "plugin_root": LIB.parent, "notify": None,
+                  "floor_command": FLOOR}
+        text = work.compose_handoff_for(state, **common, hand=hand)
+        args = argparse.Namespace(floor_command=FLOOR, dispatch=None, notify=None, budget_override_reason=None)
+        block = work._handoff_block(state, args, text, work.DEFAULT_STRETCH_TIMEOUT_SECONDS, common)
+        block.update(hand, holder_session_id=HOLDER_SESSION)
+        if not owed:
+            del block["owed_checks"]
+        return self.launch_tree.write_hand_record(self.store, work=WORK, vendor="claude", model="fixture",
+                                                  now=START + timedelta(minutes=5), handoff=block)
 
     def source(self) -> tuple[Path, str]:
         """The change's built source: one committed job file, whose commit is the pull request's head."""
@@ -317,11 +334,11 @@ def unlisted_builder_reason(report: dict) -> str | None:
     return ended.get("unlisted_builder_reason") if isinstance(ended, dict) else None
 
 
-def ready_at_head(fixture: Fixture, synchronization: dict, live=lambda head: None) -> object:
-    """``live`` runs while the hand-started builder is live, as its proof would."""
+def ready_at_head(fixture: Fixture, synchronization: dict, live=lambda head: None, *, owed: bool = False) -> object:
+    """``live`` runs while the hand-started builder is live, as its proof would; ``owed`` as in ``hand_stretch``."""
     source, head = fixture.source()
     fixture.pull_request(head, synchronization)
-    hand = fixture.hand_stretch(source)
+    hand = fixture.hand_stretch(source, owed=owed)
     builder = hand["dispatch_id"]
     fixture.cold_reading_clean = True
     report, dispatch = fixture.use_report(fixture.state(), source, builder)
@@ -362,7 +379,7 @@ def ready_launched(fixture: Fixture) -> object:
     brief, _artifact, comment, _checks = work._handoff_inputs(state, FLOOR)
     text = work.compose_handoff_for(state, branch="tradecraft/5-fixture", holder_root=root, plugin_root=LIB.parent,
                                     notify=None, floor_command=FLOOR)
-    builder, output, request = fixture._request("stretch", 5, root=root)
+    builder, output, request = fixture._request("stretch", 5, root=root, holder_session=HOLDER_SESSION)
     request.update(revision_before=base, lineage_branch="tradecraft/5-fixture", handoff={
         "brief_comment": brief.source_id, "artifact_comment": comment, "floor_command": FLOOR, "notify": None,
         "holder_root": str(root), "plugin_root": str(LIB.parent), "pull_request": 7, "holder_written": False})

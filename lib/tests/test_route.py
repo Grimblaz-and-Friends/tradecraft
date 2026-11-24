@@ -58,7 +58,7 @@ def reading(state):
     return work._route(state)
 
 
-def test_1011_nothing_launched_reads_the_builder_by_default(tmp_path):
+def test_nothing_launched_reads_the_builder_by_default(tmp_path):
     assert reading(fixture(tmp_path, BRIEF)) == {
         "name": "builder", "reason": "default", "marker": None, "overruled": None}
 
@@ -347,6 +347,14 @@ def test_1011_the_relays_launches_are_refused_on_the_builder_route(tmp_path, mon
     assert work._route(stopped)["name"] == "builder"
     code, message = named(tmp_path, monkeypatch, stopped, stage)
     assert code == "route-is-builder" and "route=relay" not in message and "the in-flight rule fixes it" in message
+
+
+def test_a_default_change_is_refused_a_build_and_told_the_relay_marker(tmp_path, monkeypatch, stored):
+    # A planned lane with no word from the owner: the builder route by default, so the relay's build is refused.
+    state = stored(CONNECTED)
+    assert work._route(state) == {"name": "builder", "reason": "default", "marker": None, "overruled": None}
+    code, message = named(tmp_path, monkeypatch, state, "build")
+    assert code == "route-is-builder" and "<!-- tradecraft:route:v1 route=relay -->" in message
 
 
 @pytest.mark.parametrize("reason", ["owner-asked", "in-flight", "cloud"])

@@ -6102,6 +6102,8 @@ BUILDER_MODE_REASONS = frozenset({
     "required-gate-evaluation-stale", "latest-gate-evaluation-failed", "latest-gate-evaluation-not-successful",
     "merge-verdict-unknown", "merge-blocked-required-gate", "merge-blocked-unattributed",
     "merge-blocked-unresolved-review-threads",
+    # A brief that vanished under a running builder: it stops, since nothing affirms the change it carries.
+    "affirmed-brief-marker-absent",
 })
 # Every unlisted reason this process returned a builder; the test suite fails on any.
 UNLISTED_BUILDER_REASONS: set[str] = set()
@@ -6387,7 +6389,9 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
                      "detail": None if made.stage in {"build", "ready-reviewers"} else made.detail}]
                    if made.stage in BUILDER_OWED_STAGES else [])
         listed = chained + rest
-        owed = {**json.loads(builder.detail), "owed_at_ready": listed[0], "owed_list": listed}
+        # `owed_chain` is the chain's own stage alone, so a reader adding the unnamed checks counts each once.
+        owed = {**json.loads(builder.detail), "owed_at_ready": listed[0], "owed_list": listed,
+                "owed_chain": chained[0] if chained else None}
         return result("final-pass", False, None, "owed-at-ready", json.dumps(owed, ensure_ascii=True),
                       status="holder-owned")
 
@@ -8567,6 +8571,9 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
                  recovery_session: str | None = None,
                  resolve_comparison: bool = True) -> dict[str, object] | None:
     """Plan a recipient using only reads; execution still proves its preconditions."""
+    if decision.stage == "handoff" and decision.reason.split(";", 1)[0] == "handoff-due":
+        # The holder sees the builder's vendor, model and effort, with their sources, before it hands off.
+        return _handoff_launch_plan(state, None, safe=True)
     implementer = decision.stage in {"artifact", "build", "floor", "review-disposition"}
     judging = decision.stage in {"cold-seat", "use", "cold-reader"}
     if not (implementer or judging) or (not decision.dispatch and decision.stage != "use"):
@@ -12616,7 +12623,12 @@ def _owed_at_ready(state: WorkState, chain_entry: dict | None, use_owed: bool) -
         return _builder_route_owed(state, payload, marker.attributes["head"], request, chain_entry=chain,
                                    use_owed=use_owed)
 
-    return {"first": at(ready[0], chain_entry if len(ready) == 1 else None), "last": at(ready[-1], chain_entry)}
+    owed = {"first": at(ready[0], chain_entry if len(ready) == 1 else None), "last": at(ready[-1], chain_entry)}
+    if len(ready) > 1:
+        # Said, not left empty: the first record's list holds its unnamed checks and rows, never a chain stage.
+        owed["first_chain"] = {"status": "not-read", "reason": "the chain is read at the current head only, so "
+                               "the stage it stopped at for the first ready record isn't read"}
+    return owed
 
 
 def _handoff_window(request: dict) -> tuple[str | None, str | None, str | None]:
@@ -13623,7 +13635,7 @@ def _builder_route_report(state: WorkState, rules: dict[str, object] | None = No
     if rules is not None:
         made = decide(state, rules)
         if made.reason == "owed-at-ready":
-            chain_entry = json.loads(made.detail)["owed_at_ready"]
+            chain_entry = json.loads(made.detail).get("owed_chain")
         use_owed = effective_policy(state, rules).use_required
     quiet, after_ready = _holder_windows(state, first[1] if first else None)
     return route_report.builder_route(

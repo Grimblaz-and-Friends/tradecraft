@@ -20,7 +20,7 @@ sys.path.insert(0, str(LIB / "tests"))
 
 import work  # noqa: E402
 from test_route import (  # noqa: E402
-    CONNECTED, HEAD, MECHANICAL, PRODUCER, fixture, launch, with_pull_request,
+    CONNECTED, HEAD, MECHANICAL, PRODUCER, RULES, fixture, launch, post, readiness_record, with_pull_request,
 )
 from test_readiness_reading import CompareGitHub, record  # noqa: E402
 
@@ -202,3 +202,71 @@ def test_a_launched_builders_model_is_observed_in_its_log_and_a_differing_declar
         "observed", "readable", "claude-observed", None)
     differs = work._readiness_vendor_model(builder_payload("m"), request, run_path)
     assert differs["source"] == "observed" and differs["declared_differs"] == {"vendor": "claude", "model": "m"}
+
+
+def row_reports(rows, head=HEAD):
+    """The check accounting as the entrance reads it: one counting row reader's report per row, at HEAD."""
+    return {"check_dispatches": [], "quotations": [], "check_reports": [
+        {"comment": 500 + row, "dispatch": "e" * 32, "counts": True, "invalid": [], "builder": "d" * 32,
+         "stage": "acceptance-criterion", "head": head, "criterion": None, "row": row, "outcome": "success",
+         "findings": []} for row in rows]}
+
+
+def mapped(*rows):
+    return [{"row": row, "carried_by": "test", "where": f"lib/tests/test_row_{row}.py"} for row in rows]
+
+
+def test_a_mechanical_record_owes_each_unread_row_and_each_row_it_maps_to_nothing(tmp_path, monkeypatch):
+    state = fixture(tmp_path, ROWS)
+    request = {"handoff": {"owed_checks": []}}
+    monkeypatch.setattr(work, "builder_checks", lambda _state: None)
+    listed = work._owed_unnamed(state, {"checks": [], "rows": mapped(1, 2, 4, 5, 6, 7)}, HEAD, request,
+                                use_owed=False)
+    assert [(entry["row"], entry["reason"]) for entry in listed if entry["reason"] == "row-unmapped"] == [
+        (3, "row-unmapped")]
+    assert [entry["row"] for entry in listed if entry["reason"] == "row-unread"] == list(range(1, 8))
+    # A report at another head reads no row at the record's.
+    monkeypatch.setattr(work, "builder_checks", lambda _state: row_reports(range(1, 8), head="c" * 40))
+    listed = work._owed_unnamed(state, {"checks": [], "rows": mapped(*range(1, 8))}, HEAD, request, use_owed=False)
+    assert [entry["row"] for entry in listed if entry["reason"] == "row-unread"] == list(range(1, 8))
+    monkeypatch.setattr(work, "builder_checks", lambda _state: row_reports(range(1, 8)))
+    assert work._owed_unnamed(state, {"checks": [], "rows": mapped(*range(1, 8))}, HEAD, request,
+                              use_owed=False) == []
+
+
+@pytest.mark.parametrize("merge", [
+    {"reason": None, "detail": "", "ready": True},
+    {"reason": "merge-blocked-required-gate", "detail": "the required gate is red", "ready": False},
+])
+def test_the_owed_list_at_ready_is_the_same_whether_the_merge_is_clean_or_blocked(tmp_path, monkeypatch, merge):
+    state = with_pull_request(fixture(tmp_path, MECHANICAL))  # A lane with no rows, so only the owed check is owed.
+    state.pr["draft"] = False
+    builder = launch(state, "stretch", 5, handoff={"owed_checks": [
+        {"stage": "cold-reader", "criterion": None, "row": None}]})
+    post(state, readiness_record(builder), 30)
+    # The floor, the holder's proof and the gate stand clear, so the chain reaches GitHub's merge reading.
+    proof = work._current_marker
+    monkeypatch.setattr(work, "_current_marker",
+                        lambda s, name, **k: name in ("floor", "proof") or proof(s, name, **k))
+    monkeypatch.setattr(work, "_release_gate_status", lambda *_a: {"verdict": "none", "reason": "none",
+                                                                   "head": None, "requirement_known": True})
+    asked = []
+    monkeypatch.setattr(work, "_merge_readiness", lambda *_a: asked.append(merge) or dict(merge))
+    made = work.decide(state, RULES)
+    assert (made.stage, made.reason) == ("final-pass", "owed-at-ready"), made.detail
+    assert json.loads(made.detail)["owed_list"] == [
+        {"stage": "cold-reader", "criterion": None, "row": None, "reason": "owed-unnamed"}]
+    assert asked, "the chain never read the merge, so the case proves nothing"
+
+
+def test_a_launched_stretchs_window_opens_at_its_launch_under_the_holders_session():
+    request = work.records.request_record(
+        dispatch_id="d" * 32, work="o/r#5", stage="stretch", settings_source="fixture", settings_scope="implementer",
+        vendor="claude", model="m", effort="e", continuity="fresh", permission_boundary="fixture", root=None,
+        holder_session_id="holder")
+    assert work._handoff_window(request) == ("holder", request["launched_at"], None)
+    unnamed = work.records.request_record(
+        dispatch_id="d" * 32, work="o/r#5", stage="stretch", settings_source="fixture", settings_scope="implementer",
+        vendor="claude", model="m", effort="e", continuity="fresh", permission_boundary="fixture", root=None)
+    assert work._handoff_window(unnamed) == (
+        None, None, "the stretch's request names no holder session or launch time")

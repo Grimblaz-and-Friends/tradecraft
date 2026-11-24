@@ -169,6 +169,7 @@ ANSWERS = {
     "merge-verdict-unknown": "read-back",
     "merge-blocked-required-gate": "read-back",
     "merge-blocked-unattributed": "read-back",
+    "affirmed-brief-marker-absent": "readiness-record",
 }
 
 
