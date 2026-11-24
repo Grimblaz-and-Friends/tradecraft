@@ -58,9 +58,9 @@ def reading(state):
     return work._route(state)
 
 
-def test_1011_nothing_launched_reads_todays_route_by_default(tmp_path):
+def test_1011_nothing_launched_reads_the_builder_by_default(tmp_path):
     assert reading(fixture(tmp_path, BRIEF)) == {
-        "name": "relay", "reason": "default", "marker": None, "overruled": None}
+        "name": "builder", "reason": "default", "marker": None, "overruled": None}
 
 
 def test_1011_an_owners_relay_marker_with_nothing_launched_reads_relay(tmp_path):
@@ -117,8 +117,8 @@ def test_1011_a_first_artifact_author_launch_is_the_relay_and_seats_decide_nothi
 
 
 def test_1011_a_builder_session_marker_without_a_build_does_not_make_the_relay(tmp_path):
-    state = fixture(tmp_path, BRIEF, route_marker("builder"), "<!-- tradecraft:builder-session:v1 session=s -->\n")
-    assert reading(state)["name"] == "builder" and reading(state)["reason"] == "owner-asked"
+    state = fixture(tmp_path, BRIEF, "<!-- tradecraft:builder-session:v1 session=s -->\n")
+    assert reading(state)["name"] == "builder" and reading(state)["reason"] == "default"
 
 
 def test_1011_an_ask_for_the_builder_on_a_relay_change_is_overruled(tmp_path):
@@ -225,14 +225,11 @@ def ended_stretch(tmp_path, *texts):
     return state, launch(state, "stretch", 5)
 
 
-def test_1011_the_mechanical_lane_keeps_todays_route_and_overrules_an_ask(tmp_path):
+def test_a_mechanical_change_with_nothing_launched_is_handed_off_on_the_default_route(tmp_path):
     assert reading(fixture(tmp_path, MECHANICAL)) == {
-        "name": "relay", "reason": "mechanical-lane", "marker": None, "overruled": None}
-    state = fixture(tmp_path, MECHANICAL, route_marker("builder"))
-    assert reading(state) == {"name": "relay", "reason": "mechanical-lane", "marker": None,
-                              "overruled": {"asked": "builder", "marker": 101}}
-    made = work.decide(state, RULES)
-    assert (made.stage, made.reason) == ("build", "pull-request-absent")
+        "name": "builder", "reason": "default", "marker": None, "overruled": None}
+    stage, status, reason, _detail = decision(fixture(tmp_path, MECHANICAL))
+    assert (stage, status, reason) == ("handoff", "holder-owned", "handoff-due")
 
 
 def test_1011_a_live_stretch_is_with_the_builder(tmp_path):
@@ -289,7 +286,8 @@ def test_1011_a_base_that_moved_after_the_ready_record_is_caught_up(tmp_path):
 
 
 def test_1011_the_builder_route_artifact_is_the_holders_to_write(tmp_path):
-    made = work.decide(fixture(tmp_path, CONNECTED, route_marker("builder")), RULES)
+    connected = MECHANICAL.replace("mechanical", "connected")
+    made = work.decide(fixture(tmp_path, connected), RULES)
     assert (made.stage, made.dispatch, made.status) == ("artifact", False, "holder-owned")
     assert "`author=holder vendor=claude`" in made.detail
 
@@ -301,9 +299,9 @@ def test_1011_a_relay_change_keeps_todays_chain(tmp_path):
     for made in (asked, work.decide(in_flight, RULES)):
         assert (made.stage, made.dispatch, made.continuity, made.reason) == (
             "build", True, "fresh", "pull-request-absent")
-    for texts in ((CONNECTED, route_marker("relay")), (CONNECTED,)):
-        made = work.decide(fixture(tmp_path / "plan", *texts), RULES)
-        assert (made.stage, made.dispatch, made.continuity, made.status) == ("artifact", True, "fresh", "runnable")
+    connected = MECHANICAL.replace("mechanical", "connected")
+    made = work.decide(fixture(tmp_path / "plan", connected, route_marker("relay")), RULES)
+    assert (made.stage, made.dispatch, made.continuity, made.status) == ("artifact", True, "fresh", "runnable")
 
 
 class NoTransport:
@@ -341,7 +339,7 @@ def stored(tmp_path):
 
 @pytest.mark.parametrize("stage", ["build", "artifact", "floor", "review-disposition"])
 def test_1011_the_relays_launches_are_refused_on_the_builder_route(tmp_path, monkeypatch, stored, stage):
-    code, message = named(tmp_path, monkeypatch, stored(CONNECTED, route_marker("builder")), stage)
+    code, message = named(tmp_path, monkeypatch, stored(MECHANICAL), stage)
     assert code == "route-is-builder" and message.startswith("route-is-builder: ")
     assert "<!-- tradecraft:route:v1 route=relay -->" in message
     stopped = stored(MECHANICAL)
@@ -351,10 +349,9 @@ def test_1011_the_relays_launches_are_refused_on_the_builder_route(tmp_path, mon
     assert code == "route-is-builder" and "route=relay" not in message and "the in-flight rule fixes it" in message
 
 
-@pytest.mark.parametrize("reason", ["default", "owner-asked", "in-flight", "mechanical-lane", "cloud"])
+@pytest.mark.parametrize("reason", ["owner-asked", "in-flight", "cloud"])
 def test_1011_a_relay_refusal_advises_the_marker_only_where_one_moves_the_route(stored, monkeypatch, reason):
-    state = stored(MECHANICAL if reason == "mechanical-lane" else CONNECTED,
-                   *([route_marker("relay")] if reason == "owner-asked" else []))
+    state = stored(CONNECTED, *([route_marker("relay")] if reason == "owner-asked" else []))
     if reason == "in-flight":
         launch(state, "build", 5)
     if reason == "cloud":
@@ -364,7 +361,7 @@ def test_1011_a_relay_refusal_advises_the_marker_only_where_one_moves_the_route(
     with pytest.raises(work.RouteRefused) as caught:
         work._refuse_off_route(state, "handoff")
     advised = "route=builder -->" in str(caught.value)
-    assert caught.value.code == "route-is-relay" and advised == (reason in ("default", "owner-asked"))
+    assert caught.value.code == "route-is-relay" and advised == (reason == "owner-asked")
 
 
 def test_1011_the_route_names_the_ask_it_answers_in_flight(tmp_path):

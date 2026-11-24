@@ -20,7 +20,7 @@ STAGES = {"handoff-due": "handoff", "handoff": "handoff", "with-builder": "with-
           "final-pass": "final-pass", "ready-reported": "final-pass", "catch-up": "catch-up",
           "hand-started": "with-builder",
           # Today's relay chain: with the plan settled and no pull request, a build is next.
-          "relay-in-flight": "build", "relay-default": "build"}
+          "relay-in-flight": "build", "owner-asked-relay": "build"}
 
 
 @pytest.fixture(scope="module")

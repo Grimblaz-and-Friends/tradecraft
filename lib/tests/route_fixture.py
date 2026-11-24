@@ -46,7 +46,7 @@ DRAFT = "<!-- tradecraft:artifact:v1 status=draft -->" + QUOTED + PLAN
 # Settled where no cold seat could be obtained, so the settlement stands without a seat's bundle.
 SETTLED = "<!-- tradecraft:artifact:v1 status=settled route=unobtainable -->" + QUOTED + PLAN
 HOLDER_READING = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->"
-BUILDER_ASK = "<!-- tradecraft:route:v1 route=builder -->\n\n> Take this one by the builder route.\n"
+RELAY_ASK = "<!-- tradecraft:route:v1 route=relay -->\n\n> Take this one by today's route.\n"
 CLEAR = {"behind": False, "strict": False, "conflict": False, "mergeability_known": True,
          "merge_state": "clean", "uncertainties": []}
 USE_RETURN = "The job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
@@ -62,7 +62,7 @@ SCENARIOS = {
     "ready-reported": "a launched builder's ready record, reach read from Git, then the release report's payload",
     "catch-up": "the ready record at the head after the base moved",
     "relay-in-flight": "a first build launch, so today's relay chain",
-    "relay-default": "no route marker and nothing launched, so today's route",
+    "owner-asked-relay": "the owner's route=relay marker, nothing launched",
     "hand-started": "a builder the owner started by hand, its record still open",
 }
 
@@ -111,8 +111,6 @@ class Fixture:
         self.pr = None
         self.synchronization = None
         self.children = []
-        # The owner's ask for the builder route, made in the issue before anything launched.
-        self.body = BUILDER_ASK
         self.cold_reading_clean = False
         for text in (BRIEF, DRAFT, SETTLED, HOLDER_READING):
             self.post(text)
@@ -132,7 +130,7 @@ class Fixture:
 
     def state(self):
         work = self.work
-        state = work.WorkState(REPO, ISSUE, {"number": ISSUE, "state": "open", "body": self.body, "labels": [],
+        state = work.WorkState(REPO, ISSUE, {"number": ISSUE, "state": "open", "body": "", "labels": [],
                                              "user": {"login": PRODUCER}},
                                issue_comments=[dict(comment) for comment in self.comments], pr=self.pr,
                                config=work.WorkConfig(marker_producers=frozenset({PRODUCER})),
@@ -391,8 +389,8 @@ def scenario(name: str, fixture: Fixture) -> int:
     if name == "relay-in-flight":
         fixture.completed("build", 5)
         return fixture.decision(fixture.state())
-    if name == "relay-default":
-        fixture.body = ""
+    if name == "owner-asked-relay":
+        fixture.post(RELAY_ASK)
         return fixture.decision(fixture.state())
     raise ValueError(f"unknown scenario: {name}")
 

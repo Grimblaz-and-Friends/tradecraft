@@ -682,7 +682,7 @@ def test_a_report_the_entrance_posted_for_a_recomposed_check_counts(counted):
     # A counting report carries its stage, its builder and the findings its return tail gives; this
     # stand-in return has no `Findings:` tail, so it counts as the one unreadable finding.
     assert report == {"comment": 1, "dispatch": report["dispatch"], "counts": True, "invalid": [],
-                      "stage": "use", "builder": report["builder"], "head": report["head"], "criterion": None,
+                      "stage": "use", "builder": report["builder"], "head": report["head"], "criterion": None, "row": None,
                       "outcome": report["outcome"], "findings": ["F0"]}
     assert report["builder"]
 

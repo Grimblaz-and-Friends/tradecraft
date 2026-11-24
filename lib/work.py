@@ -25,6 +25,7 @@ from typing import Callable
 import urllib.parse
 import uuid
 
+import brief as brief_rows
 from brief import LANES, review_lane
 from source_claims import (
     attribute_error,
@@ -2886,9 +2887,10 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
         builder_route = False  # an unreadable route is refused by every stage that reads it
     if builder_route:
         # A stretch proves delivery of the brief and plan its handoff block names; a resume copies its launch's.
-        brief, _lane = _affirmed_review(state)
+        brief, lane = _affirmed_review(state)
         try:
-            plan = _settled_artifact_text(state, "plan-unsettled")[1]
+            # The mechanical lane hands off the brief alone, so its block names no plan.
+            plan = None if lane == ("ordinary", "mechanical") else _settled_artifact_text(state, "plan-unsettled")[1]
         except BuilderRefused:
             plan = ""  # no settled plan, so no block names it
         if any((request.get("handoff") or {}).get("brief_comment") == brief.source_id
@@ -5992,13 +5994,14 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     # The role's resolved vendor launches the seat, so an override moves it; staffing is judged against it.
     vendor, vendor_source = _seat_vendor(state, "cold-reader")
     launch_plan["primary"] = launch_plan["vendors"][vendor]
-    launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
-                               **dispatch_seat.fallback_plan(vendor, own_vendor, "read"),
-                               "comparison_vendor_source": own_source}
     # A seat landing on the builder's vendor, as primary or by fallback, must record why, or no `open` can validate.
     same_vendor = ("owner-selected-claude-implementer" if own_vendor == "claude"
                    else "owner-selected-codex-cold-reader" if vendor == "codex"
                    else "cold-reader-fell-back-to-builder-vendor")
+    own_vendor, staffing = _seat_staffing(builder_mode(), own_vendor, vendor, same_vendor)
+    launch_plan["fallback"] = {**launch_plan["vendors"].get(own_vendor, {"vendor": own_vendor}),
+                               **dispatch_seat.fallback_plan(vendor, own_vendor, "read"),
+                               "comparison_vendor_source": own_source}
     command = [
         sys.executable, str(Path(__file__).resolve().parent / "dispatch_seat.py"),
         "--dispatch", str(prompt), "--root", str(reading),
@@ -6006,7 +6009,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         "--settings-source", vendor_source, "--settings-scope", "cold-reader",
         "--vendor", vendor, "--own-vendor", own_vendor, "--own-vendor-source", own_source,
         "--classification", "cold", "--requires", "read",
-        "--timeout-seconds", f"{effective_timeout:g}", "--same-vendor-reason", same_vendor,
+        "--timeout-seconds", f"{effective_timeout:g}", *staffing,
         "--lineage-branch", branch, *(["--lineage-pull-request", str(state.pr["number"])]
                                       if isinstance(state.pr.get("number"), int) else []),
         *_seat_launch_arguments(state, "cold-reader", "cold", claude_path=claude_path,
@@ -6027,7 +6030,8 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         returned = frame["return"].decode("utf-8", "replace") if frame and frame.get("return") else None
         held = cold_reader.tree_held(metadata, state.holder_root)
         posted = _post_check_report(transport or GitHubREST(), state, check_report_body(
-            stage="cold-reader", frame=frame, head=sha, tree="held" if held else "changed", criterion=None))
+            stage="cold-reader", frame=frame, head=sha, tree="held" if held else "changed", criterion=None,
+            declared=_declared_builder(builder)))
         if posted["status"] in REPORT_NOT_COUNTED:
             # A reading whose report never landed counts for nothing, so its run says so, as a composed check's does.
             code = code or 1
@@ -11118,6 +11122,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--job-from-artifact", action="store_true",
                      help="run use in builder mode: the job is the settled artifact's Use session job")
     cli.add_argument("--criterion", help="run acceptance-criterion: the settled artifact's criterion id")
+    cli.add_argument("--row", type=int,
+                     help="run acceptance-criterion on the mechanical lane, as a builder: the brief row to read")
     cli.add_argument(
         "--timeout-seconds", type=float,
         help="the time the recipient gets, from its start (default 28800 for handoff, 7200 for build, "
@@ -11489,6 +11495,17 @@ CRITERION_PREAMBLE = (
     "criterion below holds of the built result in the tree named here. Return pass, fail or unable, "
     "with the evidence you read or ran. Change nothing.\n"
 )
+# On the mechanical lane no plan names criteria, so a reader judges each brief row instead.
+ROW_PREAMBLE = (
+    "You are a fresh reader judging one row of an affirmed implementation brief against a built change. "
+    "Judge whether the change in the tree named here carries the row below. Return pass, fail or unable, "
+    "with the evidence you read or ran. Change nothing.\n"
+)
+ROW_DISPATCH = re.compile(r"\n\nRow ([0-9]+):\n\n")
+MECHANICAL_HANDOFF_REASON = (
+    "The owner affirmed this change's risk and lane as ordinary / mechanical, so the brief records a "
+    "determinate correction and no plan is owed; build from the brief's rows."
+)
 CRITERION_OPENING = re.compile(r"^[ \t]*(?:[-*+][ \t]+)?\*\*([A-Z][A-Za-z]*[0-9]+(?:\.[0-9]+)?)\.\*\*", re.M)
 HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
@@ -11610,6 +11627,10 @@ def compose_check_dispatch(stage: str, inputs: dict[str, object]) -> bytes:
     if stage == "use":
         return (bytes(inputs["job"]) + f"\n\nHead: {head}\nTree: {tree}\n\n"
                 f"{_check_conditions(tree, 'execute')}{readiness.RETURN_TAILS['use']}\n".encode("utf-8"))
+    if stage == "acceptance-criterion" and "row" in inputs:
+        return (ROW_PREAMBLE + f"\nCapability: read\nHead: {head}\nTree: {tree}\n{_check_conditions(tree, 'read')}"
+                f"{readiness.RETURN_TAILS['acceptance-criterion']}\n\nRow {inputs['row']}:\n\n"
+                f"{inputs['row_text']}\n").encode("utf-8")
     if stage == "acceptance-criterion":
         return (CRITERION_PREAMBLE + f"\nCapability: {inputs['capability']}\nHead: {head}\n"
                 f"Tree: {tree}\n{_check_conditions(tree, str(inputs['capability']))}"
@@ -11640,11 +11661,23 @@ def fresh_reader_criteria(artifact: str) -> list[str]:
     return found
 
 
+def _staged(state: WorkState) -> bool:
+    """Whether an earlier instalment of this work has merged, so a new pull request can't close the issue."""
+    return getattr(state, "instalment_boundary", None) is not None
+
+
 def _handoff_inputs(state: WorkState, floor_command: str | None):
-    """The affirmed brief, the settled plan and its comment, and the owed checks."""
-    brief, _lane = _affirmed_review(state)
+    """The affirmed brief, the settled plan and its comment, and the owed checks.
+
+    On the mechanical lane there is no plan: every brief row is owed its own reader, and use is exempt.
+    """
+    brief, lane = _affirmed_review(state)
     if brief is None:
         raise BuilderRefused("brief-absent", "the change has no affirmed brief")
+    if lane == ("ordinary", "mechanical"):
+        checks = handoff.owed_checks(criteria=[], mechanical=True, rows=brief_rows.rows(brief.body),
+                                     use_owed=False, floor_command=floor_command)
+        return brief, None, None, checks
     artifact, comment = _settled_artifact_text(state, "plan-unsettled")
     try:
         artifact_use_job(artifact)
@@ -11669,8 +11702,10 @@ def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plu
         pull_request=state.pr.get("number") if state.pr else None, issue=state.issue_number),
         hand=hand is not None)
     return handoff.compose_handoff(
-        brief=brief.body, artifact=artifact, checks=checks, allowance=allowance, repo=state.repo, issue=state.issue_number,
-        holder_root=str(holder_root), plugin_root=str(plugin_root), notify=notify, hand=hand)
+        brief=brief.body, artifact=artifact, lane_reason=None if artifact is not None else MECHANICAL_HANDOFF_REASON,
+        checks=checks, allowance=allowance, repo=state.repo, issue=state.issue_number,
+        holder_root=str(holder_root), plugin_root=str(plugin_root), notify=notify, hand=hand,
+        staged=_staged(state))
 
 
 def _builder_check_inputs(args: argparse.Namespace) -> None:
@@ -11804,7 +11839,7 @@ def _framed_recipient_run(captured: bytearray):
 
 
 def check_report_body(*, stage: str, frame: dict | None, head: str, tree: str,
-                      criterion: str | None) -> str:
+                      criterion: str | None, row: int | None = None, declared: bool = False) -> str:
     """The comment the entrance posts: the marker, a blank line, and the frame's return bytes."""
     frame = frame or {}
     attributes = [f"stage={stage}", f"dispatch={frame.get('dispatch_id') or 'unknown'}", f"head={head}",
@@ -11815,6 +11850,11 @@ def check_report_body(*, stage: str, frame: dict | None, head: str, tree: str,
         attributes.append(f"same_vendor_reason={frame['same_vendor_reason']}")
     if criterion:
         attributes.append(f"criterion={criterion}")
+    if row is not None:
+        attributes.append(f"row={row}")
+    if declared:
+        # The seat was staffed against a vendor the owner declared, not one a launch log observed.
+        attributes.append("builder_vendor=declared")
     attributes.append(f"outcome={frame.get('outcome') or 'error'}")
     returned = frame.get("return") or b""
     text = returned.decode("utf-8", "replace") if returned else NO_RETURN_LINE
@@ -11867,16 +11907,66 @@ def _holding_launch_holder_session(builder: dict) -> str:
     return session
 
 
-def _holding_launch_vendor(builder: dict) -> tuple[str, str]:
-    """The builder's vendor, from its own launch's request record: a first launch has no completed bundle."""
+def _holding_launch_request(builder: dict) -> dict:
     request = builder.get("request")
     try:
-        vendor = (json.loads(Path(str(request)).read_bytes()).get("requested") or {}).get("vendor")
-    except (OSError, ValueError, AttributeError) as exc:
+        record = json.loads(Path(str(request)).read_bytes())
+    except (OSError, ValueError) as exc:
         raise WorkError(f"the holding stretch launch's request {request} could not be read: {exc}") from exc
-    if vendor not in ("claude", "codex"):
-        raise WorkError(f"the holding stretch launch's request {request} names no vendor")
-    return vendor, f"holding stretch launch request {request}"
+    if not isinstance(record, dict):
+        raise WorkError(f"the holding stretch launch's request {request} is not an object")
+    return record
+
+
+def _holding_launch_vendor(builder: dict) -> tuple[str, str]:
+    """The builder's vendor, from its own launch's request record: a first launch has no completed bundle.
+
+    A hand-started builder's is the vendor the owner declared, as recorded, whatever its name.
+    """
+    record = _holding_launch_request(builder)
+    vendor = (record.get("requested") or {}).get("vendor")
+    declared = record.get("started_by") == "hand"
+    if not isinstance(vendor, str) or not vendor.strip() or (not declared and vendor not in ("claude", "codex")):
+        raise WorkError(f"the holding stretch launch's request {builder.get('request')} names no vendor")
+    return vendor, f"holding stretch launch request {builder.get('request')}"
+
+
+def _declared_builder(builder: dict | None) -> bool:
+    """Whether the builder's vendor is one the owner declared for a hand-started builder, not one observed."""
+    return builder is not None and _holding_launch_request(builder).get("started_by") == "hand"
+
+
+def _seat_staffing(builder: dict | None, own_vendor: str, seat_vendor: str,
+                   launched_reason: str | None) -> tuple[str, list[str]]:
+    """The seat's comparison vendor and its staffing arguments against the builder's vendor.
+
+    A declared vendor is compared ignoring case: equal to the seat's, the seat is degraded for that reason.
+    """
+    if not _declared_builder(builder):
+        return own_vendor, ["--same-vendor-reason", launched_reason] if launched_reason else []
+    declared = own_vendor.strip().lower()
+    return declared, ["--builder-vendor-source", "declared",
+                      *(["--same-vendor-reason", "declared-builder-vendor"] if declared == seat_vendor else [])]
+
+
+def _row_to_read(state: WorkState, args: argparse.Namespace, builder: dict | None) -> tuple[int, str] | None:
+    """The brief row a row reader reads, refused before any tree, bundle or write where it can't be read."""
+    row = getattr(args, "row", None)
+    if row is None or args.stage != "acceptance-criterion":
+        return None
+    if builder is None:
+        raise BuilderRefused("stage-not-the-builders", "run acceptance-criterion --row is a builder's check on "
+                             "the mechanical lane; the holder launches criteria by --criterion")
+    if args.criterion is not None:
+        raise BuilderRefused("row-and-criterion", "give --row or --criterion, not both")
+    brief, lane = _affirmed_review(state)
+    if lane != ("ordinary", "mechanical"):
+        raise BuilderRefused("row-reader-off-lane", "a row reader runs only on the ordinary / mechanical lane; "
+                             "on any other lane the settled plan's criteria carry the rows")
+    text = dict(brief_rows.rows(brief.body)).get(row) if brief is not None else None
+    if text is None:
+        raise BuilderRefused("brief-row-absent", f"the affirmed brief has no row {row}")
+    return row, text
 
 
 def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, github,
@@ -11890,6 +11980,7 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
     """
     stage = args.stage
     builder = builder_mode()
+    row = _row_to_read(state, args, builder)
     if state.raw_output is None and rules is not None:
         _evaluate_raw_output(state, rules, str(use_rules_path or "selected change-proof policy"))
     if state.validated_markers is None:
@@ -11918,6 +12009,9 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
         artifact, comment = _settled_artifact_text(state, "artifact-use-job-absent")
         job = artifact_use_job(artifact)
         tree_name, capability, criterion_id = "use", "execute", None
+    elif row is not None:
+        # The row's reader reads the change's own tree at head; nothing the builder names changes either.
+        tree_name, capability, criterion_id = None, "read", None
     else:
         criterion_id = args.criterion
         if not criterion_id:
@@ -11933,7 +12027,9 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
     # stage prints it; a criterion reader is staffed the same way.
     launch_plan = _launch_plan(state, Decision("use", True, None, "holder-named-stage", ""),
                                resolve_comparison=False)
-    launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+    own_vendor, staffing = _seat_staffing(builder, own_vendor, "claude", "owner-selected-claude-implementer"
+                                          if own_vendor == "claude" else None)
+    launch_plan["fallback"] = {**launch_plan["vendors"].get(own_vendor, {"vendor": own_vendor}),
                                **dispatch_seat.fallback_plan("claude", own_vendor, capability),
                                "comparison_vendor_source": own_vendor_source}
     if tree_name is None:
@@ -11944,6 +12040,7 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
                                                      builder["dispatch_id"] if builder else None)
         held_now = lambda: _tree_held(state, source, metadata, claim)  # noqa: E731
     inputs = ({"job": job, "head": head, "tree": consumer_root} if stage == "use" else
+              {"row": row[0], "row_text": row[1], "head": head, "tree": consumer_root} if row is not None else
               {"criterion": criterion, "capability": capability, "head": head, "tree": consumer_root})
     dispatch_bytes = compose_check_dispatch(stage, inputs)
     with tempfile.TemporaryDirectory(prefix="tradecraft-check-") as temporary:
@@ -11959,8 +12056,7 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
             "--settings-scope", "use-consumer" if stage == "use" else "criterion-reader",
             "--vendor", "claude", "--own-vendor", own_vendor, "--own-vendor-source", own_vendor_source,
             "--classification", "cold", "--requires", capability, "--timeout-seconds", timeout_argument,
-            "--return-frame",
-            *(["--same-vendor-reason", "owner-selected-claude-implementer"] if own_vendor == "claude" else []),
+            "--return-frame", *staffing,
             *(["--launched-by-dispatch", builder["dispatch_id"], "--dispatch-origin", "entrance",
                *(["--launched-by-session", builder["session_id"]] if builder.get("session_id") else [])]
               if builder else []),
@@ -11972,7 +12068,8 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
     frame = dispatch_seat.read_return_frame(bytes(captured))
     held = held_now()
     body = check_report_body(stage=stage, frame=frame, head=head, tree="held" if held else "changed",
-                             criterion=criterion_id)
+                             criterion=criterion_id, row=row[0] if row is not None else None,
+                             declared=_declared_builder(builder))
     posted = _post_check_report(github, state, body) if builder else {"status": "not-posted-outside-builder-mode"}
     _emit_report({"stage": stage, "recipient_returned": True, "head": head,
                   "tree": "held" if held else "changed", "tree_metadata": str(metadata),
@@ -12022,6 +12119,8 @@ def recompose_check(state: WorkState, request: dict) -> tuple[bytes | None, str 
             return compose_check_dispatch("use", {"job": artifact_use_job(artifact), "head": head,
                                                   "tree": Path(root)}), head, ""
         dispatch = _bundle_file(Path(request["_run_path"]), ".dispatch.bin").read_bytes().decode("utf-8", "replace")
+        if dispatch.startswith(ROW_PREAMBLE):
+            return _recompose_row(state, dispatch, head, Path(root))
         named = CRITERION_OPENING.search(dispatch.split("\nCriterion:\n\n", 1)[-1])
         if named is None:
             return None, head, "the dispatch names no criterion"
@@ -12035,6 +12134,22 @@ def recompose_check(state: WorkState, request: dict) -> tuple[bytes | None, str 
     except (OSError, ValueError, KeyError, WorkError, recipient_tree.RecipientTreeError,
             cold_reader.ColdReaderError) as exc:
         return None, None, str(exc)
+
+
+def _recompose_row(state: WorkState, dispatch: str, head: str | None,
+                   root: Path) -> tuple[bytes | None, str | None, str]:
+    """A row reader's dispatch, recomposed from the row it names and the affirmed brief as it stands."""
+    named = ROW_DISPATCH.search(dispatch)
+    if named is None:
+        return None, head, "the dispatch names no row"
+    brief, lane = _affirmed_review(state)
+    if lane != ("ordinary", "mechanical"):
+        return None, head, "the change is not on the mechanical lane"
+    text = dict(brief_rows.rows(brief.body)).get(int(named.group(1))) if brief is not None else None
+    if text is None:
+        return None, head, f"the affirmed brief has no row {named.group(1)}"
+    return compose_check_dispatch("acceptance-criterion", {"row": int(named.group(1)), "row_text": text,
+                                                           "head": head, "tree": root}), head, ""
 
 
 def _stale_declaration(artifact: str, root: Path, home: Path, name: str) -> str:
@@ -12158,7 +12273,9 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
         if not reasons:
             # A counting report's findings, read from the return tail its composed dispatch fixed.
             stage = bundle[1].get("stage")
-            entry.update({"stage": stage, "head": attributes.get("head"), "criterion": attributes.get("criterion"), "outcome": attributes.get("outcome"),
+            entry.update({"stage": stage, "head": attributes.get("head"), "criterion": attributes.get("criterion"),
+                          "row": int(attributes["row"]) if str(attributes.get("row", "")).isdigit() else None,
+                          "outcome": attributes.get("outcome"),
                           "findings": [item["finding"] for item in readiness.report_findings(stage, posted_text)]
                           if stage in readiness.RETURN_TAILS else []})
         reports.append(entry)
@@ -12182,11 +12299,77 @@ def _report_quotation(state: WorkState, comment: dict[str, object]) -> dict[str,
         "author": _author(comment), "timestamp": timestamp}}
 
 
+def _head_contains(state: WorkState) -> tuple[Callable[[str], bool | None], dict[str, str]]:
+    """Whether a commit is the pull request's head or an ancestor of it, asked of GitHub once per commit.
+
+    The builder's commits live on its pushed branch, so the holder's checkout needn't hold them. An answer
+    GitHub can't give is None, never True, and its error is kept by commit.
+    """
+    head, answers, errors = _head_sha(state), {}, {}
+
+    def reachable(commit: str) -> bool | None:
+        if commit == head:
+            return True
+        if commit not in answers:
+            try:
+                compared = GitHubREST().get(f"repos/{state.repo}/compare/{commit}...{head}")
+                answers[commit] = isinstance(compared, dict) and compared.get("status") in ("ahead", "identical")
+            except WorkError as exc:
+                # GitHub knows no such commit on this repository: it can't be in the head.
+                answers[commit] = False if getattr(exc, "http_status", None) in (404, 422) else None
+                if answers[commit] is None:
+                    errors[commit] = str(exc)
+        return answers[commit]
+
+    return reachable, errors
+
+
+def _readiness_vendor_model(payload: dict, request: dict, run_path: Path | None) -> dict[str, object]:
+    """The vendor and model that built, observed in the builder's own log where it can be read, else declared."""
+    builder = payload.get("builder") or {}
+    declared = {"vendor": builder.get("vendor"), "model": builder.get("model")}
+    observed, log, reason = None, "absent", None
+    if request.get("started_by") == "hand":
+        usage = builder.get("usage_log")
+        if isinstance(usage, str) and usage.strip() and Path(usage).is_file():
+            # The path is the builder's to declare; it is only read, to observe the pair.
+            seen = change_cost.hand_started_vendor_model(Path(usage), declared["vendor"])
+            if seen.get("status") == "observed":
+                observed = {"vendor": seen.get("vendor"), "model": seen.get("model"), "models": seen.get("models")}
+            else:
+                log, reason = "unreadable", seen.get("reason")
+        else:
+            reason = "the readiness record names no usage log that exists"
+    else:
+        vendor = (request.get("requested") or {}).get("vendor")
+        stdout = _bundle_file(run_path, f".{vendor}.stdout.log") if run_path is not None else None
+        try:
+            raw = stdout.read_bytes() if stdout is not None and stdout.exists() else None
+        except OSError as exc:
+            raw, reason = None, f"the launch's log could not be read: {exc}"
+        if raw is not None:
+            models = records.runtime_evidence(str(vendor), raw, "fresh").get("reported_models") or []
+            if models:
+                observed = {"vendor": vendor, "model": models[0] if len(models) == 1 else None, "models": models}
+            else:
+                log, reason = "unreadable", "the launch's log reports no model"
+        elif reason is None:
+            reason = "the launch left no log"
+        else:
+            log = "unreadable"
+    if observed is not None:
+        differs = (str(declared["vendor"] or "").lower() != str(observed["vendor"] or "").lower()
+                   or (observed["model"] is not None and declared["model"] != observed["model"]))
+        return {"source": "observed", "log": "readable", **observed,
+                "declared_differs": declared if differs else None}
+    return {"source": "declared", "log": log, "reason": reason, **declared, "declared_differs": None}
+
+
 def readiness_reading(state: WorkState, checks: dict[str, object] | None) -> dict[str, object] | None:
     """The governing readiness record, read against the check reports its builder launched.
 
-    The builder route's decision, refusals and handoff read it. Whether a fixed finding's commit is reachable from the
-    head is not checked here. Design: lib/DESIGN.md#the-builder-route
+    The builder route's decision, refusals and handoff read it. Each fixed finding's commit is asked of
+    GitHub against the head. Design: lib/DESIGN.md#the-builder-route
     """
     posted = [marker for marker in state.issue_markers if marker.name == "readiness"
               and marker.surface == "issue-comment" and _attribute_error(marker) is None]
@@ -12216,20 +12399,25 @@ def readiness_reading(state: WorkState, checks: dict[str, object] | None) -> dic
                 "named": entry["comment"] in named or str(entry["comment"]) in {str(n) for n in named}}
                for entry in checks.get("check_reports", [])
                if entry.get("counts") and entry.get("builder") in stretches]
-    reconciled = readiness.reconcile(payload, reports, lambda _commit: True)
+    reachable, unverified = _head_contains(state)
+    reconciled = readiness.reconcile(payload, reports, reachable)
     bundles = {entry.get("dispatch"): entry for entry in checks.get("check_dispatches", [])}
     posted_reports = {str(entry.get("comment")): entry for entry in checks.get("check_reports", [])}
+    readings = {str(marker.source_id): marker for marker in _reach_readings(state)}
 
     def launched_by_builder(entry: dict) -> bool:
-        # A named check is tied to its own composed launch and counting report; only the floor and a reach
-        # that flagged nothing have no launch to name.
+        # A named check is tied to its own composed launch and counting report; only the floor and reach have
+        # no launch to name, and reach names its own reading at that head where it flagged anything.
         if not entry.get("dispatch"):
+            if entry["stage"] == "reach" and entry["report"] is not None:
+                reading = readings.get(str(entry["report"]))
+                return reading is not None and reading.attributes.get("head") == entry["head"]
             return entry["stage"] == "floor" or (entry["stage"] == "reach" and entry["report"] is None)
         bundle, report = bundles.get(entry["dispatch"]) or {}, posted_reports.get(str(entry["report"])) or {}
         return (bundle.get("status") == "composed" and bundle.get("builder") in stretches
                 and bundle.get("stage") == entry["stage"] and report.get("counts") is True
                 and report.get("dispatch") == entry["dispatch"] and report.get("head") == entry["head"]
-                and report.get("criterion") == entry["criterion"])
+                and report.get("criterion") == entry["criterion"] and report.get("row") == entry.get("row"))
 
     launched = all(launched_by_builder(entry) for entry in payload["checks"])
     errored = [key for key, entry in bundles.items() if entry.get("outcome") == "error"
@@ -12240,7 +12428,8 @@ def readiness_reading(state: WorkState, checks: dict[str, object] | None) -> dic
             # A record from an earlier launch doesn't answer a later one, such as a send-back that stopped silent.
             "from_last_launch": dispatch == (_term_stretches(state) or [{}])[-1].get("dispatch_id"),
             "reconciled": reconciled["reconciled"], "unreconciled": reconciled["unreconciled"],
-            "reachability": "unchecked", "launched_by_builder": launched,
+            "reachability": reconciled["reachability"], "unverified": unverified, "launched_by_builder": launched,
+            "vendor_model": _readiness_vendor_model(payload, *_record_launch(state, dispatch)),
             "relaunches": readiness.relaunches(payload["checks"], errored),
             "stop": payload["stop"], "declines": [entry for entry in payload["findings"]
                                                   if entry["disposition"] == "declined"],
@@ -12254,8 +12443,7 @@ ROUTE_STAGES = {"stretch": "builder", "artifact": "relay", "build": "relay"}
 
 def _route(state: WorkState) -> dict[str, object]:
     """The route a change takes, by the first rule that applies: a cloud build keeps the relay, the
-    work's first launch decides for good, the mechanical lane keeps the relay, the owner's latest route
-    marker, else the relay.
+    work's first launch decides for good, the owner's latest route marker, else the builder.
 
     Design: lib/DESIGN.md#the-builder-route
     """
@@ -12279,11 +12467,8 @@ def _route(state: WorkState) -> dict[str, object]:
                                         set(ROUTE_STAGES))
         if rows:
             name, reason = ROUTE_STAGES[rows[0][2]["stage"]], "in-flight"
-        elif _affirmed_review(state)[1] == ("ordinary", "mechanical"):
-            # No plan names its checks, so a handoff would owe the builder a row check no stage runs.
-            name, reason = "relay", "mechanical-lane"
     if name is None:
-        name, reason = (ask.attributes["route"], "owner-asked") if ask is not None else ("relay", "default")
+        name, reason = (ask.attributes["route"], "owner-asked") if ask is not None else ("builder", "default")
     overruled = ({"asked": ask.attributes["route"], "marker": ask_id}
                  if ask is not None and reason != "owner-asked" and ask.attributes["route"] != name else None)
     # The marker names the ask the change's route answers, in flight too, so a release report shows it.
@@ -12793,6 +12978,15 @@ RESUME_KEYS = ("send_back", "catch_up_resume", "resume_reason", "resume_limit", 
 def _handed_block(request: dict) -> dict:
     handed = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
     return {name: value for name, value in handed.items() if name not in RESUME_KEYS}
+
+
+def _record_launch(state: WorkState, dispatch: str) -> tuple[dict, Path | None]:
+    """The request record and run path of the stretch launch a readiness record names."""
+    for _order, path, request, _run in lifecycle.launch_bundles(
+            state.record_root or records.default_record_root(), f"{state.repo}#{state.issue_number}", {"stretch"}):
+        if request.get("dispatch_id") == dispatch:
+            return request, Path(path)
+    return {}, None
 
 
 def _term_stretches(state: WorkState) -> list[dict]:
