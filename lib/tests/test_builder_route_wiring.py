@@ -270,3 +270,17 @@ def test_a_launched_stretchs_window_opens_at_its_launch_under_the_holders_sessio
         vendor="claude", model="m", effort="e", continuity="fresh", permission_boundary="fixture", root=None)
     assert work._handoff_window(unnamed) == (
         None, None, "the stretch's request names no holder session or launch time")
+
+
+def test_a_later_ready_record_says_the_first_records_chain_stage_was_not_read(tmp_path):
+    state = fixture(tmp_path, CONNECTED)
+    builder = launch(state, "stretch", 1, handoff={"owed_checks": []})
+    chain = {"stage": "proof", "reason": "current-head-proof-absent-or-outdated", "detail": None}
+    post(state, readiness_record(builder), 30)
+    alone = work._owed_at_ready(state, chain, use_owed=False)
+    # One ready record: the chain stage read at the current head is its own, and nothing is said missing.
+    assert alone["first"] == alone["last"] == [chain] and "first_chain" not in alone
+    post(state, readiness_record(builder), 40)
+    both = work._owed_at_ready(state, chain, use_owed=False)
+    assert both["first"] == [] and both["last"] == [chain]
+    assert both["first_chain"]["status"] == "not-read" and "current head only" in both["first_chain"]["reason"]
