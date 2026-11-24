@@ -18,6 +18,7 @@ def assert_no_new_artifact_copies(parent, before):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "cold_reading: run with the cold-reading gate in force")
+    config.addinivalue_line("markers", "unlisted_builder_reason: a test that seeds an unlisted builder reason")
     if not hasattr(config, "workerinput"):
         # The coordinator checks after every worker stops, so another worker's
         # live allocation cannot be mistaken for a leftover. Never sweep copies.
@@ -92,3 +93,20 @@ def cold_reading_gate(request, monkeypatch):
     import work
     monkeypatch.setattr(work, "_cold_reading_decision", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(work, "_owed_cold_reading", lambda *_args, **_kwargs: None)
+
+
+@pytest.fixture(autouse=True)
+def builder_reasons_listed(request):
+    """Fail a test that led the entrance to return a builder a reason the handoff's steps don't answer.
+
+    A test of the flag itself marks itself `unlisted_builder_reason` and clears what it seeded.
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    import work
+    work.UNLISTED_BUILDER_REASONS.clear()
+    yield
+    unlisted = sorted(work.UNLISTED_BUILDER_REASONS)
+    work.UNLISTED_BUILDER_REASONS.clear()
+    if unlisted and request.node.get_closest_marker("unlisted_builder_reason") is None:
+        pytest.fail("the entrance returned a builder a reason BUILDER_MODE_REASONS doesn't list: "
+                    + ", ".join(unlisted), pytrace=False)
