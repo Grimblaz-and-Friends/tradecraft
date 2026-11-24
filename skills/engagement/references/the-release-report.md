@@ -25,13 +25,13 @@
 **On the builder route (`the-stretch.md`), `run release-report` adds `builder_route` to its payload, and the report places it within the order above.** The holder gives each decline its view, `agrees`, `differs` or `cannot-judge`, because where a decline goes turns on it; a decline given no view needs the owner.
 
 - **Needs your decision** adds, in this order:
-  1. the final-pass block: each spot check the holder made and what it found, what it sent back and what came of it, and what stays open after the send-back;
-  2. each decline, from a check report or a connected reviewer, where the holder's view differs from the builder's or the holder can't judge it. The readiness record supplies the checks' declines; the holder reads a connected reviewer's from the pull request's threads and answers, as on the relay route;
-  3. every builder decision that would change a brief row;
+  1. the final-pass block: each spot check the holder made and what it found, what it sent back and what came of it, and what stays open after the send-back, including anything the last ready record still owed (`owed_at_ready.last`; the first record's list carries no chain stage where a later record stands, and `first_chain` says so);
+  2. each decline, from a check report or a connected reviewer, where the holder's view differs from the builder's or the holder can't judge it. The readiness record supplies the checks' declines, and `reviewer_declines` the connected reviewers';
+  3. every builder decision that would change a brief row, or whose text asks for the owner's choice;
   4. a handoff whose text differs from the composed one (`handoff_plan` reads `differs`, holder-written or altered);
   5. one line counting the remaining declines and pointing at their list.
 - **Declined findings** is an uncollapsed entry directly after "Your decisions, and what they did". It lists every other decline, check reports' and connected reviewers' alike, each with the builder's reason and the holder's view, and declines sharing a reason are listed together under it. No decline appears only in the collapsed section.
-- **Settled by checks** adds the route and its reason, the cost split (the holder before the handoff, the holder after it, and the builder), every limit above its default with its reason, each catch-up resume, and each row check's reading.
+- **Settled by checks** adds the route and its reason, the cost split (the holder before the handoff, the holder after it, and the builder), every limit above its default with its reason, each stretch launch's elapsed seconds beside its limit, each catch-up resume, what was owed at the first and last ready records, the holder's quiet before ready and its launches after it (`holder_quiet`, `holder_after_ready`), the builder's vendor and model with whether they were observed or declared, each row check's reading, and the cold readings' acceptances as the builder's, for the owner to judge. Until the holder's window has a lower bound, its figure before the handoff covers the holder session's whole history before it, and any comparison of the routes' cost reads it that way.
 
 The payload's other fields (the readiness reading, the send-back, plan-writer launches and refusals) are the evidence these placements draw on, and stay in the collapsed section.
 

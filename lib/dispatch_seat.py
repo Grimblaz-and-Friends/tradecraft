@@ -195,6 +195,13 @@ def _finish_comparison(comparison, error, deadline, *, process_started=True, rec
         return launch_bound.unrecorded(f"comparison failed: {type(exc).__name__}: {exc}")
 
 
+def _vendor_name(text):
+    name = text.strip().lower()
+    if not name or any(character.isspace() for character in name):
+        raise argparse.ArgumentTypeError(f"not a vendor name: {text!r}")
+    return name
+
+
 def can_supply(vendor, required_capability):
     if required_capability == "read":
         return True
@@ -504,6 +511,9 @@ def selected_role(args):
 def fallback_plan(primary, own_vendor, required_capability):
     if primary == own_vendor:
         reason = "primary and comparison vendor are the same; no second attempt"
+    elif own_vendor not in VENDORS:
+        # A hand-started builder's declared vendor is compared against, never launched.
+        reason = f"the comparison vendor {own_vendor} has no launcher here; no second attempt"
     elif not can_supply(own_vendor, required_capability):
         reason = capability_refusal(own_vendor, required_capability)
     else:
@@ -532,7 +542,8 @@ def resolve_settings(args):
     args.resolved_settings = selections
     return {"stage": args.stage, "role": role, "continuity": "fresh",
             "primary": selections[args.vendor].as_dict(args.vendor, args.settings_source),
-            "fallback": {**selections[args.own_vendor].as_dict(args.own_vendor, "availability fallback to comparison vendor"),
+            "fallback": {**(selections[args.own_vendor].as_dict(args.own_vendor, "availability fallback to comparison vendor")
+                            if args.own_vendor in VENDORS else {"vendor": args.own_vendor}),
                          **fallback_plan(args.vendor, args.own_vendor, args.requires)}}
 
 
@@ -663,7 +674,7 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
     if root_refusal:
         raise DispatchError(f"Root must be the top level of a detached Git worktree: {root}; {root_refusal}")
     if not can_supply(args.vendor, args.requires) and (
-        args.own_vendor == args.vendor or not can_supply(args.own_vendor, args.requires)
+        args.own_vendor == args.vendor or args.own_vendor not in VENDORS or not can_supply(args.own_vendor, args.requires)
     ):
         raise DispatchError(capability_refusal(args.vendor, args.requires))
     records.require_output_outside_root(output, root)
@@ -687,11 +698,16 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
             raise DispatchError(str(exc)) from exc
     elif getattr(args, "draft_comment", None) is not None or getattr(args, "draft_producer", None) is not None:
         raise DispatchError("--draft-comment and --draft-producer apply only to cold-seat")
+    # Only a hand-started builder's declared vendor may lack a launcher, so a mistyped name is refused rather
+    # than read as a different vendor that qualifies a same-vendor seat.
+    if args.own_vendor not in VENDORS and getattr(args, "builder_vendor_source", None) != "declared":
+        raise DispatchError(
+            f"--own-vendor {args.own_vendor} has no launcher without --builder-vendor-source declared")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise DispatchError("--timeout-seconds must be finite and positive")
     read_holds(hold_file)
     vendors = [args.vendor]
-    if args.own_vendor != args.vendor:
+    if args.own_vendor != args.vendor and args.own_vendor in VENDORS:
         vendors.append(args.own_vendor)
     codex_sandbox = (
         windows_codex_sandbox()
@@ -749,14 +765,12 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                     dispatch_id=request["dispatch_id"], refs=True)
             except (OSError, ValueError, TypeError) as exc:
                 plan_error = f"coverage could not be planned: {exc}"
-            request["write_bound"] = {
-                "file_tools": None, "memory": None,
-                "comparison": ({"coverage": comparison.planned()} if comparison is not None
-                               else {"coverage": [], "unavailable_reason": plan_error}),
-                "shell": launch_bound.SHELL,
-            }
+            request["write_bound"] = launch_bound.write_bound_record(
+                file_tools=None, memory=None, comparison=comparison, comparison_error=plan_error)
         request["comparison_vendor"] = args.own_vendor
         request["comparison_vendor_source"] = args.own_vendor_source or "caller-selected"
+        if args.builder_vendor_source is not None:
+            request["builder_vendor_source"] = args.builder_vendor_source
         if args.lineage_branch is not None or args.lineage_pull_request is not None:
             request["lineage_branch"] = args.lineage_branch
             request["lineage_pull_request"] = args.lineage_pull_request
@@ -1180,8 +1194,11 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--dispatch", type=Path, required=True)
     cli.add_argument("--root", type=Path, required=True)
     cli.add_argument("--vendor", choices=VENDORS, required=True)
-    cli.add_argument("--own-vendor", choices=VENDORS, required=True)
+    # Any vendor a hand-started builder declared; only a launcher vendor is ever a fallback.
+    cli.add_argument("--own-vendor", type=_vendor_name, required=True)
     cli.add_argument("--own-vendor-source", help="bundle or record proving the implementer vendor")
+    cli.add_argument("--builder-vendor-source", choices=("declared",),
+                     help="the comparison vendor is a hand-started builder's declared one, not observed")
     cli.add_argument("--work", required=True, help="issue or other work identifier")
     cli.add_argument("--stage", required=True, help="dispatch stage")
     cli.add_argument("--draft-comment", help="required by cold-seat: the draft comment carried in the dispatch")

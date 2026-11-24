@@ -2233,6 +2233,113 @@ def test_route_split_takes_bundles_by_their_run_record_paths(route_store):
     assert split["holder_before"]["usd"] == split["holder_after"]["usd"] == 0
 
 
+# A hand-started Codex builder's stream: 100000 input of which 40000 cached, and 10000 output.
+HAND_CODEX_TOKENS = {"input": 60000, "cached_input": 40000, "output": 10000}
+
+
+def hand_codex_log(tmp_path):
+    log = tmp_path / "hand.jsonl"
+    log.write_bytes(codex_stream("h1", 100000, 40000, 10000, model="gpt-6-sol"))
+    return log
+
+
+def hand_claude_log(tmp_path):
+    from test_holder_transcript import reply, write_lines
+    log = tmp_path / "projects" / "slug" / "builder.jsonl"
+    write_lines(log, [reply("b1", second=9, session="builder", input=0, output=1000, read=0, five=0, hour=0)])
+    # A subagent's transcript sits beside the session's own, under its session id.
+    write_lines(log.parent / "builder" / "subagents" / "agent-probe.jsonl", [
+        reply("b2", second=10, session="builder", model="claude-sonnet-5-5", agent="probe",
+              input=2000, output=0, read=0, five=0, hour=0)])
+    return log
+
+
+# The Claude builder's main thread spent 1000 output on Opus 5.5, and its subagent 2000 input on Sonnet 5.5.
+def hand_claude_price():
+    return route_reply_price({"output": 1000}) + route_reply_price({"input": 2000}, "claude-sonnet-5-5")
+
+
+def test_route_split_prices_a_hand_started_codex_builder_from_its_own_log(tmp_path):
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
+                               hand_usage_log=hand_codex_log(tmp_path), hand_vendor="Codex")["builder"]
+    assert builder["status"] == "priced", builder
+    assert Decimal(builder["amount"]) == route_reply_price(HAND_CODEX_TOKENS, "gpt-6-sol")
+    assert (builder["vendor"], builder["model"], builder["models"]) == ("codex", "gpt-6-sol", ["gpt-6-sol"])
+
+
+def test_route_split_prices_a_hand_started_claude_builder_from_its_transcript(tmp_path):
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
+                               hand_usage_log=hand_claude_log(tmp_path), hand_vendor="claude")["builder"]
+    assert builder["status"] == "priced", builder
+    assert Decimal(builder["amount"]) == hand_claude_price()
+    assert (builder["vendor"], builder["model"]) == ("claude", "claude-opus-5-5")
+    assert builder["models"] == ["claude-opus-5-5", "claude-sonnet-5-5"]
+
+
+@pytest.mark.parametrize("content,vendor,reason", [
+    (None, "codex", "cannot read the hand-started builder's Codex log"),
+    (b"not json\n", "codex", "is not a Codex JSON event stream"),
+    (None, "claude", "cannot read the hand-started builder's Claude transcript"),
+    (b"{}\n", "gemini", "no usage reader for vendor gemini"),
+    (b"{}\n", "Gemini", "no usage reader for vendor gemini"),
+    (b"{}\n", None, "no usage reader for vendor None"),
+])
+def test_route_split_names_why_a_hand_started_builder_is_unknown(tmp_path, content, vendor, reason):
+    log = tmp_path / "projects" / "slug" / "hand.jsonl"
+    if content is not None:
+        log.parent.mkdir(parents=True)
+        log.write_bytes(content)
+    builder = cost.route_split(holder_replies=[], start=route_moment(5), builder_bundles=[], seat_bundles=[],
+                               hand_usage_log=log, hand_vendor=vendor)["builder"]
+    assert builder["status"] == "unknown" and reason in builder["reason"]
+    assert "usd" not in builder and "vendor" not in builder
+    observed = cost.hand_started_vendor_model(log, vendor)
+    assert observed["status"] == "unknown" and reason in observed["reason"]
+
+
+def test_a_hand_started_builders_vendor_and_model_are_observed_from_its_log_without_pricing(tmp_path):
+    assert cost.hand_started_vendor_model(hand_codex_log(tmp_path), " codex ") == {
+        "status": "observed", "vendor": "codex", "model": "gpt-6-sol", "models": ["gpt-6-sol"]}
+    assert cost.hand_started_vendor_model(str(hand_claude_log(tmp_path)), "CLAUDE") == {
+        "status": "observed", "vendor": "claude", "model": "claude-opus-5-5",
+        "models": ["claude-opus-5-5", "claude-sonnet-5-5"]}
+    assert cost.hand_started_vendor_model(None, "claude") == {
+        "status": "unknown", "reason": "the hand-started builder names no usage log"}
+
+
+def test_only_a_vendor_hand_log_vendors_names_has_a_reader(tmp_path, monkeypatch):
+    assert set(cost.HAND_LOG_VENDORS) == {"claude", "codex"}
+    monkeypatch.setattr(cost, "HAND_LOG_VENDORS", {"claude": cost.HAND_LOG_VENDORS["claude"]})
+    observed = cost.hand_started_vendor_model(hand_codex_log(tmp_path), "codex")
+    assert observed["status"] == "unknown" and "no usage reader for vendor codex" in observed["reason"]
+
+
+def test_a_hand_started_change_splits_the_holder_at_the_handoff_time(tmp_path):
+    handed_off_at = datetime.fromisoformat(route_moment(5).isoformat().replace("+00:00", "Z"))
+    split = cost.route_split(holder_replies=route_holder_replies(tmp_path), start=handed_off_at,
+                             builder_bundles=[], seat_bundles=[], hand_usage_log=hand_claude_log(tmp_path),
+                             hand_vendor="claude")
+    early, edge, late = (route_reply_price(tokens) for _name, _second, tokens in ROUTE_HOLDER_REPLIES)
+    assert Decimal(split["holder_before"]["amount"]) == early and split["holder_before"]["replies"] == 1
+    assert Decimal(split["holder_after"]["amount"]) == edge + late and split["holder_after"]["replies"] == 2
+    assert Decimal(split["builder"]["amount"]) == hand_claude_price()
+    assert split["start"] == route_moment(5).isoformat()
+
+
+def test_no_handoff_time_reads_both_holder_figures_unknown_and_still_prices_a_claude_builder(tmp_path):
+    split = cost.route_split(holder_replies=route_holder_replies(tmp_path), start=None, builder_bundles=[],
+                             seat_bundles=[], hand_usage_log=hand_claude_log(tmp_path), hand_vendor="claude")
+    for name in ("holder_before", "holder_after"):
+        assert split[name] == {"status": "unknown", "reason": "no handoff time to divide the holder's cost at"}
+    assert split["start"] is None
+    assert Decimal(split["builder"]["amount"]) == hand_claude_price()
+    # A Codex stream carries no times of its own, so nothing dates its list price either.
+    codex = cost.route_split(holder_replies=[], start=None, builder_bundles=[], seat_bundles=[],
+                             hand_usage_log=hand_codex_log(tmp_path), hand_vendor="codex")["builder"]
+    assert codex["status"] == "unknown" and "no handoff time" in codex["reason"]
+    assert (codex["vendor"], codex["model"]) == ("codex", "gpt-6-sol")
+
+
 def claude_builder_stream(session, *replies):
     """A Claude stream-json log: each reply's event carries its usage as it began, output not yet counted."""
     events = [{"type": "system", "subtype": "init", "session_id": session}]
@@ -2334,8 +2441,20 @@ def test_route_comparison_is_due_once_on_the_counted_work(tmp_path):
     assert len(ledger.read_bytes().splitlines()) == 5
 
 
+def test_route_comparison_counts_only_work_first_launched_from_its_since(tmp_path):
+    comparison_file(tmp_path, {"issue": "acme/lab#7", "count": 2, "since": "2026-11-01T00:00:00Z"})
+    before = cost.route_comparison("acme/widget#1", home=tmp_path, first_launch="2026-10-31T23:59:00+00:00")
+    unknown_launch = cost.route_comparison("acme/widget#2", home=tmp_path)
+    assert before["status"] == unknown_launch["status"] == "not-counted" and before["reason"] and unknown_launch["reason"]
+    assert not (tmp_path / ".tradecraft" / "route-comparison").exists()
+    after = cost.route_comparison("acme/widget#3", home=tmp_path,
+                                  first_launch=datetime(2026, 11, 2, tzinfo=timezone.utc))
+    assert after == {"ordinal": 1, "count": 2, "issue": "acme/lab#7", "due": False}
+
+
 @pytest.mark.parametrize("value", [b"{not json", [], {"issue": "acme/lab#7"}, {"issue": "", "count": 5},
-                                   {"issue": "acme/lab#7", "count": 0}, {"issue": "acme/lab#7", "count": True}])
+                                   {"issue": "acme/lab#7", "count": 0}, {"issue": "acme/lab#7", "count": True},
+                                   {"issue": "acme/lab#7", "count": 1, "since": "2026-11-01"}])
 def test_a_malformed_route_comparison_file_is_unknown_and_writes_nothing(tmp_path, value):
     comparison_file(tmp_path, value)
     answer = cost.route_comparison("acme/widget#1", home=tmp_path)

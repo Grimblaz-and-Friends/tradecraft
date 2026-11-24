@@ -5,12 +5,48 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import work  # noqa: E402
 from test_route import BRIEF, decision, ended_stretch, fixture, launch, post, readiness_record  # noqa: E402
 
 HEAD = "a" * 40
 COMMIT = "b" * 40
+ELSEWHERE = "e" * 40
+NO_STATUS = "9" * 40
+
+
+class CompareGitHub:
+    """GitHub's compare of a commit with the head: ahead for COMMIT, diverged for ELSEWHERE, else unknown."""
+    asked: list[str] = []
+    failing = False
+
+    def get(self, endpoint, **_kwargs):
+        commit = endpoint.rsplit("/", 1)[-1].split("...", 1)[0]
+        CompareGitHub.asked.append(commit)
+        if CompareGitHub.failing:
+            raise work.WorkError("gh: connection reset")
+        if commit == COMMIT:
+            return {"status": "ahead"}
+        if commit == ELSEWHERE:
+            return {"status": "diverged"}
+        if commit == NO_STATUS:
+            return {}
+        error = work.WorkError("gh: Not Found (HTTP 404)")
+        error.http_status = 404
+        raise error
+
+
+@pytest.fixture(autouse=True)
+def compare_github(monkeypatch):
+    CompareGitHub.asked, CompareGitHub.failing = [], False
+    monkeypatch.setattr(work, "GitHubREST", CompareGitHub)
+
+
+def with_head(state, head=HEAD):
+    state.pr = {"number": 7, "head": {"sha": head}}
+    return state
 
 
 def record(dispatch, *, status="ready", checks=(), findings=(), stop=None):
@@ -42,11 +78,46 @@ def test_1011_a_record_answering_every_finding_reads_reconciled(tmp_path):
     state = fixture(tmp_path, BRIEF, record(builder, checks=[check(900, seat)], findings=[
         {"report": 900, "finding": "F1", "disposition": "fixed", "commit": COMMIT},
         {"report": 900, "finding": "F2", "disposition": "declined", "reason": "Out of the brief's rows."}]))
-    reading = work.readiness_reading(state, accounting(builder, seat))
+    reading = work.readiness_reading(with_head(state), accounting(builder, seat))
     assert reading["reconciled"] is True and reading["unreconciled"] == []
     assert reading["dispatch_is_this_works_stretch"] and reading["launched_by_builder"]
     assert [entry["finding"] for entry in reading["declines"]] == ["F2"]
-    assert reading["status"] == "ready" and reading["stop"] is None and reading["reachability"] == "unchecked"
+    assert reading["status"] == "ready" and reading["stop"] is None and reading["reachability"] == "checked"
+
+
+def fixed_findings(tmp_path, *commits):
+    state = fixture(tmp_path, BRIEF)
+    builder, seat = launch(state, "stretch", 1), "c" * 32
+    state = fixture(tmp_path, BRIEF, record(builder, checks=[check(900, seat)], findings=[
+        {"report": 900, "finding": f"F{index}", "disposition": "fixed", "commit": commit}
+        for index, commit in enumerate(commits, 1)]))
+    return work.readiness_reading(with_head(state), accounting(builder, seat, findings=tuple(
+        f"F{index}" for index in range(1, len(commits) + 1))))
+
+
+def test_a_fixed_findings_commit_in_the_head_reconciles_and_each_commit_is_asked_once(tmp_path):
+    reading = fixed_findings(tmp_path, COMMIT, COMMIT, HEAD)
+    assert reading["reconciled"] is True and reading["reachability"] == "checked"
+    # The head itself is in the head without asking, and a commit named twice is asked once.
+    assert CompareGitHub.asked == [COMMIT]
+
+
+def test_a_fixed_findings_commit_outside_the_head_or_unknown_to_github_is_unreachable(tmp_path):
+    for commit in (ELSEWHERE, "f" * 40):
+        reading = fixed_findings(tmp_path / commit[:1], commit)
+        assert reading["reconciled"] is False and reading["reachability"] == "checked"
+        assert [entry["problem"] for entry in reading["unreconciled"]] == ["unreachable"]
+
+
+def test_a_compare_github_cannot_answer_is_unverified_never_reachable(tmp_path):
+    # An answer naming no status is no answer either.
+    reading = fixed_findings(tmp_path / "none", NO_STATUS)
+    assert [entry["problem"] for entry in reading["unreconciled"]] == ["unverified"]
+    CompareGitHub.failing = True
+    reading = fixed_findings(tmp_path, COMMIT)
+    assert reading["reconciled"] is False and reading["reachability"] == "incomplete"
+    assert [entry["problem"] for entry in reading["unreconciled"]] == ["unverified"]
+    assert "connection reset" in reading["unverified"][COMMIT]
 
 
 def test_1011_a_report_the_record_leaves_out_is_listed_and_its_findings_owed(tmp_path):

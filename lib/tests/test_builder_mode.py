@@ -682,7 +682,7 @@ def test_a_report_the_entrance_posted_for_a_recomposed_check_counts(counted):
     # A counting report carries its stage, its builder and the findings its return tail gives; this
     # stand-in return has no `Findings:` tail, so it counts as the one unreadable finding.
     assert report == {"comment": 1, "dispatch": report["dispatch"], "counts": True, "invalid": [],
-                      "stage": "use", "builder": report["builder"], "head": report["head"], "criterion": None,
+                      "stage": "use", "builder": report["builder"], "head": report["head"], "criterion": None, "row": None,
                       "outcome": report["outcome"], "findings": ["F0"]}
     assert report["builder"]
 
@@ -1148,3 +1148,49 @@ def test_1011_a_comment_that_quotes_the_report_marker_is_set_aside_not_counted(c
     assert checks["check_reports"][0]["counts"] is True
     assert [quotation["source"]["id"] for quotation in checks["quotations"]] == [2, 3, 4, 5]
     assert {quotation["name"] for quotation in checks["quotations"]} == {"check-report"}
+
+
+MECHANICAL_ROWS = ("<!-- tradecraft:affirmed-brief:v1 -->\nReview risk: ordinary\nReview lane: mechanical\n\n"
+                   "**1. The job runs.**\n\n**2. The job runs twice.**\nCriterion:\n\n**C1.** A row's words, never "
+                   "its criterion.\n")
+
+
+def test_a_row_readers_report_counts_on_a_mechanical_change_with_no_settled_artifact(
+        composed, check_source, tmp_path, monkeypatch):
+    state, _behaviour, seen = composed
+    base, _head = commit_change(check_source)
+    state.pr = {"number": 12, "base": {"sha": base}}
+    # The mechanical lane has no plan: nothing settles an artifact, so a lookup of one is refused.
+    state.artifact_phase = SimpleNamespace(settled_artifact=None, source_error=None)
+    brief = SimpleNamespace(body=MECHANICAL_ROWS, source_id="70")
+    monkeypatch.setattr(work, "_affirmed_review", lambda _state: (brief, ("ordinary", "mechanical")))
+    transport = PostingTransport()
+    run_check(state, "acceptance-criterion", "--row", "2", transport=transport)
+    marker = transport.posts[0][1].split("\n", 1)[0]
+    assert "row=2" in marker and "criterion=" not in marker
+    store = tmp_path / "store"
+    write_bundle(store, "stretch", {"dispatch_id": "a" * 32, "stage": "stretch"})
+    dispatch_id = re.search(r"dispatch=(\w+)", marker).group(1)
+    write_bundle(store, "acceptance-criterion", {
+        "dispatch_id": dispatch_id, "stage": "acceptance-criterion", "root": str(seen["tree"]),
+        "launched_by": {"role": "builder", "dispatch_id": "a" * 32, "session_id": SESSION,
+                        "identity": "declared"}, "dispatch_origin": "entrance"},
+        {"outcome": "success", "staffing_status": "degraded",
+         "staffing_qualification": {"same_vendor_reason": "owner-selected-claude-implementer"}},
+        {".dispatch.bin": seen["dispatch"], ".source.bin": b"The job ran.\n"})
+    state.record_root = store
+    state.config = work.WorkConfig(marker_producers=frozenset({"producer"}))
+    state.issue_comments = [{"id": 1, "body": transport.posts[0][1], "user": {"login": "producer"}}]
+    checks = work.builder_checks(state)
+    assert [entry["status"] for entry in checks["check_dispatches"]] == ["composed"], checks["check_dispatches"]
+    [report] = checks["check_reports"]
+    assert report["counts"] is True and report["row"] == 2 and report["criterion"] is None, report
+    posted = transport.posts[0][1]
+    # A report naming another row than its dispatch reads, or a declared builder vendor under a launched
+    # builder, doesn't count.
+    for body, reason in ((posted.replace("row=2", "row=3", 1), "row differs"),
+                         (posted.replace("row=2", "row=2 builder_vendor=declared", 1),
+                          "builder_vendor outside a hand-started record")):
+        state.issue_comments = [{"id": 1, "body": body, "user": {"login": "producer"}}]
+        [report] = work.builder_checks(state)["check_reports"]
+        assert report["counts"] is False and reason in report["invalid"], report

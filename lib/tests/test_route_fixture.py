@@ -19,8 +19,10 @@ STAGES = {"handoff-due": "handoff", "handoff": "handoff", "with-builder": "with-
           "stretch-stopped": "stretch-stopped", "cannot-launch": "stretch-stopped",
           "final-pass": "final-pass", "ready-reported": "final-pass", "catch-up": "catch-up",
           "hand-started": "with-builder",
+          # The stand-in stretch ran under a write bound and recorded no comparison, so the holder owes its account.
+          "launch-account-held": "launch-account",
           # Today's relay chain: with the plan settled and no pull request, a build is next.
-          "relay-in-flight": "build", "relay-default": "build"}
+          "relay-in-flight": "build", "owner-asked-relay": "build"}
 
 
 @pytest.fixture(scope="module")
@@ -60,6 +62,9 @@ def test_each_scenario_prints_the_decision_it_names(exported, name):
         assert [entry["counts"] for entry in report["builder_checks"]["check_reports"]] == [True]
     if name == "cannot-launch":
         assert report["reason"] == "cannot-launch"
+    if name == "launch-account-held":
+        assert report["reason"] == "launch-findings-unaccounted"
+        assert [bundle["state"] for bundle in report["launch_findings"]["bundles"]] == ["unrecorded"]
     if name == "ready-reported":
         # Reach was read from the holder's Git rather than stubbed, and the payload follows the decision.
         assert (report["reason"], report["reach"]["state"]) == ("ready-reported", "clear")
@@ -75,6 +80,18 @@ def test_the_handoff_carries_the_brief_the_plan_and_the_floor_command(exported):
     assert route_fixture.PLAN.strip() in text
     assert "```text\n" + route_fixture.FLOOR + "\n```" in text
     assert "--criterion C2" in text and "--job-from-artifact" in text
+
+
+@pytest.mark.parametrize("mechanical", [False, True])
+def test_the_handoff_decision_names_the_builder_its_printed_text_is_for(exported, mechanical):
+    result = fixture_run(exported, "handoff", *(["--mechanical"] if mechanical else []))
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    report, text = result.stdout.decode("utf-8").split("\n--- composed handoff ---\n", 1)
+    settings = json.loads(report.split("\n", 1)[0])["launch_settings"]
+    assert (settings["vendor"], settings["started_by"]) == ("claude", "launch")
+    assert '"started_by": "launch"' in text and "## Where you work" not in text
+    # The stop rule names the brief's Shape sentence, so the stand-in brief the text carries has one.
+    assert "**Shape:**" in text
 
 
 def test_a_builders_proof_posted_while_its_launch_runs_stays_current_after_it_ends(tmp_path, monkeypatch, capsys):
@@ -114,3 +131,46 @@ def test_a_builders_proof_posted_while_its_launch_runs_stays_current_after_it_en
     assert [(item["stage"], item["status"]) for item in composed["declarations"]] == [
         ("floor", "declared"), ("use", "declared")] and proofs[0] == proofs[1]
     assert (decision["stage"], decision["reason"]) == ("final-pass", "ready-reported"), decision["detail"]
+
+
+def test_the_mechanical_handoff_carries_a_row_reader_per_row_and_no_plan(exported):
+    result = fixture_run(exported, "handoff", "--mechanical")
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    report, text = result.stdout.decode("utf-8").split("\n--- composed handoff ---\n", 1)
+    decision = json.loads(report.split("\n", 1)[0])
+    assert (decision["stage"], decision["reason"]) == ("handoff", "handoff-due")
+    assert "## The mechanical lane" in text and "The settled plan" not in text
+    assert "Review lane: mechanical" in text and "--job-from-artifact" not in text
+    rows = [line.rsplit("--row ", 1)[1] for line in text.splitlines() if " --row " in line]
+    assert rows == [str(number) for number in range(1, 8)]
+
+
+def test_mechanical_applies_only_to_the_handoff_scenarios(exported):
+    assert fixture_run(exported, "with-builder", "--mechanical").returncode == 2
+
+
+@pytest.mark.unlisted_builder_reason
+def test_a_decision_flagged_with_an_unlisted_builder_reason_fails_the_run(tmp_path, monkeypatch, capsys):
+    fixture = route_fixture.Fixture(tmp_path)
+    work = fixture.work
+    for name in ("GitHubREST", "_read_policy_state"):
+        monkeypatch.setattr(work, name, getattr(work, name))  # restored after the fixture's decision sets it
+    # With no reason listed, the live builder's `if_ended` reading is one the handoff's steps don't answer.
+    monkeypatch.setattr(work, "BUILDER_MODE_REASONS", frozenset())
+    try:
+        fixture.live_stretch()
+        code = fixture.decision(fixture.state())
+    finally:
+        fixture.stop()
+        work.UNLISTED_BUILDER_REASONS.clear()
+    flagged = route_fixture.unlisted_builder_reason(fixture.reports[0])
+    assert flagged and code != 0
+    assert f"unlisted_builder_reason {flagged}" in capsys.readouterr().err
+
+
+def test_the_flag_is_read_from_the_decision_or_its_if_ended():
+    read = route_fixture.unlisted_builder_reason
+    assert read({"unlisted_builder_reason": "x", "detail": ""}) == "x"
+    assert read({"detail": json.dumps({"if_ended": {"reason": "y", "unlisted_builder_reason": "y"}})}) == "y"
+    assert read({"detail": json.dumps({"if_ended": {"reason": "y"}})}) is None
+    assert read({"detail": "not json"}) is None

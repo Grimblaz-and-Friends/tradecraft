@@ -232,6 +232,16 @@ def memory_record() -> dict[str, str]:
             "fallback": "file-tool writes to the memory store are outside the allowed set"}
 
 
+def write_bound_record(*, file_tools: dict | None, memory: dict | None, comparison,
+                       comparison_error: str | None) -> dict[str, object]:
+    """The `write_bound` a launch's request record carries: its file-tool guard, its memory switch, the
+    comparison it planned (or why it planned none), and the shell's lack of a fence."""
+    return {"file_tools": file_tools, "memory": memory,
+            "comparison": ({"coverage": comparison.planned()} if comparison is not None
+                           else {"coverage": [], "unavailable_reason": comparison_error}),
+            "shell": SHELL}
+
+
 def _stream_events(raw: bytes) -> list[dict]:
     events = []
     for line in raw.splitlines():

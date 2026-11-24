@@ -111,16 +111,71 @@ def _has_pipe_decision_table(lines: list[str], index: int) -> bool:
     return bool(data) and any(data)
 
 
+ROW_HEADING = re.compile(r"^(#{1,6})\s+Row\s+([1-9][0-9]*)(?:\s+.*)?$", re.I)
+BOLD_ROW = re.compile(r"^\*\*(?:R([1-9][0-9]*)|([1-9][0-9]*))\.\s+\S.*?\*\*(?:\s|$)", re.I)
+HEADING = re.compile(r"^(#{1,6})\s")
+
+
 def _has_decision_block(text: str) -> bool:
-    row_heading = re.compile(r"^#{1,6}\s+Row\s+[1-9][0-9]*(?:\s+.*)?$", re.I)
-    bold_row = re.compile(r"^\*\*(?:R[1-9][0-9]*|[1-9][0-9]*)\.\s+\S.*?\*\*(?:\s|$)", re.I)
     lines = text.splitlines()
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if (_has_pipe_decision_table(lines, index) or row_heading.fullmatch(stripped)
-                or bold_row.match(stripped)):
+        if (_has_pipe_decision_table(lines, index) or ROW_HEADING.fullmatch(stripped)
+                or BOLD_ROW.match(stripped)):
             return True
     return False
+
+
+def _row_text(lines: list[str]) -> str:
+    while lines and not lines[-1].strip():
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def rows(text: str) -> list[tuple[int, str]]:
+    """Each decision row's number and whole text, in order, from the forms `_has_decision_block` recognises.
+
+    Rows are found outside fenced regions, but a row's text is the brief's own lines, so a fence
+    inside a row stays in it. A pipe table's rows are numbered in order from 1 and read as their
+    cells joined with ` | `. Design: lib/DESIGN.md#the-builder-route
+    """
+    original = text.splitlines()
+    # The fence-free copy keeps one line per line, so an index into it is an index into the brief.
+    outside = _without_fenced_regions(text).splitlines()
+    outside += [""] * (len(original) - len(outside))
+    found: list[tuple[int, str]] = []
+    table_rows = 0
+    index = 0
+    while index < len(outside):
+        stripped = outside[index].strip()
+        heading, bold = ROW_HEADING.fullmatch(stripped), BOLD_ROW.match(stripped)
+        if _has_pipe_decision_table(outside, index):
+            index += 2  # The header and its delimiter carry no row.
+            while index < len(outside) and _pipe_cells(outside[index]) and any(_pipe_cells(outside[index])):
+                table_rows += 1
+                found.append((table_rows, " | ".join(_pipe_cells(outside[index]))))
+                index += 1
+            continue
+        if heading:
+            level, end = len(heading.group(1)), index + 1
+            # A heading row runs to the next heading of its own level or higher, or to `Not this` at any depth.
+            while end < len(outside) and not (
+                    (match := HEADING.match(outside[end].strip())) and len(match.group(1)) <= level
+                    or _has_label(outside[end], "Not this")):
+                end += 1
+            found.append((int(heading.group(2)), _row_text(original[index:end])))
+            index = end
+            continue
+        if bold:
+            end = index + 1
+            while end < len(outside) and not (BOLD_ROW.match(outside[end].strip())
+                                              or _has_label(outside[end], "Not this")):
+                end += 1
+            found.append((int(bold.group(1) or bold.group(2)), _row_text(original[index:end])))
+            index = end
+            continue
+        index += 1
+    return found
 
 
 def missing_elements(text: str) -> tuple[str, ...]:

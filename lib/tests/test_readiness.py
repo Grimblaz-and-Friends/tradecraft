@@ -21,7 +21,7 @@ def record(**changes):
     value = {
         "schema_version": 1,
         "builder": {"vendor": "claude", "model": "opus", "started_by": "launch", "usage_log": None},
-        "checks": [{"stage": "acceptance-criterion", "criterion": "B3", "row": 2, "dispatch": DISPATCH,
+        "checks": [{"stage": "acceptance-criterion", "criterion": "B3", "row": None, "dispatch": DISPATCH,
                     "head": HEAD, "report": 123, "relaunch_of": None}],
         "findings": [{"report": 123, "finding": "F1", "disposition": "fixed", "commit": "b" * 40},
                      {"report": 123, "finding": "F2", "disposition": "declined", "reason": "out of scope"}],
@@ -238,7 +238,8 @@ def reachable(commit):
 
 
 def test_1011_a_fully_answered_record_reconciles():
-    assert readiness.reconcile(record(), [report()], reachable) == {"reconciled": True, "unreconciled": []}
+    assert readiness.reconcile(record(), [report()], reachable) == {
+        "reconciled": True, "unreconciled": [], "reachability": "checked"}
 
 
 def problems(value, reports):
@@ -307,3 +308,55 @@ def test_1011_a_relaunch_must_come_after_the_failure():
     checks = [check(OTHER, relaunch_of=DISPATCH), check(DISPATCH)]
     assert readiness.relaunches(checks, [DISPATCH]) == {"pairs": [], "unpaired": [checks[1]]}
 
+
+
+def test_a_row_reader_names_its_row_and_leaves_the_criterion_null():
+    row = {**record()["checks"][0], "criterion": None, "row": 3}
+    assert readiness.payload(body(record(checks=[row])), "ready")["checks"] == [row]
+    for criterion, number in ((None, None), (None, 0), (None, True)):
+        with pytest.raises(readiness.ReadinessError):
+            readiness.payload(body(record(checks=[{**row, "criterion": criterion, "row": number}])), "ready")
+
+
+def test_a_criterion_check_with_a_row_beside_it_reads_as_the_criterions_check():
+    named = record()["checks"][0]
+    assert readiness.payload(body(record(checks=[{**named, "row": 2}])), "ready")["checks"] == [named]
+
+
+def test_unmapped_rows_are_the_affirmed_rows_nothing_carries():
+    mapped = record(rows=[{"row": 2, "carried_by": "test", "where": "lib/tests/test_x.py"}])
+    assert readiness.unmapped_rows(mapped, [1, 2, 3, 3]) == [1, 3]
+    assert readiness.unmapped_rows(record(rows=[]), [2]) == [2]
+    assert readiness.unmapped_rows(mapped, [2]) == []
+
+
+def test_a_fix_whose_commit_could_not_be_asked_is_unverified_and_reachability_incomplete():
+    value = record()
+    value["findings"][0]["commit"] = "c" * 40
+    result = readiness.reconcile(value, [report()], lambda commit: None)
+    assert result == {"reconciled": False, "reachability": "incomplete",
+                      "unreconciled": [{"report": 123, "finding": "F1", "problem": "unverified"}]}
+
+
+def test_a_fix_whose_commit_is_not_in_the_head_is_unreachable_and_reachability_checked():
+    value = record()
+    value["findings"][0]["commit"] = "c" * 40
+    result = readiness.reconcile(value, [report()], lambda commit: False)
+    assert result["reconciled"] is False and result["reachability"] == "checked"
+    assert result["unreconciled"] == [{"report": 123, "finding": "F1", "problem": "unreachable"}]
+
+
+def test_each_distinct_commit_is_asked_once():
+    asked = []
+    fixed = [{"report": 123, "finding": finding, "disposition": "fixed", "commit": "b" * 40}
+             for finding in ("F1", "F2", "F3")]
+    value = record(findings=fixed + [{"report": 456, "finding": "F1", "disposition": "fixed", "commit": "d" * 40}])
+    reports = [report(findings=("F1", "F2", "F3")), report(number=456, findings=("F1",))]
+    result = readiness.reconcile(value, reports, lambda commit: asked.append(commit) or True)
+    assert result["reconciled"] is True and result["reachability"] == "checked"
+    assert asked == ["b" * 40, "d" * 40]
+
+
+def test_a_record_with_no_fix_reads_reachability_checked():
+    value = record(findings=[{"report": 123, "finding": "F1", "disposition": "declined", "reason": "x"}])
+    assert readiness.reconcile(value, [report(findings=("F1",))], lambda commit: None)["reachability"] == "checked"

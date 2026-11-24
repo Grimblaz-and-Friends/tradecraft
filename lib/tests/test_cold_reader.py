@@ -521,7 +521,7 @@ def test_a_mixed_reading_routes_only_its_unaccepted_flags(change):
 
 
 @pytest.mark.cold_reading
-def test_the_release_report_lists_each_readings_flags_acceptances_and_run(change):
+def test_the_release_report_lists_each_readings_flags_acceptances_and_run(change, monkeypatch):
     change.read(two_flags())
     run = change.store / "reading-1.run.json"
     run.write_text(json.dumps({**json.loads(run.read_text("utf-8")), "attempts": [
@@ -535,6 +535,10 @@ def test_the_release_report_lists_each_readings_flags_acceptances_and_run(change
     assert measures["status"] == "read" and len(measures["readings"]) == 1
     row = measures["readings"][0]
     assert (row["head"], row["whole"], row["posted"], row["can_tell"]) == (change.head, True, True, True)
+    # Whose the acceptances are follows the route: the builder writes them on its own.
+    assert row["accepted_by"] == "holder"
+    monkeypatch.setattr(work, "_route", lambda _state: {"name": "builder"})
+    assert work._cold_reading_measures(fixture)["readings"][0]["accepted_by"] == "builder"
     assert row["accepted"] == [{"flag": f"b.py:1 {dash} missing-reason {dash} why the pointer names a "
                                         "missing document", "reason": "the document is planned"}]
     assert row["routed"] == [f"a.py:1 {dash} what-comment {dash} the second line restates the code"]
