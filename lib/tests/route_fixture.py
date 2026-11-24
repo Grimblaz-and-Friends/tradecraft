@@ -32,8 +32,10 @@ WORK = f"{REPO}#{ISSUE}"
 START = datetime(2026, 11, 1, tzinfo=timezone.utc)
 FLOOR = "python -B -m pytest -q"
 RULES = {"schema_version": 1, "rules": [{"name": "fixture", "include": ["job/**"], "exclude": []}]}
-BRIEF = ("<!-- tradecraft:affirmed-brief:v1 -->\n\n## Purpose\n\nA stand-in product change whose job "
-         "an adopter runs.\n\n| Row | Outcome |\n|---|---|\n| 1 | The job runs as an adopter would run it. |\n\n"
+# Each brief carries a Shape sentence, because the handoff's stop rule is worded on what it says the change is.
+BRIEF = ("<!-- tradecraft:affirmed-brief:v1 -->\n\n**Shape:** a job an adopter runs, built and proved by use.\n\n"
+         "## Purpose\n\nA stand-in product change whose job an adopter runs.\n\n"
+         "| Row | Outcome |\n|---|---|\n| 1 | The job runs as an adopter would run it. |\n\n"
          "Review risk: ordinary\nReview lane: connected\n")
 PLAN = ("\n## Plan\n\nBuild row 1 and prove it by use.\n\n"
         "## Use session job\n\n```text\nUse the job as an adopter would.\n```\n\n"
@@ -43,6 +45,7 @@ PLAN = ("\n## Plan\n\nBuild row 1 and prove it by use.\n\n"
         "**C2.** The job runs.\nFresh reader: execute consumer tree use\n")
 # The owner-affirmed mechanical lane: a determinate correction in seven rows, with no plan owed.
 MECHANICAL_BRIEF = ("<!-- tradecraft:affirmed-brief:v1 -->\nReview risk: ordinary\nReview lane: mechanical\n\n"
+                    "**Shape:** seven of the job's lines corrected as written, and nothing else.\n\n"
                     "## Purpose\n\nA stand-in correction to the job's wording.\n\n## Rows\n\n"
                     + "".join(f"**{number}. The job's line {number} reads as corrected.** It says what it does.\n\n"
                               for number in range(1, 8)))
@@ -85,6 +88,10 @@ def isolate(base: Path) -> None:
     home, temp = base / "home", base / "temp"
     home.mkdir()
     temp.mkdir()
+    # The machine's builder is Claude, as every stand-in launch record is, so the decision's launch plan names the
+    # launched builder whose handoff the `handoff` scenario prints; with no machine file it would be Codex, by hand.
+    (home / ".tradecraft").mkdir()
+    (home / ".tradecraft" / "implementer-vendor").write_bytes(b"claude")
     os.environ["HOME"] = os.environ["USERPROFILE"] = str(home)
     for name in ("TMPDIR", "TEMP", "TMP"):
         os.environ[name] = str(temp)

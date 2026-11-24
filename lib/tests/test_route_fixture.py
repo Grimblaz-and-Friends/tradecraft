@@ -82,6 +82,18 @@ def test_the_handoff_carries_the_brief_the_plan_and_the_floor_command(exported):
     assert "--criterion C2" in text and "--job-from-artifact" in text
 
 
+@pytest.mark.parametrize("mechanical", [False, True])
+def test_the_handoff_decision_names_the_builder_its_printed_text_is_for(exported, mechanical):
+    result = fixture_run(exported, "handoff", *(["--mechanical"] if mechanical else []))
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    report, text = result.stdout.decode("utf-8").split("\n--- composed handoff ---\n", 1)
+    settings = json.loads(report.split("\n", 1)[0])["launch_settings"]
+    assert (settings["vendor"], settings["started_by"]) == ("claude", "launch")
+    assert '"started_by": "launch"' in text and "## Where you work" not in text
+    # The stop rule names the brief's Shape sentence, so the stand-in brief the text carries has one.
+    assert "**Shape:**" in text
+
+
 def test_a_builders_proof_posted_while_its_launch_runs_stays_current_after_it_ends(tmp_path, monkeypatch, capsys):
     fixture = route_fixture.Fixture(tmp_path)
     work, posted, proofs = fixture.work, [], []

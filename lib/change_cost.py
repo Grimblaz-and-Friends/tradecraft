@@ -2000,13 +2000,40 @@ def _launched_builder(builder_bundles: list, seat_bundles: list, card: _Card,
     return _route_figure(values, dispatch_ids=counted)
 
 
-# The vendors whose own usage log a hand-started builder's cost and vendor and model can be read from.
-HAND_LOG_VENDORS = ("claude", "codex")
-
-
 def _hand_vendor(vendor: object) -> str | None:
     """A declared vendor as the readers name it: the owner may write it in any case."""
     return vendor.strip().lower() if isinstance(vendor, str) and vendor.strip() else None
+
+
+def _read_claude_hand_log(log: Path) -> tuple[dict | None, str | None]:
+    """A Claude session's transcript, <projects>/<project>/<session>.jsonl, with its subagents beside it."""
+    try:
+        _source, replies, gaps, _sources = transcripts.snapshot(log.parent.parent, log.stem)
+    except (OSError, transcripts.TranscriptError) as exc:
+        return None, f"cannot read the hand-started builder's Claude transcript: {log}: {exc}"
+    # The session's own model is its main thread's; a subagent may run another.
+    main = sorted({reply["model"] for reply in replies if reply.get("agent_id") is None})
+    return {"vendor": "claude", "model": main[0] if len(main) == 1 else None,
+            "models": sorted({reply["model"] for reply in replies}), "replies": replies, "gaps": gaps}, None
+
+
+def _read_codex_hand_log(log: Path) -> tuple[dict | None, str | None]:
+    """A Codex session's JSON event stream."""
+    try:
+        raw = log.read_bytes()
+    except OSError as exc:
+        return None, f"cannot read the hand-started builder's Codex log: {log}: {exc}"
+    observed = records.runtime_evidence("codex", raw, "fresh")
+    if not observed.get("stream_valid"):
+        return None, f"the hand-started builder's log is not a Codex JSON event stream: {log}"
+    models = list(observed.get("reported_models") or [])
+    return {"vendor": "codex", "model": models[0] if len(models) == 1 else None, "models": models,
+            "observed": observed}, None
+
+
+# The vendors whose own usage log a hand-started builder's cost and vendor and model can be read from, each with
+# its reader; a vendor not here has no reader.
+HAND_LOG_VENDORS = {"claude": _read_claude_hand_log, "codex": _read_codex_hand_log}
 
 
 def _read_hand_log(log: Path, vendor: str | None) -> tuple[dict | None, str | None]:
@@ -2015,28 +2042,10 @@ def _read_hand_log(log: Path, vendor: str | None) -> tuple[dict | None, str | No
     The reading is ``{"vendor", "model", "models", ...}`` plus the reader's own evidence: ``replies`` and
     ``gaps`` for a Claude transcript, ``observed`` for a Codex JSON event stream.
     """
-    if vendor == "claude":
-        # The session's transcript, <projects>/<project>/<session>.jsonl, with its subagents beside it.
-        try:
-            _source, replies, gaps, _sources = transcripts.snapshot(log.parent.parent, log.stem)
-        except (OSError, transcripts.TranscriptError) as exc:
-            return None, f"cannot read the hand-started builder's Claude transcript: {log}: {exc}"
-        # The session's own model is its main thread's; a subagent may run another.
-        main = sorted({reply["model"] for reply in replies if reply.get("agent_id") is None})
-        return {"vendor": "claude", "model": main[0] if len(main) == 1 else None,
-                "models": sorted({reply["model"] for reply in replies}), "replies": replies, "gaps": gaps}, None
-    if vendor == "codex":
-        try:
-            raw = log.read_bytes()
-        except OSError as exc:
-            return None, f"cannot read the hand-started builder's Codex log: {log}: {exc}"
-        observed = records.runtime_evidence("codex", raw, "fresh")
-        if not observed.get("stream_valid"):
-            return None, f"the hand-started builder's log is not a Codex JSON event stream: {log}"
-        models = list(observed.get("reported_models") or [])
-        return {"vendor": "codex", "model": models[0] if len(models) == 1 else None, "models": models,
-                "observed": observed}, None
-    return None, f"no usage reader for vendor {vendor}; the hand-started builder's log cannot be read"
+    reader = HAND_LOG_VENDORS.get(vendor) if vendor else None
+    if reader is None:
+        return None, f"no usage reader for vendor {vendor}; the hand-started builder's log cannot be read"
+    return reader(log)
 
 
 def hand_started_vendor_model(log: Path | str | None, vendor: str | None) -> dict[str, object]:

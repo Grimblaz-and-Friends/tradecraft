@@ -1,9 +1,9 @@
 """A builder who takes the handoff's steps in order is led by the entrance's read-back from each to the next.
 
-Guards the walk G10 asks of the handoff's table: driven through ``handoff.BUILDER_STEPS`` with a base that requires
-resolved review threads and a fixed commit after the floor ran, the read-back at each step names the table's next
-step, except for the two the test names with their reasons, and the walk ends at `final-pass` / `ready-reported`.
-Every decision it reads is one the drift guard's flag watches.
+Guards that the handoff's table and the entrance agree on the order: driven through ``handoff.BUILDER_STEPS`` with a
+base that requires resolved review threads and a fixed commit after the floor ran, the read-back at each step names
+the table's next step, except for the two the test names with their reasons, and the walk ends at `final-pass` /
+`ready-reported`. Every decision it reads is one the drift guard's flag watches.
 Design: lib/DESIGN.md#the-builder-route
 """
 from __future__ import annotations

@@ -124,8 +124,8 @@ def test_1011_record_contract_and_last_post_after_proof():
     assert "written when you decline it" in record
     assert "The record is the last thing you post at each ready report, after proof." in record
     finish = text[text.index("## How to finish"):]
-    assert "Post proof, then the readiness record at the head you report ready, as the last post." in finish
-    assert finish.index("Post proof") < finish.index("readiness record")
+    assert "post proof, then the readiness record at the head you report ready, as the last post." in finish
+    assert finish.index("post proof") < finish.index("readiness record")
     assert "read your record back with the reach" in finish
     assert ("For reach, `report` is your `reach-reading` comment's id, or null when reach flagged nothing."
             in record)
@@ -399,6 +399,18 @@ def test_the_floor_runs_again_after_a_later_commit_before_proof():
     again = entry(checks_section(compose(floor_command=FLOOR)), "the floor again")
     assert "After any commit made after the floor ran, run the floor again at the new head" in again
     assert "posting its marker" in again and "before you resolve threads or run proof" in again
+    assert "The cold reading's `clean` and reach must stand at that new head too before proof" in again
+
+
+def test_the_stop_rule_and_how_to_finish_say_the_same_about_a_stopped_record():
+    text = compose()
+    assert "A stopped record is your last post; then finish as \"How to finish\" says." in handoff.STOP.sentence
+    finish = text[text.index("## How to finish"):]
+    assert "Where you stop, the stopped record is the last post instead." in finish
+    assert "whether the record is ready or stopped, send one message to the holder session named `holder-7`" in finish
+    assert "After a stopped record, take no further step: the holder resumes you if the change goes on." in finish
+    alone = compose(notify=None)
+    assert "whether the record is ready or stopped, end; the owner tells the holder." in alone
 
 
 def test_a_reason_meaning_stop_points_at_the_stop_rule_the_text_carries():

@@ -106,7 +106,8 @@ BUILDER_STEPS = (
     Step("answer-reviewers", "answer the reviewers", ANSWER_REVIEWERS),
     Step("floor-again", "the floor again",
          "After any commit made after the floor ran, run the floor again at the new head as step 2 gives it, "
-         "posting its marker where step 2 gives a command, before you resolve threads or run proof."),
+         "posting its marker where step 2 gives a command, before you resolve threads or run proof. The cold "
+         "reading's `clean` and reach must stand at that new head too before proof, as proof's hold requires."),
     Step("resolve-threads", "resolve the answered threads", RESOLVE_THREADS),
     Step("proof", "proof", "Run proof at your head.", CLEAN_AND_REACH_HOLD),
     Step("readiness-record", "the readiness record",
@@ -127,10 +128,10 @@ STOP = Step("stop", "stop",
             "Stop with `status=stopped` and a `shape` stop only when what the brief's Shape sentence says the "
             "change is proves wrong for the change, or the affirmed brief is no longer there to say it. Where a "
             "check cannot be launched, post `status=stopped` with a `cannot-launch` stop naming the first such "
-            "check and why. A stopped record is your last post: tell the holder as \"How to finish\" says, and "
-            "wait to be resumed.")
+            "check and why. A stopped record is your last post; then finish as \"How to finish\" says.")
 STEPS = {step.key: step for step in (*BUILDER_STEPS, STOP)}
-# The step at which each owed check is launched.
+# An owed check is listed under the step that launches it, so the builder meets it, and the walk answers it, at
+# that step rather than in a list of its own.
 CHECK_STEPS = {"cold-reader": "cold-reader", "acceptance-criterion": "criteria", "use": "use", "floor": "floor",
                "reach": "reach", "ready-reviewers": "ready-reviewers", "proof": "proof"}
 
@@ -411,14 +412,19 @@ def compose_handoff(*, brief: str, checks: list[dict], allowance: str, repo: str
             "Write no check's instructions, and choose nothing a check reads.",
         ]),
         ("How to finish", [
-            "Post proof, then the readiness record at the head you report ready, as the last post.",
+            "Where you report ready: post proof, then the readiness record at the head you report ready, as "
+            "the last post. Where you stop, the stopped record is the last post instead.",
             "",
             "Then read your record back with the reach check's command; where it shows the record "
-            "unlawful or anything still owed at that head, repair it and post the record again.",
+            "unlawful, or a ready record with anything still owed at that head, repair it and post the record "
+            "again.",
             "",
-            (f"Then send one message to the holder session named `{notify}`; where your runtime offers "
-             "no such message, end, and the owner tells the holder." if notify else
-             "Then end; the owner tells the holder."),
+            (f"Then, whether the record is ready or stopped, send one message to the holder session named "
+             f"`{notify}`; where your runtime offers no such message, end, and the owner tells the holder."
+             if notify else
+             "Then, whether the record is ready or stopped, end; the owner tells the holder."),
+            "",
+            "After a stopped record, take no further step: the holder resumes you if the change goes on.",
         ]),
     ]
     if hand:

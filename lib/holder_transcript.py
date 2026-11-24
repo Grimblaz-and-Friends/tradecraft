@@ -951,9 +951,11 @@ def _listed(calls, wanted):
             for call in calls if call["kinds"] & wanted]
 
 
-# A call that ran a stage or launcher, messaged the builder or wrote to the change on GitHub.
+# What row 1.3 of `route_report.ROW_CHECKS` reads as "sent the builder nothing": every way the holder can act on
+# the handed-off change. A subagent or session acts on nothing by itself, so it is read only as a launch.
 QUIET_BREAKING = frozenset({"work-run", "launcher", "message", "github-write"})
-# A call that started something: a stage, a launcher, a subagent or a coding-agent session.
+# What row 1.3's "launched nothing" and row 4.1's launches after ready read: anything the holder starts, so a
+# stage or launcher is both an act on the change and a launch.
 LAUNCHING = frozenset({"work-run", "launcher", "agent", "session"})
 
 

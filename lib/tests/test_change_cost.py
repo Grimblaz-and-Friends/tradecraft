@@ -2307,6 +2307,13 @@ def test_a_hand_started_builders_vendor_and_model_are_observed_from_its_log_with
         "status": "unknown", "reason": "the hand-started builder names no usage log"}
 
 
+def test_only_a_vendor_hand_log_vendors_names_has_a_reader(tmp_path, monkeypatch):
+    assert set(cost.HAND_LOG_VENDORS) == {"claude", "codex"}
+    monkeypatch.setattr(cost, "HAND_LOG_VENDORS", {"claude": cost.HAND_LOG_VENDORS["claude"]})
+    observed = cost.hand_started_vendor_model(hand_codex_log(tmp_path), "codex")
+    assert observed["status"] == "unknown" and "no usage reader for vendor codex" in observed["reason"]
+
+
 def test_a_hand_started_change_splits_the_holder_at_the_handoff_time(tmp_path):
     handed_off_at = datetime.fromisoformat(route_moment(5).isoformat().replace("+00:00", "Z"))
     split = cost.route_split(holder_replies=route_holder_replies(tmp_path), start=handed_off_at,
