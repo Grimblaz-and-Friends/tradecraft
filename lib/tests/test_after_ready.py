@@ -340,6 +340,9 @@ def test_1011_a_clean_ready_report_is_the_final_pass_until_the_release_report(
     work._complete_readied_hand_records(state)
     assert json.loads(work.decide(state, RULES).detail)["send_back_spent"] is True
     assert refused(monkeypatch, holder, state, "send-back", "--dispatch", words(tmp_path)) == "send-back-spent"
+    # With the send-back spent, a resume says where what stays open goes.
+    with pytest.raises(work.WorkError, match="^builder-not-stopped: .*" + work.SEND_BACK_SPENT):
+        run(monkeypatch, holder, state, "handoff", "--resume-reason", "more")
     capsys.readouterr()
     assert work.execute_stage(state, work.Decision("release-report", False, None, "holder-named-stage"),
                               holder, None) == 0
@@ -368,7 +371,7 @@ def test_1011_no_holder_usage_record_reads_the_holder_unknown(tmp_path):
                for name in ("holder_before", "holder_after"))
 
 
-def test_1011_a_hand_record_with_no_handoff_digest_reads_unknown(tmp_path):
+def test_a_hand_record_with_no_handoff_digest_reads_unknown(tmp_path):
     state = stored(tmp_path, *PLANNED)
     request = {"started_by": "hand", "producer_version": work.records.producer_version(),
                "handoff": {"tree": str(tmp_path), "branch": "b", "store": str(tmp_path), "dispatch": "d" * 32}}

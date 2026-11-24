@@ -65,10 +65,10 @@ The holder writes no check's instructions, and supplies the floor command only h
 
 **The builder's run.** In its own session, the builder:
 
-- opens the pull request as a draft and posts `implementing-pr`, with `builder-session` where it has a session id;
+- opens the pull request as a draft from its branch, with the issue's closing reference alone on a line of its body, by which the entrance finds it; it posts no `implementing-pr` or `builder-session`, for which that line and the stretch's record stand;
 - runs each owed check through the entrance: `run cold-reader`; `run acceptance-criterion --criterion ID` for each criterion with a `Fresh reader:` line; and `run use --job-from-artifact` where the entrance finds use owed at its head, and runs the holder's floor command itself. The entrance composes each check and posts its report, and the builder chooses nothing a check reads;
 - fixes or declines every finding of every report, writing a decline's reason when it makes the decline;
-- posts the cold reading's `open` and `clean`, whose `Accepted:` lines are its declines, a `launch-account` for each check it launched, the `reach-reading` for each item reach flags, and the `floor` marker;
+- posts the cold reading's `open` and `clean`, whose `Accepted:` lines are its declines, a `launch-account` for each check launch whose findings the decision reports, which hold its next step until it does, the `reach-reading` for each item reach flags, and the `floor` marker;
 - runs `run ready-reviewers`, and `run catch-up` when the decision orders it, answers every connected reviewer's threads, body findings and unidentified reviews, and posts proof;
 - where the plan settled nothing, continues on its recommendation and records it, naming any brief row it would change. It stops only when Shape is wrong (a `shape` stop) or a check cannot be launched (a `cannot-launch` stop naming it);
 - posts the readiness record (the `work` cell's `readiness` marker) at each ready report as its last post, after proof: each check it ran, one disposition for every finding, its decisions and refusals, and any stop. It then messages the holder session `--notify` named, or ends.

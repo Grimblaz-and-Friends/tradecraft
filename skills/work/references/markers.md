@@ -161,7 +161,7 @@ The entrance accepts the grant only for a turn that resumes that stage, when a c
 
 - **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.
 - **Attributes and lawful values:** `session` is the UUID-shaped session identity printed by the implementer launcher, or a Claude cloud session id (`cse_…`) where the vendor is `claude`; optional `vendor` is `codex` or `claude`. A matching dispatch bundle proves the vendor and must agree with a present attribute. Without a bundle, a vendor-qualified marker is the recovery route after the holder verifies the original runtime record; a UUID alone proves no vendor.
-- **Producer, surface, moment:** the holder, in a comment on the issue, when the build return and launcher output arrive. On the builder route the builder posts it with `implementing-pr` where it has a session id, and it agrees with the `stretch` bundle as with a `build` bundle; it never moves the route.
+- **Producer, surface, moment:** the holder, in a comment on the issue, when the build return and launcher output arrive. On the builder route none is owed, because the stretch's record stands for the builder's session; one posted there agrees with the `stretch` bundle as with a `build` bundle, and never moves the route.
 
 Reach correlates this claim across the issue's retained native records before scoping it to the selected implementation lineage. A proved sibling or other-lineage session is not this PR's missing turn. An authorized session with no retained attribution anywhere remains visible as its own uncertainty; a later return cannot account for an earlier marker.
 
@@ -328,7 +328,7 @@ Body-finding and unidentified-review answers instead open with the bare disposit
 
 - **Exact form:** `<!-- tradecraft:implementing-pr:v1 number=NUMBER -->`.
 - **Attributes and lawful values:** `number` is the positive integer number of the pull request that implements this issue.
-- **Producer, surface, moment:** the holder, in a comment on the implemented issue, immediately after opening the implementing pull request as a draft; on the builder route, the builder, which opens it.
+- **Producer, surface, moment:** the holder, in a comment on the implemented issue, immediately after opening the implementing pull request as a draft. On the builder route none is owed: the entrance finds the pull request the builder opens by the issue's closing reference.
 
 ```text
 <!-- tradecraft:implementing-pr:v1 number=91 -->

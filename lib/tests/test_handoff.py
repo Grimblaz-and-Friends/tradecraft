@@ -61,7 +61,7 @@ def test_1011_brief_and_artifact_byte_for_byte_and_allowance_verbatim():
     text = compose()
     assert BRIEF in text and ARTIFACT in text and ALLOWANCE in text
     assert text.index(BRIEF) < text.index(ARTIFACT) < text.index("## The checks you owe")
-    assert "the draft its settlement names, so its marker reads `status=draft`" in text
+    assert "Where it opens with a `status=draft` marker, it is the draft its settlement names" in text
 
 
 def test_1011_owed_checks_order_and_shape():
@@ -161,13 +161,15 @@ def test_1011_the_closing_line_and_who_posts_the_cold_reading():
     cold = entry(checks_section(text), "cold-reader")
     assert cold.index("`open`") < cold.index("`clean`")
     assert "holds `run use`, `run ready-reviewers` and `run proof` until a `clean` stands at your head" in cold
-    assert "status=open staffing_status=STATUS -->" in cold and "status=clean" in cold and "Accepted: path:lines" in cold
+    assert "staffing_status=STATUS same_vendor_reason=REASON -->" in cold and "status=clean" in cold and "Accepted: path:lines" in cold
     assert "First push your branch and open the draft pull request" in text and "proof are not." in text
     assert "Run the floor at the pull request's head before ready-reviewers" in text
     assert "`own-turn` with `added_by`" in text and "`.tradecraft/work.json` `connected_reviewers`" in text
     assert "wait for each connected reviewer's review and answer it whole; then run proof, then post" in text
     assert "any departure from the plan a check required, with what you added" in text
     assert "implementing-pr" not in text and "builder-session" not in text
+    assert "`<!-- tradecraft:launch-account:v1 dispatch=DISPATCH_ID -->`" in text and "`none-found`" in text
+    assert "the read-only decision lists each report's under `builder_checks`" in text
 
 
 def test_1011_without_notify_the_builder_ends():
@@ -203,8 +205,8 @@ def test_1011_reach_is_listed_before_ready_reviewers_and_proof_and_the_list_is_n
         section = checks_section(compose(**kwargs))
         assert section.index(". reach:") < section.index(". ready-reviewers:") < section.index(". proof:")
         assert section.count("not a fixed sequence") == 1
-        assert ("except where a check is held on another: ready-reviewers and proof are both held on "
-                "reach") in section
+        assert ("except where a check is held on another: use, ready-reviewers and proof are held until "
+                "the cold reading's `clean`") in section
         assert "in this order" not in section
 
 
@@ -226,7 +228,7 @@ def test_1011_floor_with_a_command_carries_it_word_for_word():
     assert "```text\n" + FLOOR + "\n```" in floor
     assert "Run it word for word" in floor
     assert "`<!-- tradecraft:floor:v1 head=FULL_COMMIT_SHA status=pass -->`" in floor
-    assert "the command and its exact output" in floor
+    assert "then the command alone in its own fenced block, then its exact output after that block" in floor
     assert "declared CI jobs" not in floor and " run floor " not in compose(floor_command=FLOOR)
 
 

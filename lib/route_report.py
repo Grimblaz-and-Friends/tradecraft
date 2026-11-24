@@ -10,9 +10,9 @@ HOLDS, FAILS, NOT_STATED, NOT_APPLICABLE, NOT_OCCURRED, UNKNOWN = (
 COST_FIGURES = ("holder_before", "holder_after", "builder")
 
 
-# What each row check asserts, numbered as the route's brief numbers them (row.check), so a release
-# report's reader needs neither. 5.1 is the launcher's own tests, with nothing in a change's records to
-# read, and 6.1 the holder writes from the run, so neither is computed.
+# What each row check asserts, under a stable label (row.check), so a release report's reader needs nothing
+# else. 5.1 is the launcher's own tests, with nothing in a change's records to read, and 6.1 the holder writes
+# from the run, so neither is computed.
 ROW_CHECKS = {
     "1.2": "every check the record names was launched by this builder and composed by the entrance",
     "2.1": "the handoff the builder received is the one the entrance composes from the settled plan",
@@ -217,6 +217,7 @@ def _cost(cost_split, route_comparison):
     unpriced = [name for name in COST_FIGURES if cost_split[name].get("status") != "priced"]
     if not unpriced:
         return {**_entry("7.3", HOLDS, field), "due": due}
+    # The cost is what 7.3 has the report state, so an unpriced figure is the cost not stated, with its reason.
     return {**_entry("7.3", NOT_STATED, field, "; ".join(
         f"{name}: {cost_split[name].get('reason') or 'unknown'}" for name in unpriced)), "due": due}
 

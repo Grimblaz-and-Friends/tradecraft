@@ -418,13 +418,11 @@ def test_1011_reach_counts_a_stretch_among_the_turns_it_measures(tmp_path, monke
     assert any({"build", "stretch"} <= stages for stages in seen)
 
 
-def test_1011_a_builder_reads_and_settles_its_own_live_launchs_reach(tmp_path, monkeypatch):
-    import subprocess
+def test_a_builder_reads_and_settles_its_own_live_launchs_reach(tmp_path, monkeypatch):
     from comparison_window import stretch_launch
 
     def git(*words):
-        return subprocess.run(["git", "-C", str(root), "-c", "user.name=f", "-c", "user.email=f@invalid", *words],
-                              check=True, capture_output=True, stdin=subprocess.DEVNULL).stdout.decode().strip()
+        return route_fixture.git(root, *words)
     root = tmp_path / "repo"
     root.mkdir()
     git("init", "-q", "-b", "main")

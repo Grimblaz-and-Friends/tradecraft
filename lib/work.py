@@ -8201,7 +8201,8 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
             "intervening_commits": [], "reason": policy.use_reason,
         }
     builder_owed = not state.floor_public or not (state.floor_public.get("declaration") or {}).get("jobs") or state.floor_public["outcome"] == "fallback"
-    stretches = lifecycle.launch_bundles(store, work, {"stretch"}) if builder_route else []
+    # Declared from the request alone: the run record gains its end later, which would outdate a posted proof.
+    stretches = [(*row[:3], None) for row in lifecycle.launch_bundles(store, work, {"stretch"})] if builder_route else []
     declarations = ([(_launch_declaration("floor", stretches[-1] if stretches else None) if builder_route and floor
                       else _marker_declaration(state, floor, "floor"))] if builder_owed else [])
     if bought and report is not None:
@@ -12643,7 +12644,8 @@ def _resume_handoff(state, args, store, holder_root, spent) -> int:
     # A ready builder is resumed only by the one send-back or a catch-up, so it is sent back at most once.
     stage = _builder_route_decision(state).stage
     if stage != "stretch-stopped":
-        way = {"final-pass": "send it back once with run send-back",
+        spent_back = bool(_send_back_launches(state) and _send_back_markers(state))
+        way = {"final-pass": SEND_BACK_SPENT if spent_back else "send it back once with run send-back",
                "catch-up": "run catch-up resumes it to catch up"}.get(stage, f"the decision reads {stage}")
         raise HandoffRefused("builder-not-stopped", f"run handoff --resume-reason: the builder has not stopped; "
                              f"{way}")
@@ -12799,6 +12801,9 @@ def _term_stretches(state: WorkState) -> list[dict]:
             f"{state.repo}#{state.issue_number}", {"stretch"}, after=term.timestamp if term else None)]
 
 
+SEND_BACK_SPENT = "this term's one send-back is spent; what stays open goes into the release report for the owner"
+
+
 def _send_back_launches(state: WorkState) -> list[dict]:
     """The send-back is spent by its launch, so a marker that failed to post can't re-arm it."""
     return [request for request in _term_stretches(state) if "send_back" in (request.get("handoff") or {})]
@@ -12873,8 +12878,7 @@ def _execute_send_back(state: WorkState, args: argparse.Namespace, github) -> in
     ready, and posted on the issue with the send-back marker. Design: lib/DESIGN.md#the-builder-route"""
     launched = _send_back_launches(state)
     if launched and _send_back_markers(state):
-        raise RouteRefused("send-back-spent", "run send-back: this term's one send-back is spent; what stays "
-                           "open goes into the release report for the owner")
+        raise RouteRefused("send-back-spent", "run send-back: " + SEND_BACK_SPENT)
     # Read before the gates after ready: a panel's or late reviewer's finding is what a send-back carries.
     ready = _builder_route_decision(state)
     if not launched and ready.stage != "final-pass":

@@ -77,20 +77,40 @@ def test_the_handoff_carries_the_brief_the_plan_and_the_floor_command(exported):
     assert "--criterion C2" in text and "--job-from-artifact" in text
 
 
-def test_1011_a_builder_route_proof_takes_its_use_and_floor_from_the_builders_evidence(tmp_path):
+def test_a_builders_proof_posted_while_its_launch_runs_stays_current_after_it_ends(tmp_path, monkeypatch, capsys):
     fixture = route_fixture.Fixture(tmp_path)
+    work, posted, proofs = fixture.work, [], []
+    for name in ("GitHubREST", "_read_policy_state", "_cold_reading_decision", "_evaluate_reach"):
+        monkeypatch.setattr(work, name, getattr(work, name))  # restored after the fixture's decision sets it
+    monkeypatch.setattr(work, "_release_gate_status", lambda *_a: {"verdict": "none", "head": None})
+    monkeypatch.setattr(work, "_merge_readiness", lambda *_a: {"reason": "ready", "detail": "", "ready": True})
+    sources = {key: {"repository": "o/r", "path": key, "revision": "a" * 40, "sha256": "1" * 64}
+               for key in ("work_configuration", "use_rules")}
+
+    def proof(head):
+        checked = fixture.state()
+        checked.changed_paths, checked.policy_sources, checked.pr_comments = ["job/job.md"], sources, posted
+        work.validate_marker_claims(checked)
+        work._prepare_builder_use(checked, None, route_fixture.RULES, head)
+        proofs.append(work.proof_document.canonical_json(work.compose_proof(checked, route_fixture.RULES)))
+        return checked
+
+    def post_proof(head):
+        # Posted on the pull request while the launch runs, as the builder's `run proof` posts it.
+        proof(head)
+        posted.append({"id": 900, "body": work.proof_document.document(json.loads(proofs[0])),
+                       "user": {"login": route_fixture.PRODUCER}, "created_at": "2026-11-01T00:15:00+00:00"})
+
     try:
-        state = route_fixture.ready_at_head(fixture, route_fixture.CLEAR)
-        work = fixture.work
-        state.changed_paths = ["job/job.md"]
-        state.policy_sources = {key: {"repository": route_fixture.REPO, "path": key, "revision": "a" * 40,
-                                      "sha256": "1" * 64} for key in ("work_configuration", "use_rules")}
-        work.validate_marker_claims(state)
-        work._prepare_builder_use(state, None, route_fixture.RULES, state.pr["head"]["sha"])
-        composed = work.compose_proof(state, route_fixture.RULES)
+        state = route_fixture.ready_at_head(fixture, route_fixture.CLEAR, post_proof)
+        fixture.pr["draft"] = False
+        capsys.readouterr()
+        fixture.decision(proof(state.pr["head"]["sha"]))
     finally:
         fixture.stop()
-    work.proof_document.validate(composed)
+    decision = json.loads(capsys.readouterr().out.split("\n", 1)[0])
+    composed = work.proof_document.validate(json.loads(proofs[1]))  # use and floor from the builder's evidence
     assert not {item["code"] for item in composed["diagnostics"]} & {"use-missing", "floor-missing"}
     assert [(item["stage"], item["status"]) for item in composed["declarations"]] == [
-        ("floor", "declared"), ("use", "declared")]
+        ("floor", "declared"), ("use", "declared")] and proofs[0] == proofs[1]
+    assert (decision["stage"], decision["reason"]) == ("final-pass", "ready-reported"), decision["detail"]

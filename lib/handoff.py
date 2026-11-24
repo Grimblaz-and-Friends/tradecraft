@@ -82,8 +82,17 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
              "reader and post its report, which your record answers; they, the floor and reach are the "
              "record's `checks`, and ready-reviewers and proof are not.", "",
              "Run the floor at the pull request's head before ready-reviewers. Otherwise the list is not a "
-             "fixed sequence, except where a check is held on another: ready-reviewers and proof are both "
-             "held on reach, so answer reach before either.", ""]
+             "fixed sequence, except where a check is held on another: use, ready-reviewers and proof are "
+             "held until the cold reading's `clean` stands at your head, and ready-reviewers and proof on "
+             "reach too, so settle both before them.", "",
+             "A check's launch may leave launch findings, which the read-only decision reports; they hold "
+             "your next step until you post an issue comment whose first line is `<!-- "
+             "tradecraft:launch-account:v1 dispatch=DISPATCH_ID -->` for that launch, followed by exactly "
+             "one fenced `json` object holding the integer `schema_version` 1 and `findings`: one entry per "
+             "finding id the decision names, each with that `id`, a `party` (`owner`, `plugin-update`, "
+             "`session`, `builder-damage`, `none-found` or `cloud-check`) and a nonempty `basis`. `session` "
+             "also takes the session's id in `session`, and `builder-damage`, a command you made, takes "
+             "`owner_report` and `practice_issue`.", ""]
     for number, check in enumerate(checks, 1):
         stage = check["stage"]
         block = _block(argv(check["command"]))
@@ -102,7 +111,8 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
             note = ("The holder supplied this floor command at the handoff. Run it word for word at the "
                     "head you test and, once it passes there, post an issue or pull-request comment whose "
                     "first line is `<!-- tradecraft:floor:v1 head=FULL_COMMIT_SHA status=pass -->`, with "
-                    "`head` the full commit id it ran at, carrying the command and its exact output.")
+                    "`head` the full commit id it ran at, then the command alone in its own fenced block, "
+                    "then its exact output after that block.")
         elif stage == "floor":
             title = "floor"
             block = []
@@ -125,8 +135,9 @@ def _checks_section(checks, *, repo, issue, holder_root, plugin_root) -> list[st
             title = stage
             note = None if stage != "cold-reader" else (
                 "Post the reading's `open`: a comment whose first line is `<!-- tradecraft:cold-reading:v1 "
-                "head=SHA status=open staffing_status=STATUS -->`, with the reading's head and its report's "
-                "staffing, quoting the report's account whole, then your review under \"Holder's review "
+                "head=SHA status=open staffing_status=STATUS same_vendor_reason=REASON -->`, with the "
+                "reading's head and its report's staffing, `same_vendor_reason` only where that staffing is "
+                "`degraded` and then the report's reason, quoting the report's account whole, then your review under \"Holder's review "
                 "against the brief\" with an `Accepted: path:lines " + DASH + " KIND " + DASH + " reason` line for "
                 "each flag you decline. After repairs run the reader again. Once nothing stands, post the "
                 "same marker with `status=clean` and your head. The entrance holds `run use`, `run "
@@ -175,7 +186,8 @@ def _record_section(started_by: str) -> list[str]:
         "its `report` comment id (null for a reach check that flagged nothing), and `relaunch_of`, the dispatch id of the errored check it relaunches, "
         "or null.",
         "- `findings`: exactly one entry for every finding of every check report, never two: its "
-        "`report` comment id, its `finding` (`F1`, `F2` ... as the report numbers them), and a "
+        "`report` comment id, its `finding` (`F1`, `F2` ... as the report numbers them; the read-only "
+        "decision lists each report's under `builder_checks`), and a "
         "`disposition` of `fixed` with the full `commit` that fixed it, or `declined` with the "
         "`reason`, written when you decline it.",
         "- `rows`: each row you map: its `row`, `carried_by` (`test`, `check` or `fresh-reader`) and "
@@ -199,8 +211,9 @@ def compose_handoff(*, brief: str, artifact: str, checks: list[dict],
     sections = [
         ("Your role", [ROLE]),
         ("The affirmed brief", [brief]),
-        ("The settled plan", ["The text below is the draft its settlement names, so its marker reads "
-                              "`status=draft`; the settlement is what makes it the plan.", "", artifact]),
+        ("The settled plan", ["The text below is the settled plan. Where it opens with a `status=draft` "
+                              "marker, it is the draft its settlement names, and the settlement is what "
+                              "makes it the plan.", "", artifact]),
         ("The checks you owe", _checks_section(checks, repo=repo, issue=issue,
                                                holder_root=holder_root, plugin_root=plugin_root)),
         ("What you may write", [allowance, "", f"Open the pull request as a draft from your branch, with "

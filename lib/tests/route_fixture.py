@@ -266,7 +266,8 @@ class Fixture:
             child.wait()
 
 
-def ready_at_head(fixture: Fixture, synchronization: dict) -> object:
+def ready_at_head(fixture: Fixture, synchronization: dict, live=lambda head: None) -> object:
+    """``live`` runs while the hand-started builder is live, as its proof would."""
     source, head = fixture.source()
     fixture.pull_request(head, synchronization)
     hand = fixture.hand_stretch(source)
@@ -275,6 +276,7 @@ def ready_at_head(fixture: Fixture, synchronization: dict) -> object:
     report, dispatch = fixture.use_report(fixture.state(), source, builder)
     # The handoff's floor command, run at the head as the handoff says, with its output.
     fixture.post(f"<!-- tradecraft:floor:v1 head={head} status=pass -->\n\n```\n{FLOOR}\n```\n\n1 passed\n")
+    live(head)
     fixture.launch_tree.complete_hand_record(fixture.store, builder, completed_by="the builder's readiness record",
                                              now=START + timedelta(minutes=20))
     fixture.readiness(builder, head, checks=[{"stage": "use", "criterion": None, "row": None, "dispatch": dispatch,
@@ -290,9 +292,7 @@ def git(root: Path, *words: str) -> str:
 
 
 def ready_launched(fixture: Fixture) -> object:
-    """A launched builder carried the change to ready: the holder checkout is a repository whose branch holds the
-    builder's commit, so reach is read from Git. The stand-in GitHub serves no checks, so proof, the gate and
-    merge readiness stand in as passed."""
+    """A launched builder ready at the head of a holder checkout with Git history, so reach is read, not stubbed."""
     work, records, root = fixture.work, fixture.records, fixture.holder
     git(root, "init", "-q", "-b", "main")
     git(root, "add", "--all")
