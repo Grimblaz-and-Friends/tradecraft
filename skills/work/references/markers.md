@@ -330,7 +330,7 @@ Body-finding and unidentified-review answers instead open with the bare disposit
 
 - **Exact form:** `<!-- tradecraft:implementing-pr:v1 number=NUMBER -->`.
 - **Attributes and lawful values:** `number` is the positive integer number of the pull request that implements this issue.
-- **Producer, surface, moment:** the holder, in a comment on the implemented issue, immediately after opening the implementing pull request as a draft. On the builder route none is owed: the entrance finds the pull request the builder opens by the issue's closing reference. Where the work already has a merged implementing pull request, the builder opens the next with no closing reference and posts this marker for it itself, a comment its allowance grants.
+- **Producer, surface, moment:** the holder, in a comment on the implemented issue, immediately after opening the implementing pull request as a draft. On the builder route none is owed: the entrance finds the pull request the builder opens by the issue's closing reference. Where the change lands in instalments, no instalment's pull request carries a closing reference: the builder posts this marker for each itself, a comment its allowance grants, and the issue is closed by hand after the last instalment merges.
 
 ```text
 <!-- tradecraft:implementing-pr:v1 number=91 -->

@@ -6110,6 +6110,8 @@ BUILDER_MODE_REASONS = frozenset({
     "merge-blocked-unresolved-review-threads",
     # A brief that vanished under a running builder: it stops, since nothing affirms the change it carries.
     "affirmed-brief-marker-absent",
+    # The holder's to settle: the builder writes nothing more and tells the holder.
+    "issue-or-pull-request-terminal", "multiple-candidate-pull-requests",
 })
 # Every unlisted reason this process returned a builder; the test suite fails on any.
 UNLISTED_BUILDER_REASONS: set[str] = set()
@@ -11769,8 +11771,9 @@ def fresh_reader_criteria(artifact: str) -> list[str]:
 
 
 def _staged(state: WorkState) -> bool:
-    """Whether an earlier instalment of this work has merged, so a new pull request can't close the issue."""
-    return getattr(state, "instalment_boundary", None) is not None
+    """Whether the change lands in instalments, named by the handoff or shown by a merged earlier one, so no
+    instalment's pull request closes the issue."""
+    return getattr(state, "instalment_boundary", None) is not None or bool(getattr(state, "instalment", None))
 
 
 def _handoff_inputs(state: WorkState, floor_command: str | None):
@@ -11802,7 +11805,8 @@ def _handoff_inputs(state: WorkState, floor_command: str | None):
 
 
 def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plugin_root: Path,
-                        notify: str | None, floor_command: str | None, hand: dict | None = None) -> bytes:
+                        notify: str | None, floor_command: str | None, hand: dict | None = None,
+                        staged: bool | None = None) -> bytes:
     """The handoff a builder of this change receives, composed from the issue's own records alone.
 
     The same records give the same bytes, so a handoff the builder received can be recomposed and
@@ -11817,7 +11821,7 @@ def compose_handoff_for(state: WorkState, *, branch: str, holder_root: Path, plu
         brief=brief.body, artifact=artifact, lane_reason=None if artifact is not None else MECHANICAL_HANDOFF_REASON,
         checks=checks, allowance=allowance, repo=state.repo, issue=state.issue_number,
         holder_root=str(holder_root), plugin_root=str(plugin_root), notify=notify, hand=hand,
-        staged=_staged(state))
+        staged=_staged(state) if staged is None else staged)
 
 
 def _builder_check_inputs(args: argparse.Namespace) -> None:
@@ -13062,7 +13066,8 @@ def _handoff_block(state: WorkState, args: argparse.Namespace, composed: bytes, 
             "pull_request": state.pr.get("number") if state.pr else None,
             "timeout_seconds": limit, "override_reason": args.budget_override_reason,
             "floor_command": args.floor_command, "holder_root": str(common["holder_root"]),
-            "plugin_root": str(common["plugin_root"]), "route_chosen": _route(state)["chosen"]}
+            "plugin_root": str(common["plugin_root"]), "route_chosen": _route(state)["chosen"],
+            "staged": _staged(state)}
 
 
 def _handoff_launch_plan(state: WorkState, by_hand: str | None, *, safe: bool = False) -> dict[str, object]:
@@ -13429,7 +13434,8 @@ def _resume_handoff(state, args, store, holder_root, spent) -> int:
             state, branch=branch, holder_root=handed.get("holder_root") or holder_root,
             plugin_root=handed.get("plugin_root") or Path(__file__).resolve().parent.parent,
             notify=handed.get("notify") if args.notify is None else args.notify,
-            floor_command=handed.get("floor_command") if args.floor_command is None else args.floor_command)
+            floor_command=handed.get("floor_command") if args.floor_command is None else args.floor_command,
+            staged=handed.get("staged"))
         block.update(recovery_restart_reason=args.resume_reason, recovery_restart_bundle=path)
         return _launch_stretch(state, args, store, Path(root), branch, block, composed,
                                args.holder_session_id.strip(), limit)
@@ -13705,7 +13711,7 @@ def _handoff_plan_reading(state: WorkState, first: tuple | None) -> dict:
             branch=block.get("branch") or request.get("lineage_branch"),
             holder_root=block.get("holder_root") or state.holder_root,
             plugin_root=block.get("plugin_root") or Path(__file__).resolve().parent.parent, notify=block.get("notify"),
-            floor_command=block.get("floor_command"), hand=hand)
+            floor_command=block.get("floor_command"), hand=hand, staged=block.get("staged"))
         # A hand-started builder's text was printed, not kept; its record names the text's digest.
         received = (block.get("composed_sha256") if hand is not None else
                     hashlib.sha256(_bundle_file(Path(run_path), ".dispatch.bin").read_bytes()).hexdigest())

@@ -23,6 +23,12 @@ RESOLVE_THREAD_COMMAND = (
     "gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id})"
     "{thread{isResolved}}}' -f id=THREAD_ID"
 )
+# The entrance's own read of a pull request's threads; it writes nothing, so the allowance passes it.
+LIST_THREADS_COMMAND = (
+    "gh api graphql -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,"
+    "name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved "
+    "comments(first:1){nodes{databaseId}}}}}}}' -f owner=OWNER -f name=NAME -F number=NUMBER"
+)
 ROW_NOTE = ("Every row of the brief has its own reader here, whatever else carries it: launch every row "
             "through its command; map each row in the record's `rows` to what carries it. ")
 # Said again under the floor again, where a late commit meets it.
@@ -72,6 +78,9 @@ ANSWER_REVIEWERS = (
 RESOLVE_THREADS = (
     "Resolve each review thread you answered, with exactly this command, its node id written in place of "
     "THREAD_ID:\n\n```text\n" + RESOLVE_THREAD_COMMAND + "\n```\n\n"
+    "List the threads with their node ids with this command, the repository's owner and name and your pull "
+    "request's number in place of OWNER, NAME and NUMBER; a thread's first comment's `databaseId` is the id of "
+    "the review comment that opened it:\n\n```text\n" + LIST_THREADS_COMMAND + "\n```\n\n"
     "Resolving is owed when the read-only decision names `reviewer-thread-answered-unresolved`, or the "
     "merge reads `merge-blocked-unresolved-review-threads`; a body finding has no thread. The entrance "
     "names it once the floor and the cold reading's `clean` both stand at your head, so take it after the "
@@ -116,7 +125,9 @@ BUILDER_STEPS = (
          "posting its marker where step 2 gives a command, before you resolve threads or run proof. The cold "
          "reading's `clean` and reach must stand at that new head too before proof, as proof's hold requires."),
     Step("resolve-threads", "resolve the answered threads", RESOLVE_THREADS),
-    Step("proof", "proof", "Run proof at your head.", CLEAN_AND_REACH_HOLD),
+    Step("proof", "proof",
+         "Restate the `**Path departures:**` paragraph and bring the body in line with your record's "
+         "`decisions`, then run proof at your head.", CLEAN_AND_REACH_HOLD),
     Step("readiness-record", "the readiness record",
          "Post the readiness record at the head you report ready, as the last post, after proof."),
     Step("read-back", "read the record back",
@@ -127,7 +138,9 @@ BUILDER_STEPS = (
          "the catch-up command below; where it names launch findings, post their launch-account first. Where "
          "it names only a wait, a check run, a gate or a reviewer still running, wait and read it again. You "
          "are done when it reads `final-pass` with `ready-reported`, or names only what stays the holder's: "
-         "the merge's own verdict, a required gate on the merge, or a bought panel."),
+         "the merge's own verdict, a required gate on the merge, or a bought panel. Where it reads "
+         "`issue-or-pull-request-terminal` or `multiple-candidate-pull-requests`, write nothing more and "
+         "tell the holder as \"How to finish\" says."),
 )
 # Not a step in the order: what a builder does when the change can't go on, which a reason meaning "stop"
 # points at.
@@ -193,6 +206,8 @@ ANSWERS = {
     "merge-blocked-required-gate": "read-back",
     "merge-blocked-unattributed": "read-back",
     "affirmed-brief-marker-absent": "stop",
+    "issue-or-pull-request-terminal": "read-back",
+    "multiple-candidate-pull-requests": "read-back",
 }
 
 
@@ -350,7 +365,8 @@ def _record_section(mechanical: bool, started_by: str) -> list[str]:
         "acceptance-criterion check names exactly one: a criterion check its `criterion` with `row` null, "
         "a row check its `row` with `criterion` null), its `dispatch` id or null, the full commit `head` it "
         "read, its `report` comment id, and `relaunch_of`, the dispatch id of the errored check it "
-        "relaunches, or null. For the floor, `report` is its floor marker comment's id; for reach, your "
+        "relaunches, or null. For the floor, `report` is its floor marker comment's id, and where the "
+        "holder supplied no floor command, name no floor entry; for reach, your "
         "`reach-reading` comment's id, or null when reach flagged nothing.",
         "- `findings`: exactly one entry for every finding of every check report, never two: its "
         "`report` comment id, its `finding` (`F1`, `F2` ... as the report numbers them; the read-only "
@@ -377,9 +393,10 @@ def _record_section(mechanical: bool, started_by: str) -> list[str]:
 
 def _opening(issue: int, staged: bool) -> str:
     if staged:
-        # A merged implementing pull request already carries the closing reference, so a second would be ambiguous.
+        # A closing reference on an instalment would close the issue before its last instalment merges.
         return ("Open the pull request as a draft from your branch, with no closing reference in its body: "
-                "this change already has a merged implementing pull request. Then post on issue "
+                "this change lands in instalments, and its issue is closed by hand after the last merges. "
+                "Then post on issue "
                 f"#{issue} a comment whose first line is `{IMPLEMENTING_PR_MARKER}`, NUMBER being your new "
                 "pull request's number: the entrance finds the pull request by that marker.")
     return (f"Open the pull request as a draft from your branch, with `Closes #{issue}` alone on a line of its "

@@ -64,7 +64,7 @@ The holder writes no check's instructions, and supplies the floor command only h
 
 **The builder's run.** In its own session, the builder takes its steps in the entrance's own order, which is fixed wherever an entrance hold names the step before it. The entrance reads the floor before the cold reading and the rest of its chain, and names thread resolution only once the floor stands again after a late commit, so the order is:
 
-1. pushes its branch and opens the pull request as a draft, its body carrying the `**Path departures:**` paragraph the builder keeps true up to proof, with the issue's closing reference alone on a line of its body, by which the entrance finds it; where the work already has a merged implementing pull request, it opens the new one with no closing reference and posts the `implementing-pr` marker for it on the issue. It posts no `builder-session`, for which the stretch's record stands;
+1. pushes its branch and opens the pull request as a draft, its body carrying the `**Path departures:**` paragraph the builder keeps true up to proof, with the issue's closing reference alone on a line of its body, by which the entrance finds it; where the change lands in instalments, no instalment's pull request carries that reference: the builder posts the `implementing-pr` marker for it on the issue, and the issue is closed by hand after the last instalment merges. It posts no `builder-session`, for which the stretch's record stands;
 2. the holder's floor command at the head, run itself;
 3. `run cold-reader`, until the reading is `clean`;
 4. `run acceptance-criterion --criterion ID` for each criterion with a `Fresh reader:` line, or on the mechanical lane `run acceptance-criterion --row N` for every row of the brief;
@@ -72,18 +72,18 @@ The holder writes no check's instructions, and supplies the floor command only h
 6. reach, posting a `reach-reading` for each item it flags;
 7. `run ready-reviewers`;
 8. answers every connected reviewer's threads, body findings and unidentified reviews;
-9. after any commit made once the floor ran, the floor again at the new head, with its marker;
+9. after any commit made once the floor ran, the floor again at the new head, with its marker, and the cold reading's `clean` and reach there too;
 10. resolves each answered thread where the decision names thread resolution;
-11. proof;
+11. proof, after restating the `**Path departures:**` paragraph and bringing the body in line with the record's decisions;
 12. the readiness record;
-13. the read-only decision, to read the record back; where its owed list names several steps, the builder takes the earliest in this order first.
+13. the read-only decision, to read the record back; where its owed list names several steps, the builder takes the earliest in this order first; where it reads the issue closed or two candidate pull requests, the builder writes nothing more and tells the holder.
 
 Where the change can't go on, the builder stops instead, by the stop rule the handoff carries; a reason the entrance returns that means stop points at that rule.
 
 Throughout, the entrance composes each check and posts its report, and the builder chooses nothing a check reads. The builder also:
 
 - fixes or declines every finding of every report, writing a decline's reason when it makes the decline;
-- posts the cold reading's `open` and `clean`, whose `Accepted:` lines are its declines, pasting the reader's account as plain lines, a `launch-account` for each check launch whose findings the decision reports, which hold its next step until it does, and the `floor` marker;
+- posts the cold reading's `open` and `clean`, whose `Accepted:` lines are its declines, written under the same "Holder's review against the brief" heading and shown to the owner in the release report as the builder's, pasting the reader's account as plain lines, a `launch-account` for each check launch whose findings the decision reports, which hold its next step until it does, and the `floor` marker;
 - runs `run catch-up` when the decision orders it;
 - where the plan settled nothing, continues on its recommendation and records it, naming any brief row it would change. It stops only when what the brief's Shape sentence says the change is is wrong for the change (a `shape` stop), or a check cannot be launched (a `cannot-launch` stop naming it);
 - posts the readiness record (the `work` cell's `readiness` marker) at each ready report as its last post, after proof: each check it ran, its reach entry naming its `reach-reading` or null where reach flagged nothing, one disposition for every finding, the rows it maps, its decisions and refusals, and any stop. It then messages the holder session `--notify` named, or ends.

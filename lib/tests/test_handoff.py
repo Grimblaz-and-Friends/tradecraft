@@ -127,8 +127,9 @@ def test_1011_record_contract_and_last_post_after_proof():
     assert "post proof, then the readiness record at the head you report ready, as the last post." in finish
     assert finish.index("post proof") < finish.index("readiness record")
     assert "read your record back with the reach" in finish
-    assert ("For the floor, `report` is its floor marker comment's id; for reach, your `reach-reading` "
-            "comment's id, or null when reach flagged nothing.") in record
+    assert ("For the floor, `report` is its floor marker comment's id, and where the holder supplied no "
+            "floor command, name no floor entry; for reach, your `reach-reading` comment's id, or null when reach flagged "
+            "nothing.") in record
     assert "`row`, the brief row the decision would change, or null where it changes none." in record
     assert "holder session named `holder-7`" in finish and "the owner tells the holder" in finish
 
@@ -396,6 +397,10 @@ def test_the_resolve_step_names_resolving_each_answered_thread_and_when_it_is_ow
     assert "names it once the floor and the cold reading's `clean` both stand at your head" in answer
     # The form is the entrance's own, repeated here because this module imports nothing of the entrance.
     assert handoff.RESOLVE_THREAD_COMMAND == work.RESOLVE_THREAD_COMMAND
+    # The threads' ids are listed by a read the allowance passes, since it carries no mutation.
+    assert "```text\n" + handoff.LIST_THREADS_COMMAND + "\n```" in answer
+    assert "reviewThreads" in handoff.LIST_THREADS_COMMAND and "mutation" not in handoff.LIST_THREADS_COMMAND
+    assert "isResolved comments(first:1){nodes{databaseId}}" in handoff.LIST_THREADS_COMMAND
 
 
 def test_the_floor_runs_again_after_a_later_commit_before_proof():
@@ -403,6 +408,9 @@ def test_the_floor_runs_again_after_a_later_commit_before_proof():
     assert "After any commit made after the floor ran, run the floor again at the new head" in again
     assert "posting its marker" in again and "before you resolve threads or run proof" in again
     assert "The cold reading's `clean` and reach must stand at that new head too before proof" in again
+    # The path-departures paragraph is made final at proof, against the record's decisions.
+    assert "Restate the `**Path departures:**` paragraph and bring the body in line with your record's " \
+        "`decisions`, then run proof" in entry(checks_section(compose()), "proof")
     # On the mechanical lane a late commit makes every row owed again, said at the row step and here.
     section = checks_section(compose(mechanical=True))
     assert handoff.ROW_AGAIN not in again and handoff.ROW_AGAIN in entry(section, "the floor again")
@@ -425,6 +433,10 @@ def test_a_reason_meaning_stop_points_at_the_stop_rule_the_text_carries():
     assert handoff.STOP.sentence in text and handoff.STOP not in handoff.BUILDER_STEPS
     for reason in ("affirmed-brief-marker-absent", "builder-stopped", "cannot-launch"):
         assert handoff.ANSWERS[reason] == "stop"
+    # A closed issue or two candidate pull requests are the holder's: the builder writes nothing more.
+    for reason in ("issue-or-pull-request-terminal", "multiple-candidate-pull-requests"):
+        assert handoff.ANSWERS[reason] == "read-back" and f"`{reason}`" in handoff.step_sentence("read-back")
+    assert "write nothing more and tell the holder as \"How to finish\" says." in text
 
 
 def test_the_cold_reader_account_is_pasted_as_plain_lines_not_a_blockquote():
@@ -437,6 +449,7 @@ def test_a_staged_change_opens_without_a_closing_reference_and_posts_the_impleme
     text = compose(staged=True)
     write = text[text.index("## What you may write"):text.index("## The readiness record")]
     assert "Closes #" not in text and "with no closing reference in its body" in write
+    assert "this change lands in instalments, and its issue is closed by hand after the last merges." in write
     assert "post on issue #7 a comment whose first line is `<!-- tradecraft:implementing-pr:v1 number=NUMBER -->`" in write
     assert "`Closes #7` alone on a line" in compose(staged=False)
 

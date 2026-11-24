@@ -349,3 +349,12 @@ def test_only_a_reach_that_flagged_something_owes_a_reach_reading(tmp_path, reac
     state = fixture(tmp_path, MECHANICAL)
     state.reach = reach
     assert work._reach_flagged(state) is owed
+
+
+def test_a_handoff_naming_an_instalment_composes_the_instalment_form_and_a_recomposition_takes_the_recorded_one(
+        tmp_path):
+    state = fixture(tmp_path, ROWS)
+    state.instalment = "the first of two"
+    common = {"branch": "b", "holder_root": tmp_path, "plugin_root": tmp_path, "notify": None, "floor_command": None}
+    assert work._staged(state) and b"lands in instalments" in work.compose_handoff_for(state, **common)
+    assert b"lands in instalments" not in work.compose_handoff_for(state, **common, staged=False)
