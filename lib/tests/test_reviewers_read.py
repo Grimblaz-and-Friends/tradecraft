@@ -238,8 +238,17 @@ def test_a_first_reading_of_a_head_before_the_answers_does_not_follow_them(histo
     _, shas = history
     stale = make(first_reading={"head": shas["B"], "launched_at": at("13:15")})
     assert stale["first_reading"]["follows_answers"]["value"] is False
+    # Launched before the use report came in, so whatever it read it didn't follow the answers to that report.
     early = make(first_reading={"head": shas["B"], "launched_at": at("12:15")})
-    assert early["first_reading"]["follows_answers"] == {"status": "read", "value": True, "reason": "none to answer"}
+    assert early["first_reading"]["follows_answers"] == {
+        "status": "read", "value": False, "reason": "it was launched before the last report on that head, use"}
+    # Launched once every report was in, before any fix: nothing needed answering, so it followed them.
+    after_all = make(first_reading={"head": shas["B"], "launched_at": at("12:45")})
+    assert after_all["first_reading"]["follows_answers"] == {
+        "status": "read", "value": True, "reason": "every report was in and none needed a fix"}
+    unread = make(first_reading={"head": shas["C"], "launched_at": at("13:15")}, unread_reports=["criterion C3"])
+    assert unread["first_reading"]["follows_answers"]["status"] == "unknown"
+    assert "criterion C3" in unread["first_reading"]["follows_answers"]["reason"]
     foreign = make(first_reading={"head": "f" * 40, "launched_at": at("13:15")})
     assert foreign["first_reading"]["follows_answers"]["status"] == "unknown"
     none = make(first_reading=None)
@@ -323,3 +332,50 @@ def test_another_reviewers_head_is_named_in_the_sentence(history, make):
     part = make(other_reviewer_heads=[{"reviewer": "claude", "commit": shas["C"]}])
     assert part["other_reviewer_heads"] == [{"reviewer": "claude", "commit": shas["C"]}]
     assert f"(claude read {shas['C'][:7]})" in part["sentence"]
+
+
+def test_a_merge_carrying_a_change_of_its_own_is_a_fix_not_a_base_merge(tmp_path):
+    repo = tmp_path / "evil"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    (repo / "a.txt").write_bytes(b"one\n")
+    (repo / "b.txt").write_bytes(b"base\n")
+    commit(repo, "base", "10:00")
+    git(repo, "checkout", "-q", "-b", "work")
+    (repo / "a.txt").write_bytes(b"one\ntwo\n")
+    ready = commit(repo, "build", "11:00")
+    git(repo, "checkout", "-q", "main")
+    (repo / "b.txt").write_bytes(b"base moved\n")
+    commit(repo, "base moves", "12:00")
+    git(repo, "checkout", "-q", "work")
+    git(repo, "merge", "-q", "--no-ff", "--no-commit", "main")
+    # The reviewer's fix made inside the catch-up merge, in a file neither side changed that way.
+    (repo / "a.txt").write_bytes(b"one\nTWO\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "catch up and fix", clock="13:00")
+    merged = git(repo, "rev-parse", "HEAD")
+    listed = rr.commits_between(repo, ready, merged, "main")
+    assert listed["status"] == "read" and [c["base_merge"] for c in listed["commits"]] == [False]
+
+
+def test_a_base_git_cannot_place_leaves_the_commits_unknown_not_a_fix(history):
+    repo, shas = history
+    listed = rr.commits_between(repo, shas["B"], shas["E"], "")
+    assert listed["status"] == "unknown" and "merge-base --is-ancestor" in listed["reason"]
+
+
+def test_a_term_affirmed_after_the_ready_step_leaves_the_builds_start_unknown(make):
+    part = make(build_began=at("12:20"))
+    assert part["since_build_began"]["status"] == "unknown"
+    assert "came after the ready step" in part["since_build_began"]["reason"]
+    assert "-" not in part["sentence"].split("after the build began")[0][-12:]
+
+
+def test_a_reviewers_notice_is_not_taken_for_its_review():
+    timeline = [
+        {"event": "reviewed", "user": {"login": "coderabbitai[bot]"}, "commit_id": "1" * 40,
+         "submitted_at": at("12:00"), "body": "Review skipped: rate limited"},
+        {"event": "reviewed", "user": {"login": "coderabbitai[bot]"}, "commit_id": "2" * 40,
+         "submitted_at": at("13:00"), "body": "Actionable comments posted: 1"}]
+    reviews = rr.first_reviews(timeline, ["coderabbitai[bot]"], counts=lambda event: "skipped" not in event["body"])
+    assert reviews == {"coderabbitai[bot]": {"commit": "2" * 40, "at": at("13:00")}}

@@ -112,7 +112,7 @@ def test_after_the_ready_step_every_report_comes_before_any_fix(tmp_path, monkey
     decision = change.decide()
     assert (decision.stage, decision.reason) == ("review-disposition", "reviewer-thread-lacks-disposition")
     # On the relay route the entrance reads no criterion report, so the first fix stage says to wait for them.
-    assert decision.detail.startswith("41 ") and work._relay_batch_detail(False) in decision.detail
+    assert decision.detail.startswith("41; ") and work._relay_batch_detail(False) in decision.detail
     change.review_comments.append(answer(41))
     # The use that changed something is a fix too, named only once the reviewers have run and been answered.
     decision = change.decide()

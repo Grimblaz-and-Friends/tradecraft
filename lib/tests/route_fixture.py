@@ -75,7 +75,8 @@ SCENARIOS = {
     "with-builder": "a live stretch launch of the change",
     "stretch-stopped": "a completed stretch and no readiness record",
     "cannot-launch": "a stopped readiness record whose builder could not launch a check",
-    "final-pass": "a ready readiness record at the head, with one counting use report reconciled",
+    "final-pass": "a ready readiness record at the head, with one counting use report reconciled, on a pull "
+                  "request still a draft, so the final pass names the ready step owed",
     "ready-reported": "a launched builder's ready record, reach read from Git, then the release report's payload",
     "catch-up": "the ready record at the head after the base moved",
     "relay-in-flight": "a first build launch, so today's relay chain",
@@ -276,7 +277,8 @@ class Fixture:
                               stdin=subprocess.DEVNULL).stdout.decode("ascii").strip()
         return root.resolve(), head
 
-    def use_report(self, state, source: Path, builder: str, criterion: str | None = None) -> tuple[int, str]:
+    def use_report(self, state, source: Path, builder: str, criterion: str | None = None,
+                   minutes: int | None = None) -> tuple[int, str]:
         """The builder's use check, or its reader of CRITERION, as the entrance composes, records and posts it; its
         comment and dispatch."""
         work, records = self.work, self.records
@@ -313,7 +315,7 @@ class Fixture:
             "dispatch_id": dispatch_id, "dispatch_sha256": hashlib.sha256(dispatch).hexdigest(),
             "staffing_status": "degraded", "same_vendor_reason": SAME_VENDOR, "outcome": "success",
             "return": returned.encode("utf-8")})
-        return self.post(body), dispatch_id
+        return self.post(body, minutes), dispatch_id
 
     def floor(self, head: str) -> dict:
         """The handoff's floor command run at HEAD with its output posted; the check a readiness record names."""
@@ -446,10 +448,11 @@ def ready_launched(fixture: Fixture, *, fixed: bool = False) -> object:
     fixture.launch_tree.write_pointer(fixture.store, dispatch_id=builder, work=WORK, request=request_path,
                                       run=records.sidecar(output, ".run.json"), session_id=None,
                                       launcher=fixture.lifecycle.process_identity(), root=root)
-    # This process stands in the launch's tree, as the builder's own run would, while its use seat starts.
+    # This process stands in the launch's tree, as the builder's own run would, while its use seat starts. Its report
+    # is posted after the head is marked ready, as use reads the head marked ready.
     holds, fixture.launch_tree.holds = fixture.launch_tree.holds, lambda launch: launch["dispatch_id"] == builder
     try:
-        report, dispatch = fixture.use_report(state, root, builder)
+        report, dispatch = fixture.use_report(state, root, builder, minutes=25)
     finally:
         fixture.launch_tree.holds = holds
     if fixed:
@@ -538,9 +541,9 @@ def moment(fixture: Fixture, route: str, at: str) -> object:
     reviewer reported and a report still owed; reported, every report in and the reviewer's thread unanswered;
     answered, the fix pushed, the floor passing again and the thread answered and resolved.
 
-    On the builder route a hand-started builder stays live and posts its record at the head after each step, as the
-    handoff's read-back says, so the decision's ``if_ended`` names its next step; on the relay route a first build
-    launch puts the change on the relay route.
+    On the builder route a hand-started builder stays live, and the stand-in posts a ready record at the head at each
+    moment, so the decision's ``if_ended`` names the next step; a real builder posts its record once, after proof,
+    and reads the record back. On the relay route a first build launch puts the change on the relay route.
     """
     fixture.changed_paths, fixture.connected_reviewers = list(CHANGED), frozenset({REVIEWER})
     source, head = fixture.source()

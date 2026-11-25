@@ -5875,7 +5875,8 @@ def _use_reported(state: WorkState, builder_route: bool) -> bool:
     if builder_route:
         builders = {request.get("dispatch_id") for request in _term_stretches(state)}
         return any(entry.get("builder") in builders for entry in _builder_use_reports(state))
-    # A use posted before the pull request opened read no commit it holds.
+    # A use posted before the pull request opened read no commit it holds. A time that can't be read is taken as
+    # after opening: that lets only the reading run before such a use, and proof stays held on use at the head.
     opened = _time((state.pr or {}).get("created_at"))
     return any(marker.name == "use" and (opened is None or (_time(marker.timestamp) or opened) >= opened)
                for marker in state.markers)
@@ -5913,7 +5914,7 @@ def _owed_before_reading(state: WorkState, *, mechanical: bool, use_bought: bool
     if pending is not None:
         return Decision("cloud-replies", False, None, "cloud-review-disposition-replies-unposted", pending,
                         status="holder-owned")
-    batch = "" if builder_route else " " + _relay_batch_detail(mechanical)
+    batch = "" if builder_route else "; " + _relay_batch_detail(mechanical)
     threads, _ignored_dispositions = _undisposed_threads(state)
     if threads:
         return Decision("review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
@@ -5931,7 +5932,8 @@ def _owed_before_reading(state: WorkState, *, mechanical: bool, use_bought: bool
     # A use that changed something is a fix, so on the relay route it waits for the reviewers like any other.
     if (not builder_route and latest_use is not None and latest_use.attributes.get("head") == sha
             and latest_use.attributes.get("changed") == "true"):
-        return Decision("build", True, "resume", "use-finding-changed-behavior-or-instructions", batch.strip())
+        return Decision("build", True, "resume", "use-finding-changed-behavior-or-instructions",
+                        batch.removeprefix("; "))
     panel_stage = _panel_next(state, lane)
     if panel_stage:
         return Decision("panel", False, None, "bought-panel-incomplete", panel_stage)
@@ -6533,11 +6535,11 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
         unread = rest if isinstance(rest, dict) else None
         rest = rest if isinstance(rest, list) else []
         readers = _unreported_readers(state) if made.stage == "acceptance-criterion" else []
-        if readers:
-            # The chain already names each reader with no report, so it is listed once.
-            chained_readers = {(entry["criterion"], entry["row"]) for entry in readers}
-            rest = [entry for entry in rest if not (entry.get("stage") == "acceptance-criterion" and (
-                entry.get("criterion"), entry.get("row")) in chained_readers)]
+        # The chain already names its own stage, and each reader with no report, so each is listed once.
+        chained_checks = ({("acceptance-criterion", entry["criterion"], entry["row"]) for entry in readers}
+                          | {(made.stage, None, None)})
+        rest = [entry for entry in rest
+                if (entry.get("stage"), entry.get("criterion"), entry.get("row")) not in chained_checks]
         if made.stage == "release-report" and not rest:
             # The final pass stands until the holder runs release-report, so its send-back stays open.
             detail = builder.detail if unread is None else json.dumps(
@@ -10775,7 +10777,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "holder_close": _release_holder_close(state),
             "cold_readings": _cold_reading_measures(state),
             "declared_caps": declared_caps(f"{state.repo}#{state.issue_number}", state.record_root),
-            "reviewers_read": _reviewers_read_report(state, transport),
+            "reviewers_read": _reviewers_read_report(state, transport, rules),
         })
         if _route(state)["name"] == "builder":
             # The comparison names the order each of its changes ran under, read from what happened to it.
@@ -13883,7 +13885,8 @@ def _handoff_plan_reading(state: WorkState, first: tuple | None) -> dict:
     return {"reading": "differs", "reason": "altered"}
 
 
-def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> dict:
+def _reviewers_read_report(state: WorkState, transport: GitHubREST | None,
+                           rules: dict[str, object] | None = None) -> dict:
     """The release report's section on the head the reviewers read and what followed it, on either route.
 
     Only the release report reads the timeline, so the ordinary decision makes no such read.
@@ -13917,10 +13920,13 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
         # Every launch for this pull request is listed, whatever its return, so one before the ready step counts
         # toward the order even where the form check refused what it returned. One recorded with no lineage counts
         # where this change's history holds the head it read, as the gate counts such a reading.
+        # A launch whose run never recorded its end still read, so launches are read, not completed bundles.
         cold_launches = []
         lineage = (pr.get("number"), (pr.get("head") or {}).get("ref"))
-        for _completed, path, request, _run in _matching_bundles(work, {"cold-reader"}, _cold_reading_source(state),
-                                                                 outcomes=None):
+        for _order, path, request, run in lifecycle.launch_bundles(_cold_reading_source(state), work,
+                                                                   {"cold-reader"}):
+            if build_reach.never_launched(run or {}):
+                continue
             recorded = (request.get("lineage_pull_request"), request.get("lineage_branch"))
             if recorded == (None, None):
                 read = cold_reader.load_metadata(cold_reader.reading_record(
@@ -13937,8 +13943,21 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
     except (WorkError, OSError, cold_reader.ColdReaderError) as exc:
         # An unreadable reading record leaves the count and the first reading unknown, never zero.
         cold_launches, first_reading = None, unknown(f"the cold readings could not be read: {exc}")
-    reviews = reviewers_read.first_reviews(timeline or [], sorted(state.config.connected_reviewers))
+    def reviewed(event: dict) -> bool:
+        # A review counts as the reviewer's look by the receipt rule `_reviewer_receipts` applies, so a notice that it
+        # skipped or is rate-limited, or an Actions review whose receipt fails, is not taken for it.
+        if _review_notice(str(event.get("body") or "")) is not None:
+            return False
+        if str(((event.get("user") or {}).get("login")) or "").lower() != ACTIONS_REVIEWER:
+            return True
+        review = next((item for item in state.reviews if item.get("id") == event.get("id")), None)
+        return review is not None and _connected_review_receipt_error(state, review) is None
+
+    reviews = reviewers_read.first_reviews(timeline or [], sorted(state.config.connected_reviewers), reviewed)
     created = {str(comment.get("id")): comment.get("created_at") for comment in state.issue_comments}
+    # Without the rules, use is taken as owed unless the lane exempts it, so an unread use is never read as none owed.
+    use_owed = (effective_policy(state, rules).use_required if rules is not None
+                else lane_pair != ("ordinary", "mechanical"))
     reports, unread = [], []
     for reviewer in sorted(state.config.connected_reviewers):
         reports.append({"name": f"reviewer {reviewer}", "at": (reviews.get(reviewer) or {}).get("at")})
@@ -13954,7 +13973,13 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
                 and entry.get("stage") == "use" and entry.get("outcome") == "success"]
         if uses:
             reports.append({"name": "use", "at": created.get(str(uses[0].get("comment")))})
-        for reader in _owed_readers(state) or []:
+        elif use_owed:
+            unread.append("the use report (none counts on this pull request)")
+        owed = _owed_readers(state)
+        if owed is None:
+            # An owed list nobody can read is unread, never clear.
+            unread.append("the criterion and row reports (the handoff names no owed checks)")
+        for reader in owed or []:
             name = f"row {reader['row']}" if reader["row"] is not None else f"criterion {reader['criterion']}"
             found = next((entry for entry in checked if _counts_as_reader_report(entry, builders)
                           and (entry.get("criterion"), entry.get("row")) == (reader["criterion"], reader["row"])), None)
@@ -13968,17 +13993,19 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
                        and (opened is None or (_time(marker.timestamp) or opened) >= opened)), key=_source_order)
         if uses:
             reports.append({"name": "use", "at": uses[0].timestamp})
+        elif use_owed:
+            unread.append("the use report (no use marker on this pull request)")
         # The relay holder's fresh readers report to it, not to the entrance, so their times are unread here: each
         # brief row's on the mechanical lane, as the first fix stage asks for them, and each criterion's otherwise.
         term_brief = term.body if term is not None else ""
         if lane_pair == ("ordinary", "mechanical"):
-            unread = [f"row {number}" for number, _text in brief_rows.rows(term_brief)]
+            unread += [f"row {number}" for number, _text in brief_rows.rows(term_brief)]
         else:
             try:
                 artifact, _comment = _settled_artifact_text(state, "artifact-criterion-unresolved")
-                unread = [f"criterion {criterion}" for criterion in fresh_reader_criteria(artifact)]
+                unread += [f"criterion {criterion}" for criterion in fresh_reader_criteria(artifact)]
             except WorkError as exc:
-                unread = [f"the plan's criteria ({exc})"]
+                unread.append(f"the plan's criteria ({exc})")
     root = Path(state.holder_root) if state.holder_root is not None else None
     if ready.get("status") == "read" and root is not None:
         base = str((pr.get("base") or {}).get("sha") or "")

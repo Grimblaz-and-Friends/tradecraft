@@ -3392,7 +3392,7 @@ def test_mechanical_lane_keeps_dispositions_and_release_report():
     }]
     decision = work.decide(fixture, RULES)
     # The relay route's first fix stage says to have every report in hand first.
-    assert (decision.stage, decision.detail) == ("review-disposition", "41 " + work._relay_batch_detail(True))
+    assert (decision.stage, decision.detail) == ("review-disposition", "41; " + work._relay_batch_detail(True))
 
     fixture.review_comments.append({
         "id": 42, "in_reply_to_id": 41, "body": "fixed",
@@ -3708,7 +3708,7 @@ def test_undisposed_reviewer_thread_routes_only_the_disposition_stage():
     }]
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.continuity, decision.detail) == (
-        "review-disposition", "resume", "41 " + work._relay_batch_detail(False),
+        "review-disposition", "resume", "41; " + work._relay_batch_detail(False),
     )
 
 
@@ -12854,7 +12854,7 @@ def test_938_an_empty_reply_block_names_no_holder_step(tmp_path, monkeypatch):
     assert work.decide(fixture, RULES).stage != "cloud-replies"
     fixture.review_comments = fixture.review_comments[:2]
     decision = work.decide(fixture, RULES)
-    assert decision.stage == "review-disposition" and decision.detail.startswith("41,43 Before this turn")
+    assert decision.stage == "review-disposition" and decision.detail.startswith("41,43; Before this turn")
 
 
 @pytest.mark.parametrize("replies", [None, [{"target": {"thread": "41"}, "body": "fixed"}]])

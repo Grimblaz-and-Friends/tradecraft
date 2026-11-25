@@ -65,12 +65,18 @@ def ready_head(timeline) -> dict:
     return unknown("the pull request has no ready-for-review event: it was never a draft, or is not yet marked ready")
 
 
-def first_reviews(timeline, reviewers) -> dict[str, dict]:
-    """Each named reviewer's first submitted review, ``{login: {"commit", "at"}}``, keyed as the caller named it."""
+def first_reviews(timeline, reviewers, counts=None) -> dict[str, dict]:
+    """Each named reviewer's first submitted review, ``{login: {"commit", "at"}}``, keyed as the caller named it.
+
+    ``counts(event)`` says whether a review event is a review at all; the entrance passes its own receipt rule, so a
+    reviewer's notice that it skipped or is rate-limited is not taken for its look.
+    """
     wanted = {name.casefold(): name for name in reviewers}
     found: dict[str, dict] = {}
     for event in timeline if isinstance(timeline, list) else ():
         if not isinstance(event, dict) or event.get("event") != "reviewed":
+            continue
+        if counts is not None and not counts(event):
             continue
         user = event.get("user")
         login = user.get("login") if isinstance(user, dict) else None
@@ -153,18 +159,35 @@ def _git_text(run, root, command):
     return result.stdout.decode("utf-8")
 
 
+def _is_ancestor(run, root, ancestor: str, descendant: str) -> bool:
+    # Git exits 1 for "not an ancestor" and otherwise only on an error, which leaves the answer unread, not false.
+    result = run(["merge-base", "--is-ancestor", ancestor, descendant], root)
+    if result.returncode not in (0, 1):
+        diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
+        raise OSError(f"git merge-base --is-ancestor {ancestor} {descendant} failed: "
+                      f"{diagnostic or result.returncode}")
+    return result.returncode == 0
+
+
+def _imports_only(run, root, sha: str) -> bool:
+    """Whether a merge's every hunk came from one of its parents: its combined diff, which leaves those out, is empty.
+    A merge carrying a change of its own, a hand-resolved conflict included, is the builder's and can be a fix."""
+    return not _git_text(run, root, ["show", "--cc", "--format=", "--no-ext-diff", "--no-textconv", sha]).strip()
+
+
 def commits_between(root: Path, old: str, new: str, base: str, *, run=None) -> dict:
     """The branch's own commits after ``old`` up to ``new``, oldest first, as ``section`` takes them.
 
     Each is ``{"sha", "committed_at", "base_merge"}``; a base merge is a merge whose other parent is already in
-    ``base``. Only the first-parent line is read, so the base's own commits a catch-up brings in are not listed.
+    ``base`` and that carries no change of its own. Only the first-parent line is read, so the base's own commits a
+    catch-up brings in are not listed.
     """
     run = run or build_reach.run_git
     try:
         for sha in (old, new):
             if run(["cat-file", "-e", f"{sha}^{{commit}}"], root).returncode:
                 return unknown(f"commit {sha} is not in the holder's objects")
-        if run(["merge-base", "--is-ancestor", old, new], root).returncode:
+        if not _is_ancestor(run, root, old, new):
             return unknown(f"{old} is not an ancestor of {new}: the branch's history was rewritten after it")
         listing = _git_text(run, root, ["log", "--no-show-signature", "--first-parent", "--reverse", "-z",
                                         "--format=%H%x09%cI%x09%P", f"{old}..{new}", "--"])
@@ -173,8 +196,8 @@ def commits_between(root: Path, old: str, new: str, base: str, *, run=None) -> d
             sha, committed_at, parents = record.strip("\n").split("\t")
             others = parents.split()[1:]
             # A merge whose other side the base already holds brings in the base, never a fix of the branch's own.
-            merged = bool(others) and all(
-                run(["merge-base", "--is-ancestor", parent, base], root).returncode == 0 for parent in others)
+            merged = (bool(others) and all(_is_ancestor(run, root, parent, base) for parent in others)
+                      and _imports_only(run, root, sha))
             commits.append({"sha": sha, "committed_at": committed_at, "base_merge": merged})
     except (OSError, TimeoutError, subprocess.TimeoutExpired, UnicodeError, ValueError) as exc:
         return unknown(f"the commits from {old} to {new} could not be read: {exc}")
@@ -189,6 +212,9 @@ def _since_build_began(ready_at, build_began):
     began = _time(build_began)
     if began is None:
         return unknown(f"the first builder launch's time is unreadable: {build_began!r}")
+    if began > ready_at:
+        # The brief was affirmed again after the ready step, so the term's first launch can't date the build's start.
+        return unknown(f"the term's first builder launch, {build_began}, came after the ready step")
     return {"status": "read", "seconds": round((ready_at - began).total_seconds())}
 
 
@@ -245,7 +271,10 @@ def _fix_before_last_report(ready_at, commits, reports, unread_reports):
             "last_report": {"name": last.get("name"), "at": last.get("at")}, "compared": COMPARED}
 
 
-def _follows_answers(reading, ready, ready_at, launched, commits):
+def _follows_answers(reading, ready, ready_at, launched, commits, reports, unread_reports):
+    """Whether the first reading came after the fix batch: launched once every report on the ready head was in,
+    on a head at or after each fix committed before its launch. A fix after the launch is the reading's own repair,
+    since every report it could answer was already in."""
     if ready_at is None:
         return unknown("the head the reviewers read is unknown")
     if launched < ready_at:
@@ -253,13 +282,24 @@ def _follows_answers(reading, ready, ready_at, launched, commits):
     commits, missing = _commit_list(commits)
     if missing:
         return unknown(missing)
+    unread = list(unread_reports) + [report.get("name") for report in reports if _time(report.get("at")) is None]
+    if unread:
+        return unknown("whether every report was in before it can't be told: the entrance cannot read "
+                       + ", ".join(str(name) for name in unread))
+    timed = [(_time(report["at"]), report) for report in reports]
+    if not timed:
+        return unknown("no report on that head is on record")
+    last_at, last = max(timed, key=lambda pair: pair[0])
+    if launched < last_at:
+        return {"status": "read", "value": False,
+                "reason": f"it was launched before the last report on that head, {last.get('name')}"}
     fixes = [commit for commit in commits if not commit.get("base_merge")]
     undated = [commit.get("sha") for commit in fixes if _time(commit.get("committed_at")) is None]
     if undated:
         return unknown(f"commit {undated[0]} has no readable committer date")
     answering = [commit for commit in fixes if _time(commit["committed_at"]) <= launched]
     if not answering:
-        return {"status": "read", "value": True, "reason": "none to answer"}
+        return {"status": "read", "value": True, "reason": "every report was in and none needed a fix"}
     order = [commit.get("sha") for commit in commits]
     head = reading.get("head")
     if head == ready["head"]:
@@ -275,7 +315,7 @@ def _follows_answers(reading, ready, ready_at, launched, commits):
             "reason": f"it read {_short(head)}, before the answering commit {_short(last)}"}
 
 
-def _first_reading(first_reading, ready, ready_at, commits):
+def _first_reading(first_reading, ready, ready_at, commits, reports, unread_reports):
     if first_reading is None:
         return {"status": "none", "reason": "no cold reading has been launched for this pull request"}
     if first_reading.get("status") == "unknown":
@@ -284,7 +324,8 @@ def _first_reading(first_reading, ready, ready_at, commits):
     part = {"status": "read", "head": head, "launched_at": first_reading.get("launched_at")}
     if launched is None:
         return {**part, "follows_answers": unknown("the first cold reading's launch time is unreadable")}
-    return {**part, "follows_answers": _follows_answers(first_reading, ready, ready_at, launched, commits)}
+    return {**part, "follows_answers": _follows_answers(first_reading, ready, ready_at, launched, commits, reports,
+                                                        unread_reports)}
 
 
 def _plural(count, word):
@@ -374,7 +415,7 @@ def section(*, ready: dict, build_began: str | None, cold_launches: list[str] | 
         "since_build_began": _since_build_began(ready_at, build_began),
         "cold_readings_before": _cold_readings_before(ready_at, cold_launches),
         "fix_before_last_report": _fix_before_last_report(ready_at, commits, reports, unread_reports),
-        "first_reading": _first_reading(first_reading, ready, ready_at, commits),
+        "first_reading": _first_reading(first_reading, ready, ready_at, commits, reports, unread_reports),
         "changed_after": changed_after,
     }
     return {**part, "sentence": _sentence(part)}

@@ -119,7 +119,7 @@ def test_the_relay_ready_step_says_what_ready_means(exported):
 
 def test_the_relay_answers_and_reading_wait_in_words_for_the_readers_the_entrance_cannot_read(exported):
     answers = json.loads(printed(exported, "relay-reported").split("\n", 1)[0])
-    assert answers["detail"] == "501 " + work._relay_batch_detail(False)
+    assert answers["detail"] == "501; " + work._relay_batch_detail(False)
     reading = json.loads(printed(exported, "relay-answered").split("\n", 1)[0])
     assert json.loads(reading["detail"])["before_reading"] == work._relay_reading_detail(False)
 
@@ -137,8 +137,10 @@ def test_the_release_report_says_what_changed_after_the_head_the_reviewers_read(
     changed = section["changed_after"]
     assert (section["head"]["commit"], changed["to"]) == (changed["from"], json.loads(report)["floor"]["head"])
     assert ([entry["path"] for entry in changed["files"]], changed["nothing_changed"]) == (["job/job.md"], False)
-    # The fix followed the reviewer's report on that head, so none came before it.
-    assert section["fix_before_last_report"]["value"] is False
+    # The fix followed the reviewer's report on that head, but this stand-in's handoff records no owed checks, so
+    # the criterion reports are unread and the field can't read false.
+    fix = section["fix_before_last_report"]
+    assert fix["status"] == "unknown" and "the handoff names no owed checks" in fix["reason"]
     assert "1 file and +1/-1 lines changed between it and" in section["sentence"]
 
 
@@ -244,3 +246,11 @@ def test_the_flag_is_read_from_the_decision_or_its_if_ended():
     assert read({"detail": json.dumps({"if_ended": {"reason": "y", "unlisted_builder_reason": "y"}})}) == "y"
     assert read({"detail": json.dumps({"if_ended": {"reason": "y"}})}) is None
     assert read({"detail": "not json"}) is None
+
+
+@pytest.mark.parametrize("name", [name for name in sorted(STEPS) if name.startswith("builder-")])
+def test_a_builders_owed_list_names_each_check_once(exported, name):
+    report = json.loads(printed(exported, name).split("\n", 1)[0])
+    owed = json.loads(json.loads(report["detail"])["if_ended"]["detail"])["owed_list"]
+    named = [(entry["stage"], entry.get("criterion"), entry.get("row")) for entry in owed]
+    assert len(named) == len(set(named)), named
