@@ -6,6 +6,8 @@ real before-snapshot, makes its changes, takes the real after-snapshot and compa
 it, then whether the entrance reads that launch as clear or held, through the
 entrance's own launch-findings reading. `--list` names the scenarios. Nothing outside
 the temporary folder is read or written, and the folder is removed afterwards.
+It ships beside the tests so a holder or a use session can see what a situation
+records and how the entrance reads it, without waiting for a live launch to meet it.
 Run under `python -B`, so importing the tree writes no bytecode into it for a launch's comparison
 to see. Paths under the temporary folder print as `<fixture>`.
 Design: lib/DESIGN.md#what-a-launch-comparison-releases

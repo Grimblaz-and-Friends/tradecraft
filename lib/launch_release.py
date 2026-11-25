@@ -172,6 +172,30 @@ def _entry(value: dict) -> tuple:
     return tuple(_text(value.get(field)) for field in ENTRY_FIELDS)
 
 
+def _pair(gone: list[dict], came: list[dict]) -> list[tuple[dict, dict]]:
+    """Each entry that left matched with the one that replaced it, taking both out of their lists.
+
+    Pairing lets an update read as one entry's move, which can release, and lets a held change
+    name the field that moved. A plugin is installed once per scope and project, so those two
+    identify an entry; an entry pairs only where it and its match are the only ones with that
+    scope and project, since several can't be told apart. Failing that, when one entry left and
+    one came, they are one entry whose scope or project moved.
+    """
+    def identity(entry):
+        return entry.get("scope"), entry.get("projectPath")
+
+    pairs = []
+    for entry in list(gone):
+        same = [other for other in came if identity(other) == identity(entry)]
+        if len(same) == 1 and sum(identity(other) == identity(entry) for other in gone) == 1:
+            pairs.append((entry, same[0]))
+            gone.remove(entry)
+            came.remove(same[0])
+    if len(gone) == 1 and len(came) == 1:
+        pairs.append((gone.pop(), came.pop()))
+    return pairs
+
+
 def _plugin_differences(before: dict, after: dict, added_folders: set[str], windows: bool
                         ) -> tuple[list[str], list[str]]:
     """Each listed difference, and the new install paths when every one is an update to an added folder."""
@@ -189,19 +213,7 @@ def _plugin_differences(before: dict, after: dict, added_folders: set[str], wind
         new = {_entry(entry): entry for entry in after[key]}
         gone = [old[entry] for entry in sorted(set(old) - set(new))]
         came = [new[entry] for entry in sorted(set(new) - set(old))]
-        pairs = []
-        for entry in list(gone):
-            # Paired, so an update reads as one entry's move and a held change names the field that moved:
-            # by scope and project, or, when one entry left and one came, those two.
-            same = [other for other in came if (other.get("scope"), other.get("projectPath"))
-                    == (entry.get("scope"), entry.get("projectPath"))]
-            if len(same) == 1 and sum((other.get("scope"), other.get("projectPath"))
-                                      == (entry.get("scope"), entry.get("projectPath")) for other in gone) == 1:
-                pairs.append((entry, same[0]))
-                gone.remove(entry)
-                came.remove(same[0])
-        if len(gone) == 1 and len(came) == 1:
-            pairs.append((gone.pop(), came.pop()))
+        pairs = _pair(gone, came)
         for entry in gone:
             differences.append(f"plugin {key} entry removed {_text({f: entry.get(f) for f in ENTRY_FIELDS})}")
             releasable = False
