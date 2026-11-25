@@ -6501,6 +6501,7 @@ def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Deci
             f"stretch launch {pointer['dispatch_id']} is still running; wait for its readiness record"
             for pointer in live)}
         builders = [_builder_reading(state, pointer) for pointer in live]
+        # One builder is the ordinary case, read at the detail's top level; only several need a list to tell apart.
         if len(builders) == 1:
             detail.update(builders[0])
         else:

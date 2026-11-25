@@ -214,7 +214,12 @@ class Launch:
 
     @property
     def bound(self) -> datetime | None:
-        """The launch time plus the limit plus the stage's cleanup reserve: no wait runs past it."""
+        """The launch time plus the limit plus the stage's cleanup reserve, after which the wait ends.
+
+        Past it the launcher has stopped its builder or is past its own window, so a wait still running would
+        only outlast the builder it watches. The launch's latest return would add the entrance's preflight cap,
+        time in which a launch whose record never completes leaves nothing to watch.
+        """
         if self.started is None or self.limit is None:
             return None
         return self.started + timedelta(seconds=self.limit + lifecycle.cleanup_reserve(self.limit))
@@ -224,6 +229,8 @@ class Launch:
         return bool(self.run.get("completed_at"))
 
     def stopped(self) -> bool:
+        # A run record not yet written names no launcher, and with none the launch would read as stopped at once;
+        # the pointer names it from the launch's start.
         state = dict(self.run)
         state.setdefault("launcher_process", self.pointer.get("launcher_process"))
         return lifecycle.liveness(state) == "stopped"
@@ -396,14 +403,7 @@ def _launched(store: Path, work: str, instalment: str | None) -> tuple[list[dict
     found = [pointer for pointer in launch_tree.live_launches(store)
              if str(pointer.get("work", "")).lower() == work.lower()]
     if instalment is not None:
-        def named(pointer):
-            try:
-                request = json.loads(Path(pointer["request"]).read_bytes())
-            except (OSError, ValueError, KeyError, TypeError):
-                return False
-            handoff = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
-            return (request.get("instalment") or handoff.get("instalment")) == instalment
-        found = [pointer for pointer in found if named(pointer)]
+        found = [pointer for pointer in found if launch_instalment(pointer) == instalment]
     return ([pointer for pointer in found if pointer.get("hand") is not True],
             [pointer for pointer in found if pointer.get("hand") is True])
 
@@ -461,9 +461,12 @@ def wait(store, repo: str, issue: int, *, instalment: str | None = None, out=Non
 
 
 def launch_instalment(pointer: dict) -> str | None:
-    """The instalment a launch's request names, so its wait command watches that launch where two run."""
+    """The instalment a launch's request names, or its handoff block, so its wait command watches that launch."""
     try:
         request = json.loads(Path(pointer["request"]).read_bytes())
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    return request.get("instalment") if isinstance(request, dict) else None
+    if not isinstance(request, dict):
+        return None
+    handoff = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
+    return request.get("instalment") or handoff.get("instalment")

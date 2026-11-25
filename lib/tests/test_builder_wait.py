@@ -211,7 +211,7 @@ def test_the_wait_ends_no_earlier_than_its_builder_and_within_a_minute_after(lau
 
 def test_a_builder_past_its_limit_ends_the_wait_at_the_limit_and_the_reserve_never_after(launcher):
     clock = Clock(T0)
-    # The bound falls 33 seconds in, between two polls, so only a last poll scheduled at it ends there exactly.
+    # The bound falls between two polls, so only a last poll scheduled at it ends there exactly.
     builder = Builder(clock, launcher(), launched=T0 - timedelta(seconds=LIMIT + RESERVE - 33))
     bound = builder.launched + timedelta(seconds=LIMIT + RESERVE)
     for second in range(0, 120, 3):
@@ -306,7 +306,7 @@ def test_a_replayed_log_prints_each_step_once_in_order_within_a_minute_with_stat
         builder.checkpoint()
     replayed = REPLAY.read_bytes().splitlines()
     for index, raw in enumerate(replayed):
-        # Seven seconds a line, so the replay outlasts a status interval and prints a second status line.
+        # Slow enough that the replay outlasts a status interval and prints a second status line.
         clock.at(7 * index + 1, lambda raw=raw: append(raw))
     clock.at(7 * len(replayed) + 5, lambda: builder.complete("success"))
     code, out = watch(clock)

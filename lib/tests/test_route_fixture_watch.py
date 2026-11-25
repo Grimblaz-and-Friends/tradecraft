@@ -1,6 +1,6 @@
 """The route fixture's `watch-` scenarios: a stand-in builder, the holder's wait on it, and the decision meanwhile.
 
-All seven run at once from one exported copy of lib/, since each spends most of its time waiting on its stand-in.
+They run at once from one exported copy of lib/, since each spends most of its time waiting on its stand-in.
 """
 from __future__ import annotations
 
