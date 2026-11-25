@@ -432,3 +432,17 @@ Wherever a model has no price, whether the run ends known, as a floor or unknown
 - A declared cap is recorded before the first read so a run stopped part-way still leaves its reason, and the release report lists every one so the owner sees each run that needed more than the default.
 
 **Decisions in force:** D-1003, a stage's limit is its recipient's time, counted from the recipient's start, and the entrance's work before the launch has its own cap; D-840, the reserve, the build budget and stopping a hung read with what it started; D-998, the entrance's work before a launch and its split, which the cap bounds; D-1012, a builder's captured check wait follows its launcher's window, so the check keeps its whole limit; D-1013, the stretch launcher is told when its limit was declared.
+
+## A relay turn's own checks
+
+**What it does now.** `work._check_account` writes the paragraph that closes every composed `build`, `floor` and `review-disposition` prompt, in a mechanical-lane wording (affirmed rows) and an artifact wording (acceptance criteria), local and cloud alike. It has the builder map each obligation to a committed test, a check it runs itself or an owed fresh reader. A check the builder runs itself is run at the turn's final head when it has no earlier result the builder can cite by revision, when anything changed since the revision it last ran at can affect it (that turn's commits, an earlier turn's, or a merge of the base), when the builder can't rule an effect out, or when a holder reading in the dispatch or the holder's own dispatch text names it. Every other such check is returned anyway, with the revision it last ran at, its result there and why nothing since can affect it, so the return accounts for every obligation every turn. Owed fresh readers are returned as before, after every repair. The builder route's handoff, send-back and catch-up lines share none of this text.
+
+**Why.**
+
+- The builder knows what it changed, so it can scope its own checks with no text from the holder; these are checks it already runs on its own work, so scoping them hands it no independent check. A fresh reader's check stays the holder's to launch, and CI runs every committed test at every head.
+- A check is scoped by everything since its last run, not by one turn's commits, so a turn stopped before its checks, or a catch-up, can't leave an affected check carried.
+- A carried result names its revision and reason so the holder can read the reason against the history and have the check run where it doesn't hold; a holder's note naming a check always wins.
+- The entrance checks none of this. The record is the builder's reasons and the holder's reading of them, and the floor is still read at each head.
+- One function writes both wordings so they cannot drift, and one text serves a first build and a repair: a first build has no earlier result, so it runs everything.
+
+**Decisions in force:** D-850, the declared CI floor, whose every-turn rerun of each builder-executable check this replaces; D-NUMBER, a relay repair runs only the checks a change since their last run can affect.
