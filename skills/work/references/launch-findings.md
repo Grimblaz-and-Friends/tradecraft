@@ -23,11 +23,11 @@ The request's `write_bound` states what applied: the guarded tools and allowed p
 
 ## What releases
 
-Some changes to the installed plugins are the runtime's own work: any session's runtime, the app, or any Python process that imports a plugin makes them at moments no launch controls. A change of one of these kinds is **released**. It is not a finding, holds no stage and owes no account, and the run record's `launch_comparison.released` lists it with its `id`, `item`, `path`, `change` and `kind`, beside `findings` and `attributed`, so you can still see what changed. The entrance's `implementer_environments` repeats each launch's comparison, `released` included. Releasing applies to two items only: the plugins folder (`plugins`), and the launcher's own plugin root (`launcher-plugin`), which is compared when no registered checkout is that root.
+Some changes to the installed plugins are the runtime's own work: any session's runtime, the app, or any Python process that imports a plugin makes them at moments no launch controls. A change of one of these kinds is **released** whoever made it, the launched session's own commands included, because a change's timing can't tell the runtime's work from the launch's. It is not a finding, holds no stage and owes no account, and the run record's `launch_comparison.released` lists it with its `id`, `item`, `path`, `change` and `kind`, beside `findings` and `attributed`, so you can still see what changed. The entrance's `implementer_environments` repeats each launch's comparison, `released` included. Releasing applies to two items only: the plugins folder (`plugins`), and the launcher's own plugin root (`launcher-plugin`), which is compared when no registered checkout is that root.
 
 | Kind | What changed | Where it releases |
 |---|---|---|
-| `bytecode` | a `__pycache__` folder, or a `.pyc` file directly in one. Python checks these against their source's recorded time and size, or hash, and rebuilds them when they differ. | anywhere in either item |
+| `bytecode` | a `__pycache__` folder, or a `.pyc` file directly in one. An import writes these with its source's time and size, and Python rebuilds them when those differ. | anywhere in either item |
 | `synced-marketplaces` | a `synced` folder at the plugins folder's top, or anything under it: the app's synced marketplace list | the plugins folder |
 | `in-use-marker` | a `.in_use` folder or a file directly in it, or a `.last_inuse_sweep` file, at any depth: the runtime marks a plugin version in use and sweeps the marks | either item |
 | `orphan-marker` | a `.orphaned_at` file at any depth: the runtime marks a retired plugin version | either item |
