@@ -1,4 +1,7 @@
-"""What a launch comparison releases in the plugins folder, and what still holds."""
+"""What a launch comparison releases in the plugins folder, and what still holds.
+
+Design: lib/DESIGN.md#what-a-launch-comparison-releases
+"""
 import json
 import os
 from pathlib import Path

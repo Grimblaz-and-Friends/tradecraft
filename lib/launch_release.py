@@ -185,7 +185,8 @@ def _plugin_differences(before: dict, after: dict, added_folders: set[str], wind
         came = [new[entry] for entry in sorted(set(new) - set(old))]
         pairs = []
         for entry in list(gone):
-            # An entry keeps its identity by scope and project; failing that, a lone pair is one entry.
+            # Paired, so an update reads as one entry's move and a held change names the field that moved:
+            # by scope and project, or, when one entry left and one came, those two.
             same = [other for other in came if (other.get("scope"), other.get("projectPath"))
                     == (entry.get("scope"), entry.get("projectPath"))]
             if len(same) == 1 and sum((other.get("scope"), other.get("projectPath"))
