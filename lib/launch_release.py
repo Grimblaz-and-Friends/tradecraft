@@ -63,7 +63,7 @@ def _kind(item: str, parts: list[str], entry: str | None, windows: bool) -> str 
     if (last == "__pycache__" and is_dir()) or (
             parent == "__pycache__" and last.endswith(".pyc") and is_file()):
         return "bytecode"
-    if plugins and names[0] == "synced":
+    if plugins and names[0] == "synced" and (len(names) > 1 or is_dir()):
         return "synced-marketplaces"
     if (last == ".in_use" and is_dir()) or (parent == ".in_use" and is_file()) or (
             last == ".last_inuse_sweep" and is_file()):

@@ -118,6 +118,14 @@ def test_an_upkeep_name_in_the_wrong_place_holds(home):
     assert result["released"] == []
 
 
+def test_a_file_where_the_synced_folder_belongs_holds(home):
+    home.remove("synced")
+    before = home.comparison()
+    home.write("synced", b"not a folder")
+    result = before.finish(60)
+    assert held(result, home) == ["synced"] and result["released"] == []
+
+
 @pytest.mark.parametrize("separator", ["/", "\\"])
 def test_paths_read_alike_with_either_separator(separator):
     top = separator.join(["", "fixture", "home", ".claude", "plugins"])
