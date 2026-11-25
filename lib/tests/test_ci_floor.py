@@ -224,8 +224,8 @@ FRESH = {
 def test_implementation_turns_rerun_only_affected_checks_and_account_for_every_one(stage, mechanical, cloud):
     brief = support.MECHANICAL if mechanical else support.AFFIRMED
     reading = "<!-- tradecraft:holder-reading:v1 result=amended -->\nRun C2 on this repair."
-    state = support.state(brief) if mechanical else support.state(
-        brief, support.ARTIFACT, support._settled("would", "would"), support.HOLDER, reading)
+    state = support.state(brief, support.ARTIFACT, support._settled("would", "would", brief=brief),
+                          support.HOLDER, reading)
     command = "python example-check.py --literal '$argument'"
     prompt = work._stage_prompt(state, work.Decision(stage, True, "resume", "fixture"),
                                 floor_command=command, cloud=cloud).decode()
@@ -235,7 +235,8 @@ def test_implementation_turns_rerun_only_affected_checks_and_account_for_every_o
     assert FRESH[mechanical] in prompt
     assert "Run each remaining builder-executable" not in prompt
     assert "Repairs renew this duty" not in prompt
-    # A holder's note reaches the builder as a reading; the account's rule that it wins needs it carried.
+    # A holder's note reaches the builder as a reading, and the rule that it wins needs it carried. The
+    # mechanical lane carries no readings, so there a note travels only in a holder-written dispatch.
     assert ("Run C2 on this repair." in prompt) is not mechanical
     if stage == "floor":
         assert command in prompt

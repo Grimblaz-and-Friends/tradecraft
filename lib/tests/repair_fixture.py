@@ -16,7 +16,9 @@ about its state:
 - `c`: a first build, fresh; no earlier return.
 - `d`: as `a`, with a holder reading that names C2 to be run on this repair.
 - `holder`: no builder turn; three criteria, a first return at E, and a repair's return whose reason for
-  carrying C2 is false of the history. A holder's use session reads it; it has no `prompt` and no `verify`.
+  carrying C2 is false of the history. A holder's use session reads it; it has no `prompt`, because no
+  builder turn is composed, and no `verify`, because a holder may answer the false reason by asking the
+  builder for the run, which no log here can show, so its session's report is read instead.
 
 No real home or store is read, no socket connects and no `gh` runs: `prompt` isolates itself as the route
 fixture does.

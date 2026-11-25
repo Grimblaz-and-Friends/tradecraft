@@ -19,7 +19,7 @@ The composed paragraph told the builder to run every builder-executable check at
 ## Calls made inside the rows
 
 - **One text for a first build and a repair.** Row 1 states one condition for both, and a first build has no earlier result, so it runs everything.
-- **"No earlier result" means none the builder can cite by revision,** so a session that took a change over with no return of its own runs the check.
+- **"No earlier result" means none the builder can cite by revision,** whether from its own return or one posted on the change, so a session that took a change over and can find no such return runs the check.
 - **In doubt, run it.** Row 1 turns on "can affect", and a builder that cannot rule an effect out has not shown the check unaffected.
 - **A holder's note is a holder reading carried in the dispatch, or the holder's own dispatch text,** the two carriers the relay route has. On the mechanical lane the composed prompt carries no readings, so a note there travels only in a holder-written dispatch.
 - **One function writes both lane wordings,** so they cannot drift; every sentence the brief didn't touch is kept word for word.
