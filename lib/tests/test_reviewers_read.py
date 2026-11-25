@@ -93,7 +93,7 @@ def baseline(history):
 
 @pytest.fixture
 def make(history, baseline):
-    """A section of the new order's change, with any input replaced."""
+    """A section of a reviewers-first change, with any input replaced."""
     _, shas = history
 
     def build(**changes):
@@ -210,7 +210,8 @@ def test_with_every_report_read_and_no_fix_before_them_the_fix_reads_false(make)
     assert fix["status"] == "read" and fix["value"] is False and fix["commit"] is None
 
 
-def test_the_new_order_reads_no_cold_reading_before_no_fix_before_and_a_reading_that_follows(history, make):
+def test_a_reviewers_first_change_reads_no_cold_reading_before_no_fix_before_and_a_reading_that_follows(
+        history, make):
     _, shas = history
     part = make()
     assert part["head"] == {"status": "read", "commit": shas["B"], "ready_at": READY_AT}
@@ -227,7 +228,7 @@ def test_the_new_order_reads_no_cold_reading_before_no_fix_before_and_a_reading_
            f"and {shas['E'][:7]}, the head you merge (1 binary)" in part["sentence"]
 
 
-def test_the_earlier_order_reads_a_cold_reading_before_ready_that_precedes_it(history, make):
+def test_a_cold_reading_first_change_reads_a_cold_reading_before_ready_that_precedes_it(history, make):
     _, shas = history
     part = make(cold_launches=[at("11:10"), at("13:15")],
                  first_reading={"head": shas["B"], "launched_at": at("11:10")})
@@ -371,7 +372,8 @@ def test_a_term_affirmed_after_the_ready_step_leaves_the_builds_start_unknown(ma
     part = make(build_began=at("12:20"))
     assert part["since_build_began"]["status"] == "unknown"
     assert "came after the ready step" in part["since_build_began"]["reason"]
-    assert "-" not in part["sentence"].split("after the build began")[0][-12:]
+    # The sentence says the duration is unknown rather than stating a negative one.
+    assert "how long after the build began is unknown" in part["sentence"]
 
 
 def test_a_reviewers_notice_is_not_taken_for_its_review():

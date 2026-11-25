@@ -209,7 +209,7 @@ def test_a_builder_taking_the_handoffs_steps_in_order_is_led_to_ready_reported(w
     capsys.readouterr()
 
 
-def test_a_builder_that_finished_on_the_earlier_order_is_asked_for_nothing_again(walk, capsys):
+def test_a_builder_that_finished_cold_reading_first_is_asked_for_nothing_again(walk, capsys):
     """A builder still running when the practice was updated finishes in its own copy's order: its reading made
     clean before the ready step stands, and the final pass asks for no reading, report or proof again."""
     fixture = walk.fixture
@@ -217,7 +217,7 @@ def test_a_builder_that_finished_on_the_earlier_order_is_asked_for_nothing_again
     builder = fixture.hand_stretch(source, owed=True)["dispatch_id"]
     fixture.connected_reviewers = frozenset({REVIEWER})
     fixture.pull_request(head, route_fixture.CLEAR)
-    # The earlier order: the floor, the cold reading, the criterion reader and reach, then the ready step and proof.
+    # Cold reading first: the floor, the cold reading, the criterion reader and reach, then the ready step and proof.
     walk.checks.append(floor(fixture, head))
     walk.cold_clean = walk.reach_clear = walk.proof = True
     for stage, fields in (("cold-reader", {}), ("acceptance-criterion", {"criterion": "C2"})):
