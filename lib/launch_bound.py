@@ -655,7 +655,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             elapsed_seconds: float, record: Path | None = None,
             home: Path | None = None, end: float | None = None,
             allowance: str | None = None, own_row_resnapshot: bool = False) -> dict[str, object]:
-    """Findings are changes no other live recorded run accounts for and no release rule releases (row 2).
+    """Findings are changes no other live recorded run accounts for and no release rule releases.
 
     Working-copy and branch changes are findings only when the run's record
     names them; the rest are ``listed``. Past ``end`` nothing more is examined:

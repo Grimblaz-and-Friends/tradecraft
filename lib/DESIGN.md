@@ -138,7 +138,7 @@ The comparison of a Claude launch (`launch_bound.py`) also reads, before and aft
 - Releasing is decided in memory before the store is read, so a released change never needs a recorded run and a slow store read never leaves it unexamined. The release step checks the allowance after each change like the rest of the sort, so an allowance spent before the step finishes still leaves the item `uncompared`.
 - `classify_recorded` applies the same rules to a finished record's findings, for measuring them against recorded launches; neither the comparison nor the entrance calls it, because a record made before releases existed keeps its hold. It reads names alone, since a record keeps no entry types or install-record contents, so install records and marketplace clones hold there.
 
-**Decisions in force:** D-1023, what a launch comparison releases, chosen over crediting a change by whether the run's own commands were running and over fencing the builder, and reading the two install records against D-939's stat-only comparison; D-939, the launch's before-and-after comparison, which this section narrows.
+**Decisions in force:** D-996, the comparison's allowance, which the release step checks after each change; D-1023, what a launch comparison releases, chosen over crediting a change by whether the run's own commands were running and over fencing the builder, and reading the two install records against D-939's stat-only comparison; D-939, the launch's before-and-after comparison, which this section narrows.
 
 ## Launch accounts
 
