@@ -61,17 +61,13 @@ MODULES = {
                '    return [f"{day},{Decimal(amount).quantize(Decimal(\'0.01\'))}" for day, amount in entries]\n'),
     "parse": ('def parse_line(line):\n    day, amount = line.split(",")\n    return day, amount\n'),
 }
-EDITS = {
-    # This turn's fix in `a`, `b` and `d`: an empty month totals zero rather than an integer 0.
-    "totals": ('from decimal import Decimal\n\n\ndef month_total(amounts):\n'
-               '    total = sum((Decimal(amount) for amount in amounts), Decimal("0"))\n'
-               '    return total.quantize(Decimal("0.01"))\n'),
-    # The commit between E and the fix in `b` and `holder`: an exported day loses stray spaces.
-    "export": ('from decimal import Decimal\n\n\ndef export_lines(entries):\n'
-               '    lines = []\n    for day, amount in entries:\n'
-               '        lines.append(f"{day.strip()},{Decimal(amount).quantize(Decimal(\'0.01\'))}")\n'
-               '    return lines\n'),
-}
+TURNS_FIX = ('from decimal import Decimal\n\n\ndef month_total(amounts):\n'
+             '    total = sum((Decimal(amount) for amount in amounts), Decimal("0"))\n'
+             '    return total.quantize(Decimal("0.01"))\n')
+STOPPED_TURNS_COMMIT = ('from decimal import Decimal\n\n\ndef export_lines(entries):\n'
+                        '    lines = []\n    for day, amount in entries:\n'
+                        '        lines.append(f"{day.strip()},{Decimal(amount).quantize(Decimal(\'0.01\'))}")\n'
+                        '    return lines\n')
 ASSERTS = {
     "totals": ('from ledger.totals import month_total\n'
                'assert month_total(["1.10", "2.20"]) == Decimal("3.30")\n'),
@@ -167,9 +163,9 @@ def make(arm: str, work: Path) -> int:
                "plan, which the turn's instructions also carry.\n- `ran.log`: written by the checks.\n")
         return 0
     if arm in ("b", "holder"):
-        _write(product / "ledger" / "export.py", EDITS["export"])
+        _write(product / "ledger" / "export.py", STOPPED_TURNS_COMMIT)
         stopped = _commit(product, "Strip stray spaces from an exported day")
-    _write(product / "ledger" / "totals.py", EDITS["totals"])
+    _write(product / "ledger" / "totals.py", TURNS_FIX)
     fix = _commit(product, "An empty month totals 0.00")
     files = [f"- `product/`: the product repository, on branch `{BRANCH}`.",
              "- `plan.md`: the settled plan, which the turn's instructions also carry.",
