@@ -132,7 +132,7 @@ The comparison of a Claude launch (`launch_bound.py`) also reads, before and aft
 - A released change stays in the record so a holder, or a read across changes, can see what changed and catch a kind that releases more than it should. Its `id` lets a later reader cross-reference it with an account.
 - Releasing is decided in memory before the store is read, so a released change never needs a recorded run and is never left unexamined when the allowance runs out.
 
-**Decisions in force:** D-<PR>, what a launch comparison releases, chosen over crediting a change by whether the run's own commands were running and over fencing the builder, and reading the two install records against D-939's stat-only comparison; D-939, the launch's before-and-after comparison, which this section narrows.
+**Decisions in force:** D-1023, what a launch comparison releases, chosen over crediting a change by whether the run's own commands were running and over fencing the builder, and reading the two install records against D-939's stat-only comparison; D-939, the launch's before-and-after comparison, which this section narrows.
 
 ## Launch accounts
 
