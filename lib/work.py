@@ -6480,7 +6480,8 @@ def _builder_reading(state: WorkState, pointer: dict) -> dict[str, object]:
     values = builder_wait.read_once(pointer)
     return {"dispatch": pointer.get("dispatch_id"), **values,
             "wait": builder_wait.wait_command(state.repo, state.issue_number, state.holder_root,
-                                              Path(__file__).resolve().parent.parent, state.instalment)}
+                                              Path(__file__).resolve().parent.parent,
+                                              builder_wait.launch_instalment(pointer) or state.instalment)}
 
 
 def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Decision:
@@ -13537,11 +13538,10 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
     _note_cap_outcome("handed-off", bundle=str(request_path))
     added = after(dispatch_id) if after is not None else {}
     # A resume, a send-back and a catch-up resume are the same builder running again, after the handoff the
-    # holder's wait starts from, so each names the wait as the first launch does.
-    wait = builder_wait.wait_command(state.repo, state.issue_number,
-                                     block.get("holder_root") or state.holder_root or args.root,
-                                     block.get("plugin_root") or Path(__file__).resolve().parent.parent,
-                                     args.instalment)
+    # holder's wait starts from, so each names the wait as the first launch does. Its roots are the holder's
+    # --root and this entrance, as the decision names them, so the two never give different commands.
+    wait = builder_wait.wait_command(state.repo, state.issue_number, state.holder_root or args.root,
+                                     Path(__file__).resolve().parent.parent, args.instalment)
     _emit_report({"stage": args.stage, "status": "handed-off", "started_by": "launch", "dispatch": dispatch_id,
                   "resume": resume, "tree": str(implementation_root), "branch": branch,
                   "request": str(request_path), "records": str(bundle),

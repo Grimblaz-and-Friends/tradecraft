@@ -19,8 +19,8 @@ import time
 import launch_tree
 import run_lifecycle as lifecycle
 
-# Each step shows well within a minute of the builder taking it; a poll opens, reads and closes each file once,
-# so a launcher replacing its run record is never held off for longer than one read.
+# Each step shows soon after the builder takes it; a poll opens, reads and closes each file once, so a launcher
+# replacing its run record is never held off for longer than one read.
 POLL_SECONDS = 5.0
 # Often enough that an owner opening the task sees a recent line, rarely enough not to bury the steps.
 STATUS_SECONDS = 300.0
@@ -32,7 +32,8 @@ CLAUDE_FORM = "claude-stream-json"
 # The record types of Claude's stream form; a log whose first record is none of them is in another form.
 CLAUDE_TYPES = frozenset({"system", "assistant", "user", "tool_progress", "result", "rate_limit_event",
                           "stream_event"})
-# A step without its own description is named by the first of these its input carries.
+# What a step acts on, the target before its scope: a file before a folder, a search pattern before the folder it
+# searches, so the line names the thing the builder is working on.
 MAIN_ARGUMENTS = ("file_path", "notebook_path", "pattern", "path", "skill", "command", "url", "query", "prompt")
 HAND_NOT_MEASURED = ("a builder started by hand isn't measured: the owner started that session and sees it "
                      "there, and no launch records its time, limit or steps")
@@ -87,8 +88,9 @@ class Step:
 class Log:
     """A builder's log read forward from where the last read stopped: its steps, and when it last did anything.
 
-    Each read opens, reads and closes the file. ``form`` is the attempt's ``source_format``; where the
-    attempt names none, the first record decides whether the log is Claude's stream form.
+    Each read opens, reads and closes the file. ``form`` is the attempt's ``source_format``, which the launcher
+    names as it starts the attempt; a record that names none is read by its first record rather than refused, so
+    a log from a writer that records no format still shows its steps if it is Claude's stream form.
     """
 
     def __init__(self, path, form: str | None = None):
@@ -143,6 +145,7 @@ class Log:
             if block.get("type") != "tool_use":
                 continue
             identity = block.get("id") if isinstance(block.get("id"), str) else None
+            # Counted by its id, so a record written twice is one step and the count matches the log's ids.
             if identity is not None and identity in self.seen:
                 continue
             if identity is not None:
@@ -185,9 +188,16 @@ class Launch:
         path = attempt.get("stdout")
         if path and (self.log is None or self.log.path != Path(path)):
             # A new attempt writes a new log; its steps are read from its start, and the builder was last active
-            # when the attempt before it was, not when the launch began.
+            # when the attempt before it was, not when the launch began. A first read of a retried launch reads
+            # that earlier log once for it, so a fresh read and a long wait agree.
             previous = self.log
             self.log = Log(path, attempt.get("source_format"))
+            if previous is None and len(attempts) > 1 and isinstance(attempts[-2], dict) and attempts[-2].get("stdout"):
+                previous = Log(attempts[-2]["stdout"], attempts[-2].get("source_format"))
+                try:
+                    previous.read()
+                except OSError:
+                    pass
             if previous is not None:
                 self.log.activity = previous.activity
 
@@ -231,7 +241,8 @@ def reading(launch: Launch, now: datetime) -> dict[str, object]:
     last = log.steps[-1] if log and log.steps else None
     since = (log.activity if log and log.activity else None) or started
     running_step = None
-    if last is not None and last.identity not in log.finished and last.at is not None and not launch.completed:
+    if (last is not None and last.identity is not None and last.identity not in log.finished and last.at is not None
+            and not launch.completed):
         running_step = max(0, int((end - last.at).total_seconds()))
     readable = None if log is None else log.readable
     return {
@@ -239,7 +250,8 @@ def reading(launch: Launch, now: datetime) -> dict[str, object]:
         "running_seconds": max(0, int((end - started).total_seconds())) if started else None,
         "limit_seconds": launch.limit,
         "quiet_seconds": max(0, int((end - since).total_seconds())) if since else None,
-        "steps": len(log.steps) if log is not None and readable is not False else None,
+        # A launch with no log yet has taken no step; only a log in another form has steps that can't be read.
+        "steps": 0 if log is None else len(log.steps) if readable is not False else None,
         "last_step": last.text() if last is not None else None,
         "last_step_running_seconds": running_step,
     }
@@ -303,8 +315,8 @@ class Waiter:
         self.failing.pop(name, None)
         return True
 
-    def _steps(self, prefix: str = "step") -> None:
-        log = self.launch.log
+    def _steps(self, log: Log | None = None) -> None:
+        log = log or self.launch.log
         if log is None:
             return
         before = len(log.steps)
@@ -314,7 +326,7 @@ class Waiter:
             self.form_said = True
             self.say("the builder's log isn't in Claude's stream form, so its steps can't be read; status lines only")
         for step in log.steps[before:]:
-            self.say(f"{'helper step' if step.helper else prefix}: {step.text()}")
+            self.say(f"{'helper step' if step.helper else 'step'}: {step.text()}")
 
     def _status(self) -> None:
         self.say(status_line(self.work, reading(self.launch, self.clock())))
@@ -344,6 +356,9 @@ class Waiter:
             had_log = launch.log
             self._try("run record", launch.pointer.get("run"), launch.read_run)
             if launch.log is not had_log and had_log is not None:
+                # The old log's last steps come first, then its activity stands until the new log shows any.
+                self._steps(had_log)
+                launch.log.activity = max(filter(None, (launch.log.activity, had_log.activity)), default=None)
                 self.say("the builder started a new attempt; its steps follow from the new log")
             if launch.completed:
                 return self._ended(self._outcome())
@@ -443,3 +458,12 @@ def wait(store, repo: str, issue: int, *, instalment: str | None = None, out=Non
     ended = _last_ended(store, work)
     say(f"no launched builder of {work} is running" + (f"; {ended}" if ended else ""))
     return 0
+
+
+def launch_instalment(pointer: dict) -> str | None:
+    """The instalment a launch's request names, so its wait command watches that launch where two run."""
+    try:
+        request = json.loads(Path(pointer["request"]).read_bytes())
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return request.get("instalment") if isinstance(request, dict) else None

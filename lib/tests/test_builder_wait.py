@@ -304,10 +304,11 @@ def test_a_replayed_log_prints_each_step_once_in_order_within_a_minute_with_stat
             appended.append(clock.now)
         builder.append(record)
         builder.checkpoint()
-    for index, raw in enumerate(REPLAY.read_bytes().splitlines()):
+    replayed = REPLAY.read_bytes().splitlines()
+    for index, raw in enumerate(replayed):
         # Seven seconds a line, so the replay outlasts a status interval and prints a second status line.
         clock.at(7 * index + 1, lambda raw=raw: append(raw))
-    clock.at(7 * 46 + 5, lambda: builder.complete("success"))
+    clock.at(7 * len(replayed) + 5, lambda: builder.complete("success"))
     code, out = watch(clock)
     assert code == 0
     printed = [(at, text) for at, text in out.lines if text.startswith(("step:", "helper step:"))]
@@ -516,9 +517,41 @@ def test_a_new_attempt_is_quiet_since_the_builder_last_did_anything_not_since_th
         builder.record["attempts"].append({"vendor": "claude", "stdout": str(retry),
                                            "source_format": builder_wait.CLAUDE_FORM})
         builder.checkpoint()
+    # A step lands in the old log after the wait last read it, and before the switch.
+    clock.at(58, lambda: builder.step("Bash", {"command": "make test", "description": "Test before the retry"}))
     clock.at(60, new_attempt)
+    fresh = {}
+    clock.at(300, lambda: fresh.update(builder_wait.read_once(json.loads(builder.pointer.read_bytes()), clock.now)))
     clock.at(400, lambda: builder.complete("success"))
     code, out = watch(clock)
     assert code == 0 and out.texts("the builder started a new attempt")
+    assert out.texts("step: ") == ["step: Bash: Test before the retry"]
     [later] = [text for at, text in out.lines[1:] if text.startswith("builder for ")]
-    assert minutes(later, "quiet") == 5 and "0 steps" in later
+    assert minutes(later, "quiet") == 4 and "0 steps" in later
+    # A fresh read, as the decision makes, takes the activity from the attempt before too.
+    assert fresh["quiet_seconds"] // 60 == 4 and fresh["steps"] == 0
+
+
+def test_two_live_builders_each_get_a_wait_command_for_their_own_instalment(launcher, tmp_path):
+    from test_route import MECHANICAL, fixture
+    clock = Clock(datetime.now(timezone.utc))
+    Builder(clock, launcher(), launched=clock.now - timedelta(hours=1), instalment="a")
+    Builder(clock, launcher(), launched=clock.now - timedelta(hours=2), instalment="b")
+    state = fixture(tmp_path, MECHANICAL)
+    state.record_root, state.holder_root = records.default_record_root(), tmp_path / "holder"
+    detail = json.loads(work._builder_route_decision(state).detail)
+    assert sorted(entry["wait"].rsplit(" ", 2)[1:] for entry in detail["builders"]) == [
+        ["--instalment", "a"], ["--instalment", "b"]]
+
+
+def test_a_step_with_no_id_is_not_read_as_running_and_no_log_yet_is_no_step(launcher):
+    clock = Clock(T0)
+    builder = Builder(clock, launcher(), launched=T0 - timedelta(hours=1))
+    builder.append({"type": "assistant", "timestamp": stamp(T0), "message": {"content": [
+        {"type": "tool_use", "name": "Bash", "input": {"description": "No id"}}]}})
+    values = builder_wait.read_once(json.loads(builder.pointer.read_bytes()), T0 + timedelta(minutes=3))
+    assert values["last_step"] == "Bash: No id" and values["last_step_running_seconds"] is None
+    builder.record["attempts"] = []
+    builder.checkpoint()
+    values = builder_wait.read_once(json.loads(builder.pointer.read_bytes()), T0)
+    assert values["steps"] == 0 and "0 steps" in builder_wait.status_line(WORK, values)

@@ -18,6 +18,7 @@ sys.path.insert(0, str(LIB))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import builder_wait  # noqa: E402
+import work  # noqa: E402
 import route_fixture  # noqa: E402
 
 WATCH = sorted(name for name in route_fixture.SCENARIOS if name.startswith("watch-"))
@@ -81,7 +82,7 @@ def test_a_watched_builder_is_read_as_its_records_say_and_the_wait_ends_with_it(
         block.append(line)
     records = json.loads("\n".join(block))
     assert detail["started_at"] == records["run"]["launched_at"]
-    assert detail["limit_seconds"] == records["request_limit_seconds"] == route_fixture.WATCH_LIMIT
+    assert detail["limit_seconds"] == records["request_limit_seconds"] == work.DEFAULT_STRETCH_TIMEOUT_SECONDS
     assert abs(detail["running_seconds"] - records["run"]["elapsed_checkpoint_seconds"]) < 60
     # The decision names the very command the scenario started the wait with.
     assert detail["wait"] == out.split("the wait, started as the handed-off report prints it: ", 1)[1].split(" ---")[0]

@@ -79,10 +79,10 @@ SCENARIOS = {
     "owner-asked-relay": "the owner's route=relay marker, nothing launched",
     "hand-started": "a builder the owner started by hand, its record still open",
     "launch-account-held": "a completed stretch launched under a write bound whose comparison no launch-account names",
-    "watch-ready": "a launched builder's stand-in, running two hours of eight, watched by the holder's wait until it "
-                   "ends ready",
+    "watch-ready": "a launched builder's stand-in, two hours into the stretch's default limit, watched by the "
+                   "holder's wait until it ends ready",
     "watch-stopped": "the same, until the stand-in's run ends failed",
-    "watch-limit": "the same, until its launcher stops it at its eight-hour limit",
+    "watch-limit": "the same, until its launcher stops it at that limit",
     "watch-crash": "the same, until the stand-in dies without completing its record",
     "watch-replay": "the same, the stand-in appending the recorded-form log tests/fixtures/builder-stream.jsonl line by "
                     "line, until it ends ready",
@@ -91,7 +91,6 @@ SCENARIOS = {
 }
 WATCHED = {"watch-ready": "ready", "watch-stopped": "stopped", "watch-limit": "limit", "watch-crash": "crash",
            "watch-replay": "ready"}
-WATCH_LIMIT = 28800.0
 # The stand-in reaches its limit this many seconds after it starts, in the middle of its quiet span.
 LIMIT_AT = 18.0
 REPLAY_LOG = Path("fixtures") / "builder-stream.jsonl"
@@ -236,17 +235,18 @@ class Fixture:
     def watched_stretch(self, mode: str, replay: Path | None = None) -> tuple[subprocess.Popen, str, Path, Path]:
         """A launched stretch whose launcher is the stand-in builder, live and writing its run record and log.
 
-        Its request carries the stretch's eight-hour limit; it was launched two hours ago, or, for ``limit``, so
+        Its request carries the stretch's default limit; it was launched two hours ago, or, for ``limit``, so
         that its limit falls ``LIMIT_AT`` seconds after it starts. The pointer is written once its run record
         exists, so the wait finds the launch whole.
         """
         now = datetime.now(timezone.utc)
-        launched = now - timedelta(seconds=WATCH_LIMIT - LIMIT_AT if mode == "limit" else 7200)
+        limit = self.work.DEFAULT_STRETCH_TIMEOUT_SECONDS
+        launched = now - timedelta(seconds=limit - LIMIT_AT if mode == "limit" else 7200)
         root = self.base / "implementation"
         dispatch_id, output, request = self._request("stretch", 0, root=root, holder_session=HOLDER_SESSION,
                                                      at=launched)
-        request.update(handoff={"timeout_seconds": WATCH_LIMIT, "holder_root": str(self.holder),
-                                "plugin_root": str(LIB.parent)}, caller_limit_seconds=WATCH_LIMIT)
+        request.update(handoff={"timeout_seconds": limit, "holder_root": str(self.holder),
+                                "plugin_root": str(LIB.parent)}, caller_limit_seconds=limit)
         request_path, run_path = (self.records.sidecar(output, ".request.json"),
                                   self.records.sidecar(output, ".run.json"))
         log = self.records.sidecar(output, ".claude.stdout.log")
