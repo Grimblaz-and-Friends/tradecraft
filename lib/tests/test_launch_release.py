@@ -1,4 +1,4 @@
-"""What a launch comparison releases in the plugins folder, and what still holds (#946)."""
+"""What a launch comparison releases in the plugins folder, and what still holds."""
 import json
 import os
 from pathlib import Path
@@ -48,7 +48,7 @@ def kinds(result, home, item="plugins"):
     return {rel(home, entry): entry["kind"] for entry in result["released"] if entry["item"] == item}
 
 
-# --- C2: the upkeep kinds release; one more file, or a sourceless .pyc, holds -----------
+# --- The upkeep kinds release; one more file, or a sourceless .pyc, holds -----------
 
 def launcher_at(home, where):
     """The launcher's plugin root: an installed version that stays, or a checkout outside the plugins folder."""
@@ -67,7 +67,7 @@ def launcher_upkeep(home, top):
 
 
 @pytest.mark.parametrize("where", ["installed", "checkout"])
-def test_c2_upkeep_alone_holds_nothing_and_is_listed_by_kind_in_both_items(home, where):
+def test_upkeep_alone_holds_nothing_and_is_listed_by_kind_in_both_items(home, where):
     launcher = launcher_at(home, where)
     before = home.comparison(launcher)
     release_fixture._upkeep(home)
@@ -89,7 +89,7 @@ def test_c2_upkeep_alone_holds_nothing_and_is_listed_by_kind_in_both_items(home,
         assert entry["id"] == launch_bound._finding_id(entry["item"], entry["path"], entry["change"])
 
 
-def test_c2_one_more_file_elsewhere_in_the_plugins_folder_is_the_one_finding(home):
+def test_one_more_file_elsewhere_in_the_plugins_folder_is_the_one_finding(home):
     before = home.comparison()
     release_fixture._upkeep(home)
     home.write(f"data/{WIDGET}/added.json", b"{}")
@@ -98,7 +98,7 @@ def test_c2_one_more_file_elsewhere_in_the_plugins_folder_is_the_one_finding(hom
     assert set(kinds(result, home).values()) == set(UPKEEP.values())
 
 
-def test_c2_a_compiled_file_outside_pycache_is_the_one_finding(home):
+def test_a_compiled_file_outside_pycache_is_the_one_finding(home):
     before = home.comparison()
     release_fixture._upkeep(home)
     release_fixture._sourceless(home)
@@ -106,7 +106,7 @@ def test_c2_a_compiled_file_outside_pycache_is_the_one_finding(home):
     assert held(result, home) == [f"{WIDGET_V1}/lib/helper.pyc"]
 
 
-def test_c2_an_upkeep_name_in_the_wrong_place_holds(home):
+def test_an_upkeep_name_in_the_wrong_place_holds(home):
     before = home.comparison()
     home.write("store/sub/x.json", b"{}")
     home.write(f"cache/{MARKET}/synced/x.json", b"{}")
@@ -116,7 +116,7 @@ def test_c2_an_upkeep_name_in_the_wrong_place_holds(home):
 
 
 @pytest.mark.parametrize("separator", ["/", "\\"])
-def test_c2_paths_read_alike_with_either_separator(separator):
+def test_paths_read_alike_with_either_separator(separator):
     top = separator.join(["", "fixture", "home", ".claude", "plugins"])
 
     def change(path, kind="added"):
@@ -133,7 +133,7 @@ def test_c2_paths_read_alike_with_either_separator(separator):
         5: "orphan-marker", 8: "version-folder", 9: "version-folder"}
 
 
-def test_c2_released_changes_never_wait_on_the_store(home, monkeypatch):
+def test_released_changes_never_wait_on_the_store(home, monkeypatch):
     before = home.comparison()
     release_fixture._upkeep(home)
 
@@ -144,7 +144,7 @@ def test_c2_released_changes_never_wait_on_the_store(home, monkeypatch):
     assert before.finish(60)["status"] == "clean"
 
 
-# --- C3: a whole version folder releases; an edit inside one, or a new plugin, holds ---------
+# --- A whole version folder releases; an edit inside one, or a new plugin, holds ---------
 
 def swap(home, plugin=GADGET, old="3.0.0", new="4.0.0"):
     home.write(f"cache/{MARKET}/{plugin}/{new}/.claude-plugin/plugin.json", b"{}")
@@ -152,7 +152,7 @@ def swap(home, plugin=GADGET, old="3.0.0", new="4.0.0"):
     home.remove(f"cache/{MARKET}/{plugin}/{old}")
 
 
-def test_c3_a_version_swap_releases_everything_under_both_folders(home):
+def test_a_version_swap_releases_everything_under_both_folders(home):
     before = home.comparison()
     swap(home)
     result = before.finish(60)
@@ -162,7 +162,7 @@ def test_c3_a_version_swap_releases_everything_under_both_folders(home):
     assert {path.split("/")[3] for path in released} == {"3.0.0", "4.0.0"}
 
 
-def test_c3_a_swap_of_the_launchers_own_version_holds_nothing(home):
+def test_a_swap_of_the_launchers_own_version_holds_nothing(home):
     launcher = home.path(GADGET_V3)
     home.write(".in_use/4101", b"{}", top=launcher)
     home.write("lib/__pycache__/m.cpython-312.pyc", b"\x00", top=launcher)
@@ -176,13 +176,13 @@ def test_c3_a_swap_of_the_launchers_own_version_holds_nothing(home):
     assert own and {entry["change"] for entry in own} == {"removed"}
 
 
-def test_c3_a_file_changed_inside_a_version_that_stayed_holds(home):
+def test_a_file_changed_inside_a_version_that_stayed_holds(home):
     before = home.comparison()
     home.write(f"{GADGET_V3}/.claude-plugin/plugin.json", b'{"name": "edited"}')
     assert held(before.finish(60), home) == [f"{GADGET_V3}/.claude-plugin/plugin.json"]
 
 
-def test_c3_a_plugins_own_folder_appearing_holds(home):
+def test_a_plugins_own_folder_appearing_holds(home):
     before = home.comparison()
     home.write(f"cache/{MARKET}/newcomer/1.0.0/.claude-plugin/plugin.json", b"{}")
     result = before.finish(60)
@@ -190,19 +190,19 @@ def test_c3_a_plugins_own_folder_appearing_holds(home):
     assert set(kinds(result, home).values()) == {"version-folder"}
 
 
-def test_c3_a_marketplaces_own_folder_appearing_holds(home):
+def test_a_marketplaces_own_folder_appearing_holds(home):
     before = home.comparison()
     home.write("cache/other-market/thing/1.0.0/plugin.json", b"{}")
     assert held(before.finish(60), home) == ["cache/other-market", "cache/other-market/thing"]
 
 
-# --- C4: the install records, by what they say --------------------------------------
+# --- The install records, by what they say --------------------------------------
 
 def finding(result, home, name):
     return next(entry for entry in result["findings"] if rel(home, entry) == name)
 
 
-def test_c4_a_refresh_time_alone_releases_and_a_source_change_holds(home):
+def test_a_refresh_time_alone_releases_and_a_source_change_holds(home):
     before = home.comparison()
     home.marketplaces[MARKET]["lastUpdated"] = "2026-11-03T05:30:00.000Z"
     home.save_records()
@@ -218,7 +218,7 @@ def test_c4_a_refresh_time_alone_releases_and_a_source_change_holds(home):
     assert "acme/market" in reason and "someone-else/market" in reason
 
 
-def test_c4_a_move_to_a_version_folder_added_in_the_launch_releases(home):
+def test_a_move_to_a_version_folder_added_in_the_launch_releases(home):
     before = home.comparison()
     release_fixture._update(home)
     result = before.finish(60)
@@ -227,7 +227,7 @@ def test_c4_a_move_to_a_version_folder_added_in_the_launch_releases(home):
     assert basis == "update to " + str(home.path(f"cache/{MARKET}/{WIDGET}/2.0.0"))
 
 
-def test_c4_a_move_to_a_path_no_update_added_holds_naming_both_paths(home):
+def test_a_move_to_a_path_no_update_added_holds_naming_both_paths(home):
     before = home.comparison()
     release_fixture._repoint(home)
     reason = finding(before.finish(60), home, "installed_plugins.json")["reason"]
@@ -237,7 +237,7 @@ def test_c4_a_move_to_a_path_no_update_added_holds_naming_both_paths(home):
 
 
 @pytest.mark.parametrize("field", ["scope", "projectPath"])
-def test_c4_a_scope_or_project_change_holds_naming_the_field(home, field):
+def test_a_scope_or_project_change_holds_naming_the_field(home, field):
     before = home.comparison()
     home.installed["plugins"][f"{GADGET}@{MARKET}"][0][field] = "local" if field == "scope" else "/elsewhere"
     home.save_records()
@@ -245,7 +245,7 @@ def test_c4_a_scope_or_project_change_holds_naming_the_field(home, field):
     assert f"{GADGET}@{MARKET}" in reason and f" {field} " in reason
 
 
-def test_c4_a_plugin_key_added_holds_naming_it(home):
+def test_a_plugin_key_added_holds_naming_it(home):
     before = home.comparison()
     home.installed["plugins"][f"newcomer@{MARKET}"] = [home.entry("newcomer", "1.0.0")]
     home.save_records()
@@ -253,7 +253,7 @@ def test_c4_a_plugin_key_added_holds_naming_it(home):
 
 
 @pytest.mark.parametrize("change", ["top-level version", "unnamed field", "time fields"])
-def test_c4_fields_row_3_does_not_name_release(home, change):
+def test_fields_outside_the_compared_ones_release(home, change):
     before = home.comparison()
     if change == "top-level version":
         home.installed["version"] = 3
@@ -269,7 +269,7 @@ def test_c4_fields_row_3_does_not_name_release(home, change):
 
 
 @pytest.mark.parametrize("refreshed", [True, False])
-def test_c4_a_marketplace_clone_change_releases_only_with_its_refresh(home, refreshed):
+def test_a_marketplace_clone_change_releases_only_with_its_refresh(home, refreshed):
     before = home.comparison()
     if refreshed:
         release_fixture._refresh(home)
@@ -287,7 +287,7 @@ def test_c4_a_marketplace_clone_change_releases_only_with_its_refresh(home, refr
 
 @pytest.mark.parametrize("side", ["before", "after"])
 @pytest.mark.parametrize("record", ["known_marketplaces.json", "installed_plugins.json"])
-def test_c4_an_unparsable_reading_holds_and_says_which(home, side, record):
+def test_an_unparsable_reading_holds_and_says_which(home, side, record):
     if side == "before":
         home.write(record, b"{not json")
     before = home.comparison()
@@ -300,15 +300,15 @@ def test_c4_an_unparsable_reading_holds_and_says_which(home, side, record):
     assert f"{record} could not be read {side}" in reason
 
 
-def test_c4_an_install_record_added_or_removed_holds(home):
+def test_an_install_record_added_or_removed_holds(home):
     before = home.comparison()
     home.remove("installed_plugins.json")
     assert held(before.finish(60), home) == ["installed_plugins.json"]
 
 
-# --- C5 and C7: the run record and the entrance ------------------------------------
+# --- The run record and the entrance ------------------------------------
 
-def test_c5_released_changes_ride_the_run_record_and_the_entrance_reads_clear(home):
+def test_released_changes_ride_the_run_record_and_the_entrance_reads_clear(home):
     before = home.comparison()
     release_fixture._upkeep(home)
     result = before.finish(60)
@@ -318,7 +318,7 @@ def test_c5_released_changes_ride_the_run_record_and_the_entrance_reads_clear(ho
     assert stored["released"] == result["released"]
 
 
-def test_c7_a_record_from_before_still_holds_every_finding_until_an_account_counts(home):
+def test_a_record_from_before_still_holds_every_finding_until_an_account_counts(home):
     before = home.comparison()
     release_fixture._upkeep(home)
     old = release_fixture.recorded_before(before.finish(60))
@@ -330,7 +330,7 @@ def test_c7_a_record_from_before_still_holds_every_finding_until_an_account_coun
     assert release_fixture.entrance(home, old, account)["status"] == "clear"
 
 
-# --- C8: the use session's fixture driver -------------------------------------------
+# --- The use session's fixture driver -------------------------------------------
 
 EXPECTED = {"upkeep": [], "update": [], "refresh": [],
             "stray-edit": [f"{WIDGET_V1}/lib/mod.py"], "repoint": ["installed_plugins.json"],
@@ -340,7 +340,7 @@ EXPECTED = {"upkeep": [], "update": [], "refresh": [],
 
 
 @pytest.mark.parametrize("name", sorted(release_fixture.SCENARIOS))
-def test_c8_each_scenario_agrees_with_the_comparison_and_the_entrance(tmp_path, name):
+def test_each_scenario_agrees_with_the_comparison_and_the_entrance(tmp_path, name):
     result = release_fixture.run(name, tmp_path)
     home = Home.__new__(Home)
     home.plugins = (tmp_path / "home" / ".claude" / "plugins").resolve()
@@ -349,7 +349,7 @@ def test_c8_each_scenario_agrees_with_the_comparison_and_the_entrance(tmp_path, 
     assert len(result["entrance"]["owed"]) == len(EXPECTED[name])
 
 
-def test_c8_the_driver_lists_and_runs_a_scenario_from_the_command_line(tmp_path):
+def test_the_driver_lists_and_runs_a_scenario_from_the_command_line(tmp_path):
     script = LIB / "tests" / "release_fixture.py"
     env = {**os.environ, "TMPDIR": str(tmp_path), "TEMP": str(tmp_path), "TMP": str(tmp_path)}
     listed = subprocess.run([sys.executable, "-B", str(script), "--list"], capture_output=True, check=True,
@@ -360,3 +360,14 @@ def test_c8_the_driver_lists_and_runs_a_scenario_from_the_command_line(tmp_path)
                            stdin=subprocess.DEVNULL, env=env).stdout.decode("utf-8")
     assert '"released"' in shown and "The entrance reads this launch as: held" in shown
     assert str(tmp_path) not in shown and list(tmp_path.glob("release-fixture-*")) == []
+
+
+def test_a_finished_records_findings_classify_by_name_with_install_records_holding(home):
+    before = home.comparison()
+    release_fixture._upkeep(home)
+    release_fixture._update(home)
+    old = release_fixture.recorded_before(before.finish(60))
+    released = launch_release.classify_recorded(old["findings"], old["coverage"])
+    kept = sorted(rel(home, finding) for index, finding in enumerate(old["findings"]) if index not in released)
+    assert kept == sorted(["installed_plugins.json", "known_marketplaces.json",
+                           f"marketplaces/{MARKET}/.claude-plugin/marketplace.json"])

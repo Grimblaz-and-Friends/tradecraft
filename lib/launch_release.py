@@ -1,4 +1,4 @@
-"""Which changes in the plugins folder a launch comparison releases (#946).
+"""Which changes in the plugins folder a launch comparison releases.
 
 Every session's runtime keeps some files in the plugins folder up at moments no
 launch controls, and updates installed plugins whole. A change of one of those
@@ -17,7 +17,8 @@ RELEASING_ITEMS = frozenset({"plugins", "launcher-plugin"})
 MARKETPLACES = "known_marketplaces.json"
 INSTALLED = "installed_plugins.json"
 INSTALL_RECORDS = (MARKETPLACES, INSTALLED)
-# The only fields compared; every other field, time fields included, is ignored.
+# Only these fields decide which plugin code loads and where its updates come from, so time
+# fields, which the app rewrites at every refresh, and every other field are ignored.
 MARKETPLACE_FIELDS = ("source", "installLocation")
 ENTRY_FIELDS = ("scope", "projectPath", "installPath", "version")
 
@@ -320,7 +321,10 @@ def classify_recorded(findings: list[dict], coverage: list[dict], *, windows: bo
                       ) -> dict[int, dict]:
     """Which of one recorded launch's findings the rules release, read from its record alone.
 
-    The record keeps no install record's contents, so those and marketplace clones hold.
+    For measuring the rules against finished records, as a replay across recorded launches
+    does; neither the comparison nor the entrance calls it, and no record is reread to
+    release its hold. The record keeps no install record's contents, so those and
+    marketplace clones hold, and no entry type, so names alone decide.
     """
     tops = {entry["item"]: entry["path"] for entry in coverage
             if isinstance(entry, dict) and entry.get("item") in RELEASING_ITEMS and entry.get("path")}

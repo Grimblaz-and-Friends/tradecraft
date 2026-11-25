@@ -29,8 +29,8 @@ Some changes to the installed plugins are the runtime's own work: any session's 
 |---|---|---|
 | `bytecode` | a `__pycache__` folder, or a `.pyc` file directly in one. Python checks these against their source and rebuilds them when they differ. | anywhere in either item |
 | `synced-marketplaces` | `synced/` or anything under it, at the plugins folder's top: the app's synced marketplace list | the plugins folder |
-| `in-use-marker` | a plugin version's `.in_use` folder or a file directly in it, or a `.last_inuse_sweep` stamp: the runtime marks a version in use and sweeps the marks | either item |
-| `orphan-marker` | a `.orphaned_at` file: the runtime marks a retired version | either item |
+| `in-use-marker` | a `.in_use` folder or a file directly in it, or a `.last_inuse_sweep` file, at any depth: the runtime marks a plugin version in use and sweeps the marks | either item |
+| `orphan-marker` | a `.orphaned_at` file at any depth: the runtime marks a retired plugin version | either item |
 | `usage-queue` | `store/` at the plugins folder's top, or a `.json` file directly in it: the plugin store's usage queue | the plugins folder |
 | `catalog-cache` | a file at the plugins folder's top named `plugin-directory-cache…json`: a catalog of what could be installed, not of what loads | the plugins folder |
 | `version-folder` | a whole version folder, `cache/<marketplace>/<plugin>/<version>`, added or removed during the launch, with everything in it: installing a new version and retiring the old one is the runtime's update | either item, so a launcher running from a retired version releases too |

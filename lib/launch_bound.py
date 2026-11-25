@@ -522,7 +522,8 @@ def snapshot(plan: list[dict], *, seconds: float, own_output: Path,
                 state = {"status": "compared",
                          "entries": _walk(path, end, checkout=item["method"] == "checkout")}
                 if item["item"] == "plugins":
-                    # The two install records are read by what they say. Design: lib/DESIGN.md#what-a-launch-comparison-releases
+                    # Only the snapshots see the install records' contents before and after the run.
+                    # Design: lib/DESIGN.md#what-a-launch-comparison-releases
                     _check(end)
                     state["install_records"] = launch_release.read_install_records(path)
         except _Expired as exc:
