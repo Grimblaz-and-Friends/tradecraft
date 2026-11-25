@@ -204,7 +204,7 @@ SCOPE = (
     "this turn's commits, an earlier turn's, or a merge of the base.",
     "Where you cannot rule out that a change affects it, run it.",
     "a holder reading in this dispatch, or the holder's own text sent with it, names to be run, "
-    "whatever your own view.",
+    "whatever your own view, unless an earlier turn of yours already ran it after receiving that reading.",
     "command or procedure, tested revision, result and limitation.",
     "the revision it last ran at, its result there, and why nothing changed since that revision can "
     "affect it; the holder reads each such reason and has the check run where it does not hold.",
