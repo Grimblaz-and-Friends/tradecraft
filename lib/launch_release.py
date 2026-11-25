@@ -4,7 +4,7 @@ Every session's runtime keeps some files in the plugins folder up at moments no
 launch controls, and updates installed plugins whole. A change of one of those
 kinds is released: recorded under its kind, never a finding. Only the two
 plugin install records are read for their contents. Nothing here does I/O but
-``read_install_records``.
+``read_install_records`` and ``release``'s resolving of the plugins folder's real path.
 Design: lib/DESIGN.md#what-a-launch-comparison-releases
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import stat
 
 # The runtime keeps files up only in the plugins folder and the launcher's own plugin root; a
 # registered checkout is a change's tree, whose every write the comparison exists to catch.
@@ -29,9 +30,15 @@ def _fold(text: str, windows: bool) -> str:
     return text.casefold() if windows else text
 
 
+def _slashed(path: str, windows: bool) -> str:
+    """Separators forward with no trailing one; a backslash separates only on Windows, being part of
+    a name elsewhere, so a folder named with backslashes can't pass for a path."""
+    return (str(path).replace("\\", "/") if windows else str(path)).rstrip("/")
+
+
 def _normal(path: str, windows: bool) -> str:
-    """Slashes forward with no trailing one, and case folded where the platform folds it."""
-    return _fold(str(path).replace("\\", "/").rstrip("/"), windows)
+    """The form every path comparison here shares, case folded where the platform folds names."""
+    return _fold(_slashed(path, windows), windows)
 
 
 def _relative(path: str, top: str, windows: bool) -> list[str] | None:
@@ -39,9 +46,10 @@ def _relative(path: str, top: str, windows: bool) -> list[str] | None:
 
     Compared name by name, because case folding can change a name's length.
     """
-    names = str(path).replace("\\", "/").rstrip("/").split("/")
-    base = str(top).replace("\\", "/").rstrip("/").split("/")
-    if len(names) <= len(base) or [_fold(name, windows) for name in names[:len(base)]]             != [_fold(name, windows) for name in base]:
+    names = _slashed(path, windows).split("/")
+    base = _slashed(top, windows).split("/")
+    if len(names) <= len(base) or [_fold(name, windows) for name in names[:len(base)]] \
+            != [_fold(name, windows) for name in base]:
         return None
     return names[len(base):]
 
@@ -89,8 +97,12 @@ def _kind(item: str, parts: list[str], entry: str | None, windows: bool) -> str 
 
 
 def _version_folders(changes: list[dict], tops: dict[str, str], windows: bool,
-                     entry_of=None) -> tuple[set[str], set[str]]:
-    """The version folders ``cache/<marketplace>/<plugin>/<version>`` added and removed whole."""
+                     entry_of=None, real_top: str | None = None) -> tuple[set[str], set[str]]:
+    """The version folders ``cache/<marketplace>/<plugin>/<version>`` added and removed whole.
+
+    Each is also kept under ``real_top``, the plugins folder's resolved path, because the
+    launcher's own root is resolved and may reach the same folder through a link.
+    """
     added, removed = set(), set()
     top = tops.get("plugins")
     if top is None:
@@ -103,7 +115,10 @@ def _version_folders(changes: list[dict], tops: dict[str, str], windows: bool,
             continue
         if entry_of is not None and entry_of(change) not in {None, "dir"}:
             continue
-        (added if change["change"] == "added" else removed).add(_normal(change["path"], windows))
+        side = added if change["change"] == "added" else removed
+        side.add(_normal(change["path"], windows))
+        if real_top is not None:
+            side.add(_normal(real_top + "/" + "/".join(parts), windows))
     return added, removed
 
 
@@ -115,15 +130,30 @@ def _inside(path: str, folders: set[str], windows: bool) -> bool:
 
 # --- The install records, by what they say -----------------------------------
 
+def _regular_bytes(path: Path) -> bytes:
+    """A regular file's bytes; a link, a pipe or any other entry is refused, never followed or waited on.
+
+    A link would let the record's contents change behind an entry the walk sees as unchanged.
+    """
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        raise ValueError("not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError("not a regular file")
+        return handle.read()
+
+
 def read_install_records(top: Path) -> dict[str, dict]:
     """Each install record at the plugins folder's top, parsed, or why it couldn't be."""
     readings = {}
     for name in INSTALL_RECORDS:
         try:
-            readings[name] = {"value": json.loads(Path(top, name).read_bytes())}
+            readings[name] = {"value": json.loads(_regular_bytes(Path(top, name)))}
         except FileNotFoundError:
             readings[name] = {"reason": "absent"}
-        except (OSError, UnicodeError, ValueError) as exc:
+        except (OSError, RecursionError, UnicodeError, ValueError) as exc:
             readings[name] = {"reason": f"{type(exc).__name__}: {exc}"}
     return readings
 
@@ -283,7 +313,7 @@ def _refreshed(name: str, before: dict | None, after: dict | None, windows: bool
 # --- The two callers ------------------------------------------------------------
 
 def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, dict] | None = None,
-             entry_of=None, windows: bool = os.name == "nt", check=None
+             entry_of=None, windows: bool = os.name == "nt", check=None, real_top: str | None = None
              ) -> tuple[dict[int, dict], dict[int, str]]:
     """Each released change's kind and basis by index, and a reason for each held install-record change.
 
@@ -294,7 +324,7 @@ def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, 
     """
     released: dict[int, dict] = {}
     reasons: dict[int, str] = {}
-    added, removed = _version_folders(changes, tops, windows, entry_of)
+    added, removed = _version_folders(changes, tops, windows, entry_of, real_top)
     whole = added | removed
     before, after = records if records is not None else (None, None)
     for index, change in enumerate(changes):
@@ -320,6 +350,10 @@ def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, 
                 and change["change"] == "modified":
             record = MARKETPLACES if name == _fold(MARKETPLACES, windows) else INSTALLED
             if records is None:
+                continue
+            if entry_of is not None and entry_of(change) != "file":
+                # A record turned into a link or anything else holds, whatever it reads as.
+                reasons[index] = f"{record} is not a regular file before and after"
                 continue
             basis, reason = _install_record(record, before, after, added, windows)
             if basis is not None:
@@ -353,7 +387,9 @@ def release(plan: list[dict], changes: list[dict], before: dict, after: dict, *,
                 kinds.add(value[0])
         return kinds.pop() if len(kinds) == 1 else (None if not kinds else "mixed")
 
-    return classify(changes, tops, records=records, entry_of=entry_of, windows=windows, check=check)
+    real_top = os.path.realpath(tops["plugins"]) if "plugins" in tops else None
+    return classify(changes, tops, records=records, entry_of=entry_of, windows=windows, check=check,
+                    real_top=real_top)
 
 
 def classify_recorded(findings: list[dict], coverage: list[dict], *, windows: bool = os.name == "nt"

@@ -126,8 +126,8 @@ def test_a_file_where_the_synced_folder_belongs_holds(home):
     assert held(result, home) == ["synced"] and result["released"] == []
 
 
-@pytest.mark.parametrize("separator", ["/", "\\"])
-def test_paths_read_alike_with_either_separator(separator):
+@pytest.mark.parametrize("separator, windows", [("/", False), ("/", True), ("\\", True)])
+def test_paths_read_alike_with_either_separator_where_both_separate(separator, windows):
     top = separator.join(["", "fixture", "home", ".claude", "plugins"])
 
     def change(path, kind="added"):
@@ -138,10 +138,30 @@ def test_paths_read_alike_with_either_separator(separator):
                change("plugin-directory-cache-v3.json", "modified"), change(f"{GADGET_V3}/.orphaned_at"),
                change(f"{WIDGET_V1}/lib/x.pyc"), change(f"data/{WIDGET}/x.json"),
                change(f"cache/{MARKET}/{GADGET}/4.0.0"), change(f"cache/{MARKET}/{GADGET}/4.0.0/p.json")]
-    released, _reasons = launch_release.classify(changes, {"plugins": top}, windows=False)
+    released, _reasons = launch_release.classify(changes, {"plugins": top}, windows=windows)
     assert {index: value["kind"] for index, value in released.items()} == {
         0: "bytecode", 1: "in-use-marker", 2: "synced-marketplaces", 3: "usage-queue", 4: "catalog-cache",
         5: "orphan-marker", 8: "version-folder", 9: "version-folder"}
+
+
+def test_a_name_with_backslashes_is_one_name_where_backslash_does_not_separate():
+    top = "/fixture/home/.claude/plugins"
+    decoy = top + "/cache\\acme-market\\widget\\1.0.0"
+    edit = top + f"/{WIDGET_V1}/lib/mod.py"
+    changes = [{"item": "plugins", "path": decoy, "change": "added"},
+               {"item": "plugins", "path": edit, "change": "modified"}]
+    released, _reasons = launch_release.classify(changes, {"plugins": top}, windows=False)
+    assert released == {}
+
+
+def test_a_version_folder_matches_the_launchers_root_through_a_linked_plugins_folder():
+    top, real = "/home/u/.claude/plugins", "/data/dotfiles/claude/plugins"
+    changes = [{"item": "plugins", "path": top + f"/{GADGET_V3}", "change": "removed"},
+               {"item": "launcher-plugin", "path": real + f"/{GADGET_V3}/lib/mod.py", "change": "removed"}]
+    tops = {"plugins": top, "launcher-plugin": real + f"/{GADGET_V3}"}
+    unresolved, _reasons = launch_release.classify(changes, tops, windows=False)
+    resolved, _reasons = launch_release.classify(changes, tops, windows=False, real_top=real)
+    assert 1 not in unresolved and resolved[1] == {"kind": "version-folder"}
 
 
 def test_a_home_whose_folded_name_changes_length_still_releases():
@@ -329,6 +349,30 @@ def test_an_unparsable_reading_holds_and_says_which(home, side, record):
     result = before.finish(60)
     reason = finding(result, home, record)["reason"]
     assert f"{record} could not be read {side}" in reason
+
+
+def test_an_install_record_turned_into_a_link_holds_and_is_never_read_through(home, tmp_path):
+    target = tmp_path / "elsewhere.json"
+    target.write_bytes(home.path("installed_plugins.json").read_bytes())
+    before = home.comparison()
+    home.remove("installed_plugins.json")
+    try:
+        os.symlink(target, home.path("installed_plugins.json"))
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"this machine can't make a link: {exc}")
+    result = before.finish(60)
+    assert "installed_plugins.json" in held(result, home)
+    readings = launch_release.read_install_records(home.plugins)
+    assert "not a regular file" in readings["installed_plugins.json"]["reason"]
+
+
+def test_an_install_record_that_is_not_a_regular_file_or_nests_too_deep_is_a_reason(home):
+    home.remove("known_marketplaces.json")
+    home.path("known_marketplaces.json").mkdir()
+    home.write("installed_plugins.json", b"[" * 100000 + b"]" * 100000)
+    readings = launch_release.read_install_records(home.plugins)
+    assert "not a regular file" in readings["known_marketplaces.json"]["reason"]
+    assert readings["installed_plugins.json"]["reason"].startswith("RecursionError")
 
 
 def test_an_install_record_added_or_removed_holds(home):

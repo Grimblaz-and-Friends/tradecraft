@@ -48,7 +48,7 @@ Where two kinds fit one change, the first in the table names it.
 - a `.pyc` file anywhere but directly in a `__pycache__` folder, because it can load with no source to check it against;
 - an install entry moved into another plugin's version folder, even one the launch added;
 - an upkeep name in another place, such as `store/sub/x.json` or `cache/<marketplace>/synced/x.json`;
-- an install record added, removed, or unreadable before or after; a marketplace added or removed, or its `source` or `installLocation` changed; a plugin key or entry added or removed, or an entry's `scope` or `projectPath` changed; a `version` or `installPath` moved to a path no update in the launch added;
+- an install record added, removed, unreadable before or after, or anything but a regular file, such as a link; a marketplace added or removed, or its `source` or `installLocation` changed; a plugin key or entry added or removed, or an entry's `scope` or `projectPath` changed; a `version` or `installPath` moved to a path no update in the launch added;
 - a change in a marketplace's clone while that marketplace's `lastUpdated` stayed put;
 - anything else in the plugins folder, a plugin's own data folder (`data/…`) included.
 
