@@ -15,6 +15,7 @@ Design: lib/DESIGN.md#what-a-launch-comparison-releases
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -112,13 +113,18 @@ class Home:
         return value
 
     def bundle(self, comparison: dict) -> None:
-        """The launch's request and run records, as the launcher leaves them once it stops."""
+        """The launch's request and run records, as the launcher leaves them once it stops.
+
+        The launch opens at the comparison's before-snapshot and completes at its after-snapshot,
+        so a change's timing reads against the launch as it would on a real run.
+        """
         request = {"schema_version": 2, "dispatch_id": OWN, "work": WORK, "stage": "build",
-                   "launched_at": "2026-11-03T05:00:00+00:00", "requested": {"vendor": "claude"},
+                   "launched_at": comparison.get("before_at") or comparison["after_at"],
+                   "requested": {"vendor": "claude"},
                    "write_bound": {"file_tools": None, "memory": None, "comparison": {"coverage": []},
                                    "shell": launch_bound.SHELL}}
         run = {"schema_version": 2, "dispatch_id": OWN, "lifecycle": "completed",
-               "completed_at": "2026-11-03T06:00:00+00:00", "outcome": "success",
+               "completed_at": comparison["after_at"], "outcome": "success",
                "attempts": [{"vendor": "claude", "launched": True}], "launch_comparison": comparison}
         (self.store / "launch.md.request.json").write_text(json.dumps(request), encoding="utf-8")
         (self.store / "launch.md.run.json").write_text(json.dumps(run), encoding="utf-8")
@@ -128,9 +134,11 @@ def entrance(home: Home, comparison: dict, accounts: tuple[dict, ...] = ()) -> d
     """The entrance's reading of this one launch, through its own launch-findings evaluation."""
     import work
     home.bundle(comparison)
+    # An account counts only once posted after the launch completed.
+    posted = (datetime.fromisoformat(comparison["after_at"]) + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     comments = [{"body": f"<!-- tradecraft:launch-account:v1 dispatch={OWN} -->\n\n```json\n"
                          + json.dumps({"schema_version": 1, "findings": list(accounts)}) + "\n```\n",
-                 "user": {"login": PRODUCER}, "created_at": "2026-11-03T07:00:00Z"}] if accounts else []
+                 "user": {"login": PRODUCER}, "created_at": posted}] if accounts else []
     state = work.WorkState("example/product", 12,
                            {"number": 12, "state": "open", "body": "", "labels": [],
                             "user": {"login": PRODUCER}},
@@ -193,6 +201,14 @@ def _sourceless(home: Home) -> None:
     home.write(f"cache/{MARKET}/{WIDGET}/1.0.0/lib/helper.pyc", b"\x00pyc")
 
 
+def _installed_removed(home: Home) -> None:
+    home.remove(f"cache/{MARKET}/{GADGET}/3.0.0")
+
+
+def _data_write(home: Home) -> None:
+    home.write(f"data/{WIDGET}/state.json", b'{"runs": 1}')
+
+
 def _new_plugin(home: Home) -> None:
     home.write(f"cache/{MARKET}/newcomer/1.0.0/.claude-plugin/plugin.json", b'{"name": "newcomer"}')
     home.installed["plugins"][f"newcomer@{MARKET}"] = [home.entry("newcomer", "1.0.0")]
@@ -214,6 +230,9 @@ SCENARIOS = {
                    "gains its key", _new_plugin),
     "recorded-before": ("a run record in the form written before released changes were recorded, "
                         "with upkeep findings and no account", _upkeep),
+    "installed-removed": ("an installed version folder removed while installed_plugins.json still "
+                          "points at it", _installed_removed),
+    "data-write": ("a file in a plugin's own data folder rewritten", _data_write),
 }
 
 

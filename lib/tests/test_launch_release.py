@@ -367,7 +367,8 @@ EXPECTED = {"upkeep": [], "update": [], "refresh": [],
             "stray-edit": [f"{WIDGET_V1}/lib/mod.py"], "repoint": ["installed_plugins.json"],
             "source": ["known_marketplaces.json"], "sourceless": [f"{WIDGET_V1}/lib/helper.pyc"],
             "new-plugin": [f"cache/{MARKET}/newcomer", "installed_plugins.json"],
-            "recorded-before": sorted(UPKEEP)}
+            "recorded-before": sorted(UPKEEP), "installed-removed": [],
+            "data-write": [f"data/{WIDGET}/state.json"]}
 
 
 @pytest.mark.parametrize("name", sorted(release_fixture.SCENARIOS))
