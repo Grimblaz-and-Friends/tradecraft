@@ -43,7 +43,9 @@ def test_list_names_every_scenario(exported):
     result = fixture_run(exported, "--list")
     assert result.returncode == 0, result.stderr
     assert result.stdout.decode("ascii").split("\n") == [*route_fixture.SCENARIOS, ""]
-    assert set(route_fixture.SCENARIOS) == set(STAGES)
+    # The watch- scenarios start a stand-in builder and the holder's wait; test_route_fixture_watch runs them.
+    assert set(route_fixture.SCENARIOS) == set(STAGES) | {name for name in route_fixture.SCENARIOS
+                                                          if name.startswith("watch-")}
 
 
 @pytest.mark.parametrize("name", sorted(STAGES))

@@ -26,6 +26,7 @@ import urllib.parse
 import uuid
 
 import brief as brief_rows
+import builder_wait
 from brief import LANES, review_lane
 from source_claims import (
     attribute_error,
@@ -105,7 +106,9 @@ COMMANDS = (
 # A stage whose sentence `allowance` prints though the entrance launches no such stage: the holder
 # writes a stretch builder's dispatch, and the sentence it carries must be the launch's own.
 ALLOWANCE_ONLY_STAGES = ("stretch",)
-DIRECT_COMMANDS = ("release", "adopt", "run", "tree", "allowance")
+# `wait` reads a launched builder's records and writes nothing: it is not a stage, so the holder-quiet reading
+# never counts it as the holder acting on the change. Design: lib/DESIGN.md#the-builder-route
+DIRECT_COMMANDS = ("release", "adopt", "run", "tree", "allowance", "wait")
 CLI_COMMANDS = DIRECT_COMMANDS
 USE_HOLDER_DETAIL = (
     "Charter and time-box the experience session under its procedure; "
@@ -6467,6 +6470,20 @@ BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and post
 RESUME_WAY = "run handoff --resume-reason TEXT, on the owner's word"
 
 
+def _builder_reading(state: WorkState, pointer: dict) -> dict[str, object]:
+    """How one live builder is doing, read as the wait reads it, and the wait's command; a hand-started one isn't measured.
+
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    if pointer.get("hand") is True:
+        return {"dispatch": pointer.get("dispatch_id"), "measured": False, "reason": builder_wait.HAND_NOT_MEASURED}
+    values = builder_wait.read_once(pointer)
+    values.pop("last_step_running_seconds", None)
+    return {"dispatch": pointer.get("dispatch_id"), **values,
+            "wait": builder_wait.wait_command(state.repo, state.issue_number, state.holder_root,
+                                              Path(__file__).resolve().parent.parent, state.instalment)}
+
+
 def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Decision:
     """The next stage once the plan is settled on the builder route, from its stretch and readiness record.
 
@@ -6478,11 +6495,18 @@ def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Deci
             if str(pointer.get("work", "")).lower() == work.lower()]
     if live and not as_ended:
         # The decision adds what it will read once the builder ends, so the builder can read its record back.
-        return Decision("with-builder", False, None, "builder-live", json.dumps({"live": "; ".join(
+        detail: dict[str, object] = {"live": "; ".join(
             f"hand-started record {pointer['dispatch_id']} is open, awaiting its readiness record or "
             "run handoff --ended-reason" if pointer.get("hand") is True else
             f"stretch launch {pointer['dispatch_id']} is still running; wait for its readiness record"
-            for pointer in live)}, ensure_ascii=True), status="waiting")
+            for pointer in live)}
+        builders = [_builder_reading(state, pointer) for pointer in live]
+        if len(builders) == 1:
+            detail.update(builders[0])
+        else:
+            detail["builders"] = builders
+        return Decision("with-builder", False, None, "builder-live", json.dumps(detail, ensure_ascii=True),
+                        status="waiting")
     term, _lane = _affirmed_review(state)
     if not lifecycle.launch_bundles(store, work, {"stretch"}, after=term.timestamp if term else None):
         return Decision("handoff", False, None, "handoff-due",
@@ -11169,7 +11193,8 @@ def parser() -> argparse.ArgumentParser:
         "command", nargs="?", choices=CLI_COMMANDS,
         help=(
             "omit to decide read-only; run names one stage; tree builds a consumer root; "
-            "release and adopt manage a registration without dispatching"
+            "release and adopt manage a registration without dispatching; wait watches this "
+            "change's launched builder until it ends"
         ),
     )
     cli.add_argument("stage", nargs="?", choices=COMMANDS + ALLOWANCE_ONLY_STAGES,
@@ -13512,10 +13537,16 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
         print(window, flush=True)
     _note_cap_outcome("handed-off", bundle=str(request_path))
     added = after(dispatch_id) if after is not None else {}
+    # Every launch of the builder, a resume's included, names the wait the holder starts in its background.
+    wait = builder_wait.wait_command(state.repo, state.issue_number,
+                                     block.get("holder_root") or state.holder_root or args.root,
+                                     block.get("plugin_root") or Path(__file__).resolve().parent.parent,
+                                     args.instalment)
     _emit_report({"stage": args.stage, "status": "handed-off", "started_by": "launch", "dispatch": dispatch_id,
                   "resume": resume, "tree": str(implementation_root), "branch": branch,
                   "request": str(request_path), "records": str(bundle),
-                  "launcher_output": str(out), "launcher_errors": str(err), **added}, state)
+                  "launcher_output": str(out), "launcher_errors": str(err), "wait": wait,
+                  "wait_how": builder_wait.WAIT_SENTENCE, **added}, state)
     return 1 if added.get("error") else 0
 
 
@@ -13852,10 +13883,24 @@ def run(
     # Before any other read or write: a run inside a stretch launch's tree is the builder's.
     token = _enter_builder_mode(args)
     try:
+        if args.command == "wait":
+            return _wait_command(args)
         return _run_entry(args, transport=transport, executor=executor)
     finally:
         if token is not None:
             _BUILDER.reset(token)
+
+
+def _wait_command(args: argparse.Namespace) -> int:
+    """Watch this work's launched builder from its local records alone, until it ends or its limit passes.
+
+    It reads no GitHub and runs no Git, so it is dispatched before every other read. Design:
+    lib/DESIGN.md#the-builder-route
+    """
+    if args.stage is not None:
+        raise WorkError("wait does not accept a stage")
+    return builder_wait.wait(records.default_record_root().expanduser().resolve(), args.repo, args.issue,
+                             instalment=args.instalment)
 
 
 def _run_entry(

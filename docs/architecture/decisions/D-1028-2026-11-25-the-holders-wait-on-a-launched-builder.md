@@ -1,0 +1,19 @@
+# D-1028 — The holder's wait on a launched builder
+
+**Purpose:** record why #1028 gives the holder a read-only wait it runs in its runtime's background after each launch of its builder, how the wait ends, and what was chosen over what. **Audience:** a future session changing `lib/builder_wait.py`, the `with-builder` decision or the holder-quiet reading. **Success:** that reader can recover each choice without the issue.
+
+The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/1028#issuecomment-7167582348) governs, as amended once at its cap for row 3's judging seat. The lane is ordinary / connected, and no panel was bought. This record supersedes none; D-1017 and D-1013 stay in force.
+
+## Calls
+
+- **C1. A background wait in the holder's session, over teaching the lab's holder pane the builder route** (the owner, 2026-11-25: "background wait as long as it is designed in a way that will prevent a high cost because the holder is doing lots of status checks"). The builder stays detached, as the owner kept it, so it outlives the holder's session; the wait only watches.
+- **C2. A direct command, not a `run` stage.** The holder-quiet reading counts `work.py run` calls as the holder acting on the change, and the stage machinery (cap, window, bundle) is for launches. The wait reads local files only, never GitHub, so it is dispatched before every network read.
+- **C3. Only the wait's end wakes the holder, and the builder's closing message stays.** A background task wakes its session only when it ends; a watcher that handed each line to the holder would cost a turn per line. The closing message is the one wake that survives a wait stopped by hand or ended with the app or the session.
+- **C4. The reply to a wait's end counts as prompted** in the release report's quiet reading, matched to the call that started the wait by the `<tool-use-id>` its end notice names. A builder its launcher stops at its limit sends no message, so there the wait's end is the holder's only wake and it tells the owner. Any other task's end notice still prompts nothing.
+- **C5. Quiet is read from the log's latest `assistant` or `user` timestamp,** not the file's last write: `tool_progress` heartbeats every few seconds kept a throwaway wait's quiet at zero across an eleven-minute step on #946's builder.
+- **C6. The wait ends at the launch time plus the limit plus the stage's cleanup reserve,** with its last poll at that bound, as well as on a completed record or a launch that ended without completing it. A launch whose recipient started late could reach that bound a few seconds before its record completes; the bound the brief states was kept over the launch's own latest return time, which adds the 900-second cap.
+- **C7. One reading for the wait and the decision** (`builder_wait.reading`), so the two can't disagree; a hand-started builder is said to be unmeasured rather than shown as zeros.
+- **C8. Every launch of the builder names the wait,** the handoff, a `--resume-reason` resume, the send-back and a catch-up resume, because each is the same builder running again; a hand-started handoff names none.
+- **C9. A poll every five seconds,** within the brief's "each step within a minute" and below its fifteen-second ceiling, so the route fixture's stand-in builders end their scenarios quickly; each read opens, reads and closes one file, so the launcher's replace is never held off for longer than a read.
+
+The tests are `lib/tests/test_builder_wait.py`, `lib/tests/test_route_fixture_watch.py`, and the wait tests in `lib/tests/test_after_ready.py` and `lib/tests/test_holder_transcript.py`.

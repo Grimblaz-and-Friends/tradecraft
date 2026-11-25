@@ -641,3 +641,73 @@ def test_the_window_bounds_read_from_record_timestamps_and_a_missing_one_is_unkn
     unparsed = ht.launch_calls("holder", "yesterday", at(20), home=projects)
     assert unparsed == {"status": "unknown", "calls": [], "reason": "the window's start is not a timestamp"}
     assert ht.handoff_quiet(None, at(0), at(20), home=projects)["status"] == "unknown"
+
+
+WAIT = r'python -B "C:\plugin\lib\work.py" wait --repo acme/widget --issue 12 --root "C:\holder"'
+
+
+def background(identity, second, command):
+    """A reply that starts COMMAND in the runtime's background and finishes its turn after the start is reported."""
+    return [said(identity, second, ("Bash", {"command": command, "run_in_background": True})),
+            heard(second + 1, result=f"{identity}-0") | {"toolUseResult": {"backgroundTaskId": f"task-{identity}"}},
+            said(f"{identity}-done", second + 2)]
+
+
+def handed_off():
+    """The owner's word and the handoff call; the window opens at the launch inside that call."""
+    return [heard(1, {"kind": "human"}),
+            said("handoff", 2, shell("python -B lib/work.py run handoff --repo acme/widget --issue 12")),
+            heard(3, result="handoff-0")]
+
+
+def task_end(second, call):
+    """The runtime's notice that the background task CALL started has ended, as the desktop app records it."""
+    text = (f"<task-notification>\n<task-id>task-{call}</task-id>\n<tool-use-id>{call}-0</tool-use-id>\n"
+            "<status>completed</status>\n</task-notification>")
+    return heard(second, {"kind": "task-notification", "producer": "session-task"}, text) | {
+        "turnOrigin": "task_notification"}
+
+
+def test_a_waits_start_and_its_end_wake_are_not_the_holder_acting(tmp_path):
+    """The handoff's turn starts the wait; the builder ends ready and messages; the wait's end comes after."""
+    projects = transcript(tmp_path, [
+        *handed_off(),
+        *background("wait", 4, WAIT),
+        heard(10, {"kind": "peer", "name": "builder"}, PEER_TEXT),
+        said("noted", 11),
+        task_end(14, "wait"),
+        said("ended", 15),
+    ])
+    # The window opens at the launch, inside the handoff call, and closes at the ready record.
+    found = ht.handoff_quiet("holder", at(3), at(12), builder="builder-12", change=("acme/widget", 12), home=projects)
+    assert found == {"status": "quiet", "calls": [], "launches": [], "unprompted": [], "unresolved": [],
+                     "reason": None}
+    assert ht.handoff_quiet("holder", at(3), at(20), home=projects)["unprompted"] == []
+
+
+def test_the_reply_to_a_waits_end_inside_the_window_was_asked_for(tmp_path):
+    """A builder stopped at its limit sends nothing, so the wait's end wakes the holder, which tells the owner."""
+    projects = transcript(tmp_path, [
+        *handed_off(),
+        *background("wait", 4, WAIT),
+        task_end(8, "wait"),
+        said("told", 9),
+        heard(10, {"kind": "human"}),
+        said("resume", 11, shell("python -B lib/work.py run handoff --resume-reason more --repo acme/widget")),
+        heard(12, result="resume-0"),
+        *background("again", 13, WAIT),
+    ])
+    found = ht.handoff_quiet("holder", at(3), at(20), home=projects)
+    assert found["unprompted"] == []
+    assert [call["kinds"] for call in found["calls"]] == [["work-run"]]
+
+
+def test_the_reply_to_another_background_tasks_end_is_unprompted(tmp_path):
+    projects = transcript(tmp_path, [
+        *handed_off(),
+        *background("probe", 4, "python -B lib/probe.py"),
+        task_end(8, "probe"),
+        said("read", 9),
+    ])
+    found = ht.handoff_quiet("holder", at(3), at(20), home=projects)
+    assert [item["timestamp"] for item in found["unprompted"]] == [at(9).isoformat()]

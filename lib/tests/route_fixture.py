@@ -18,12 +18,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
 
 LIB = Path(__file__).resolve().parents[1]
@@ -76,7 +79,23 @@ SCENARIOS = {
     "owner-asked-relay": "the owner's route=relay marker, nothing launched",
     "hand-started": "a builder the owner started by hand, its record still open",
     "launch-account-held": "a completed stretch launched under a write bound whose comparison no launch-account names",
+    "watch-ready": "a launched builder's stand-in, running two hours of eight, watched by the holder's wait until it "
+                   "ends ready",
+    "watch-stopped": "the same, until the stand-in's run ends failed",
+    "watch-limit": "the same, until its launcher stops it at its eight-hour limit",
+    "watch-crash": "the same, until the stand-in dies without completing its record",
+    "watch-replay": "the same, the stand-in appending the recorded-form log tests/fixtures/builder-stream.jsonl line by "
+                    "line, until it ends ready",
+    "watch-hand": "a builder the owner started by hand, its record open, and the wait run against it",
+    "watch-none": "no builder running, one earlier stretch completed, and the wait run against it",
 }
+# How each watched stand-in ends.
+WATCHED = {"watch-ready": "ready", "watch-stopped": "stopped", "watch-limit": "limit", "watch-crash": "crash",
+           "watch-replay": "ready"}
+WATCH_LIMIT = 28800.0
+# The stand-in reaches its limit this many seconds after it starts, in the middle of its quiet span.
+LIMIT_AT = 18.0
+REPLAY_LOG = Path("fixtures") / "builder-stream.jsonl"
 
 
 def _refused_connection(*_args, **_kwargs):
@@ -163,13 +182,14 @@ class Fixture:
 
     # --- launch records, each written by its launcher's own writers ---------------------------------
 
-    def _request(self, stage: str, minutes: int, root=None, holder_session=None) -> tuple[str, Path, dict]:
+    def _request(self, stage: str, minutes: int, root=None, holder_session=None,
+                 at: datetime | None = None) -> tuple[str, Path, dict]:
         dispatch_id = uuid.uuid4().hex
         request = self.records.request_record(
             dispatch_id=dispatch_id, work=WORK, stage=stage, settings_source="route fixture",
             settings_scope="implementer", vendor="claude", model="fixture", effort="fixture",
             continuity="fresh", permission_boundary="route fixture", root=root,
-            now=START + timedelta(minutes=minutes), holder_session_id=holder_session)
+            now=at or START + timedelta(minutes=minutes), holder_session_id=holder_session)
         output = self.store / f"{stage}-{dispatch_id}" / "result.md"
         output.parent.mkdir(parents=True)
         return dispatch_id, output, request
@@ -213,6 +233,41 @@ class Fixture:
                                        launcher=self.lifecycle.process_identity(child.pid),
                                        root=self.base / "implementation")
         return dispatch_id
+
+    def watched_stretch(self, mode: str, replay: Path | None = None) -> tuple[subprocess.Popen, str, Path, Path]:
+        """A launched stretch whose launcher is the stand-in builder, live and writing its run record and log.
+
+        Its request carries the stretch's eight-hour limit; it was launched two hours ago, or, for ``limit``, so
+        that its limit falls ``LIMIT_AT`` seconds after it starts. The pointer is written once its run record
+        exists, so the wait finds the launch whole.
+        """
+        now = datetime.now(timezone.utc)
+        launched = now - timedelta(seconds=WATCH_LIMIT - LIMIT_AT if mode == "limit" else 7200)
+        root = self.base / "implementation"
+        dispatch_id, output, request = self._request("stretch", 0, root=root, holder_session=HOLDER_SESSION,
+                                                     at=launched)
+        request.update(handoff={"timeout_seconds": WATCH_LIMIT, "holder_root": str(self.holder),
+                                "plugin_root": str(LIB.parent)}, caller_limit_seconds=WATCH_LIMIT)
+        request_path, run_path = (self.records.sidecar(output, ".request.json"),
+                                  self.records.sidecar(output, ".run.json"))
+        log = self.records.sidecar(output, ".claude.stdout.log")
+        self.records.write_json(request_path, request)
+        child = subprocess.Popen(
+            [sys.executable, "-B", str(LIB / "tests" / "stand_in_builder.py"), "--run", str(run_path),
+             "--dispatch", dispatch_id, "--log", str(log), "--mode", mode, "--launched", launched.isoformat(),
+             *(["--limit-at", f"{LIMIT_AT:g}"] if mode == "limit" else []),
+             *(["--replay", str(replay)] if replay is not None else [])],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.children.append(child)
+        end = time.monotonic() + 30
+        while not run_path.is_file():
+            if child.poll() is not None or time.monotonic() > end:
+                raise RuntimeError("route fixture: the stand-in builder wrote no run record")
+            time.sleep(0.1)
+        self.launch_tree.write_pointer(self.store, dispatch_id=dispatch_id, work=WORK, request=request_path,
+                                       run=run_path, session_id=None,
+                                       launcher=self.lifecycle.process_identity(child.pid), root=root)
+        return child, dispatch_id, run_path, log
 
     def hand_stretch(self, tree: Path, *, owed: bool = False) -> dict:
         """A hand-started record whose handoff block is the one `run handoff --by-hand` writes, digest and the
@@ -325,7 +380,8 @@ class Fixture:
 
     def stop(self) -> None:
         for child in self.children:
-            child.kill()
+            if child.poll() is None:
+                child.kill()
             child.wait()
 
 
@@ -422,8 +478,101 @@ def ready_launched(fixture: Fixture) -> object:
     return fixture.state()
 
 
+def _clock() -> str:
+    return datetime.now().astimezone().strftime("%H:%M:%S")
+
+
+def _wait_argv(fixture: Fixture) -> tuple[str, list[str]]:
+    """The command the handed-off report prints for this work, and the same words run by this interpreter."""
+    import builder_wait
+    command = builder_wait.wait_command(REPO, ISSUE, fixture.holder, LIB.parent)
+    return command, [sys.executable, *shlex.split(command)[1:]]
+
+
+def watch(name: str, fixture: Fixture) -> int:
+    """Start a stand-in builder and the wait on it, print the wait's lines as they come, take the decision while
+    the builder runs, then print the stand-in's records and when the stand-in and the wait each ended."""
+    lock = threading.Lock()
+
+    def say(text: str) -> None:
+        with lock:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
+    replay = LIB / "tests" / REPLAY_LOG if name == "watch-replay" else None
+    child, dispatch_id, run_path, log = fixture.watched_stretch(WATCHED[name], replay)
+    started = time.monotonic()
+    say(f"--- {_clock()} the stand-in builder started: dispatch {dispatch_id}, log {log} ---\n")
+    if replay is not None:
+        say(f"--- the stand-in appends {replay} line by line ---\n")
+    command, argv = _wait_argv(fixture)
+    say(f"--- {_clock()} the wait, started as the handed-off report prints it: {command} ---\n")
+    wait = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    ended: dict[str, str] = {}
+
+    def pump() -> None:
+        for line in wait.stdout:
+            say("wait| " + line.decode("utf-8", "replace").rstrip("\r\n") + "\n")
+
+    def builder_end() -> None:
+        child.wait()
+        ended["builder"] = _clock()
+
+    threads = [threading.Thread(target=pump, daemon=True), threading.Thread(target=builder_end, daemon=True)]
+    for thread in threads:
+        thread.start()
+    # Mid-way through the replay; for the others in the stand-in's quiet span, with its last step running.
+    time.sleep(max(0.0, (5 if replay is not None else 13) - (time.monotonic() - started)))
+    with lock:
+        sys.stdout.write(f"--- {_clock()} the read-only decision, taken while the builder runs ---\n")
+        sys.stdout.flush()
+        code = fixture.decision(fixture.state())
+        request = json.loads(Path(str(run_path).removesuffix(".run.json") + ".request.json").read_bytes())
+        sys.stdout.write("--- the stand-in's own records at that moment ---\n"
+                         + json.dumps({"request_limit_seconds": request["handoff"]["timeout_seconds"],
+                                       "run": json.loads(run_path.read_bytes())}, indent=2) + "\n")
+        sys.stdout.flush()
+    try:
+        wait.wait(timeout=120)
+    except subprocess.TimeoutExpired:
+        wait.kill()
+        wait.wait()
+        say("route_fixture: the wait ran on for two minutes and was stopped\n")
+        code = code or 1
+    ended["wait"] = _clock()
+    for thread in threads:
+        thread.join(timeout=10)
+    say("--- the stand-in's run record as it ended ---\n" + json.dumps(json.loads(run_path.read_bytes()), indent=2)
+        + "\n")
+    say(f"--- the stand-in builder ended at {ended.get('builder', 'not yet')}; the wait ended at {ended['wait']}, "
+        f"exit {wait.returncode} ---\n")
+    return code or wait.returncode
+
+
+def wait_once(fixture: Fixture) -> int:
+    """The decision, then the wait run once against it, its lines printed as it prints them."""
+    code = fixture.decision(fixture.state())
+    command, argv = _wait_argv(fixture)
+    sys.stdout.write(f"--- {_clock()} the wait, started as the handed-off report would print it: {command} ---\n")
+    sys.stdout.flush()
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+    sys.stdout.write("".join("wait| " + line + "\n" for line in
+                             (result.stdout + result.stderr).decode("utf-8", "replace").splitlines()))
+    sys.stdout.write(f"--- {_clock()} the wait ended, exit {result.returncode} ---\n")
+    sys.stdout.flush()
+    return code or result.returncode
+
+
 def scenario(name: str, fixture: Fixture) -> int:
     head = "a" * 40
+    if name in WATCHED:
+        return watch(name, fixture)
+    if name == "watch-hand":
+        fixture.hand_stretch(fixture.base / "implementation")
+        return wait_once(fixture)
+    if name == "watch-none":
+        fixture.completed("stretch", 5)
+        return wait_once(fixture)
     if name == "ready-reported":
         state = ready_launched(fixture)
         code = fixture.decision(state)

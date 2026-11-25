@@ -86,6 +86,11 @@ def cap_refusal(deadline):
             "known, run again with --preflight-cap-seconds N --preflight-cap-reason TEXT.")
 
 
+def cleanup_reserve(allotted):
+    """The time a run keeps after its recipient's allotment to stop it and complete its records."""
+    return min(60.0, max(MINIMUM_CLEANUP_RESERVE_SECONDS, allotted / 10))
+
+
 class Deadline:
     """A run's time in two phases: the entrance's capped work, then the recipient's window.
 
@@ -107,7 +112,7 @@ class Deadline:
             raise ValueError("preflight cap must be finite and positive")
         self.ceiling = None if ceiling is None else float(ceiling)
         self.allotted = min(self.limit, self.ceiling) if self.ceiling is not None else self.limit
-        self.reserve = min(60.0, max(MINIMUM_CLEANUP_RESERVE_SECONDS, self.allotted / 10))
+        self.reserve = cleanup_reserve(self.allotted)
         self.cap = None if cap is None else float(cap)
         self.cap_declared, self.cap_reason = bool(cap_declared), cap_reason
         self.cap_end = self.started + (self.cap or 0.0)
