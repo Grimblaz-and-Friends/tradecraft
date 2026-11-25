@@ -26,6 +26,7 @@ import tempfile
 import time
 
 from holder_tree_guard import contains, path_key
+import launch_release
 import run_lifecycle as lifecycle
 from seat_process import run_read
 from tree_write_guard import (BUILTIN_SAFE_TYPES, WORKTREE_TOOLS, Refusal, agent_definitions,
@@ -520,6 +521,10 @@ def snapshot(plan: list[dict], *, seconds: float, own_output: Path,
             else:
                 state = {"status": "compared",
                          "entries": _walk(path, end, checkout=item["method"] == "checkout")}
+                if item["item"] == "plugins":
+                    # The two install records are read by what they say. Design: lib/DESIGN.md#what-a-launch-comparison-releases
+                    _check(end)
+                    state["install_records"] = launch_release.read_install_records(path)
         except _Expired as exc:
             state = {"status": "uncompared", "reason": str(exc)}
         except (OSError, UnicodeError, ValueError) as exc:
@@ -637,7 +642,7 @@ def _diff_entries(item: str, top: str, before: dict, after: dict, method: str) -
 
 # The owner's limit on everything between the after-walk and the final record.
 COMPARING_SECONDS = 120.0
-OWN_WORK, FOUND = "own", "found"
+OWN_WORK, FOUND, RELEASED = "own", "found", "released"
 # The registry and the launch's own records: a change to one is never the run's own work, wherever its path lies.
 HELD_WHEREVER = frozenset({"registry", "own-request", "own-pointer"})
 
@@ -717,7 +722,13 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
     refs_found: dict[str, tuple[list[dict], list[dict]]] = {}
     has_refs = any(item["method"] == REFS_METHOD for item in plan)
     unreadable, named, skipped, expired = None, None, 0, False
+    releases: dict[int, dict] = {}
     try:
+        # The plugin files every session's runtime keeps up, and whole plugin updates, are released
+        # by kind before any is a finding. Design: lib/DESIGN.md#what-a-launch-comparison-releases
+        releases, reasons = launch_release.release(plan, changes, before, after, check=lambda: _check(limit))
+        for index, reason in reasons.items():
+            changes[index]["reason"] = reason
         # Sorted in memory first, so a slow store read never leaves the run's own edits unexamined.
         needs = []
         for index, change in enumerate(changes):
@@ -725,6 +736,8 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
                 continue
             if change["item"] not in HELD_WHEREVER and contains(own_root, Path(change["path"])):
                 outcome[index] = OWN_WORK  # This run's own edits are its own work.
+            elif index in releases:
+                outcome[index] = RELEASED
             elif own_row_resnapshot and change.get("others_unchanged") and _own_row_resnapshot(change, own_root):
                 # A stretch builder's catch-up re-snapshots its own root's row after the landing it made.
                 outcome[index] = OWN_WORK
@@ -768,9 +781,9 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
     except _Expired:
         expired = True
     ran_out = f"comparison allowance ran out ({label})"
-    findings, attributed, listed = [], [], []
+    findings, attributed, listed, released = [], [], [], []
     examined: dict[str, list[int]] = {}
-    for change, result in zip(changes, outcome):
+    for index, (change, result) in enumerate(zip(changes, outcome)):
         counts = examined.setdefault(change["item"], [0, 0])
         counts[1] += 1
         if result is None:
@@ -779,6 +792,10 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         rows = change.pop("rows", None)
         change.pop("others_unchanged", None)
         if result == OWN_WORK:
+            continue
+        if result == RELEASED:
+            released.append({"id": _finding_id(change["item"], change["path"], change["change"]),
+                             **{k: change[k] for k in ("item", "path", "change")}, **releases[index]})
             continue
         if result != FOUND:
             attributed.append({**{k: change[k] for k in ("item", "path", "change")}, "to": result})
@@ -822,10 +839,11 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
         result["record_lines_skipped"] = skipped
     findings.sort(key=lambda value: value["id"])
     listed.sort(key=lambda value: value["id"])
+    released.sort(key=lambda value: value["id"])
     return {"schema_version": SCHEMA_VERSION, "status": "findings" if findings else "clean",
             "before_at": before_at, "after_at": after_at, "elapsed_seconds": elapsed_seconds,
             "coverage": coverage, "findings": findings, "attributed": attributed,
-            "listed": listed, **result}
+            "listed": listed, "released": released, **result}
 
 
 RESNAPSHOT_FIELDS = frozenset({"revision_before", "status_before"})
@@ -1395,7 +1413,7 @@ def unrecorded(reason: str) -> dict[str, object]:
             # an unrecorded comparison are named alike in an account.
             "findings": [{"id": "unrecorded", "item": "comparison",
                           "path": "", "change": "unrecorded", "reason": reason}],
-            "attributed": [], "listed": []}
+            "attributed": [], "listed": [], "released": []}
 
 
 CLOUD_NOT_RUN_REASON = "not run: a cloud builder runs on a remote machine and cannot reach this one"
@@ -1408,7 +1426,7 @@ def cloud_not_run() -> dict[str, object]:
     """
     return {"schema_version": SCHEMA_VERSION, "status": "cloud-not-run", "before_at": None,
             "after_at": now(), "elapsed_seconds": 0.0, "coverage": [], "findings": [],
-            "attributed": [],
+            "attributed": [], "released": [],
             "reason": CLOUD_NOT_RUN_REASON}
 
 
@@ -1416,4 +1434,4 @@ def not_launched() -> dict[str, object]:
     """No process started, so nothing ran that could change a covered item."""
     return {"schema_version": SCHEMA_VERSION, "status": "not-launched", "before_at": None,
             "after_at": now(), "elapsed_seconds": 0.0, "coverage": [], "findings": [],
-            "attributed": []}
+            "attributed": [], "released": []}

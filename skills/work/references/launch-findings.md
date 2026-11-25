@@ -21,6 +21,38 @@ The request's `write_bound` states what applied: the guarded tools and allowed p
 
 **A cloud build is not compared.** A cloud builder runs on a remote machine and cannot reach this one, so its run record's comparison reads `cloud-not-run` with that reason, a clear status that holds nothing; a local build still runs its comparison. The work cell's cloud-builds reference owns the route.
 
+## What releases
+
+Some changes to the installed plugins are the runtime's own work: any session's runtime, the app, or any Python process that imports a plugin makes them at moments no launch controls. A change of one of these kinds is **released**. It is not a finding, holds no stage and owes no account, and the run record's `launch_comparison.released` lists it with its `id`, `item`, `path`, `change` and `kind`, beside `findings` and `attributed`, so you can still see what changed. The entrance's `implementer_environments` repeats each launch's comparison, `released` included. Releasing applies to two items only: the plugins folder (`plugins`), and the launcher's own plugin root (`launcher-plugin`), which is compared when no registered checkout is that root.
+
+| Kind | What changed | Where it releases |
+|---|---|---|
+| `bytecode` | a `__pycache__` folder, or a `.pyc` file directly in one. Python checks these against their source and rebuilds them when they differ. | anywhere in either item |
+| `synced-marketplaces` | `synced/` or anything under it, at the plugins folder's top: the app's synced marketplace list | the plugins folder |
+| `in-use-marker` | a plugin version's `.in_use` folder or a file directly in it, or a `.last_inuse_sweep` stamp: the runtime marks a version in use and sweeps the marks | either item |
+| `orphan-marker` | a `.orphaned_at` file: the runtime marks a retired version | either item |
+| `usage-queue` | `store/` at the plugins folder's top, or a `.json` file directly in it: the plugin store's usage queue | the plugins folder |
+| `catalog-cache` | a file at the plugins folder's top named `plugin-directory-cache…json`: a catalog of what could be installed, not of what loads | the plugins folder |
+| `version-folder` | a whole version folder, `cache/<marketplace>/<plugin>/<version>`, added or removed during the launch, with everything in it: installing a new version and retiring the old one is the runtime's update | either item, so a launcher running from a retired version releases too |
+| `install-record` | an install record whose listed fields didn't change, or that moved a plugin to a version folder added in the same launch (below) | the plugins folder |
+| `marketplace-refresh` | a change in a marketplace's clone, `marketplaces/<name>/`, while that marketplace's `lastUpdated` in `known_marketplaces.json` moved: the app refreshed it | the plugins folder |
+
+Where two kinds fit one change, the first in the table names it.
+
+**The two install records are read by what they say.** `known_marketplaces.json` and `installed_plugins.json` decide which plugin code every later session loads and where its updates come from, so they are the only files the comparison reads the contents of; every other file is compared by size and time, or by digest. Only these fields are compared: in `known_marketplaces.json`, which marketplaces there are and each one's `source` and `installLocation`; in `installed_plugins.json`, which plugin keys there are and each key's entries as `scope`, `projectPath`, `installPath` and `version`. A change that leaves those alone, such as a time field (`lastUpdated`, `installedAt`) or the file's own `version`, releases with the basis `no listed field changed`. A plugin update releases with the basis `update to <path>`: the only differences are entries whose `version` and `installPath` both moved, each to a version folder the same launch added.
+
+**What still holds** in those items, because each could change what code runs:
+
+- a file added, removed or changed inside a version folder that was there before and after: editing an installed version in place is never the runtime's work;
+- a plugin's or a marketplace's own folder (`cache/<marketplace>/<plugin>` or `cache/<marketplace>`) added or removed, even where the version folder inside it releases;
+- a `.pyc` file anywhere but directly in a `__pycache__` folder, because it can load with no source to check it against;
+- an upkeep name in another place, such as `store/sub/x.json` or `cache/<marketplace>/synced/x.json`;
+- an install record added, removed, or unreadable before or after; a marketplace added or removed, or its `source` or `installLocation` changed; a plugin key or entry added or removed, or an entry's `scope` or `projectPath` changed; a `version` or `installPath` moved to a path no update in the launch added;
+- a change in a marketplace's clone while that marketplace's `lastUpdated` stayed put;
+- anything else in the plugins folder, a plugin's own data folder (`data/…`) included.
+
+A held install-record finding's `reason` names each listed field that changed, by marketplace or plugin key, with its value before and after, or which reading couldn't be parsed and why. Name that change in your account, never a time stamp. Nothing outside those two items releases: a compiled file in a registered checkout's `__pycache__`, and every change to a checkout, the registry, the dispatch records or the run's own records, holds as before. A launch recorded before releases existed has no `released` list; it keeps its findings and its hold until an account counts, and nothing rereads it under these rules.
+
 ## The hold
 
 Any bundle for this change whose comparison has findings, or whose request has a write-bound baseline but whose stopped launch left no comparison (`unrecorded`), holds every next stage, the holder-named `run <stage>` included. A launch still running owes no account: its report entry reads `running`, because its comparison is written when it stops, and the live-launch routing governs it meanwhile. The run itself is untouched: a finding never fails or discards it.
