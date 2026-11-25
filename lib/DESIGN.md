@@ -444,6 +444,7 @@ Wherever a model has no price, whether the run ends known, as a floor or unknown
 - A check is scoped by everything since its last run, not by one turn's commits, so a turn stopped before its checks, or a merge of the base, can't leave an affected check carried.
 - A carried result names its revision and reason so the holder can read the reason against the history and have the check run where it doesn't hold; a holder's note naming a check always wins.
 - The entrance checks none of this. The record is the builder's reasons and the holder's reading of them, and the floor is still read at each head.
+- The builder route keeps its own rerun lines because no change has yet run a repair on it, so what a repair there costs hasn't been measured; scoping them waits for that measure rather than borrowing this route's.
 - One function writes both wordings so they cannot drift, and one text serves a first build and a repair: a first build has no earlier result, so it runs everything.
 
 **Decisions in force:** D-850, the declared CI floor and the account every build or repair returns, with its builder-executable checks scoped as D-1029 says; D-944, brief rows that name their checks in the owner's cell, which the mechanical wording maps; D-885, the mechanical lane's accounting by affirmed row, renewed after every repair as this section's account; D-1029, a relay repair runs only the checks a change since their last run can affect.
