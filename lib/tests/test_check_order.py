@@ -1,8 +1,9 @@
 """The order the entrance gives a change's checks once its floor passes: the ready step, then the criterion readers
-and use at that head while the reviewers read, one batch of answers, then the cold reading, use at the head where
-today's rule owes it, and proof.
+and use at that head while the reviewers read, one batch of answers, then the cold reading, use again where no use
+evidence stands at the head, and proof.
 
-Each test here runs the real cold-reading gate over a change with Git history, so the order is read, not stood in.
+The tests run the real cold-reading gate over a change with Git history; where one stands in for something else, such
+as a review's body findings, a panel's stages or the route, it says so beside the stand-in.
 Design: lib/DESIGN.md#the-cold-reader
 """
 from __future__ import annotations
@@ -71,7 +72,6 @@ def test_a_finished_build_is_told_to_mark_ready_whatever_its_reading(change, rea
         change.commit(A_FIX)
     decision = change.decide(draft=True)
     assert (decision.stage, decision.reason) == ("ready-reviewers", "floor-complete-pr-draft")
-    # Readying the reviewers and running use are not held on the reading; proof still is.
     assert not held(change, "ready-reviewers", draft=True) and not held(change, "use", draft=True)
     assert held(change, "proof", draft=True)
     capsys.readouterr()
@@ -219,7 +219,7 @@ def test_a_commit_after_a_clean_reading_owes_a_reread_of_what_it_changed(change)
     assert (decision.stage, decision.reason, covered(decision)) == ("cold-reader", "cold-reading-stale", ["a.py"])
 
 
-# Use: once on the first build, and again only where today's rule makes it stale.
+# Use: once on the first build, and again only where no use evidence stands at the head.
 
 def test_use_runs_again_only_where_a_commit_made_it_stale(tmp_path, monkeypatch):
     change = Change(tmp_path, monkeypatch, brief=test_work.AFFIRMED)
@@ -231,7 +231,7 @@ def test_use_runs_again_only_where_a_commit_made_it_stale(tmp_path, monkeypatch)
     assert change.decide().stage == "cold-reader"
     change.reviewed(clean())
     change.post_clean()
-    # The use marker reads an earlier head; today's rule names use at the head once the reading is clean.
+    # The use marker reads an earlier head, so use at the head is named once the reading is clean.
     assert (change.decide().stage, change.decide().reason) == ("use", "current-head-use-absent")
     change.post_use()
     assert change.decide().stage == "proof"

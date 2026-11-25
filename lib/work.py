@@ -5820,7 +5820,8 @@ def _reader_kind(mechanical: bool) -> str:
 def _relay_batch_detail(mechanical: bool) -> str:
     # The entrance reads no relay-route criterion report, so the first fix stage carries the wait in words.
     kind = _reader_kind(mechanical)
-    return (f"Before this turn, have the use report and every {kind} fresh reader's report in hand, and send "
+    return (f"Before this turn, have the use report where use is owed and every {kind} fresh reader's report in "
+            "hand, and send "
             f"their findings with the reviewers' in this one turn: the entrance reads no {kind} report on this "
             "route, so it cannot hold the turn on them.")
 
@@ -5851,8 +5852,8 @@ def _unreported_readers(state: WorkState) -> list[dict[str, object]]:
 
 
 def _use_reported(state: WorkState, builder_route: bool) -> bool:
-    """Whether a use has reported on this pull request at all, whatever its head; today's use-at-head question
-    is asked again after the cold reading."""
+    """Whether a use has reported on this pull request at all, whatever its head; whether use evidence stands at
+    the head is asked after the cold reading."""
     if builder_route:
         builders = {request.get("dispatch_id") for request in _term_stretches(state)}
         return any(entry.get("builder") in builders for entry in _builder_use_reports(state))
@@ -6064,9 +6065,11 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         _emit_report(_reported_decision(state, refusal).as_dict(), state)
         return 0
     _brief, lane_pair = _affirmed_review(state)
-    policy = effective_policy(state, rules) if rules is not None else None
-    before = _owed_before_reading(state, mechanical=lane_pair == ("ordinary", "mechanical"),
-                                  use_bought=bool(policy and policy.use_required),
+    mechanical = lane_pair == ("ordinary", "mechanical")
+    # Without the rules, use is taken as bought unless the lane exempts it, so the reading never runs ahead of a
+    # use it can't rule out.
+    use_bought = effective_policy(state, rules).use_required if rules is not None else not mechanical
+    before = _owed_before_reading(state, mechanical=mechanical, use_bought=use_bought,
                                   lane=lane_pair[1] if lane_pair else "", builder_route=builder_route)
     if before is not None:
         refusal = replace(decision, dispatch=False, continuity=None, status="refused",
@@ -6662,9 +6665,10 @@ def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Deci
 
 
 def _draft_ready_detail(mechanical: bool) -> str:
-    # Marking ready means the planned build is complete, not that the other checks have passed: they run now.
+    # Marking ready means the planned build is complete, not that the other checks have passed: they run after it.
     return ("Mark the pull request ready for its reviewers: the planned build is complete and the floor passes "
-            "at this head. Run use and every " + _reader_kind(mechanical) + " fresh reader at this same head "
+            "at this head. Run use where it is owed and every " + _reader_kind(mechanical) + " fresh reader at "
+            "this same head "
             "while the reviewers read; no cold reading is owed before this step, and no finding is answered "
             "until every report is in.")
 
@@ -13892,7 +13896,8 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
     first = launches[0][2] if launches else {}
     build_began = first.get("handed_off_at") if first.get("started_by") == "hand" else first.get("launched_at")
     try:
-        # Every launch counts toward the order, whatever its return, since each one read before the reviewers did.
+        # Every launch for this pull request is listed, whatever its return, so one before the ready step counts
+        # toward the order even where the form check refused what it returned.
         cold_launches = [request.get("launched_at") for _completed, _path, request, _run in _matching_bundles(
             work, {"cold-reader"}, _cold_reading_source(state), outcomes=None)
             if (request.get("lineage_pull_request"), request.get("lineage_branch")) in {
@@ -13911,8 +13916,9 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
         reports.append({"name": f"reviewer {reviewer}", "at": (reviews.get(reviewer) or {}).get("at")})
     if builder_route:
         builders = {request.get("dispatch_id") for request in _term_stretches(state)}
+        # A report counts here as it does for the decision: counting, from this term's builder, its seat succeeded.
         counted = [entry for entry in (builder_checks(state) or {}).get("check_reports", [])
-                   if entry.get("counts") and entry.get("builder") in builders]
+                   if entry.get("counts") and entry.get("builder") in builders and entry.get("outcome") == "success"]
         uses = [entry for entry in counted if entry.get("stage") == "use"]
         if uses:
             reports.append({"name": "use", "at": created.get(str(uses[0].get("comment")))})

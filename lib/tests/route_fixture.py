@@ -540,7 +540,7 @@ def moment(fixture: Fixture, route: str, at: str) -> object:
 
     On the builder route a hand-started builder stays live and posts its record at the head after each step, as the
     handoff's read-back says, so the decision's ``if_ended`` names its next step; on the relay route a first build
-    launch makes the change today's relay chain.
+    launch puts the change on the relay route.
     """
     fixture.changed_paths, fixture.connected_reviewers = list(CHANGED), frozenset({REVIEWER})
     source, head = fixture.source()
