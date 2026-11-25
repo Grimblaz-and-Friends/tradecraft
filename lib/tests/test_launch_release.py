@@ -363,9 +363,7 @@ EXPECTED = {"upkeep": [], "update": [], "refresh": [],
 @pytest.mark.parametrize("name", sorted(release_fixture.SCENARIOS))
 def test_each_scenario_agrees_with_the_comparison_and_the_entrance(tmp_path, name):
     result = release_fixture.run(name, tmp_path)
-    home = Home.__new__(Home)
-    home.plugins = (tmp_path / "home" / ".claude" / "plugins").resolve()
-    assert held(result["comparison"], home) == EXPECTED[name]
+    assert held(result["comparison"], result["home"]) == EXPECTED[name]
     assert result["entrance"]["status"] == ("held" if EXPECTED[name] else "clear")
     assert len(result["entrance"]["owed"]) == len(EXPECTED[name])
 

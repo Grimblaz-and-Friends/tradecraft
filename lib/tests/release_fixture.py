@@ -220,14 +220,14 @@ def recorded_before(comparison: dict) -> dict:
 
 
 def run(name: str, base: Path) -> dict:
-    """One scenario's comparison record and the entrance's reading of it."""
+    """One scenario's comparison record, the entrance's reading of it, and its fixture home."""
     home = Home(base)
     comparison = home.comparison()
     SCENARIOS[name][1](home)
     result = comparison.finish(60)
     if name == "recorded-before":
         result = recorded_before(result)
-    return {"comparison": result, "entrance": entrance(home, result)}
+    return {"comparison": result, "entrance": entrance(home, result), "home": home}
 
 
 def _shown(value: object, base: Path) -> str:

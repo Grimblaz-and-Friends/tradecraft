@@ -725,8 +725,8 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
     unreadable, named, skipped, expired = None, None, 0, False
     releases: dict[int, dict] = {}
     try:
-        # The plugin files every session's runtime keeps up, and whole plugin updates, are released
-        # by kind before any is a finding. Design: lib/DESIGN.md#what-a-launch-comparison-releases
+        # Decided in memory before the store is read, so a released change never waits on that read.
+        # Design: lib/DESIGN.md#what-a-launch-comparison-releases
         releases, reasons = launch_release.release(plan, changes, before, after, check=lambda: _check(limit))
         for index, reason in reasons.items():
             changes[index]["reason"] = reason

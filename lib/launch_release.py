@@ -47,7 +47,12 @@ def _relative(path: str, top: str, windows: bool) -> list[str] | None:
 # --- The upkeep files and whole version folders, by kind -----------------------
 
 def _kind(item: str, parts: list[str], entry: str | None, windows: bool) -> str | None:
-    """The upkeep kind for one path, first match first; ``entry`` is "dir", "file", "link" or unknown."""
+    """The upkeep kind for one path, first match first.
+
+    ``entry`` is "dir", "file", "link", None where unknown, or "mixed" where the type changed
+    between the snapshots, which no type-gated kind releases, because the runtime's upkeep
+    never turns a folder into a file or a link.
+    """
     names = [_fold(name, windows) for name in parts]
     last, parent = names[-1], names[-2] if len(names) > 1 else None
     plugins = item == "plugins"
@@ -63,6 +68,7 @@ def _kind(item: str, parts: list[str], entry: str | None, windows: bool) -> str 
     if (last == "__pycache__" and is_dir()) or (
             parent == "__pycache__" and last.endswith(".pyc") and is_file()):
         return "bytecode"
+    # The app's sync folder holds account data, never plugin code that loads, so all of it releases.
     if plugins and names[0] == "synced" and (len(names) > 1 or is_dir()):
         return "synced-marketplaces"
     if (last == ".in_use" and is_dir()) or (parent == ".in_use" and is_file()) or (
