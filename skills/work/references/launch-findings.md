@@ -35,7 +35,7 @@ Some changes to the installed plugins are the runtime's own work: any session's 
 | `catalog-cache` | a file at the plugins folder's top named `plugin-directory-cache…json`: a catalog of what could be installed, not of what loads | the plugins folder |
 | `version-folder` | a whole version folder, `cache/<marketplace>/<plugin>/<version>`, added or removed during the launch, with everything in it: installing a new version and retiring the old one is the runtime's update | either item, so a launcher running from a retired version releases too |
 | `install-record` | an install record whose listed fields didn't change, or that moved a plugin to a version folder added in the same launch (below) | the plugins folder |
-| `marketplace-refresh` | a change in a marketplace's clone, `marketplaces/<name>/`, while that marketplace's `lastUpdated` in `known_marketplaces.json` moved: the app refreshed it | the plugins folder |
+| `marketplace-refresh` | a change in a marketplace's clone, `marketplaces/<name>` or anything in it, while that marketplace's `lastUpdated` in `known_marketplaces.json` moved: the app refreshed it | the plugins folder |
 
 Where two kinds fit one change, the first in the table names it.
 

@@ -292,11 +292,11 @@ def test_fields_outside_the_compared_ones_release(home, change):
         home.installed["plugins"][f"{WIDGET}@{MARKET}"][0]["gitCommitSha"] = "f" * 40
     else:
         home.installed["plugins"][f"{WIDGET}@{MARKET}"][0]["lastUpdated"] = "2026-11-03T05:31:00.000Z"
-    home.save_records()
+    home.save_records("installed_plugins.json")
     result = before.finish(60)
     assert result["findings"] == []
     assert {rel(home, entry): entry["kind"] for entry in result["released"]} == {
-        "installed_plugins.json": "install-record", "known_marketplaces.json": "install-record"}
+        "installed_plugins.json": "install-record"}
 
 
 @pytest.mark.parametrize("refreshed", [True, False])

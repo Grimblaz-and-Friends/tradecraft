@@ -97,9 +97,11 @@ class Home:
         path = self.path(rel)
         shutil.rmtree(path) if path.is_dir() else path.unlink()
 
-    def save_records(self) -> None:
-        self.write("known_marketplaces.json", json.dumps(self.marketplaces, indent=2).encode("utf-8"))
-        self.write("installed_plugins.json", json.dumps(self.installed, indent=2).encode("utf-8"))
+    def save_records(self, *names: str) -> None:
+        """Rewrite the named install records, or both, as the app does when it changes one."""
+        values = {"known_marketplaces.json": self.marketplaces, "installed_plugins.json": self.installed}
+        for name in names or tuple(values):
+            self.write(name, json.dumps(values[name], indent=2).encode("utf-8"))
 
     def comparison(self, launcher: Path | None = None) -> launch_bound.Comparison:
         value = launch_bound.Comparison(
@@ -161,12 +163,13 @@ def _update(home: Home, plugin: str = WIDGET, old: str = "1.0.0", new: str = "2.
     home.remove(f"cache/{MARKET}/{plugin}/{old}")
     home.installed["plugins"][f"{plugin}@{MARKET}"] = [
         {**home.entry(plugin, new), "lastUpdated": "2026-11-03T05:31:00.000Z"}]
+    home.save_records("installed_plugins.json")
     _refresh(home)
 
 
 def _refresh(home: Home) -> None:
     home.marketplaces[MARKET]["lastUpdated"] = "2026-11-03T05:30:00.000Z"
-    home.save_records()
+    home.save_records("known_marketplaces.json")
     home.write(f"marketplaces/{MARKET}/.claude-plugin/marketplace.json", b'{"plugins": ["widget"]}')
 
 
@@ -178,12 +181,12 @@ def _stray_edit(home: Home) -> None:
 def _repoint(home: Home) -> None:
     home.installed["plugins"][f"{WIDGET}@{MARKET}"] = [
         {**home.entry(WIDGET, "1.0.0"), "installPath": str(home.base / "elsewhere" / WIDGET)}]
-    home.save_records()
+    home.save_records("installed_plugins.json")
 
 
 def _source(home: Home) -> None:
     home.marketplaces[MARKET]["source"] = {"source": "github", "repo": "someone-else/market"}
-    home.save_records()
+    home.save_records("known_marketplaces.json")
 
 
 def _sourceless(home: Home) -> None:
@@ -193,7 +196,7 @@ def _sourceless(home: Home) -> None:
 def _new_plugin(home: Home) -> None:
     home.write(f"cache/{MARKET}/newcomer/1.0.0/.claude-plugin/plugin.json", b'{"name": "newcomer"}')
     home.installed["plugins"][f"newcomer@{MARKET}"] = [home.entry("newcomer", "1.0.0")]
-    home.save_records()
+    home.save_records("installed_plugins.json")
 
 
 SCENARIOS = {
