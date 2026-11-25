@@ -445,4 +445,4 @@ Wherever a model has no price, whether the run ends known, as a floor or unknown
 - The entrance checks none of this. The record is the builder's reasons and the holder's reading of them, and the floor is still read at each head.
 - One function writes both wordings so they cannot drift, and one text serves a first build and a repair: a first build has no earlier result, so it runs everything.
 
-**Decisions in force:** D-850, the declared CI floor, whose every-turn rerun of each builder-executable check this replaces; D-NUMBER, a relay repair runs only the checks a change since their last run can affect.
+**Decisions in force:** D-850, the declared CI floor, whose every-turn rerun of each builder-executable check this replaces; D-1029, a relay repair runs only the checks a change since their last run can affect.
