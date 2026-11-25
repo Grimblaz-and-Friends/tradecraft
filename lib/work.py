@@ -5842,8 +5842,11 @@ def _unreported_readers(state: WorkState) -> list[dict[str, object]]:
     if owed is None:
         return []  # the final pass names an unreadable owed list itself, so nothing is held on it here
     builders = {request.get("dispatch_id") for request in stretches}
-    reported = {(entry.get("criterion"), entry.get("row"))
-                for entry in (builder_checks(state) or {}).get("check_reports", [])
+    try:
+        reports = (builder_checks(state) or {}).get("check_reports", [])
+    except (OSError, ValueError, WorkError):
+        reports = []  # an accounting that can't be read proves no report, so every owed reader is still owed
+    reported = {(entry.get("criterion"), entry.get("row")) for entry in reports
                 if entry.get("counts") and entry.get("builder") in builders
                 and entry.get("stage") == "acceptance-criterion" and entry.get("outcome") == "success"}
     return [{"criterion": check.get("criterion"), "row": check.get("row")} for check in owed
@@ -5869,8 +5872,8 @@ def _owed_before_reading(state: WorkState, *, mechanical: bool, use_bought: bool
     the ready step, the criterion readers the entrance can read, the first use, the reviewers, their answers,
     a relay use that changed something, and a bought panel. None once the reading is owed.
 
-    The decision's chain and `run cold-reader` both ask it, so a reading named early is refused rather than
-    put back in front. Design: lib/DESIGN.md#the-cold-reader
+    The decision's chain and `run cold-reader` both ask it, so a reading named early is refused rather than run
+    ahead of the reviewers and use. Design: lib/DESIGN.md#the-cold-reader
     """
     if bool((state.pr or {}).get("draft")) or (state.synchronization or {}).get("merge_state") == "draft":
         return Decision("ready-reviewers", False, None, "floor-complete-pr-draft", _draft_ready_detail(mechanical))
@@ -6055,7 +6058,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     effective_timeout = timeout_seconds if timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
     if not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise WorkError("--timeout-seconds must be finite and positive")
-    # Without this a session naming the stage would put the reading back in front of the reviewers and use.
+    # Without this a session naming the stage would run the reading ahead of the reviewers and use.
     try:
         builder_route = _route(state)["name"] == "builder"
     except WorkError as exc:
@@ -13897,16 +13900,26 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
     build_began = first.get("handed_off_at") if first.get("started_by") == "hand" else first.get("launched_at")
     try:
         # Every launch for this pull request is listed, whatever its return, so one before the ready step counts
-        # toward the order even where the form check refused what it returned.
-        cold_launches = [request.get("launched_at") for _completed, _path, request, _run in _matching_bundles(
-            work, {"cold-reader"}, _cold_reading_source(state), outcomes=None)
-            if (request.get("lineage_pull_request"), request.get("lineage_branch")) in {
-                (None, None), (pr.get("number"), (pr.get("head") or {}).get("ref"))}]
+        # toward the order even where the form check refused what it returned. One recorded with no lineage counts
+        # where this change's history holds the head it read, as the gate counts such a reading.
+        cold_launches = []
+        lineage = (pr.get("number"), (pr.get("head") or {}).get("ref"))
+        for _completed, path, request, _run in _matching_bundles(work, {"cold-reader"}, _cold_reading_source(state),
+                                                                 outcomes=None):
+            recorded = (request.get("lineage_pull_request"), request.get("lineage_branch"))
+            if recorded == (None, None):
+                read = cold_reader.load_metadata(cold_reader.reading_record(
+                    Path(str(request.get("root"))), _records_home(state))).get("head")
+                if not _cold_reading_in_history(state, read, path):
+                    continue
+            elif recorded != lineage:
+                continue
+            cold_launches.append(request.get("launched_at"))
         readings = _cold_readings(state)
         first_reading = ({"head": readings[0]["head"],
                           "launched_at": readings[0]["request"].get("launched_at") or readings[0]["completed_at"]}
                          if readings else None)
-    except (WorkError, OSError) as exc:
+    except (WorkError, OSError, cold_reader.ColdReaderError) as exc:
         # An unreadable reading record leaves the count and the first reading unknown, never zero.
         cold_launches, first_reading = None, unknown(f"the cold readings could not be read: {exc}")
     reviews = reviewers_read.first_reviews(timeline or [], sorted(state.config.connected_reviewers))
@@ -13917,7 +13930,12 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
     if builder_route:
         builders = {request.get("dispatch_id") for request in _term_stretches(state)}
         # A report counts here as it does for the decision: counting, from this term's builder, its seat succeeded.
-        counted = [entry for entry in (builder_checks(state) or {}).get("check_reports", [])
+        try:
+            checked = (builder_checks(state) or {}).get("check_reports", [])
+        except (OSError, ValueError, WorkError) as exc:
+            # An accounting that can't be read leaves each report's time unread, never guessed.
+            checked, unread = [], [f"the builder's check reports ({exc})"]
+        counted = [entry for entry in checked
                    if entry.get("counts") and entry.get("builder") in builders and entry.get("outcome") == "success"]
         uses = [entry for entry in counted if entry.get("stage") == "use"]
         if uses:

@@ -63,7 +63,7 @@ SAME_VENDOR = "owner-selected-claude-implementer"
 # The holder's session a handoff records, in a stretch's request or a hand record; no transcript of it exists.
 HOLDER_SESSION = "fixture-holder-session"
 REVIEWER = "reviewer-bot"
-# The paths the change's pull request touches, which the use rules buy use for.
+# The paths the change's pull request touches; the use rules buy use for its job.
 CHANGED = ["job/job.md", "skill/SKILL.md"]
 # The moments of one change a use session walks through, each a scenario on either route.
 MOMENTS = ("built", "reporting", "reported", "answered")
@@ -582,9 +582,9 @@ def moment(fixture: Fixture, route: str, at: str) -> object:
         fixture.post(f"<!-- tradecraft:use:v1 head={head} status=pass changed=false staffing_status=qualified -->\n"
                      "The use session's note.", 12)
     if step >= 3:
-        # Every report is in, so the reviewer's thread and the use finding are answered in one fix.
+        # Every report is in, so every finding is answered in one fix, dated after the reports it answers.
         (source / "job" / "job.md").write_bytes(b"run the job as corrected\n")
-        git(source, "commit", "-q", "-am", "fix the job's line")
+        git(source, "commit", "-q", "-am", "fix the job's line", at=START + timedelta(minutes=13))
         head = git(source, "rev-parse", "HEAD")
         fixture.pr["head"]["sha"] = head
         fixture.review_comments.append(answer(head))
