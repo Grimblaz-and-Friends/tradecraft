@@ -22,7 +22,7 @@ WIDGET_V1 = f"cache/{MARKET}/{WIDGET}/1.0.0"
 GADGET_V3 = f"cache/{MARKET}/{GADGET}/3.0.0"
 UPKEEP = {"synced/account-1/.marketplaces.json": "synced-marketplaces",
           f"{WIDGET_V1}/.in_use/5202": "in-use-marker",
-          f"{GADGET_V3}/.orphaned_at": "orphan-marker",
+          f"cache/{MARKET}/{GADGET}/2.0.0/.orphaned_at": "orphan-marker",
           f"{WIDGET_V1}/lib/__pycache__/util.cpython-312.pyc": "bytecode",
           "store/usage-queue.json": "usage-queue",
           "plugin-directory-cache-v2.json": "catalog-cache",
@@ -246,6 +246,16 @@ def test_a_move_to_a_version_folder_added_in_the_launch_releases(home):
     assert result["findings"] == []
     basis = next(entry["basis"] for entry in result["released"] if rel(home, entry) == "installed_plugins.json")
     assert basis == "update to " + str(home.path(f"cache/{MARKET}/{WIDGET}/2.0.0"))
+
+
+def test_a_move_into_another_plugins_new_version_folder_holds(home):
+    before = home.comparison()
+    home.write(f"cache/{MARKET}/{GADGET}/9.9.9/.claude-plugin/plugin.json", b"{}")
+    home.installed["plugins"][f"{WIDGET}@{MARKET}"] = [
+        {**home.entry(WIDGET, "9.9.9"), "installPath": str(home.path(f"cache/{MARKET}/{GADGET}/9.9.9"))}]
+    home.save_records()
+    reason = finding(before.finish(60), home, "installed_plugins.json")["reason"]
+    assert f"{WIDGET}@{MARKET}" in reason and "installPath" in reason and "9.9.9" in reason
 
 
 def test_a_move_to_a_path_no_update_added_holds_naming_both_paths(home):

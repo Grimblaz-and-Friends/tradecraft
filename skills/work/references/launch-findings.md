@@ -27,7 +27,7 @@ Some changes to the installed plugins are the runtime's own work: any session's 
 
 | Kind | What changed | Where it releases |
 |---|---|---|
-| `bytecode` | a `__pycache__` folder, or a `.pyc` file directly in one. Python checks these against their source and rebuilds them when they differ. | anywhere in either item |
+| `bytecode` | a `__pycache__` folder, or a `.pyc` file directly in one. Python checks these against their source's recorded time and size, or hash, and rebuilds them when they differ. | anywhere in either item |
 | `synced-marketplaces` | a `synced` folder at the plugins folder's top, or anything under it: the app's synced marketplace list | the plugins folder |
 | `in-use-marker` | a `.in_use` folder or a file directly in it, or a `.last_inuse_sweep` file, at any depth: the runtime marks a plugin version in use and sweeps the marks | either item |
 | `orphan-marker` | a `.orphaned_at` file at any depth: the runtime marks a retired plugin version | either item |
@@ -39,19 +39,20 @@ Some changes to the installed plugins are the runtime's own work: any session's 
 
 Where two kinds fit one change, the first in the table names it.
 
-**The two install records are read by what they say.** `known_marketplaces.json` and `installed_plugins.json` decide which plugin code every later session loads and where its updates come from, so they are the only files the comparison reads the contents of; every other file is compared by size and time, or by digest. Only these fields are compared: in `known_marketplaces.json`, which marketplaces there are and each one's `source` and `installLocation`; in `installed_plugins.json`, which plugin keys there are and each key's entries as `scope`, `projectPath`, `installPath` and `version`. A change that leaves those alone, such as a time field (`lastUpdated`, `installedAt`) or the file's own `version`, releases with the basis `no listed field changed`. A plugin update releases with the basis `update to <path>`: the only differences are entries whose `version` and `installPath` both moved, each to a version folder the same launch added.
+**The two install records are read by what they say.** `known_marketplaces.json` and `installed_plugins.json` decide which plugin code every later session loads and where its updates come from, so they are the only files the comparison reads the contents of; every other file is compared by size and time, or by digest. Only these fields are compared: in `known_marketplaces.json`, which marketplaces there are and each one's `source` and `installLocation`; in `installed_plugins.json`, which plugin keys there are and each key's entries as `scope`, `projectPath`, `installPath` and `version`. A change that leaves those alone, such as a time field (`lastUpdated`, `installedAt`) or the file's own `version`, releases with the basis `no listed field changed`. A plugin update releases with the basis `update to <path>`: the only differences are entries whose `version` and `installPath` both moved, each to a version folder of that same plugin that the same launch added.
 
 **What still holds** in those items, because each could change what code runs:
 
 - a file added, removed or changed inside a version folder that was there before and after: editing an installed version in place is never the runtime's work;
 - a plugin's or a marketplace's own folder (`cache/<marketplace>/<plugin>` or `cache/<marketplace>`) added or removed, even where the version folder inside it releases;
 - a `.pyc` file anywhere but directly in a `__pycache__` folder, because it can load with no source to check it against;
+- an install entry moved into another plugin's version folder, even one the launch added;
 - an upkeep name in another place, such as `store/sub/x.json` or `cache/<marketplace>/synced/x.json`;
 - an install record added, removed, or unreadable before or after; a marketplace added or removed, or its `source` or `installLocation` changed; a plugin key or entry added or removed, or an entry's `scope` or `projectPath` changed; a `version` or `installPath` moved to a path no update in the launch added;
 - a change in a marketplace's clone while that marketplace's `lastUpdated` stayed put;
 - anything else in the plugins folder, a plugin's own data folder (`data/…`) included.
 
-A held install-record finding's `reason` names each listed field that changed, by marketplace or plugin key, with its value before and after, or which reading couldn't be parsed and why. Name that change in your account, never a time stamp. Nothing outside those two items releases: a compiled file in a registered checkout's `__pycache__`, and every change to a checkout, the registry, the dispatch records or the run's own records, holds as before. A launch recorded before releases existed has no `released` list; it keeps its findings and its hold until an account counts, and nothing rereads it under these rules.
+Released changes are not findings, so a `launch-account` never names a released `id`: an account naming an id the launch didn't flag counts for nothing. The plugins folder's walk, like a checkout's, leaves out every `.git`, a marketplace clone's included, so nothing inside one is compared. A held install-record finding's `reason` names each listed field that changed, by marketplace or plugin key, with its value before and after, or which reading couldn't be parsed and why. Name that change in your account, never a time stamp. Nothing outside those two items releases: a compiled file in a registered checkout's `__pycache__`, and every change to a checkout, the registry, the dispatch records or the run's own records, holds as before. A launch recorded before releases existed has no `released` list; it keeps its findings and its hold until an account counts, and nothing rereads it under these rules.
 
 ## The hold
 

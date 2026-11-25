@@ -196,6 +196,17 @@ def _pair(gone: list[dict], came: list[dict]) -> list[tuple[dict, dict]]:
     return pairs
 
 
+def _own_folder(key: str, path: str, windows: bool) -> bool:
+    """Whether ``path`` is a version folder of the plugin ``key`` names (``<plugin>@<marketplace>``).
+
+    An update moves a plugin to its own new version; an entry moved into another plugin's
+    folder changes what that plugin loads, so it holds.
+    """
+    plugin, _, marketplace = key.rpartition("@")
+    names = _normal(path, windows).split("/")
+    return len(names) >= 3 and names[-3:-1] == [_fold(marketplace, windows), _fold(plugin, windows)]
+
+
 def _plugin_differences(before: dict, after: dict, added_folders: set[str], windows: bool
                         ) -> tuple[list[str], list[str]]:
     """Each listed difference, and the new install paths when every one is an update to an added folder."""
@@ -228,7 +239,7 @@ def _plugin_differences(before: dict, after: dict, added_folders: set[str], wind
                             for field in changed]
             path = new_entry.get("installPath")
             if set(changed) != {"version", "installPath"} or not isinstance(path, str) \
-                    or _normal(path, windows) not in added_folders:
+                    or _normal(path, windows) not in added_folders or not _own_folder(key, path, windows):
                 releasable = False
             else:
                 updates.append(path)

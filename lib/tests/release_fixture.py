@@ -36,7 +36,7 @@ MARKET, WIDGET, GADGET = "acme-market", "widget", "gadget"
 
 
 class Home:
-    """A lab-free home whose plugins folder has one marketplace and two installed plugins."""
+    """A lab-free home whose plugins folder has one marketplace, two installed plugins and one retired version."""
 
     def __init__(self, base: Path):
         self.base = Path(base).resolve()
@@ -55,9 +55,11 @@ class Home:
         for rel, data in {
                 f"{widget}/.claude-plugin/plugin.json": b'{"name": "widget"}',
                 f"{widget}/lib/mod.py": b"VALUE = 1\n",
+                f"{widget}/lib/util.py": b"HELPER = 1\n",
                 f"{widget}/lib/__pycache__/mod.cpython-312.pyc": b"\x00pyc",
                 f"{widget}/.in_use/4101": b'{"pid": 4101}',
                 f"cache/{MARKET}/{GADGET}/3.0.0/.claude-plugin/plugin.json": b'{"name": "gadget"}',
+                f"cache/{MARKET}/{GADGET}/2.0.0/.claude-plugin/plugin.json": b'{"name": "gadget"}',
                 f"marketplaces/{MARKET}/.claude-plugin/marketplace.json": b'{"plugins": []}',
                 f"marketplaces/{MARKET}/README.md": b"# acme\n",
                 "synced/account-1/.marketplaces.json": b"[]",
@@ -146,7 +148,7 @@ def _upkeep(home: Home) -> None:
     widget = f"cache/{MARKET}/{WIDGET}/1.0.0"
     home.write("synced/account-1/.marketplaces.json", b'[{"name": "acme-market"}]')
     home.write(f"{widget}/.in_use/5202", b'{"pid": 5202}')
-    home.write(f"cache/{MARKET}/{GADGET}/3.0.0/.orphaned_at", b"1700000000")
+    home.write(f"cache/{MARKET}/{GADGET}/2.0.0/.orphaned_at", b"1700000000")
     home.write(f"{widget}/lib/__pycache__/util.cpython-312.pyc", b"\x00pyc")
     home.write("store/usage-queue.json", b'{"usage-rows-queued": [1]}')
     home.write("plugin-directory-cache-v2.json", b'{"listings": [1]}')
