@@ -6057,8 +6057,12 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     # Without this a session naming the stage would put the reading back in front of the reviewers and use.
     try:
         builder_route = _route(state)["name"] == "builder"
-    except WorkError:
-        builder_route = False
+    except WorkError as exc:
+        # Which reports hold the reading depends on the route, so a reading whose route can't be read waits.
+        refusal = replace(decision, dispatch=False, continuity=None, status="refused", reason="route-unreadable",
+                          detail=str(exc))
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
     _brief, lane_pair = _affirmed_review(state)
     policy = effective_policy(state, rules) if rules is not None else None
     before = _owed_before_reading(state, mechanical=lane_pair == ("ordinary", "mechanical"),
@@ -6518,8 +6522,8 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
             detail = builder.detail if unread is None else json.dumps(
                 {**json.loads(builder.detail), "owed_list": unread}, ensure_ascii=True)
             return result("final-pass", False, None, "ready-reported", detail, status="holder-owned")
-        # Reach holds the ready step, which now comes straight after the floor, so reach owed on the builder's
-        # stage is listed with the checks the record doesn't yet name, not lost behind them.
+        # Reach holds the ready step, which comes straight after the floor, so reach owed on the builder's stage
+        # is listed with the checks the record doesn't yet name, not lost behind them.
         owed_stage = made.stage in BUILDER_OWED_STAGES or (
             made.stage == "reach-read" and held_by_reach.get("stage") in {"ready-reviewers", "proof"})
         if not owed_stage and made.stage != "release-report" and not rest:
@@ -6536,7 +6540,8 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
             chained = [{"stage": "acceptance-criterion", "criterion": entry["criterion"], "row": entry["row"],
                         "reason": made.reason, "detail": None} for entry in readers]
         listed = chained + rest
-        # `owed_chain` is the chain's own stage alone, so a reader adding the unnamed checks counts each once.
+        # `owed_chain` is the chain's own stage alone, so a reader adding the unnamed checks counts each once; where
+        # the chain names several readers it is the first, as the chain names one stage, and `owed_list` has all.
         owed = {**json.loads(builder.detail), "owed_at_ready": listed[0], "owed_list": listed if unread is None
                 else {**unread, "listed": listed}, "owed_chain": chained[0] if chained else None}
         return result("final-pass", False, None, "owed-at-ready", json.dumps(owed, ensure_ascii=True),
@@ -13880,16 +13885,22 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
     term, lane_pair = _affirmed_review(state)
     try:
         builder_route = _route(state)["name"] == "builder"
-    except WorkError:
-        builder_route = False
+    except WorkError as exc:
+        builder_route, route_error = None, str(exc)
     launches = lifecycle.launch_bundles(store, work, RESUME_SOURCE_STAGES["build"] | {"stretch"},
                                         after=term.timestamp if term else None)
     first = launches[0][2] if launches else {}
     build_began = first.get("handed_off_at") if first.get("started_by") == "hand" else first.get("launched_at")
     try:
+        # Every launch counts toward the order, whatever its return, since each one read before the reviewers did.
+        cold_launches = [request.get("launched_at") for _completed, _path, request, _run in _matching_bundles(
+            work, {"cold-reader"}, _cold_reading_source(state), outcomes=None)
+            if (request.get("lineage_pull_request"), request.get("lineage_branch")) in {
+                (None, None), (pr.get("number"), (pr.get("head") or {}).get("ref"))}]
         readings = _cold_readings(state)
-        cold_launches = [str(reading["request"].get("launched_at") or reading["completed_at"]) for reading in readings]
-        first_reading = ({"head": readings[0]["head"], "launched_at": cold_launches[0]} if readings else None)
+        first_reading = ({"head": readings[0]["head"],
+                          "launched_at": readings[0]["request"].get("launched_at") or readings[0]["completed_at"]}
+                         if readings else None)
     except (WorkError, OSError) as exc:
         # An unreadable reading record leaves the count and the first reading unknown, never zero.
         cold_launches, first_reading = None, unknown(f"the cold readings could not be read: {exc}")
@@ -13916,14 +13927,21 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
                           and (entry.get("criterion"), entry.get("row")) == (check.get("criterion"), check.get("row"))),
                          None)
             reports.append({"name": name, "at": created.get(str(found.get("comment"))) if found else None})
+    elif builder_route is None:
+        # Which reports the entrance can read depends on the route, so an unreadable one leaves them unread.
+        unread = [f"the reports the route owes (the route could not be read: {route_error})"]
     else:
         opened = _time(pr.get("created_at"))
         uses = sorted((marker for marker in state.markers if marker.name == "use"
                        and (opened is None or (_time(marker.timestamp) or opened) >= opened)), key=_source_order)
         if uses:
             reports.append({"name": "use", "at": uses[0].timestamp})
-        if lane_pair != ("ordinary", "mechanical"):
-            # The relay holder's fresh readers report to it, not to the entrance, so their times are unread here.
+        # The relay holder's fresh readers report to it, not to the entrance, so their times are unread here: each
+        # brief row's on the mechanical lane, as the first fix stage asks for them, and each criterion's otherwise.
+        term_brief = term.body if term is not None else ""
+        if lane_pair == ("ordinary", "mechanical"):
+            unread = [f"row {number}" for number, _text in brief_rows.rows(term_brief)]
+        else:
             try:
                 artifact, _comment = _settled_artifact_text(state, "artifact-criterion-unresolved")
                 unread = [f"criterion {criterion}" for criterion in fresh_reader_criteria(artifact)]

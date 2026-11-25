@@ -15,9 +15,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import route_fixture  # noqa: E402
 import test_work  # noqa: E402
 import work  # noqa: E402
-from test_cold_reader import Change, clean, covered, flagged, settled  # noqa: E402
+from test_cold_reader import Change, clean, covered, flagged, lineage, settled  # noqa: E402
 
 pytestmark = pytest.mark.cold_reading
 
@@ -142,7 +143,7 @@ def test_a_branch_behind_its_base_catches_up_whatever_is_outstanding(tmp_path, m
 
 # The cold reading: neither named nor launchable until the rest is answered.
 
-@pytest.mark.parametrize("outstanding", ["draft", "reviewer", "thread", "body", "use"])
+@pytest.mark.parametrize("outstanding", ["draft", "reviewer", "thread", "body", "use", "panel"])
 def test_nobody_is_told_to_run_the_cold_reader_or_can_until_the_rest_is_answered(
         tmp_path, monkeypatch, capsys, outstanding):
     change = Change(tmp_path, monkeypatch, brief=test_work.AFFIRMED)
@@ -157,6 +158,9 @@ def test_nobody_is_told_to_run_the_cold_reader_or_can_until_the_rest_is_answered
         finding = work.review_findings.BodyFinding(test_work.REVIEWER, "cr-comment:v1:x", [{"id": 9}])
         monkeypatch.setattr(work, "_body_findings", lambda _state: work.review_findings.Classification(
             [finding], [], []))
+    if outstanding == "panel":
+        # A bought panel's stages have their own suite; here one is still to run.
+        monkeypatch.setattr(work, "_panel_next", lambda _state, _lane: "revision-diff")
     draft = outstanding == "draft"
     decision = change.decide(draft=draft)
     assert decision.stage not in {"cold-reader", "cold-reading-post", "cold-reading-close"}
@@ -255,3 +259,61 @@ def test_an_open_reading_awaiting_review_before_the_ready_step_reads_the_ready_s
     change.post_open(flagged("a.py"))
     assert change.decide(draft=True).stage == "ready-reviewers"
     assert change.decide().stage == "build"  # its review, once the reviewers have been answered
+
+
+# The release report's section on what the reviewers read, over the change's own Git history.
+
+class Timeline:
+    """GitHub's timeline of the pull request, the one read the release report's section makes."""
+
+    def __init__(self, events):
+        self.events = events
+
+    def get(self, endpoint, paginate=False):
+        assert endpoint.endswith("/timeline") and paginate
+        return self.events
+
+
+def marked_ready(change, reviewed=True):
+    """The timeline of a pull request marked ready at the change's head, then read by its reviewer."""
+    events = [{"event": "committed", "sha": change.head, "committer": {"date": change.tick()}},
+              {"event": "ready_for_review", "created_at": change.tick()}]
+    if reviewed:
+        events.append({"event": "reviewed", "commit_id": change.head, "submitted_at": change.tick(),
+                       "user": {"login": test_work.REVIEWER}})
+    return Timeline(events)
+
+
+def section(change, timeline):
+    fixture = change.state()
+    work.validate_marker_claims(fixture)
+    return work._reviewers_read_report(fixture, timeline)
+
+
+def test_a_reading_launched_before_the_ready_step_counts_whatever_its_return(change):
+    malformed = clean().replace("## Flags", "## Flagz")
+    change.read(malformed)
+    lineage(change, "reading-1", launched_at=change.tick())
+    part = section(change, marked_ready(change))
+    # The form check refused the return, so no reading counts at the gate, yet the launch read before the reviewers.
+    assert part["cold_readings_before"] == {"status": "read", "count": 1}
+    assert part["first_reading"]["status"] == "none"
+    assert work.reviewers_read.order_of(part) == {"order": "cold-reading-first"}
+
+
+def test_a_relay_mechanical_change_cannot_read_its_row_readers_so_the_fix_field_is_unknown(tmp_path, monkeypatch):
+    change = Change(tmp_path, monkeypatch, brief=route_fixture.MECHANICAL_BRIEF)
+    part = section(change, marked_ready(change))
+    fix = part["fix_before_last_report"]
+    assert fix["status"] == "unknown" and "row 1" in fix["reason"] and "row 7" in fix["reason"]
+    assert part["changed_after"]["nothing_changed"] is True
+
+
+def test_a_named_reading_whose_route_cannot_be_read_waits(change, monkeypatch, capsys):
+    def unreadable(_state):
+        raise work.WorkError("the route marker is malformed")
+
+    monkeypatch.setattr(work, "_route", unreadable)
+    report = reader_run(change, monkeypatch, capsys)
+    assert (report["status"], report["reason"]) == ("refused", "route-unreadable")
+    assert "malformed" in report["detail"]

@@ -2528,3 +2528,11 @@ def test_route_comparison_refuses_an_order_it_does_not_know(tmp_path, order):
     with pytest.raises(cost.CostError):
         cost.route_comparison("acme/widget#1", home=tmp_path, order=order)
     assert not (tmp_path / ".tradecraft" / "route-comparison").exists()
+
+
+def test_route_comparison_knows_every_order_the_release_report_names():
+    import reviewers_read
+    named = {reviewers_read.order_of({"cold_readings_before": {"status": "read", "count": count}})["order"]
+             for count in (0, 1)}
+    named.add(reviewers_read.order_of({"cold_readings_before": {"status": "unknown", "reason": "x"}})["order"])
+    assert named == set(cost.ROUTE_ORDERS)

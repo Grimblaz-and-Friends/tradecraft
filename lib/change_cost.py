@@ -2143,6 +2143,7 @@ def route_split(*, holder_replies: list[dict], start: datetime | None, builder_b
             "leaves_out": "seats the holder launched, which the cost report prices"}
 
 
+# The names reviewers_read.order_of gives, repeated so this module keeps free of its Git reads; a test ties the two.
 ROUTE_ORDERS = ("reviewers-first", "cold-reading-first", "unknown")
 # Before the order was recorded, a cold reading always came before the reviewers, so an old entry took that order.
 ORDER_BEFORE_RECORDING = ("cold-reading-first", "entered before the order was recorded, when no other order existed")

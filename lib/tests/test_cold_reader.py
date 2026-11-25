@@ -987,7 +987,7 @@ def test_an_override_naming_another_vendor_is_set_aside_and_the_reader_stays_on_
 @pytest.mark.cold_reading
 @pytest.mark.parametrize("stage", ["proof", "release-report"])
 def test_a_named_stage_the_gate_holds_refuses_without_effect(change, stage):
-    # The reading now runs after the ready step and use, so it holds only what follows it.
+    # The reading runs after the ready step and use, so it holds only what follows it.
     assert work.COLD_READING_HELD_STAGES == {"proof", "release-report"}
     fixture = change.state()
     held = work._cold_reading_hold(fixture, work.Decision(stage, False, None, "holder-named-stage"))
