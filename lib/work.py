@@ -7219,7 +7219,7 @@ def validated_grants(state: WorkState, comment_ids, stage: str, continuity: str 
 
 def _check_account(mechanical: bool) -> str:
     """What a build or repair turn runs and returns for each check it owes; one text for both lanes."""
-    # A small repair shouldn't rerun a long check nothing it touched can reach.
+    # A small repair shouldn't rerun a long check that nothing since its last run can reach.
     # Design: lib/DESIGN.md#a-relay-turns-own-checks
     if mechanical:
         noun, ident = "row", "row number"

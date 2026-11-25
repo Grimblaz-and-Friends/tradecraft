@@ -37,7 +37,7 @@ LIB = Path(__file__).resolve().parents[1]
 REPO, ISSUE, PRODUCER = "o/ledger", 14, "producer"
 BRANCH = "change/ledger-totals"
 ARMS = ("a", "b", "c", "d", "holder")
-# Each check's script, the criterion it carries and the one module it reads.
+# Each check reads one module, so the history alone shows which checks a commit can reach.
 CHECKS = {"C1": ("check_totals", "totals"), "C2": ("check_export", "export"), "C3": ("check_parse", "parse")}
 RELAY_ASK = "<!-- tradecraft:route:v1 route=relay -->\n\n> Take this one by today's route.\n"
 BRIEF = ("<!-- tradecraft:affirmed-brief:v1 -->\n\n"

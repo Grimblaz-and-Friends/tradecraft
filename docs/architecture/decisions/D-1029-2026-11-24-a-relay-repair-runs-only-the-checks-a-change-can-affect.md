@@ -2,7 +2,7 @@
 
 **Purpose:** record why #901 has a relay build or repair turn scope the checks it runs itself, who decides the scope, and the calls made inside the brief's rows. **Audience:** a future session changing what a composed build, floor or reviewer-disposition turn runs and returns, or what the holder accepts before readiness. **Success:** that reader can recover what was chosen over what without the issue.
 
-The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/901#issuecomment-7149217641) governs. Its plan was [settled on the would route](https://github.com/Grimblaz-and-Friends/tradecraft/issues/901#issuecomment-7149492081). The lane is ordinary / connected, and no panel was bought. This record replaces the every-turn rerun that [D-850](D-850-2026-10-04-declared-ci-floor.md) introduced ("run remaining builder-executable checks" at every build or repair) and supersedes nothing else in it.
+The owner's [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/901#issuecomment-7149217641) governs. Its plan was [settled on the would route](https://github.com/Grimblaz-and-Friends/tradecraft/issues/901#issuecomment-7149492081). The lane is ordinary / connected, and no panel was bought. This record replaces the every-turn rerun that [D-850](D-850-2026-10-04-declared-ci-floor.md) introduced ("run remaining builder-executable checks" at every build or repair) and supersedes nothing else in it. [D-885](D-885-2026-10-10-version-and-row-accounting.md)'s accounting by affirmed row on the mechanical lane stands, its renewed results after a repair now being the renewed account this record describes.
 
 ## The fault
 
