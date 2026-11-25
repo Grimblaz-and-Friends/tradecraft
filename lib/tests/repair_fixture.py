@@ -1,7 +1,8 @@
 """A stand-in product change on the relay route, the turn the entrance composes for it, and a check of what a session did.
 
-A criterion's session runs this from the tree under `python -B`; it never reads this file. `make ARM WORK`
-builds the change in the new folder WORK: a small Git repository in `WORK/product`, its settled plan,
+An acceptance-criterion or use session runs this from the tree under `python -B` and never reads this
+file, because what each arm expects of it is written here. `make ARM WORK` builds the change in the new
+folder WORK: a small Git repository in `WORK/product`, its settled plan,
 the returns the arm has, and an empty `WORK/ran.log`. `prompt ARM WORK` prints the bytes
 `work._stage_prompt` returns for that arm's turn, so no sentence of the composed text is retyped here.
 `verify ARM WORK RETURN` reads `ran.log` and the session's return and prints `as expected`, or each
