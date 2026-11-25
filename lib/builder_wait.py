@@ -19,10 +19,10 @@ import time
 import launch_tree
 import run_lifecycle as lifecycle
 
-# Row 2's "each step within a minute": a poll this often opens, reads and closes each file once, so a
-# launcher replacing its run record is never held off for longer than one read.
+# Each step shows well within a minute of the builder taking it; a poll opens, reads and closes each file once,
+# so a launcher replacing its run record is never held off for longer than one read.
 POLL_SECONDS = 5.0
-# Row 2's "every few minutes".
+# Often enough that an owner opening the task sees a recent line, rarely enough not to bury the steps.
 STATUS_SECONDS = 300.0
 # A read that fails while the launcher replaces its record is retried silently; one failing this long is said.
 UNREADABLE_SECONDS = 60.0
@@ -184,8 +184,12 @@ class Launch:
         attempt = attempts[-1] if isinstance(attempts, list) and attempts and isinstance(attempts[-1], dict) else {}
         path = attempt.get("stdout")
         if path and (self.log is None or self.log.path != Path(path)):
-            # A new attempt writes a new log; its steps are read from its start.
+            # A new attempt writes a new log; its steps are read from its start, and the builder was last active
+            # when the attempt before it was, not when the launch began.
+            previous = self.log
             self.log = Log(path, attempt.get("source_format"))
+            if previous is not None:
+                self.log.activity = previous.activity
 
     @property
     def started(self) -> datetime | None:
@@ -193,9 +197,10 @@ class Launch:
 
     @property
     def limit(self) -> float | None:
+        # The launch's own limit first: a resume carries the first launch's handoff block, whose limit isn't its own.
         request = self.request or {}
         handoff = request.get("handoff") if isinstance(request.get("handoff"), dict) else {}
-        return _number(handoff.get("timeout_seconds")) or _number(request.get("caller_limit_seconds"))
+        return _number(request.get("caller_limit_seconds")) or _number(handoff.get("timeout_seconds"))
 
     @property
     def bound(self) -> datetime | None:
@@ -274,7 +279,7 @@ def status_line(work: str, values: dict) -> str:
 
 
 class Waiter:
-    """The wait's loop over one launch: steps as they come, a status line every five minutes, and one end line."""
+    """The wait's loop over one launch: steps as they come, a status line every ``STATUS_SECONDS``, and one end line."""
 
     def __init__(self, work: str, launch: Launch, *, out, clock, sleep):
         self.work, self.launch, self.out, self.clock, self.sleep = work, launch, out, clock, sleep
@@ -286,7 +291,7 @@ class Waiter:
         self.out.flush()
 
     def _try(self, name: str, path, action) -> bool:
-        """Run one read; a failure is said once it has lasted a minute, and said again only after a success."""
+        """Run one read; a failure is said once it has lasted ``UNREADABLE_SECONDS``, and again only after a success."""
         try:
             action()
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -360,7 +365,7 @@ class Waiter:
                 next_status = self.clock() + timedelta(seconds=STATUS_SECONDS)
             pause = POLL_SECONDS
             if bound is not None:
-                # The last poll falls at the bound, never after it.
+                # A sleep past the bound would keep the wait running after the builder's limit and reserve.
                 pause = min(pause, max(0.0, (bound - self.clock()).total_seconds()))
             self.sleep(pause)
 

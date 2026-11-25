@@ -89,7 +89,6 @@ SCENARIOS = {
     "watch-hand": "a builder the owner started by hand, its record open, and the wait run against it",
     "watch-none": "no builder running, one earlier stretch completed, and the wait run against it",
 }
-# How each watched stand-in ends.
 WATCHED = {"watch-ready": "ready", "watch-stopped": "stopped", "watch-limit": "limit", "watch-crash": "crash",
            "watch-replay": "ready"}
 WATCH_LIMIT = 28800.0

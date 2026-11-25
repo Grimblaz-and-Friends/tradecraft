@@ -852,8 +852,19 @@ def _starts_wait(name, tool_input):
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if name not in SHELL_TOOLS or not isinstance(command, str):
         return False
-    return any(program == "work.py" and "wait" in arguments
+    return any(program == "work.py" and _command_word(arguments) == "wait"
                for program, arguments in (_program(_words(segment)) for segment in _SEGMENT.split(command)))
+
+
+def _command_word(arguments):
+    """The entrance's command, its first word that is neither an option nor an option's value."""
+    words = iter(arguments)
+    for word in words:
+        if not word.startswith("-"):
+            return word
+        if "=" not in word:
+            next(words, None)
+    return None
 
 
 def _prompt_kind(record, waits=frozenset()):

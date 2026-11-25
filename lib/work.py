@@ -6478,7 +6478,6 @@ def _builder_reading(state: WorkState, pointer: dict) -> dict[str, object]:
     if pointer.get("hand") is True:
         return {"dispatch": pointer.get("dispatch_id"), "measured": False, "reason": builder_wait.HAND_NOT_MEASURED}
     values = builder_wait.read_once(pointer)
-    values.pop("last_step_running_seconds", None)
     return {"dispatch": pointer.get("dispatch_id"), **values,
             "wait": builder_wait.wait_command(state.repo, state.issue_number, state.holder_root,
                                               Path(__file__).resolve().parent.parent, state.instalment)}
@@ -13537,7 +13536,8 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
         print(window, flush=True)
     _note_cap_outcome("handed-off", bundle=str(request_path))
     added = after(dispatch_id) if after is not None else {}
-    # Every launch of the builder, a resume's included, names the wait the holder starts in its background.
+    # A resume, a send-back and a catch-up resume are the same builder running again, after the handoff the
+    # holder's wait starts from, so each names the wait as the first launch does.
     wait = builder_wait.wait_command(state.repo, state.issue_number,
                                      block.get("holder_root") or state.holder_root or args.root,
                                      block.get("plugin_root") or Path(__file__).resolve().parent.parent,

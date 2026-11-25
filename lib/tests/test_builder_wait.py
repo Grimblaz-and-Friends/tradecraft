@@ -107,7 +107,8 @@ class Builder:
     """One launched stretch: its request, run record and pointer written by the launchers' own writers, and a log."""
 
     def __init__(self, clock: Clock, child, *, launched: datetime, limit: float = LIMIT,
-                 form: str | None = builder_wait.CLAUDE_FORM, instalment=None, run_record: bool = True):
+                 form: str | None = builder_wait.CLAUDE_FORM, instalment=None, run_record: bool = True,
+                 handed_limit: float | None = None):
         self.clock, self.child, self.launched = clock, child, launched
         self.store = records.default_record_root()
         self.dispatch_id = uuid.uuid4().hex
@@ -117,7 +118,8 @@ class Builder:
             dispatch_id=self.dispatch_id, work=WORK, stage="stretch", settings_source="fixture",
             settings_scope="implementer", vendor="claude", model="fixture", effort="fixture", continuity="fresh",
             permission_boundary="fixture", root=None, now=launched)
-        request.update(handoff={"timeout_seconds": limit}, caller_limit_seconds=limit, instalment=instalment)
+        request.update(handoff={"timeout_seconds": handed_limit or limit}, caller_limit_seconds=limit,
+                       instalment=instalment)
         self.request = records.sidecar(output, ".request.json")
         records.write_json(self.request, request)
         self.run = records.sidecar(output, ".run.json")
@@ -182,7 +184,7 @@ def minutes(text: str, word: str) -> int:
     return int(found.group(1) or 0) * 60 + int(found.group(2))
 
 
-# --- C1: the wait ends with the builder ---------------------------------------------------------------------
+# --- The wait ends with the builder ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("way", ["ready", "stopped", "limit", "crash"])
 def test_the_wait_ends_no_earlier_than_its_builder_and_within_a_minute_after(launcher, way):
@@ -220,8 +222,8 @@ def test_a_builder_past_its_limit_ends_the_wait_at_the_limit_and_the_reserve_nev
     assert builder.child.poll() is None  # Ending stops nothing.
 
 
-def test_a_launch_recorded_before_this_change_reads_the_same_way(launcher):
-    """A run record with no source format named, as a launch before the wait wrote its own, still reads its steps."""
+def test_a_run_record_that_names_no_source_format_still_reads_its_steps(launcher):
+    """Where the attempt names no source format, the log's first record decides that it is Claude's stream form."""
     clock = Clock(T0)
     builder = Builder(clock, launcher(), launched=T0 - timedelta(hours=1), form=None)
     builder.step("Read", {"file_path": "lib/a.py"})
@@ -232,7 +234,7 @@ def test_a_launch_recorded_before_this_change_reads_the_same_way(launcher):
     assert out.texts("step:") == ["step: Bash: List the tree"]
 
 
-# --- C2: the wait writes nothing and stopping it stops nothing ------------------------------------------------
+# --- The wait writes nothing and stopping it stops nothing ----------------------------------------------------
 
 def tree_bytes(*roots: Path) -> dict[str, bytes]:
     return {str(path): path.read_bytes() for root in roots if root.exists()
@@ -276,7 +278,7 @@ def test_killing_the_wait_leaves_the_builder_running_and_its_records_as_they_wer
     assert tree_bytes(records.default_record_root()) == before
 
 
-# --- C3: the lines say how the builder is doing ---------------------------------------------------------------
+# --- The lines say how the builder is doing -------------------------------------------------------------------
 
 def replay_steps() -> list[tuple[str, str, bool]]:
     found = []
@@ -303,7 +305,7 @@ def test_a_replayed_log_prints_each_step_once_in_order_within_a_minute_with_stat
         builder.append(record)
         builder.checkpoint()
     for index, raw in enumerate(REPLAY.read_bytes().splitlines()):
-        # Seven seconds a line, so the replay runs past one five-minute status line.
+        # Seven seconds a line, so the replay outlasts a status interval and prints a second status line.
         clock.at(7 * index + 1, lambda raw=raw: append(raw))
     clock.at(7 * 46 + 5, lambda: builder.complete("success"))
     code, out = watch(clock)
@@ -409,7 +411,7 @@ def test_an_instalment_names_which_of_two_builders_to_watch(launcher):
     assert code == 0 and "running 1h00m" in out.texts()[0]
 
 
-# --- C4: the "with builder" reading carries the same facts --------------------------------------------------
+# --- The "with builder" reading carries the same facts ------------------------------------------------------
 
 def test_the_with_builder_reading_agrees_with_the_records_and_the_wait(launcher, tmp_path):
     from test_route import MECHANICAL, fixture
@@ -434,6 +436,7 @@ def test_the_with_builder_reading_agrees_with_the_records_and_the_wait(launcher,
     assert abs(detail["running_seconds"] - run["elapsed_checkpoint_seconds"]) < 60
     assert abs(detail["quiet_seconds"] - 120) < 60
     assert detail["steps"] == 2 and detail["last_step"] == "Bash: Build the job"
+    assert abs(detail["last_step_running_seconds"] - 120) < 60
     assert detail["wait"] == builder_wait.wait_command("o/r", 5, tmp_path / "holder", LIB.parent)
     line = builder_wait.status_line(WORK, builder_wait.read_once(json.loads(builder.pointer.read_bytes())))
     assert line.startswith(f"builder for {WORK}: running 2h05m of 8h00m, quiet 2m, 2 steps; last: Bash: Build the job")
@@ -452,7 +455,7 @@ def test_a_hand_started_builder_is_not_measured(tmp_path):
     assert not {"running_seconds", "quiet_seconds", "steps", "limit_seconds", "wait"} & detail.keys()
 
 
-# --- C6(a): the wait opens no connection, runs no GitHub command and starts no model session ------------------
+# --- The wait opens no connection, runs no GitHub command and starts no model session ----------------------
 
 def test_the_wait_tries_no_connection_no_program_and_no_lookup_of_gh_or_claude(launcher, monkeypatch, tmp_path):
     clock = Clock(T0)
@@ -490,3 +493,32 @@ def test_the_wait_tries_no_connection_no_program_and_no_lookup_of_gh_or_claude(l
     # Where the platform has no /proc, the liveness lookup reads a process's start time with `ps`; nothing else runs.
     assert [attempt for attempt in tried if not (attempt[0] == "subprocess.Popen" and not Path("/proc").is_dir()
                                                  and "ps" in str(attempt[1]))] == []
+
+
+def test_a_resume_is_read_against_its_own_limit_not_the_first_launchs(launcher):
+    """A send-back resume carries the first launch's eight-hour block and runs under its own hour."""
+    clock = Clock(T0)
+    builder = Builder(clock, launcher(), launched=T0 - timedelta(minutes=50), limit=3600.0, handed_limit=LIMIT)
+    code, out = watch(clock)
+    assert code == 0 and "running 50m of 1h00m" in out.texts()[0]
+    assert clock.now == builder.launched + timedelta(seconds=3600 + lifecycle.cleanup_reserve(3600))
+    assert out.texts()[-1].startswith("the builder's limit has passed: 1h00m")
+
+
+def test_a_new_attempt_is_quiet_since_the_builder_last_did_anything_not_since_the_launch(launcher):
+    clock = Clock(T0)
+    builder = Builder(clock, launcher(), launched=T0 - timedelta(hours=3))
+    builder.step("Bash", {"command": "make", "description": "Build"})
+    retry = builder.log.with_name("retry.stdout.log")
+
+    def new_attempt():
+        retry.write_bytes(b"")
+        builder.record["attempts"].append({"vendor": "claude", "stdout": str(retry),
+                                           "source_format": builder_wait.CLAUDE_FORM})
+        builder.checkpoint()
+    clock.at(60, new_attempt)
+    clock.at(400, lambda: builder.complete("success"))
+    code, out = watch(clock)
+    assert code == 0 and out.texts("the builder started a new attempt")
+    [later] = [text for at, text in out.lines[1:] if text.startswith("builder for ")]
+    assert minutes(later, "quiet") == 5 and "0 steps" in later

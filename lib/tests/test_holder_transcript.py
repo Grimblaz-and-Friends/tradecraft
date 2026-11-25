@@ -711,3 +711,13 @@ def test_the_reply_to_another_background_tasks_end_is_unprompted(tmp_path):
     ])
     found = ht.handoff_quiet("holder", at(3), at(20), home=projects)
     assert [item["timestamp"] for item in found["unprompted"]] == [at(9).isoformat()]
+
+
+@pytest.mark.parametrize("command,wait", [
+    (WAIT, True),
+    ("python -B lib/work.py --repo acme/widget --issue 12 --root C:/holder wait", True),
+    ("python -B lib/work.py run handoff --resume-reason wait --repo acme/widget", False),
+    ("python -B lib/work.py --root wait --repo acme/widget --issue 12", False),
+])
+def test_only_the_entrances_wait_command_is_a_wait(command, wait):
+    assert ht._starts_wait("Bash", {"command": command}) is wait
