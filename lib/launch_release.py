@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 
+# The runtime keeps files up only in the plugins folder and the launcher's own plugin root; a
+# registered checkout is a change's tree, whose every write the comparison exists to catch.
 RELEASING_ITEMS = frozenset({"plugins", "launcher-plugin"})
 MARKETPLACES = "known_marketplaces.json"
 INSTALLED = "installed_plugins.json"

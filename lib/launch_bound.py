@@ -7,6 +7,8 @@ Claude use consumer given a shell also compare what they must not touch before
 and after the run. Other Claude seats given a shell are not compared.
 A change the launcher cannot attribute to another live recorded run is a
 finding the holder must account for; the entrance holds the change until then.
+A change the runtime makes in the installed plugins is released instead, never a
+finding (lib/DESIGN.md#what-a-launch-comparison-releases).
 A Claude launch also compares each covered repository's working copies and
 branches, and holds only on those its own record names.
 """
@@ -653,7 +655,7 @@ def compare(plan: list[dict], before: dict, after: dict, *, root: Path, holder_s
             elapsed_seconds: float, record: Path | None = None,
             home: Path | None = None, end: float | None = None,
             allowance: str | None = None, own_row_resnapshot: bool = False) -> dict[str, object]:
-    """Findings are changes no other live recorded run accounts for (row 2).
+    """Findings are changes no other live recorded run accounts for and no release rule releases (row 2).
 
     Working-copy and branch changes are findings only when the run's record
     names them; the rest are ``listed``. Past ``end`` nothing more is examined:
