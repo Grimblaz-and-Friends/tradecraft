@@ -198,21 +198,57 @@ def test_fixture_bytes_are_the_landed_gate_blobs():
         assert hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() == expected
 
 
+SCOPE = (
+    "run its check at this turn's final head when it has no earlier result in this change that you "
+    "can cite by revision, or when anything changed since the revision it last ran at can affect it: "
+    "this turn's commits, an earlier turn's, or a merge of the base.",
+    "Where you cannot rule out that a change affects it, run it.",
+    "a holder reading in this dispatch, or the holder's own text sent with it, names to be run, "
+    "whatever your own view, unless an earlier turn of yours already ran it after receiving that reading.",
+    "command or procedure, tested revision, result and limitation.",
+    "the revision it last ran at, its result there, and why nothing changed since that revision can "
+    "affect it; the holder reads each such reason and has the check run where it does not hold.",
+    "after every repair, even on an already-ready pull request.",
+)
+FRESH = {
+    False: ("Return each owed fresh-reader criterion's ID and exact artifact text for a separate "
+            "holder-launched recorded seat; do not launch or judge that reader."),
+    True: ("Return each owed fresh-reader row's number and exact affirmed row text, required capability "
+           "and needed inputs for a separate holder-launched recorded seat; do not launch or judge that reader."),
+}
+
+
+@pytest.mark.parametrize("cloud", [False, True])
+@pytest.mark.parametrize("mechanical", [False, True])
 @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
-def test_implementation_turn_prompts_renew_acceptance_and_holder_reader_duty(stage):
-    state = support.state(support.AFFIRMED)
+def test_implementation_turns_rerun_only_affected_checks_and_account_for_every_one(stage, mechanical, cloud):
+    brief = support.MECHANICAL if mechanical else support.AFFIRMED
+    reading = "<!-- tradecraft:holder-reading:v1 result=amended -->\nRun C2 on this repair."
+    state = support.state(brief, support.ARTIFACT, support._settled("would", "would", brief=brief),
+                          support.HOLDER, reading)
     command = "python example-check.py --literal '$argument'"
     prompt = work._stage_prompt(state, work.Decision(stage, True, "resume", "fixture"),
-                                floor_command=command).decode()
-    assert "Commit executable criteria as tests" in prompt
-    assert "tested revision" in prompt
-    assert "exact artifact text" in prompt
-    assert "do not launch or judge that reader" in prompt
-    assert "Repairs renew this duty" in prompt
+                                floor_command=command, cloud=cloud).decode()
+    assert work._check_account(mechanical) in prompt
+    for value in SCOPE:
+        assert value in prompt
+    assert FRESH[mechanical] in prompt
+    assert "Run each remaining builder-executable" not in prompt
+    assert "Repairs renew this duty" not in prompt
+    # A holder's note reaches the builder as a reading, and the rule that it wins needs it carried. The
+    # mechanical lane carries no readings, so there a note travels only in a holder-written dispatch.
+    assert ("Run C2 on this repair." in prompt) is not mechanical
     if stage == "floor":
         assert command in prompt
         assert "<!-- tradecraft:floor:v1 head=TESTED_HEAD status=pass -->" in prompt
         assert "A failed command produces no passing marker line" in prompt
+
+
+def test_check_account_is_one_rule_in_both_wordings():
+    criterion, row = work._check_account(False), work._check_account(True)
+    tail = lambda text: text.split("For each remaining builder-executable", 1)[1].split(" Return each owed", 1)[0]
+    assert tail(criterion).replace("criterion", "N").replace(" ID,", " K,") == (
+        tail(row).replace("row number", "K").replace("row", "N"))
 
 
 def test_missing_floor_command_refuses_before_any_mutation(tmp_path, capsys, monkeypatch):
