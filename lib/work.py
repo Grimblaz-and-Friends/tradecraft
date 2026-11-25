@@ -7249,7 +7249,7 @@ def _check_account(mechanical: bool) -> str:
         )
     return mapping + (
         f" For each remaining builder-executable {noun}, run its check at this turn's final head "
-        f"when it has no earlier result in this change that you can cite by revision, or when anything "
+        "when it has no earlier result in this change that you can cite by revision, or when anything "
         "changed since the revision it last ran at can affect it: this turn's commits, an earlier "
         "turn's, or a merge of the base. Where you cannot rule out that a change affects it, run it. "
         f"Run every {noun} that a holder reading in this dispatch, or the holder's own text sent with "
@@ -7259,7 +7259,7 @@ def _check_account(mechanical: bool) -> str:
         "revision it last ran at, its result there, and why nothing changed since that revision can "
         "affect it; the holder reads each such reason and has the check run where it does not hold."
     ) + fresh + (
-        f" Owe this whole account, every {noun} run at the new head or returned from its last run "
+        f" Owe this whole account, every {noun} run at the final head or returned from its last run "
         "with its reason, after every repair, even on an already-ready pull request."
     )
 
