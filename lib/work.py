@@ -5833,25 +5833,40 @@ def _relay_reading_detail(mechanical: bool) -> str:
             "cannot hold the reading on them.")
 
 
+def _owed_readers(state: WorkState) -> list[dict[str, object]] | None:
+    """Each criterion or row reader the term's latest handoff owed, or None where no handoff names its owed checks."""
+    owed = next((block["owed_checks"] for block in (request.get("handoff") for request in
+                                                     reversed(_term_stretches(state)))
+                 if isinstance(block, dict) and isinstance(block.get("owed_checks"), list)), None)
+    if owed is None:
+        return None
+    return [{"criterion": check.get("criterion"), "row": check.get("row")} for check in owed
+            if isinstance(check, dict) and check.get("stage") == "acceptance-criterion"]
+
+
+def _counts_as_reader_report(entry: dict, builders: set) -> bool:
+    """A criterion or row report the decision and the release report both count: counting, from this term's
+    builder, and its seat succeeded."""
+    return (bool(entry.get("counts")) and entry.get("builder") in builders
+            and entry.get("stage") == "acceptance-criterion" and entry.get("outcome") == "success")
+
+
 def _unreported_readers(state: WorkState) -> list[dict[str, object]]:
     """On the builder route, each criterion or row reader the handoff owed with no counting report from this
     term's builder, at any head: the fix batch waits for every first report, not for a report at the head."""
-    stretches = _term_stretches(state)
-    owed = next((block["owed_checks"] for block in (request.get("handoff") for request in reversed(stretches))
-                 if isinstance(block, dict) and isinstance(block.get("owed_checks"), list)), None)
+    owed = _owed_readers(state)
     if owed is None:
-        return []  # the final pass names an unreadable owed list itself, so nothing is held on it here
-    builders = {request.get("dispatch_id") for request in stretches}
+        # The final pass names an unreadable owed list itself, and a hold on a list nobody can read would hold the
+        # reading for good, so nothing is held on it here.
+        return []
+    builders = {request.get("dispatch_id") for request in _term_stretches(state)}
     try:
         reports = (builder_checks(state) or {}).get("check_reports", [])
     except (OSError, ValueError, WorkError):
         reports = []  # an accounting that can't be read proves no report, so every owed reader is still owed
     reported = {(entry.get("criterion"), entry.get("row")) for entry in reports
-                if entry.get("counts") and entry.get("builder") in builders
-                and entry.get("stage") == "acceptance-criterion" and entry.get("outcome") == "success"}
-    return [{"criterion": check.get("criterion"), "row": check.get("row")} for check in owed
-            if isinstance(check, dict) and check.get("stage") == "acceptance-criterion"
-            and (check.get("criterion"), check.get("row")) not in reported]
+                if _counts_as_reader_report(entry, builders)}
+    return [reader for reader in owed if (reader["criterion"], reader["row"]) not in reported]
 
 
 def _use_reported(state: WorkState, builder_route: bool) -> bool:
@@ -13935,21 +13950,14 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> di
         except (OSError, ValueError, WorkError) as exc:
             # An accounting that can't be read leaves each report's time unread, never guessed.
             checked, unread = [], [f"the builder's check reports ({exc})"]
-        counted = [entry for entry in checked
-                   if entry.get("counts") and entry.get("builder") in builders and entry.get("outcome") == "success"]
-        uses = [entry for entry in counted if entry.get("stage") == "use"]
+        uses = [entry for entry in checked if entry.get("counts") and entry.get("builder") in builders
+                and entry.get("stage") == "use" and entry.get("outcome") == "success"]
         if uses:
             reports.append({"name": "use", "at": created.get(str(uses[0].get("comment")))})
-        owed = next((block["owed_checks"] for block in (request.get("handoff") for request in
-                     reversed(_term_stretches(state))) if isinstance(block, dict)
-                     and isinstance(block.get("owed_checks"), list)), [])
-        for check in owed:
-            if not isinstance(check, dict) or check.get("stage") != "acceptance-criterion":
-                continue
-            name = f"row {check['row']}" if check.get("row") is not None else f"criterion {check.get('criterion')}"
-            found = next((entry for entry in counted if entry.get("stage") == "acceptance-criterion"
-                          and (entry.get("criterion"), entry.get("row")) == (check.get("criterion"), check.get("row"))),
-                         None)
+        for reader in _owed_readers(state) or []:
+            name = f"row {reader['row']}" if reader["row"] is not None else f"criterion {reader['criterion']}"
+            found = next((entry for entry in checked if _counts_as_reader_report(entry, builders)
+                          and (entry.get("criterion"), entry.get("row")) == (reader["criterion"], reader["row"])), None)
             reports.append({"name": name, "at": created.get(str(found.get("comment"))) if found else None})
     elif builder_route is None:
         # Which reports the entrance can read depends on the route, so an unreadable one leaves them unread.
