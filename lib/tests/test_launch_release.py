@@ -366,10 +366,20 @@ def test_an_install_record_turned_into_a_link_holds_and_is_never_read_through(ho
     assert "not a regular file" in readings["installed_plugins.json"]["reason"]
 
 
-def test_an_install_record_that_is_not_a_regular_file_or_nests_too_deep_is_a_reason(home):
+def test_an_install_record_that_is_not_a_regular_file_or_nests_too_deep_is_a_reason(home, monkeypatch):
     home.remove("known_marketplaces.json")
     home.path("known_marketplaces.json").mkdir()
-    home.write("installed_plugins.json", b"[" * 100000 + b"]" * 100000)
+    # How deep the parser goes before RecursionError follows the platform's stack, so the error is
+    # raised here rather than reached by nesting.
+    parse = launch_release.json.loads
+
+    def too_deep(data):
+        if data.startswith(b"[[["):
+            raise RecursionError("maximum recursion depth exceeded")
+        return parse(data)
+
+    monkeypatch.setattr(launch_release.json, "loads", too_deep)
+    home.write("installed_plugins.json", b"[[[]]]")
     readings = launch_release.read_install_records(home.plugins)
     assert "not a regular file" in readings["known_marketplaces.json"]["reason"]
     assert readings["installed_plugins.json"]["reason"].startswith("RecursionError")
