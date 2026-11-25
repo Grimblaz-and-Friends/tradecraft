@@ -33,11 +33,15 @@ def _normal(path: str, windows: bool) -> str:
 
 
 def _relative(path: str, top: str, windows: bool) -> list[str] | None:
-    """The change's path as names below the item's top, or None when it lies elsewhere."""
-    folded, base = _normal(path, windows), _normal(top, windows)
-    if not folded.startswith(base + "/"):
+    """The change's path as names below the item's top, or None when it lies elsewhere.
+
+    Compared name by name, because case folding can change a name's length.
+    """
+    names = str(path).replace("\\", "/").rstrip("/").split("/")
+    base = str(top).replace("\\", "/").rstrip("/").split("/")
+    if len(names) <= len(base) or [_fold(name, windows) for name in names[:len(base)]]             != [_fold(name, windows) for name in base]:
         return None
-    return str(path).replace("\\", "/").rstrip("/")[len(base) + 1:].split("/")
+    return names[len(base):]
 
 
 # --- The upkeep files and whole version folders, by kind -----------------------
@@ -54,6 +58,8 @@ def _kind(item: str, parts: list[str], entry: str | None, windows: bool) -> str 
     def is_file():
         return entry in {None, "file"}
 
+    # Python checks a .pyc in __pycache__ against its source and rebuilds it; one elsewhere can load
+    # with no source to check, so it holds.
     if (last == "__pycache__" and is_dir()) or (
             parent == "__pycache__" and last.endswith(".pyc") and is_file()):
         return "bytecode"
@@ -67,6 +73,7 @@ def _kind(item: str, parts: list[str], entry: str | None, windows: bool) -> str 
     if plugins and names[0] == "store" and (
             (len(names) == 1 and is_dir()) or (len(names) == 2 and last.endswith(".json") and is_file())):
         return "usage-queue"
+    # By prefix, so a renamed catalog version (``-v2``, ``-v3``) still releases.
     if plugins and len(names) == 1 and last.startswith("plugin-directory-cache") and last.endswith(".json") \
             and is_file():
         return "catalog-cache"
@@ -328,7 +335,7 @@ def classify_recorded(findings: list[dict], coverage: list[dict], *, windows: bo
     """
     tops = {entry["item"]: entry["path"] for entry in coverage
             if isinstance(entry, dict) and entry.get("item") in RELEASING_ITEMS and entry.get("path")}
-    changes = [{"item": str(finding.get("item") or "").partition(":")[0], "path": str(finding.get("path") or ""),
+    changes = [{"item": str(finding.get("item") or ""), "path": str(finding.get("path") or ""),
                 "change": finding.get("change")} for finding in findings]
     released, _reasons = classify(changes, tops, windows=windows)
     return released

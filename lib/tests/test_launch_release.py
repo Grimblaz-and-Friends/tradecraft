@@ -133,6 +133,16 @@ def test_paths_read_alike_with_either_separator(separator):
         5: "orphan-marker", 8: "version-folder", 9: "version-folder"}
 
 
+def test_a_home_whose_folded_name_changes_length_still_releases():
+    # The sharp s folds to "ss", one character longer, so a cut at the folded top's length would misread.
+    top = "C:\\Users\\Stra" + chr(0xDF) + "e\\.claude\\plugins"
+    changes = [{"item": "plugins", "path": top + "\\synced\\a.json", "change": "added"},
+               {"item": "plugins", "path": top + "\\store\\q.json", "change": "modified"}]
+    released, _reasons = launch_release.classify(changes, {"plugins": top}, windows=True)
+    assert {index: value["kind"] for index, value in released.items()} == {
+        0: "synced-marketplaces", 1: "usage-queue"}
+
+
 def test_released_changes_never_wait_on_the_store(home, monkeypatch):
     before = home.comparison()
     release_fixture._upkeep(home)
