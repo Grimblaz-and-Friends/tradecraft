@@ -53,8 +53,6 @@ class Home:
             path.mkdir(parents=True, exist_ok=True)
         self.own_request = self.base / "records" / "own.md.request.json"
         self.own_request.write_bytes(b"{}")
-        (self.home / ".claude" / "settings.json").parent.mkdir(parents=True, exist_ok=True)
-        (self.home / ".claude" / "settings.json").write_bytes(b"{}")
         widget = f"cache/{MARKET}/{WIDGET}/1.0.0"
         for rel, data in {
                 f"{widget}/.claude-plugin/plugin.json": b'{"name": "widget"}',
