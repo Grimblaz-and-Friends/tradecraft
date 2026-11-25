@@ -2528,9 +2528,10 @@ def gate_check(*, identity=91, run_id=81, workflow_id=11, head=SHA,
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER), ("build", True, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True), ("floor", True, "resume")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True), ("ready-reviewers", False, None)),
+    # A use that changed something is a fix, so it waits for the ready step and the reviewers like any other.
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR,
            f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=true staffing_status=qualified -->", pr=True),
-     ("build", True, "resume")),
+     ("ready-reviewers", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True),
      ("ready-reviewers", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, draft=False),
@@ -3390,7 +3391,8 @@ def test_mechanical_lane_keeps_dispositions_and_release_report():
         "user": {"login": REVIEWER, "type": "Bot"},
     }]
     decision = work.decide(fixture, RULES)
-    assert (decision.stage, decision.detail) == ("review-disposition", "41")
+    # The relay route's first fix stage says to have every report in hand first.
+    assert (decision.stage, decision.detail) == ("review-disposition", "41 " + work._relay_batch_detail(True))
 
     fixture.review_comments.append({
         "id": 42, "in_reply_to_id": 41, "body": "fixed",
@@ -3453,7 +3455,7 @@ def test_bought_use_returns_an_actionable_holder_handoff():
     fixture.pr_comments.append({"body": "review complete", "user": {"login": REVIEWER}})
     decision = work.decide(fixture, RULES)
 
-    assert decision.reason == "current-head-use-absent"
+    assert decision.reason == "pull-request-use-absent"
     assert decision.detail is not None
     for step in (
         "charter and time-box",
@@ -3706,7 +3708,7 @@ def test_undisposed_reviewer_thread_routes_only_the_disposition_stage():
     }]
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.continuity, decision.detail) == (
-        "review-disposition", "resume", "41",
+        "review-disposition", "resume", "41 " + work._relay_batch_detail(False),
     )
 
 
@@ -4974,7 +4976,8 @@ def listing(base, issue, pulls):
 @pytest.mark.parametrize("risk,lane", work.LANES)
 @pytest.mark.parametrize("paths", [["lib/runtime.py"], ["README.md"]])
 @pytest.mark.parametrize("configured", [False, True])
-def test_reviewers_precede_use_and_proof_on_every_lane(risk, lane, paths, configured):
+def test_use_and_the_reviewers_read_the_first_build_before_a_panel_and_proof_on_every_lane(
+        risk, lane, paths, configured):
     config = CONFIG if configured else work.WorkConfig(marker_producers=frozenset({PRODUCER}))
     brief = AFFIRMED.replace("connected", lane).replace("ordinary", risk)
     fixture = state(brief, ARTIFACT, _settled("would", "would", brief=brief), HOLDER, FLOOR,
@@ -4982,13 +4985,15 @@ def test_reviewers_precede_use_and_proof_on_every_lane(risk, lane, paths, config
     assert work.decide(fixture, RULES).stage == "ready-reviewers"
     assert work._ready_evidence_error(fixture, RULES) is None
     fixture.pr["draft"] = False
+    # Use reads the head marked ready while the reviewers read it, so its first report is asked for first.
+    if lane != "mechanical" and paths[0].startswith("lib/"):
+        assert (work.decide(fixture, RULES).stage, work.decide(fixture, RULES).reason) == (
+            "use", "pull-request-use-absent")
+        fixture.issue_comments.append({"body": USE, "user": {"login": PRODUCER}})
     if configured:
         assert work.decide(fixture, RULES).stage == "waiting"
         fixture.pr_comments.append({"body": "review complete", "user": {"login": REVIEWER}})
-    if lane.endswith("panel"):
-        assert work.decide(fixture, RULES).stage == "panel"
-    else:
-        assert work.decide(fixture, RULES).stage == ("use" if lane != "mechanical" and paths[0].startswith("lib/") else "proof")
+    assert work.decide(fixture, RULES).stage == ("panel" if lane.endswith("panel") else "proof")
 
 
 @pytest.mark.parametrize("evidence", [[], [FLOOR], [FLOOR, USE],
@@ -9382,7 +9387,7 @@ def test_use_handoff_names_registered_implementation_root_and_revision(
     , floor_command="python fixture-check.py") == 0
     returned = json.loads(capsys.readouterr().out)
     assert (returned["stage"], returned["dispatch"], returned["continuity"],
-            returned["reason"]) == ("use", False, None, "current-head-use-absent")
+            returned["reason"]) == ("use", False, None, "pull-request-use-absent")
     assert str(implementation) in returned["detail"]
     assert revision in returned["detail"]
 
@@ -10703,7 +10708,7 @@ def test_raw_output_inventory_failure_refuses_ready_use_and_panel_routing(
     configured_work(root, [])
     records = tmp_path / "dispatches"
     monkeypatch.setattr(work.records, "default_record_root", lambda: records)
-    for stage in ("cold-seat", "floor"):
+    for stage in ("cold-seat", "floor", *(["use"] if lane.endswith("panel") else [])):
         dispatch_bundle(records, stage=stage)
         run_path = records / stage / "result.md.run.json"
         run = json.loads(run_path.read_bytes())
@@ -10713,8 +10718,10 @@ def test_raw_output_inventory_failure_refuses_ready_use_and_panel_routing(
     rules = RULES if patterns is None else {**RULES, "raw_output_patterns": patterns}
     write_policy(root, rules)
     brief = AFFIRMED.replace("connected", lane).replace("ordinary", "elevated" if lane.endswith("panel") else "ordinary")
+    # On the panel lane use has read the first build, which it does before a panel.
     fixture = state(
         brief, ARTIFACT, _settled("would", "would", brief=brief), HOLDER, FLOOR,
+        *([USE] if lane.endswith("panel") else []),
         "<!-- tradecraft:panel-stage:v1 stage=cold-pass status=complete -->",
         pr=True, draft=False, reviewer_ran=True,
     )
@@ -12847,7 +12854,7 @@ def test_938_an_empty_reply_block_names_no_holder_step(tmp_path, monkeypatch):
     assert work.decide(fixture, RULES).stage != "cloud-replies"
     fixture.review_comments = fixture.review_comments[:2]
     decision = work.decide(fixture, RULES)
-    assert (decision.stage, decision.detail) == ("review-disposition", "41,43")
+    assert decision.stage == "review-disposition" and decision.detail.startswith("41,43 Before this turn")
 
 
 @pytest.mark.parametrize("replies", [None, [{"target": {"thread": "41"}, "body": "fixed"}]])

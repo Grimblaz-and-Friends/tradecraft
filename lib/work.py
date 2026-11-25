@@ -77,6 +77,7 @@ import use_history
 import version_policy
 import raw_output
 import route_report
+import reviewers_read
 import build_reach
 import change_cost
 import holder_transcript
@@ -5729,7 +5730,7 @@ def _set_aside(state: WorkState, markers: list[Marker], reason: str) -> None:
 
 
 def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
-    """Hold readiness until a current, clean cold reading covers the change."""
+    """Hold proof and the release report until a current, clean cold reading covers the change."""
     if not _cold_reading_due(state):
         return None
     markers = [marker for marker in state.markers if marker.name == "cold-reading"]
@@ -5812,6 +5813,112 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
         status="holder-owned")
 
 
+def _reader_kind(mechanical: bool) -> str:
+    return "affirmed brief row" if mechanical else "artifact criterion"
+
+
+def _relay_batch_detail(mechanical: bool) -> str:
+    # The entrance reads no relay-route criterion report, so the first fix stage carries the wait in words.
+    kind = _reader_kind(mechanical)
+    return (f"Before this turn, have the use report and every {kind} fresh reader's report in hand, and send "
+            f"their findings with the reviewers' in this one turn: the entrance reads no {kind} report on this "
+            "route, so it cannot hold the turn on them.")
+
+
+def _relay_reading_detail(mechanical: bool) -> str:
+    kind = _reader_kind(mechanical)
+    return (f"Before the reader runs, every {kind} fresh reader has reported and its findings are answered, and "
+            f"your account of every {kind} is recorded: the entrance reads no {kind} report on this route, so it "
+            "cannot hold the reading on them.")
+
+
+def _unreported_readers(state: WorkState) -> list[dict[str, object]]:
+    """On the builder route, each criterion or row reader the handoff owed with no counting report from this
+    term's builder, at any head: the fix batch waits for every first report, not for a report at the head."""
+    stretches = _term_stretches(state)
+    owed = next((block["owed_checks"] for block in (request.get("handoff") for request in reversed(stretches))
+                 if isinstance(block, dict) and isinstance(block.get("owed_checks"), list)), None)
+    if owed is None:
+        return []  # the final pass names an unreadable owed list itself, so nothing is held on it here
+    builders = {request.get("dispatch_id") for request in stretches}
+    reported = {(entry.get("criterion"), entry.get("row"))
+                for entry in (builder_checks(state) or {}).get("check_reports", [])
+                if entry.get("counts") and entry.get("builder") in builders
+                and entry.get("stage") == "acceptance-criterion" and entry.get("outcome") == "success"}
+    return [{"criterion": check.get("criterion"), "row": check.get("row")} for check in owed
+            if isinstance(check, dict) and check.get("stage") == "acceptance-criterion"
+            and (check.get("criterion"), check.get("row")) not in reported]
+
+
+def _use_reported(state: WorkState, builder_route: bool) -> bool:
+    """Whether a use has reported on this pull request at all, whatever its head; today's use-at-head question
+    is asked again after the cold reading."""
+    if builder_route:
+        builders = {request.get("dispatch_id") for request in _term_stretches(state)}
+        return any(entry.get("builder") in builders for entry in _builder_use_reports(state))
+    # A use posted before the pull request opened read no commit it holds.
+    opened = _time((state.pr or {}).get("created_at"))
+    return any(marker.name == "use" and (opened is None or (_time(marker.timestamp) or opened) >= opened)
+               for marker in state.markers)
+
+
+def _owed_before_reading(state: WorkState, *, mechanical: bool, use_bought: bool, lane: str,
+                         builder_route: bool) -> Decision | None:
+    """The first stage still owed before the cold reading, in the one order every route and lane takes:
+    the ready step, the criterion readers the entrance can read, the first use, the reviewers, their answers,
+    a relay use that changed something, and a bought panel. None once the reading is owed.
+
+    The decision's chain and `run cold-reader` both ask it, so a reading named early is refused rather than
+    put back in front. Design: lib/DESIGN.md#the-cold-reader
+    """
+    if bool((state.pr or {}).get("draft")) or (state.synchronization or {}).get("merge_state") == "draft":
+        return Decision("ready-reviewers", False, None, "floor-complete-pr-draft", _draft_ready_detail(mechanical))
+    if builder_route:
+        unreported = _unreported_readers(state)
+        if unreported:
+            names = ", ".join(f"row {entry['row']}" if entry["row"] is not None else str(entry["criterion"])
+                              for entry in unreported)
+            return Decision("acceptance-criterion", False, None,
+                            "row-report-absent" if mechanical else "criterion-report-absent",
+                            f"No counting report from this term's builder for {names}: launch each reader "
+                            "through run acceptance-criterion before answering any finding.")
+    if use_bought and not _use_reported(state, builder_route):
+        if builder_route:
+            return Decision("use", False, None, "pull-request-use-report-absent",
+                            "No counting composed use report on this pull request: run use while the reviewers "
+                            "read, before answering any finding.")
+        return Decision("use", False, None, "pull-request-use-absent", USE_HOLDER_DETAIL)
+    if state.config.connected_reviewers and not _reviewer_ran(state):
+        return Decision("waiting", False, None, "required-connected-reviewer-has-not-run")
+    pending = _cloud_replies_pending(state)
+    if pending is not None:
+        return Decision("cloud-replies", False, None, "cloud-review-disposition-replies-unposted", pending,
+                        status="holder-owned")
+    batch = "" if builder_route else " " + _relay_batch_detail(mechanical)
+    threads, _ignored_dispositions = _undisposed_threads(state)
+    if threads:
+        return Decision("review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
+                        ",".join(str(identity) for identity in threads) + batch)
+    bodies = _body_findings(state)
+    if bodies.missing_findings or bodies.missing_reviews:
+        return Decision("review-disposition", True, "resume", "reviewer-body-lacks-disposition",
+                        _body_disposition_detail(state, bodies) + batch)
+    answered_unresolved = _answered_unresolved_threads(state)
+    if answered_unresolved:
+        return Decision("review-disposition", True, "resume", "reviewer-thread-answered-unresolved",
+                        ",".join(str(thread["comment_id"]) for thread in answered_unresolved))
+    sha = _head_sha(state)
+    latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
+    # A use that changed something is a fix, so on the relay route it waits for the reviewers like any other.
+    if (not builder_route and latest_use is not None and latest_use.attributes.get("head") == sha
+            and latest_use.attributes.get("changed") == "true"):
+        return Decision("build", True, "resume", "use-finding-changed-behavior-or-instructions", batch.strip())
+    panel_stage = _panel_next(state, lane)
+    if panel_stage:
+        return Decision("panel", False, None, "bought-panel-incomplete", panel_stage)
+    return None
+
+
 def _seat_vendor(state: WorkState, role: str) -> tuple[str, str]:
     """The vendor a judging role launches on: its latest per-issue override, else Claude."""
     # Validation sets aside an override naming any vendor but Claude or Codex, so none reaches the launch.
@@ -5825,7 +5932,9 @@ def _seat_vendor(state: WorkState, role: str) -> tuple[str, str]:
     return "claude", f"work entrance {role} default"
 
 
-COLD_READING_HELD_STAGES = frozenset({"ready-reviewers", "use", "proof", "release-report"})
+# The reading runs after the reviewers, use and the criterion readers have reported and been answered, so it
+# holds only what comes after it. Design: lib/DESIGN.md#the-cold-reader
+COLD_READING_HELD_STAGES = frozenset({"proof", "release-report"})
 
 
 def _cold_reading_hold(state: WorkState, decision: Decision) -> Decision | None:
@@ -5845,6 +5954,8 @@ def _cold_reading_hold(state: WorkState, decision: Decision) -> Decision | None:
 
 def _held_by_cold_reading(state: WorkState, stage: str) -> bool:
     """Report the hold and say so; each held stage asks only after its own refusals, whose fixes come first."""
+    if stage not in COLD_READING_HELD_STAGES:
+        return False
     held = _cold_reading_hold(state, Decision(stage, False, None, "holder-named-stage"))
     if held is not None:
         _emit_report(_reported_decision(state, held).as_dict(), state)
@@ -5923,7 +6034,7 @@ def _cold_reading_measures(state: WorkState) -> dict[str, object]:
 def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path: Path | None,
                          tree_metadata: Path | None, timeout_seconds: float | None,
                          claude_path: Path | None, codex_path: Path | None,
-                         transport: GitHubREST | None = None) -> int:
+                         transport: GitHubREST | None = None, rules: dict[str, object] | None = None) -> int:
     # The holder holds the brief, so a dispatch it wrote could aim the reader.
     if dispatch_path is not None or tree_metadata is not None:
         raise WorkError("run cold-reader composes its own prompt and tree; it accepts no "
@@ -5943,6 +6054,24 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     effective_timeout = timeout_seconds if timeout_seconds is not None else DEFAULT_STAGE_TIMEOUT_SECONDS
     if not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise WorkError("--timeout-seconds must be finite and positive")
+    # Without this a session naming the stage would put the reading back in front of the reviewers and use.
+    try:
+        builder_route = _route(state)["name"] == "builder"
+    except WorkError:
+        builder_route = False
+    _brief, lane_pair = _affirmed_review(state)
+    policy = effective_policy(state, rules) if rules is not None else None
+    before = _owed_before_reading(state, mechanical=lane_pair == ("ordinary", "mechanical"),
+                                  use_bought=bool(policy and policy.use_required),
+                                  lane=lane_pair[1] if lane_pair else "", builder_route=builder_route)
+    if before is not None:
+        refusal = replace(decision, dispatch=False, continuity=None, status="refused",
+                          reason="cold-reading-not-yet-owed",
+                          detail=f"The cold reading runs once the reviewers, use and the criterion readers have "
+                          f"reported and every finding is answered; take {before.stage} ({before.reason}) first. "
+                          f"{before.detail or ''}".rstrip())
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
     gate = _cold_reading_decision(state, sha)
     if gate is not None and gate.reason == "cold-reading-unverifiable":
         _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
@@ -6100,7 +6229,8 @@ BUILDER_MODE_REASONS = frozenset({
     "declared-floor-blocked", "declared-floor-stalled", "declared-floor-unverifiable", "latest-check-run-pending",
     "current-head-floor-missing-or-red",
     "cold-reading-absent", "cold-reading-why-owed", "cold-reading-stale", "cold-reading-flag-reread",
-    "cold-reading-post-owed", "cold-reading-close", "cold-reading-unverifiable",
+    "cold-reading-post-owed", "cold-reading-close", "cold-reading-unverifiable", "cold-reading-not-yet-owed",
+    "criterion-report-absent", "row-report-absent", "pull-request-use-report-absent",
     "floor-complete-pr-draft", "required-connected-reviewer-has-not-run", "reviewer-thread-lacks-disposition",
     "reviewer-body-lacks-disposition", "reviewer-thread-answered-unresolved", "bought-panel-incomplete",
     "current-head-use-report-absent", "current-head-proof-absent-or-outdated",
@@ -6139,6 +6269,9 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
 def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
     validate_marker_claims(state)
     state.reach = None
+    # The stage a reach refusal held, so the final pass can tell the builder's ready step or proof from the
+    # holder's release report.
+    held_by_reach: dict[str, str] = {}
 
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None, status: str | None = None) -> Decision:
@@ -6157,6 +6290,7 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
         if stage in {"ready-reviewers", "proof", "release-report"}:
             refusal = _reach_refusal(state, stage)
             if refusal is not None:
+                held_by_reach["stage"] = stage
                 return _reported_decision(state, refusal)
         if stage in {"ready-reviewers", "proof"}:
             refusal = _version_obligation_refusal(state, stage) or _raw_output_refusal(state, stage)
@@ -6263,39 +6397,24 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
             # The builder route owes no holder reading: the holder wrote the plan it would read.
             return result("holder-read", False, None, "whole-change-holder-reading-absent")
     def chain(sha: str) -> Decision:
-        """Today's gates from ready-reviewers on, which the builder route also takes once a ready record stands."""
-        if bool(state.pr.get("draft")) or (state.synchronization or {}).get("merge_state") == "draft":
-            return result("ready-reviewers", False, None, "floor-complete-pr-draft",
-                          _draft_ready_detail(policy.mechanical))
+        """The gates from ready-reviewers on, which the builder route also takes once a ready record stands:
+        what the reviewers, use and the criterion readers owe, then the cold reading, then use at the head,
+        proof and release. Design: lib/DESIGN.md#the-cold-reader"""
         reviewers = state.config.connected_reviewers
-        if reviewers and not _reviewer_ran(state):
-            return result("waiting", False, None, "required-connected-reviewer-has-not-run")
-        threads, _ignored_dispositions = _undisposed_threads(state)
-        pending = _cloud_replies_pending(state)
-        if pending is not None:
-            return result("cloud-replies", False, None, "cloud-review-disposition-replies-unposted", pending,
-                          status="holder-owned")
-        if threads:
-            return result(
-                "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
-                ",".join(str(identity) for identity in threads),
-            )
-        bodies = _body_findings(state)
-        if bodies.missing_findings or bodies.missing_reviews:
-            return result(
-                "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
-                _body_disposition_detail(state, bodies),
-            )
-        answered_unresolved = _answered_unresolved_threads(state)
-        if answered_unresolved:
-            return result(
-                "review-disposition", True, "resume", "reviewer-thread-answered-unresolved",
-                ",".join(str(thread["comment_id"]) for thread in answered_unresolved),
-            )
-        panel_stage = _panel_next(state, lane)
-        if panel_stage:
-            return result("panel", False, None, "bought-panel-incomplete", panel_stage)
         bought = policy.use_required
+        before = _owed_before_reading(state, mechanical=policy.mechanical, use_bought=bought, lane=lane,
+                                      builder_route=builder_route)
+        if before is not None:
+            return result(before.stage, before.dispatch, before.continuity, before.reason, before.detail,
+                          before.status)
+        cold = _cold_reading_decision(state, sha)
+        if cold is not None:
+            detail = cold.detail
+            if cold.stage == "cold-reader" and not builder_route:
+                # The builder route has held the reading on the criterion reports; the relay holder holds it.
+                detail = json.dumps({**json.loads(detail), "before_reading": _relay_reading_detail(policy.mechanical)},
+                                    ensure_ascii=True)
+            return result(cold.stage, cold.dispatch, cold.continuity, cold.reason, detail, cold.status)
         if builder_route:
             # The builder's composed use report is the use evidence here; a `use` marker counts for nothing.
             if bought and not _builder_use_counts(state, sha):
@@ -6370,8 +6489,8 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
             return result(builder.stage, builder.dispatch, builder.continuity, builder.reason,
                           builder.detail, builder.status)
         sha = str(_head_sha(state))
-        # The relay's floor and cold-reading holds come before the chain here too, so a ready record that
-        # skipped either is named as owed rather than read through.
+        # The relay's floor hold comes before the chain here too, so a ready record that skipped it is named as
+        # owed rather than read through; the chain holds the cold reading in its place.
         evaluation = floor_evaluation(state)
         outcome = evaluation["outcome"]
         if outcome in {"blocked", "stalled", "unverifiable"}:
@@ -6379,8 +6498,7 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
         if outcome == "pending":
             return result("waiting", False, None, "latest-check-run-pending", _floor_detail(evaluation) or None)
         made = (Decision("floor", True, "resume", "current-head-floor-missing-or-red", _floor_detail(evaluation) or None)
-                if outcome in {"fallback", "builder-missing", "builder-red"} else
-                _cold_reading_decision(state, sha) or chain(sha))
+                if outcome in {"fallback", "builder-missing", "builder-red"} else chain(sha))
         # Each check the handoff owed that the record doesn't name is owed whatever the chain or merge reads.
         reading = readiness_reading(state, builder_checks(state)) or {}
         rest = _owed_unnamed(state, {"checks": reading.get("checks") or [], "rows": reading.get("rows") or []},
@@ -6389,19 +6507,34 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
         # A handoff that can't give its owed checks leaves the list unread, never clear: the final pass says so.
         unread = rest if isinstance(rest, dict) else None
         rest = rest if isinstance(rest, list) else []
+        readers = _unreported_readers(state) if made.stage == "acceptance-criterion" else []
+        if readers:
+            # The chain already names each reader with no report, so it is listed once.
+            chained_readers = {(entry["criterion"], entry["row"]) for entry in readers}
+            rest = [entry for entry in rest if not (entry.get("stage") == "acceptance-criterion" and (
+                entry.get("criterion"), entry.get("row")) in chained_readers)]
         if made.stage == "release-report" and not rest:
             # The final pass stands until the holder runs release-report, so its send-back stays open.
             detail = builder.detail if unread is None else json.dumps(
                 {**json.loads(builder.detail), "owed_list": unread}, ensure_ascii=True)
             return result("final-pass", False, None, "ready-reported", detail, status="holder-owned")
-        if made.stage not in BUILDER_OWED_STAGES and made.stage != "release-report" and not rest:
+        # Reach holds the ready step, which now comes straight after the floor, so reach owed on the builder's
+        # stage is listed with the checks the record doesn't yet name, not lost behind them.
+        owed_stage = made.stage in BUILDER_OWED_STAGES or (
+            made.stage == "reach-read" and held_by_reach.get("stage") in {"ready-reviewers", "proof"})
+        if not owed_stage and made.stage != "release-report" and not rest:
             return made
         # The holder is refused these on the builder route, so the ready record owed them: its final pass
         # names what the builder left, for the holder to send back.
         # In this route's own words: a version bump is a commit the builder owes, and readying reviewers is its.
-        chained = ([{"stage": "builder-commit" if made.stage == "build" else made.stage, "reason": made.reason,
+        chained = ([{"stage": "builder-commit" if made.stage == "build" else made.stage, "criterion": None,
+                     "row": None, "reason": made.reason,
                      "detail": None if made.stage in {"build", "ready-reviewers"} else made.detail}]
-                   if made.stage in BUILDER_OWED_STAGES else [])
+                   if owed_stage else [])
+        if readers:
+            # One entry per reader, as the record's unnamed checks are listed, so each owed check reads once.
+            chained = [{"stage": "acceptance-criterion", "criterion": entry["criterion"], "row": entry["row"],
+                        "reason": made.reason, "detail": None} for entry in readers]
         listed = chained + rest
         # `owed_chain` is the chain's own stage alone, so a reader adding the unnamed checks counts each once.
         owed = {**json.loads(builder.detail), "owed_at_ready": listed[0], "owed_list": listed if unread is None
@@ -6446,19 +6579,14 @@ def _decide_unflagged(state: WorkState, rules: dict[str, object]) -> Decision:
                       _floor_detail(evaluation) or None)
     if outcome == "pending":
         return result("waiting", False, None, "latest-check-run-pending", _floor_detail(evaluation) or None)
-    latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
-    if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
-        return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
-    cold = _cold_reading_decision(state, sha)
-    if cold is not None:
-        return result(cold.stage, cold.dispatch, cold.continuity, cold.reason, cold.detail, cold.status)
     return chain(sha)
 
 
 # The stages a builder-route holder doesn't run once a ready record stands, so the builder owed them at
 # ready: those refused to the holder on this route, and readying reviewers, which the builder does there.
 BUILDER_OWED_STAGES = frozenset({"build", "artifact", "floor", "review-disposition", "proof", "use",
-                                 "ready-reviewers", "cold-reader", "cold-reading-post", "cold-reading-close"})
+                                 "ready-reviewers", "acceptance-criterion", "cold-reader", "cold-reading-post",
+                                 "cold-reading-close"})
 BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and posts it as a draft "
                                  "marked `author=holder vendor=claude` or `vendor=codex`")
 
@@ -6529,10 +6657,11 @@ def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Deci
 
 
 def _draft_ready_detail(mechanical: bool) -> str:
-    return ("Before authorizing ready-reviewers, account for every "
-            + ("affirmed brief row" if mechanical else "artifact criterion") + " in the latest "
-            "build or repair return and record all owed non-CI results and holder-launched "
-            "fresh-reader returns; green CI does not discharge them.")
+    # Marking ready means the planned build is complete, not that the other checks have passed: they run now.
+    return ("Mark the pull request ready for its reviewers: the planned build is complete and the floor passes "
+            "at this head. Run use and every " + _reader_kind(mechanical) + " fresh reader at this same head "
+            "while the reviewers read; no cold reading is owed before this step, and no finding is answered "
+            "until every report is in.")
 
 
 def registry_path() -> Path:
@@ -9923,8 +10052,6 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     if sync is not None:
         _emit_report(_reported_decision(live, sync).as_dict(), state)
         return 0
-    if _held_by_cold_reading(state, "ready-reviewers"):
-        return 0
     label = state.config.reviewer_label
     label_applied = False
     issue_endpoint = f"repos/{state.repo}/issues/{number}"
@@ -10339,7 +10466,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
     if decision.stage == "cold-reader":
         return _execute_cold_reader(state, decision, dispatch_path=dispatch_path,
                                     tree_metadata=tree_metadata, timeout_seconds=timeout_seconds,
-                                    claude_path=claude_path, codex_path=codex_path, transport=transport)
+                                    claude_path=claude_path, codex_path=codex_path, transport=transport,
+                                    rules=rules)
     if decision.stage in {"floor", "use", "review-disposition", "proof", "ready-reviewers"}:
         sync = _synchronization_decision(state)
         if sync is not None:
@@ -10620,9 +10748,12 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             "holder_close": _release_holder_close(state),
             "cold_readings": _cold_reading_measures(state),
             "declared_caps": declared_caps(f"{state.repo}#{state.issue_number}", state.record_root),
+            "reviewers_read": _reviewers_read_report(state, transport),
         })
         if _route(state)["name"] == "builder":
-            payload["builder_route"] = _builder_route_report(state, rules)
+            # The comparison names the order each of its changes ran under, read from what happened to it.
+            payload["builder_route"] = _builder_route_report(
+                state, rules, order=reviewers_read.order_of(payload["reviewers_read"]))
         _emit_report(payload, state)
         return 0
     if decision.stage == "use" and decision.dispatch:
@@ -10671,8 +10802,6 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             raise WorkError("use dispatch file must be outside the selected source root")
         if not dispatch.is_file() or not dispatch.read_bytes().strip():
             raise WorkError(f"use dispatch file is absent or empty: {dispatch}")
-        if _held_by_cold_reading(state, "use"):
-            return 0
         here = Path(__file__).resolve().parent
         own_vendor, own_vendor_source = _producer_vendor(
             state, RESUME_SOURCE_STAGES["build"],
@@ -12109,8 +12238,6 @@ def _builder_check(state: WorkState, args: argparse.Namespace, root: Path, githu
         if refused is not None:
             _emit_report(_reported_decision(state, refused).as_dict(), state)
             return 0
-    if stage == "use" and _held_by_cold_reading(state, "use"):
-        return 0
     # As the use stage does: a conflicted or behind branch goes to catch-up before any check of it.
     sync = _synchronization_decision(state)
     if sync is not None:
@@ -13729,7 +13856,95 @@ def _handoff_plan_reading(state: WorkState, first: tuple | None) -> dict:
     return {"reading": "differs", "reason": "altered"}
 
 
-def _builder_route_report(state: WorkState, rules: dict[str, object] | None = None) -> dict:
+def _reviewers_read_report(state: WorkState, transport: GitHubREST | None) -> dict:
+    """The release report's section on the head the reviewers read and what followed it, on either route.
+
+    Only the release report reads the timeline, so the ordinary decision makes no such read.
+    Design: lib/DESIGN.md#the-cold-reader
+    """
+    unknown = reviewers_read.unknown
+    pr = state.pr or {}
+    head, number = _head_sha(state), pr.get("number")
+    if transport is None or not isinstance(number, int) or head is None:
+        ready = unknown("no pull request or GitHub connection to read the timeline from")
+        timeline = None
+    else:
+        try:
+            timeline = reviewers_read.fetch_timeline(transport, state.repo, number)
+            ready = reviewers_read.ready_head(timeline)
+        except (WorkError, OSError, ValueError, KeyError, TypeError) as exc:
+            # A timeline GitHub won't serve, or serves malformed, leaves the head unknown, never guessed.
+            timeline, ready = None, unknown(f"the pull request's timeline could not be read: {exc!r}")
+    work = f"{state.repo}#{state.issue_number}"
+    store = state.record_root or records.default_record_root()
+    term, lane_pair = _affirmed_review(state)
+    try:
+        builder_route = _route(state)["name"] == "builder"
+    except WorkError:
+        builder_route = False
+    launches = lifecycle.launch_bundles(store, work, RESUME_SOURCE_STAGES["build"] | {"stretch"},
+                                        after=term.timestamp if term else None)
+    first = launches[0][2] if launches else {}
+    build_began = first.get("handed_off_at") if first.get("started_by") == "hand" else first.get("launched_at")
+    try:
+        readings = _cold_readings(state)
+        cold_launches = [str(reading["request"].get("launched_at") or reading["completed_at"]) for reading in readings]
+        first_reading = ({"head": readings[0]["head"], "launched_at": cold_launches[0]} if readings else None)
+    except (WorkError, OSError) as exc:
+        # An unreadable reading record leaves the count and the first reading unknown, never zero.
+        cold_launches, first_reading = None, unknown(f"the cold readings could not be read: {exc}")
+    reviews = reviewers_read.first_reviews(timeline or [], sorted(state.config.connected_reviewers))
+    created = {str(comment.get("id")): comment.get("created_at") for comment in state.issue_comments}
+    reports, unread = [], []
+    for reviewer in sorted(state.config.connected_reviewers):
+        reports.append({"name": f"reviewer {reviewer}", "at": (reviews.get(reviewer) or {}).get("at")})
+    if builder_route:
+        builders = {request.get("dispatch_id") for request in _term_stretches(state)}
+        counted = [entry for entry in (builder_checks(state) or {}).get("check_reports", [])
+                   if entry.get("counts") and entry.get("builder") in builders]
+        uses = [entry for entry in counted if entry.get("stage") == "use"]
+        if uses:
+            reports.append({"name": "use", "at": created.get(str(uses[0].get("comment")))})
+        owed = next((block["owed_checks"] for block in (request.get("handoff") for request in
+                     reversed(_term_stretches(state))) if isinstance(block, dict)
+                     and isinstance(block.get("owed_checks"), list)), [])
+        for check in owed:
+            if not isinstance(check, dict) or check.get("stage") != "acceptance-criterion":
+                continue
+            name = f"row {check['row']}" if check.get("row") is not None else f"criterion {check.get('criterion')}"
+            found = next((entry for entry in counted if entry.get("stage") == "acceptance-criterion"
+                          and (entry.get("criterion"), entry.get("row")) == (check.get("criterion"), check.get("row"))),
+                         None)
+            reports.append({"name": name, "at": created.get(str(found.get("comment"))) if found else None})
+    else:
+        opened = _time(pr.get("created_at"))
+        uses = sorted((marker for marker in state.markers if marker.name == "use"
+                       and (opened is None or (_time(marker.timestamp) or opened) >= opened)), key=_source_order)
+        if uses:
+            reports.append({"name": "use", "at": uses[0].timestamp})
+        if lane_pair != ("ordinary", "mechanical"):
+            # The relay holder's fresh readers report to it, not to the entrance, so their times are unread here.
+            try:
+                artifact, _comment = _settled_artifact_text(state, "artifact-criterion-unresolved")
+                unread = [f"criterion {criterion}" for criterion in fresh_reader_criteria(artifact)]
+            except WorkError as exc:
+                unread = [f"the plan's criteria ({exc})"]
+    root = Path(state.holder_root) if state.holder_root is not None else None
+    if ready.get("status") == "read" and root is not None:
+        base = str((pr.get("base") or {}).get("sha") or "")
+        commits = reviewers_read.commits_between(root, ready["head"], head, base)
+        changed = reviewers_read.numstat(root, ready["head"], head)
+    else:
+        why = ready.get("reason") or "the holder's checkout is not known"
+        commits, changed = unknown(why), unknown(why)
+    return reviewers_read.section(
+        ready=ready, build_began=build_began, cold_launches=cold_launches, commits=commits, reports=reports,
+        unread_reports=unread, first_reading=first_reading, changed_after=changed,
+        other_reviewer_heads=reviewers_read.other_heads(ready, reviews))
+
+
+def _builder_route_report(state: WorkState, rules: dict[str, object] | None = None,
+                          order: dict | None = None) -> dict:
     """The release report's ``builder_route`` from what the entrance holds; what it doesn't read is None,
     which route_report reads as unknown with a reason. Design: lib/DESIGN.md#the-builder-route"""
     work = f"{state.repo}#{state.issue_number}"
@@ -13792,7 +14007,8 @@ def _builder_route_report(state: WorkState, rules: dict[str, object] | None = No
         # Counted from the switch file's start, so a change first handed off before it isn't entered.
         opened = next(iter(lifecycle.launch_bundles(store, work, {"stretch"})), None)
         comparison = change_cost.route_comparison(work, first_launch=opened and (
-            opened[2].get("handed_off_at") if opened[2].get("started_by") == "hand" else opened[2].get("launched_at")))
+            opened[2].get("handed_off_at") if opened[2].get("started_by") == "hand" else opened[2].get("launched_at")),
+            order=order)
     except (OSError, ValueError, change_cost.CostError) as exc:
         comparison = {"status": "unknown", "reason": str(exc)}
     records_by_launch = {}

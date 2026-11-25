@@ -2422,6 +2422,10 @@ def comparison_file(home, value):
     path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
 
 
+def drop_entries(answer):
+    return {key: value for key, value in answer.items() if key != "entries"}
+
+
 def test_route_comparison_is_absent_without_its_file_and_writes_nothing(tmp_path):
     assert cost.route_comparison("acme/widget#1", home=tmp_path) is None
     assert not (tmp_path / ".tradecraft").exists()
@@ -2432,10 +2436,10 @@ def test_route_comparison_is_due_once_on_the_counted_work(tmp_path):
     answers = [cost.route_comparison(f"acme/widget#{n}", home=tmp_path) for n in range(1, 5)]
     assert [answer["ordinal"] for answer in answers] == [1, 2, 3, 4]
     assert not any(answer["due"] for answer in answers)
-    assert cost.route_comparison("acme/widget#2", home=tmp_path) == {
+    assert drop_entries(cost.route_comparison("acme/widget#2", home=tmp_path)) == {
         "ordinal": 2, "count": 5, "issue": "acme/lab#7", "due": False}
     fifth = cost.route_comparison("acme/widget#5", home=tmp_path)
-    assert fifth == {"ordinal": 5, "count": 5, "issue": "acme/lab#7", "due": True}
+    assert drop_entries(fifth) == {"ordinal": 5, "count": 5, "issue": "acme/lab#7", "due": True}
     assert cost.route_comparison("acme/widget#5", home=tmp_path)["due"] is False
     ledger = tmp_path / ".tradecraft" / "route-comparison" / "ledger.jsonl"
     assert len(ledger.read_bytes().splitlines()) == 5
@@ -2449,7 +2453,7 @@ def test_route_comparison_counts_only_work_first_launched_from_its_since(tmp_pat
     assert not (tmp_path / ".tradecraft" / "route-comparison").exists()
     after = cost.route_comparison("acme/widget#3", home=tmp_path,
                                   first_launch=datetime(2026, 11, 2, tzinfo=timezone.utc))
-    assert after == {"ordinal": 1, "count": 2, "issue": "acme/lab#7", "due": False}
+    assert drop_entries(after) == {"ordinal": 1, "count": 2, "issue": "acme/lab#7", "due": False}
 
 
 @pytest.mark.parametrize("value", [b"{not json", [], {"issue": "acme/lab#7"}, {"issue": "", "count": 5},
@@ -2461,3 +2465,66 @@ def test_a_malformed_route_comparison_file_is_unknown_and_writes_nothing(tmp_pat
     assert answer["status"] == "unknown" and answer["reason"]
     assert not (tmp_path / ".tradecraft" / "route-comparison").exists()
 
+
+
+def ledger_rows(home):
+    return [json.loads(line) for line in
+            (home / ".tradecraft" / "route-comparison" / "ledger.jsonl").read_bytes().splitlines()]
+
+
+def old_ledger(home, works):
+    """A ledger as written before orders were recorded: each row names its work and entry time only."""
+    ledger = home / ".tradecraft" / "route-comparison" / "ledger.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"".join(json.dumps({"work": work, "entered_at": "2026-11-02T00:00:00+00:00"}).encode()
+                                + b"\n" for work in works))
+    return ledger
+
+
+def test_route_comparison_records_the_order_each_work_is_entered_with(tmp_path):
+    comparison_file(tmp_path, {"issue": "acme/lab#7", "count": 5})
+    cost.route_comparison("acme/widget#1", home=tmp_path, order={"order": "reviewers-first"})
+    cost.route_comparison("acme/widget#2", home=tmp_path,
+                          order={"order": "unknown", "reason": "the cold-reader launches were not read"})
+    answer = cost.route_comparison("acme/widget#3", home=tmp_path)
+    rows = ledger_rows(tmp_path)
+    assert [(row["order"], row.get("order_reason")) for row in rows] == [
+        ("reviewers-first", None), ("unknown", "the cold-reader launches were not read"),
+        ("unknown", "no order was given when it was entered")]
+    assert answer["entries"] == [
+        {"work": "acme/widget#1", "order": "reviewers-first"},
+        {"work": "acme/widget#2", "order": "unknown", "reason": "the cold-reader launches were not read"},
+        {"work": "acme/widget#3", "order": "unknown", "reason": "no order was given when it was entered"}]
+
+
+def test_route_comparison_lists_an_entry_written_before_orders_as_cold_reading_first(tmp_path):
+    comparison_file(tmp_path, {"issue": "acme/lab#7", "count": 5})
+    old_ledger(tmp_path, ["acme/widget#1"])
+    answer = cost.route_comparison("acme/widget#2", home=tmp_path, order={"order": "reviewers-first"})
+    assert answer["entries"] == [
+        {"work": "acme/widget#1", "order": "cold-reading-first",
+         "reason": "entered before the order was recorded, when no other order existed"},
+        {"work": "acme/widget#2", "order": "reviewers-first"}]
+
+
+def test_route_comparison_keeps_counting_across_the_order_and_a_rerun_writes_nothing(tmp_path):
+    comparison_file(tmp_path, {"issue": "acme/lab#7", "count": 5, "since": "2026-11-01T00:00:00Z"})
+    ledger = old_ledger(tmp_path, [f"acme/widget#{n}" for n in (1, 2, 3)])
+    fourth = cost.route_comparison("acme/widget#4", home=tmp_path, first_launch="2026-11-20T00:00:00Z",
+                                   order={"order": "reviewers-first"})
+    assert fourth["ordinal"] == 4 and fourth["due"] is False
+    assert [entry["order"] for entry in fourth["entries"]] == ["cold-reading-first"] * 3 + ["reviewers-first"]
+    written = ledger.read_bytes()
+    again = cost.route_comparison("acme/widget#4", home=tmp_path, order={"order": "cold-reading-first"})
+    assert ledger.read_bytes() == written and again["ordinal"] == 4
+    assert again["entries"][-1] == {"work": "acme/widget#4", "order": "reviewers-first"}
+    switch = json.loads((tmp_path / ".tradecraft" / "route-comparison.json").read_bytes())
+    assert switch["since"] == "2026-11-01T00:00:00Z"
+
+
+@pytest.mark.parametrize("order", [{"order": "sideways"}, "reviewers-first", {}])
+def test_route_comparison_refuses_an_order_it_does_not_know(tmp_path, order):
+    comparison_file(tmp_path, {"issue": "acme/lab#7", "count": 5})
+    with pytest.raises(cost.CostError):
+        cost.route_comparison("acme/widget#1", home=tmp_path, order=order)
+    assert not (tmp_path / ".tradecraft" / "route-comparison").exists()
