@@ -37,7 +37,10 @@ MARKET, WIDGET, GADGET = "acme-market", "widget", "gadget"
 
 
 class Home:
-    """A lab-free home whose plugins folder has one marketplace, two installed plugins and one retired version."""
+    """A home whose plugins folder has one marketplace, two installed plugins and one retired version.
+
+    It names no real path, repository or marketplace, so what holds in it holds on any adopter's machine.
+    """
 
     def __init__(self, base: Path):
         self.base = Path(base).resolve()
