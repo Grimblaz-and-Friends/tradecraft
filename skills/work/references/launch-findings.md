@@ -43,7 +43,7 @@ Where two kinds fit one change, the first in the table names it.
 
 **What still holds** in those items, because each could change what code runs:
 
-- a file added, removed or changed inside a version folder that was there before and after: editing an installed version in place is never the runtime's work;
+- a file added, removed or changed inside a version folder that was there before and after, unless a kind in the table names it, such as bytecode in its `__pycache__` or a marker in its `.in_use`: editing an installed version in place is never the runtime's work;
 - a plugin's or a marketplace's own folder (`cache/<marketplace>/<plugin>` or `cache/<marketplace>`) added or removed, even where the version folder inside it releases;
 - a `.pyc` file anywhere but directly in a `__pycache__` folder, because it can load with no source to check it against;
 - an install entry moved into another plugin's version folder, even one the launch added;
