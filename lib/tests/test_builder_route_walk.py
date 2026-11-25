@@ -259,7 +259,7 @@ def test_the_owed_readers_come_from_the_handoff_and_clear_on_a_counting_report(t
                                       "outcome": "success", "criterion": "C2", "row": None}]}
         monkeypatch.setattr(work, "builder_checks", lambda _state: counted)
         assert work._unreported_readers(state) == []
-        # A report from another work's builder, or one whose seat failed, reads nothing.
+        # A report whose seat failed reads nothing.
         counted["check_reports"][0].update(outcome="error")
         assert work._unreported_readers(state) == [{"criterion": "C2", "row": None}]
     finally:

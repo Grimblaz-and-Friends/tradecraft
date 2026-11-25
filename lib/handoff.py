@@ -248,8 +248,7 @@ def _check(stage: str, criterion: str | None = None, *extra: str, row: int | Non
 
 def owed_checks(*, criteria: list[str], use_owed: bool, floor_command: str | None,
                 mechanical: bool = False, rows: list | None = None) -> list[dict]:
-    """The checks the builder owes, in the builder's order: the floor and reach before the ready step, the
-    criterion readers and use at the head it marked ready, then the cold reader and proof.
+    """The checks the builder owes, in the order of the handoff's steps (``BUILDER_STEPS``).
 
     On the mechanical lane each of the brief's ``rows`` (as ``brief.rows`` gives them, or their numbers)
     is owed its own reader, in place of the plan's criteria.

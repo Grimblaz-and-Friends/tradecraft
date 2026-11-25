@@ -297,7 +297,7 @@ def test_a_reading_launched_before_the_ready_step_counts_whatever_its_return(cha
     part = section(change, marked_ready(change))
     # The form check refused the return, so no reading counts at the gate, yet the launch read before the reviewers.
     assert part["cold_readings_before"] == {"status": "read", "count": 1}
-    assert part["first_reading"]["status"] == "none"
+    assert part["first_reading"]["status"] == "unknown" and "passed the form check" in part["first_reading"]["reason"]
     assert work.reviewers_read.order_of(part) == {"order": "cold-reading-first"}
 
 

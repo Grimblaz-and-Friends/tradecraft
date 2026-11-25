@@ -1,4 +1,7 @@
-"""The release report's section on what the reviewers read, against a real Git history."""
+"""The release report's section on what the reviewers read, against a real Git history.
+
+Design: lib/DESIGN.md#the-cold-reader
+"""
 from datetime import datetime
 import os
 from pathlib import Path

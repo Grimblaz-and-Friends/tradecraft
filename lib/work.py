@@ -5884,9 +5884,8 @@ def _use_reported(state: WorkState, builder_route: bool) -> bool:
 
 def _owed_before_reading(state: WorkState, *, mechanical: bool, use_bought: bool, lane: str,
                          builder_route: bool) -> Decision | None:
-    """The first stage still owed before the cold reading, in the one order every route and lane takes:
-    the ready step, the criterion readers the entrance can read, the first use, the reviewers, their answers,
-    a relay use that changed something, and a bought panel. None once the reading is owed.
+    """The first stage still owed before the cold reading, in the one order every route and lane takes ("The order
+    of the checks" in the design section below); None once the reading is owed.
 
     The decision's chain and `run cold-reader` both ask it, so a reading named early is refused rather than run
     ahead of the reviewers and use. Design: lib/DESIGN.md#the-cold-reader
@@ -13937,9 +13936,11 @@ def _reviewers_read_report(state: WorkState, transport: GitHubREST | None,
                 continue
             cold_launches.append(request.get("launched_at"))
         readings = _cold_readings(state)
-        first_reading = ({"head": readings[0]["head"],
-                          "launched_at": readings[0]["request"].get("launched_at") or readings[0]["completed_at"]}
-                         if readings else None)
+        # The first reading is dated by its launch alone, since its completion comes later than what it read before.
+        first_reading = ({"head": readings[0]["head"], "launched_at": readings[0]["request"].get("launched_at")}
+                         if readings else
+                         unknown("a cold reader was launched for this pull request, but no return of it passed the "
+                                 "form check") if cold_launches else None)
     except (WorkError, OSError, cold_reader.ColdReaderError) as exc:
         # An unreadable reading record leaves the count and the first reading unknown, never zero.
         cold_launches, first_reading = None, unknown(f"the cold readings could not be read: {exc}")
