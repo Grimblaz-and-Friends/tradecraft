@@ -46,7 +46,7 @@ def runs(tmp_path_factory):
     return done
 
 
-def test_the_list_names_the_seven_watch_scenarios():
+def test_the_list_names_the_watch_scenarios():
     assert WATCH == ["watch-crash", "watch-hand", "watch-limit", "watch-none", "watch-ready", "watch-replay",
                      "watch-stopped"]
 

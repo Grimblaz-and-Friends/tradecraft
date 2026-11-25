@@ -26,6 +26,8 @@ POLL_SECONDS = 5.0
 STATUS_SECONDS = 300.0
 # A read that fails while the launcher replaces its record is retried silently; one failing this long is said.
 UNREADABLE_SECONDS = 60.0
+# A wait started mid-build, after a restart, opens with the builder's last few steps, enough to show where it
+# is without replaying hours of them.
 EARLIER_STEPS = 3
 WHAT_LIMIT = 120
 CLAUDE_FORM = "claude-stream-json"
@@ -216,9 +218,9 @@ class Launch:
     def bound(self) -> datetime | None:
         """The launch time plus the limit plus the stage's cleanup reserve, after which the wait ends.
 
-        Past it the launcher has stopped its builder or is past its own window, so a wait still running would
-        only outlast the builder it watches. The launch's latest return would add the entrance's preflight cap,
-        time in which a launch whose record never completes leaves nothing to watch.
+        A builder that started on time has been stopped, and its record completed, within the reserve; one whose
+        recipient started late can outlive the wait, the cost of not waiting to the launch's latest return, which
+        adds the entrance's preflight cap to a launch whose record may never complete.
         """
         if self.started is None or self.limit is None:
             return None
@@ -363,7 +365,8 @@ class Waiter:
             had_log = launch.log
             self._try("run record", launch.pointer.get("run"), launch.read_run)
             if launch.log is not had_log and had_log is not None:
-                # The old log's last steps come first, then its activity stands until the new log shows any.
+                # A step can land in the old log after the last poll and before the switch, so its unread tail
+                # is shown first, and its activity stands until the new log shows any.
                 self._steps(had_log)
                 launch.log.activity = max(filter(None, (launch.log.activity, had_log.activity)), default=None)
                 self.say("the builder started a new attempt; its steps follow from the new log")
