@@ -139,7 +139,6 @@ def _forms(path: str, top: str | None, real_top: str | None, windows: bool) -> s
 
 
 def _within(path: str, folders: dict[str, str], windows: bool) -> str | None:
-    """The value of the folder in ``folders`` that ``path`` is at or under, or None."""
     parts = _normal(path, windows).split("/")
     for count in range(len(parts), 0, -1):
         found = folders.get("/".join(parts[:count]))
@@ -400,7 +399,6 @@ def _refreshed(name: str, before: dict | None, after: dict | None, windows: bool
 # --- The two callers ------------------------------------------------------------
 
 def _record(change: dict, top: str | None, windows: bool) -> str | None:
-    """The install record a modified change in the plugins folder is, or None."""
     if change["item"] != "plugins" or change["change"] != "modified" or top is None:
         return None
     parts = _relative(change["path"], top, windows)
@@ -499,6 +497,8 @@ def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, 
         reason = held.get(_normal(change["path"], windows))
         kind = None if reason is not None else _kind(item, parts, entry_of(change) if entry_of is not None else None,
                                                      windows)
+        # Upkeep under a held removal keeps its kind: it releases wherever it sits, and the folder's own entry
+        # and its other files carry the hold.
         if reason is None and kind is None:
             reason = _within(change["path"], held, windows)
         # Matched by name, not type, so a link where a compiled file belongs is read and refused, never released
