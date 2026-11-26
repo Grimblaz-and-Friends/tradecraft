@@ -25,12 +25,10 @@ INSTALL_RECORDS = (MARKETPLACES, INSTALLED)
 # fields, which the app rewrites at every refresh, and every other field are ignored.
 MARKETPLACE_FIELDS = ("source", "installLocation")
 ENTRY_FIELDS = ("scope", "projectPath", "installPath", "version")
-# A compiled file's header is a magic number, then a flags word: bit 0 marks a source hash and
-# bit 1 asks for it to be checked. Python checks only these against the source; flags 2 has no
-# hash bit, so it is checked by time and size, as flags 0 is. They are read as Python's default
-# setting reads them, because a loading process's --check-hash-based-pycs is its own and unseen here.
 HEADER_BYTES = 16
-CHECKED_FLAGS = frozenset({0, 2, 3})
+HASH_BASED, CHECK_SOURCE = 0b01, 0b10
+# Flags with no hash bit are checked by time and size, so CHECK_SOURCE alone is checked as no flags are.
+CHECKED_FLAGS = frozenset({0, CHECK_SOURCE, HASH_BASED | CHECK_SOURCE})
 
 
 def _fold(text: str, windows: bool) -> str:
@@ -201,7 +199,7 @@ def _header(header_of, change: dict) -> str | None:
         return (f"compiled file's header could not be read: {len(header)} bytes, fewer than the "
                 f"{HEADER_BYTES} a header takes")
     flags = int.from_bytes(header[4:8], "little")
-    if flags == 1:
+    if flags == HASH_BASED:
         return ("compiled file's header marks it unchecked (flags 1): Python loads it without checking "
                 "it against its source")
     if flags not in CHECKED_FLAGS:
