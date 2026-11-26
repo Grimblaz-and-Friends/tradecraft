@@ -46,8 +46,8 @@ HAND_NOT_MEASURED = ("a builder started by hand isn't measured: the owner starte
 WAIT_SENTENCE = ("Start this in your runtime's background, so that only its end wakes you; don't read its lines "
                  "or check on the builder while it runs. The builder's own closing message still comes when it "
                  "ends on its own, where its handoff named you with --notify; when the wait ends with no message "
-                 "from it, read the decision once and tell the owner what it says, and start the wait again where "
-                 "that decision still reads with-builder.")
+                 "from it, read the decision once and tell the owner what it says; where that decision still reads "
+                 "with-builder, start the wait again once, and no more.")
 
 
 def wait_command(repo: str, issue: int, holder_root, plugin_root, instalment: str | None = None) -> str:
@@ -179,6 +179,7 @@ class Launch:
         self.pointer = pointer
         self.request: dict | None = None
         self.run: dict = {}
+        self.run_written: datetime | None = None
         self.log: Log | None = None
 
     def read_request(self) -> None:
@@ -193,11 +194,12 @@ class Launch:
         path = Path(self.pointer["run"])
         try:
             value = json.loads(path.read_bytes())
+            written = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
         except FileNotFoundError:
-            value = {}
+            value, written = {}, None
         if not isinstance(value, dict):
             raise ValueError("the run record is not an object")
-        self.run = value
+        self.run, self.run_written = value, written
         attempts = value.get("attempts")
         attempt = attempts[-1] if isinstance(attempts, list) and attempts and isinstance(attempts[-1], dict) else {}
         path = attempt.get("stdout")
@@ -228,16 +230,33 @@ class Launch:
         return _number(request.get("caller_limit_seconds")) or _number(handoff.get("timeout_seconds"))
 
     @property
-    def bound(self) -> datetime | None:
-        """The launch time plus the limit plus the stage's cleanup reserve, after which the wait ends.
+    def builder_started(self) -> datetime | None:
+        """When the builder itself started, which can be minutes after the launch while its launcher prepares.
 
-        A builder that started on time has been stopped, and its record completed, within the reserve; one whose
-        recipient started late can outlive the wait, the cost of not waiting to the launch's latest return, which
-        adds the entrance's preflight cap to a launch whose record may never complete.
+        The launcher counts its elapsed checkpoint from that start and rewrites the record with it, so the record's
+        write time less that count is the start. It is held between the launch and the end of the launch's
+        preflight cap, the latest the launcher may start it, so a launcher that stopped writing can't move it on.
         """
-        if self.started is None or self.limit is None:
+        launched = self.started
+        elapsed = _number(self.run.get("elapsed_checkpoint_seconds"))
+        if launched is None or elapsed is None or self.run_written is None:
+            return launched
+        cap = (self.request or {}).get("preflight_cap")
+        cap = _number(cap.get("seconds")) if isinstance(cap, dict) else None
+        latest = launched + timedelta(seconds=cap or lifecycle.PREFLIGHT_CAP_SECONDS)
+        return min(max(self.run_written - timedelta(seconds=elapsed), launched), latest)
+
+    @property
+    def bound(self) -> datetime | None:
+        """The builder's own start plus its limit plus the stage's cleanup reserve, after which the wait ends.
+
+        The launcher stops its builder at that limit, counted from the builder's start, and completes the record
+        within the reserve, so the wait ends no earlier than the builder and runs no later than its window.
+        """
+        start = self.builder_started
+        if start is None or self.limit is None:
             return None
-        return self.started + timedelta(seconds=self.limit + lifecycle.cleanup_reserve(self.limit))
+        return start + timedelta(seconds=self.limit + lifecycle.cleanup_reserve(self.limit))
 
     @property
     def completed(self) -> bool:
@@ -403,7 +422,7 @@ class Waiter:
             bound = launch.bound
             if bound is not None and now >= bound:
                 return self._ended(f"the builder's limit has passed: {_span(launch.limit)} and the "
-                                   f"{lifecycle.cleanup_reserve(launch.limit):g}-second reserve since its launch; "
+                                   f"{lifecycle.cleanup_reserve(launch.limit):g}-second reserve since it started; "
                                    "the wait ends without stopping it")
             self._steps()
             if self.clock() >= next_status:

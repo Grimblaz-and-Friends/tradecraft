@@ -140,6 +140,8 @@ class Builder:
     def checkpoint(self) -> None:
         self.record["elapsed_checkpoint_seconds"] = (self.clock.now - self.launched).total_seconds()
         atomic_record(self.run, self.record)
+        # The wait reads the builder's start from the record's write time, which is the stand-in clock's here.
+        os.utime(self.run, (self.clock.now.timestamp(), self.clock.now.timestamp()))
 
     def append(self, record: dict) -> None:
         with self.log.open("ab") as stream:
@@ -607,3 +609,25 @@ def test_a_crashed_latest_launch_is_named_when_no_builder_runs(launcher):
 def test_a_command_with_no_description_is_named_by_its_first_line_and_marked_when_more_follow():
     assert builder_wait._what({"command": "git push origin HEAD\ngit status"}) == "git push origin HEAD ..."
     assert builder_wait._what({"command": "git status"}) == "git status"
+
+
+def test_a_builder_started_after_its_launchers_preflight_is_waited_on_to_its_own_limit(launcher):
+    """The launcher writes the request, prepares for two minutes, then starts the builder, and counts from then."""
+    clock = Clock(T0)
+    builder = Builder(clock, launcher(), launched=T0 - timedelta(seconds=LIMIT - 30))
+    preflight = timedelta(minutes=2)
+
+    def checkpoint() -> None:
+        # The elapsed checkpoint counts from the builder's start; the record's write time is the moment it was written.
+        builder.record["elapsed_checkpoint_seconds"] = (clock.now - builder.launched - preflight).total_seconds()
+        atomic_record(builder.run, builder.record)
+        os.utime(builder.run, (clock.now.timestamp(), clock.now.timestamp()))
+    builder.checkpoint = checkpoint
+    checkpoint()
+    for second in range(5, 200, 5):
+        clock.at(second, checkpoint)
+    # Stopped at its own limit, 30 s plus the preflight from now, and completed within the reserve.
+    clock.at(30 + 120 + 20, lambda: builder.complete("interrupted", "ceiling"))
+    code, out = watch(clock)
+    assert code == 0 and out.texts()[-1].startswith("the builder's run ended: completed, interrupted, ceiling")
+    assert T0 + timedelta(seconds=170) <= clock.now <= T0 + timedelta(seconds=230)
