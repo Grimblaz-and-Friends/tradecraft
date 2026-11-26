@@ -856,7 +856,8 @@ def _starts_wait(name, tool_input):
                for program, arguments in (_program(_words(segment)) for segment in _SEGMENT.split(command)))
 
 
-# The entrance's options that take no value, so the word after one can still be its command.
+# The entrance's options that take no value, so the word after one can still be its command. Written out, because
+# the entrance imports this module and so its parser can't be read here; a test ties the two.
 ENTRANCE_FLAGS = frozenset({"--cloud", "--job-from-artifact", "--preview", "--help", "-h"})
 
 

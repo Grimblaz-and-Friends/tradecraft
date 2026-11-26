@@ -6,7 +6,8 @@ is in Claude's stream form: an `assistant` record for each step, `tool_progress`
 runs, and a `user` record for each step's result. MODE says how it ends: `ready` completes the record
 with success, `stopped` completes it as failed, `limit` completes it as stopped at its ceiling when its
 limit is reached, and `crash` dies without completing it. With `--replay`
-it appends a recorded-form log line by line instead of its own steps.
+it appends a recorded-form log line by line instead of its own steps. With `--hold-until PATH` it ends
+only once PATH exists, so a scenario reads it while it runs however slowly that scenario's machine is.
 """
 from __future__ import annotations
 
@@ -99,6 +100,16 @@ def _hold(run: Run, until: float, started: float, beat=None) -> None:
         time.sleep(1.0)
 
 
+def _held(run: Run, path: Path | None, beat=None) -> None:
+    """Keep running until PATH exists, or for at most two minutes, so the stand-in never outlives its scenario."""
+    end = time.monotonic() + 120
+    while path is not None and not path.exists() and time.monotonic() < end:
+        run.checkpoint()
+        if beat is not None:
+            beat()
+        time.sleep(0.5)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--run", type=Path, required=True)
@@ -108,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--launched", required=True, help="the launch time, ISO 8601")
     parser.add_argument("--limit-at", type=float, help="with --mode limit: seconds after the start it reaches its limit")
     parser.add_argument("--replay", type=Path, help="a recorded-form log to append line by line")
+    parser.add_argument("--hold-until", type=Path, help="end only once this file exists")
     args = parser.parse_args(argv)
     launched = datetime.fromisoformat(args.launched)
     started = time.monotonic()
@@ -124,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             _append(args.log, record)
             run.checkpoint()
             time.sleep(0.25)
+        _held(run, args.hold_until)
         run.complete("success")
         return 0
     _append(args.log, {"type": "system", "subtype": "init", "session_id": SESSION, "model": "fixture"})
@@ -145,11 +158,13 @@ def main(argv: list[str] | None = None) -> int:
     beats = iter(range(1, 1000))
     if args.mode == "limit":
         _hold(run, args.limit_at or QUIET_UNTIL, started, lambda: _heartbeat(args.log, last, tool, next(beats)))
+        _held(run, args.hold_until, lambda: _heartbeat(args.log, last, tool, next(beats)))
         run.complete("interrupted", "ceiling")
         return 0
     _hold(run, QUIET_UNTIL, started, lambda: _heartbeat(args.log, last, tool, next(beats)))
     _result(args.log, last, helper=None, at=datetime.now(timezone.utc))
     _hold(run, END_AT, started)
+    _held(run, args.hold_until)
     if args.mode == "crash":
         os._exit(70)  # It dies where it stands; its record is never completed.
     run.complete("success" if args.mode == "ready" else "failed")

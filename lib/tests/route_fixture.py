@@ -255,6 +255,7 @@ class Fixture:
             [sys.executable, "-B", str(LIB / "tests" / "stand_in_builder.py"), "--run", str(run_path),
              "--dispatch", dispatch_id, "--log", str(log), "--mode", mode, "--launched", launched.isoformat(),
              *(["--limit-at", f"{LIMIT_AT:g}"] if mode == "limit" else []),
+             "--hold-until", str(self.records.sidecar(output, ".read")),
              *(["--replay", str(replay)] if replay is not None else [])],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.children.append(child)
@@ -531,6 +532,8 @@ def watch(name: str, fixture: Fixture) -> int:
                          + json.dumps({"request_limit_seconds": request["handoff"]["timeout_seconds"],
                                        "run": json.loads(run_path.read_bytes())}, indent=2) + "\n")
         sys.stdout.flush()
+    # The decision is read; the stand-in may now end.
+    Path(str(run_path).removesuffix(".run.json") + ".read").write_bytes(b"")
     try:
         wait.wait(timeout=120)
     except subprocess.TimeoutExpired:

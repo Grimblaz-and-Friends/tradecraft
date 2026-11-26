@@ -32,7 +32,9 @@ ENDS = {"watch-ready": "the builder's run ended: completed, success",
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory):
-    """Each scenario's output, from lib/ alone copied outside every registered worktree."""
+    """Each scenario's output, from lib/ alone copied outside every registered worktree, as the use session's
+    declared tree holds it: inside one, the fixture's holder folder sits in that worktree's repository, and the
+    entrance refuses it as a root that isn't a repository's top level."""
     export = tmp_path_factory.mktemp("export")
     root = export / "lib"
     shutil.copytree(LIB, root, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
@@ -41,9 +43,16 @@ def runs(tmp_path_factory):
                                       cwd=str(export))
                for name in WATCH}
     done = {}
-    for name, process in started.items():
-        out, err = process.communicate(timeout=240)
-        done[name] = (process.returncode, out.decode("utf-8"), err.decode("utf-8", "replace"))
+    try:
+        for name, process in started.items():
+            out, err = process.communicate(timeout=240)
+            done[name] = (process.returncode, out.decode("utf-8"), err.decode("utf-8", "replace"))
+    finally:
+        # One that runs past its time fails the module; none is left running behind it.
+        for process in started.values():
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
     return done
 
 
@@ -86,10 +95,11 @@ def test_a_watched_builder_is_read_as_its_records_say_and_the_wait_ends_with_it(
     assert detail["limit_seconds"] == records["request_limit_seconds"] == work.DEFAULT_STRETCH_TIMEOUT_SECONDS
     assert abs(detail["running_seconds"] - records["run"]["elapsed_checkpoint_seconds"]) < 60
     assert detail["wait"] == out.split("the wait, started as the handed-off report prints it: ", 1)[1].split(" ---")[0]
+    assert detail["quiet_seconds"] < 60
+    # The replay appends the recorded log, not the stand-in's own steps, so its steps are held by the next test.
     if name != "watch-replay":
         assert detail["steps"] == len(stand_in_builder.EARLIER) + len(stand_in_builder.LIVE)
         assert detail["last_step"] == "Bash: Run the job's tests a second time"
-        assert detail["quiet_seconds"] < 60
     ended = out.rsplit("--- the stand-in builder ended at ", 1)[1].split(" ---", 1)[0]
     builder, wait = ended.split("; the wait ended at ")
     # The scenario prints clock times alone, so a run across midnight is read across it.
