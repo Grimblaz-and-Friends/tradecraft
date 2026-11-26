@@ -8251,6 +8251,29 @@ def _launch_declaration(stage: str, row: tuple | None) -> dict[str, object]:
             "same_vendor_reason": (run.get("staffing_qualification") or {}).get("same_vendor_reason")}
 
 
+# The markers whose comment a proof may name as its use or floor source. A source opening with another is
+# refused at composition, and the gate-agreement test runs a proof naming each past the gate.
+# Design: lib/DESIGN.md#what-a-proof-names-as-its-sources
+PROOF_SOURCE_MARKERS = {"use": frozenset({"use", "check-report", "affirmed-brief"}), "floor": frozenset({"floor"})}
+
+
+def _refuse_unlisted_source(state: WorkState, evidence: str, source: dict[str, object] | None) -> None:
+    """Refuse a proof naming a held comment, as its EVIDENCE source, that opens with a marker it may not name."""
+    kind, identity = (source or {}).get("kind"), (source or {}).get("id")
+    held = (state.issue_comments if kind == "issue-comment"
+            else state.pr_comments if kind == "pull-request-comment" else [])
+    record = next((item for item in held if item.get("id") == identity), None) if identity is not None else None
+    if record is None:
+        return  # a source the state holds no comment for is the gate's to refuse, by the record it finds
+    found = markers(_marker_sources([record], str(kind)))
+    opening = found[0].name if found else None
+    if opening not in PROOF_SOURCE_MARKERS[evidence]:
+        raise WorkError(
+            f"proof would name {kind} #{identity} as its {evidence} source, which opens with "
+            + (f"a {opening} marker" if opening else "no marker") + f"; a {evidence} source opens with "
+            + " or ".join(sorted(PROOF_SOURCE_MARKERS[evidence])))
+
+
 def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, object]:
     if state.pr is None or not isinstance(state.pr.get("number"), int):
         raise WorkError("proof requires one implementing pull request")
@@ -8315,6 +8338,8 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
             store, work, {"use"}) if row[2].get("dispatch_id") == report["dispatch"]), None)))
     elif bought:
         declarations.append(_marker_declaration(state, use_marker, "use"))
+    _refuse_unlisted_source(state, "use", use["source"])
+    _refuse_unlisted_source(state, "floor", _marker_source(state, floor) if floor else None)
     evidence = {
         "schema_version": 1,
         "identity": {

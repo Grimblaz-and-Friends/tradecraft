@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -133,10 +135,29 @@ def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
     return set(result)
 
 
+# Another repository's script, held here byte for byte to be run and never edited, beside the record that names
+# its source and digest. Only those exact bytes are passed over, so an edited copy is judged like any file here.
+HELD_COPIES = (("tools/gate/check.py", "tools/gate/source.json"),)
+
+
+def _held_copy(root: Path, path: Path) -> bool:
+    relative = path.relative_to(root).as_posix()
+    for copy, record in HELD_COPIES:
+        if relative != copy:
+            continue
+        try:
+            digest = json.loads((root / record).read_bytes())["sha256"]
+            return hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+    return False
+
+
 def _target_python_files(root: Path, *, include_tests: bool = True) -> list[Path]:
     candidates = [
         path for path in _python_files(root)
         if ".git" not in path.parts and (include_tests or "tests" not in path.parts)
+        and not _held_copy(root, path)
     ]
     ignored = _git_ignored(root, candidates)
     return [path for path in candidates if path not in ignored]

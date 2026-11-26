@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "repository": "example/product",
+  "work_issue": 12,
+  "pull_request": 19,
+  "evidence_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "marker_producers": [
+    "holder"
+  ],
+  "cases": [
+    {
+      "name": "counting-report",
+      "changed": null,
+      "comment": {
+        "surface": "issue-comment",
+        "author": "holder",
+        "body": "<!-- tradecraft:check-report:v1 stage=use dispatch=4fda5cc77b7147b7b1281065569efecc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=held staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer outcome=success -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "counts"
+      }
+    },
+    {
+      "name": "another-stage",
+      "changed": "stage",
+      "comment": {
+        "surface": "issue-comment",
+        "author": "holder",
+        "body": "<!-- tradecraft:check-report:v1 stage=cold-reader dispatch=4fda5cc77b7147b7b1281065569efecc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=held staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer outcome=success -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "refused",
+        "opens_with": "a check-report marker",
+        "facts": [
+          "stage=cold-reader, not stage=use"
+        ]
+      }
+    },
+    {
+      "name": "errored-outcome",
+      "changed": "outcome",
+      "comment": {
+        "surface": "issue-comment",
+        "author": "holder",
+        "body": "<!-- tradecraft:check-report:v1 stage=use dispatch=4fda5cc77b7147b7b1281065569efecc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=held staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer outcome=error -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "refused",
+        "opens_with": "a check-report marker",
+        "facts": [
+          "outcome=error, not outcome=success"
+        ]
+      }
+    },
+    {
+      "name": "changed-tree",
+      "changed": "tree",
+      "comment": {
+        "surface": "issue-comment",
+        "author": "holder",
+        "body": "<!-- tradecraft:check-report:v1 stage=use dispatch=4fda5cc77b7147b7b1281065569efecc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=changed staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer outcome=success -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "refused",
+        "opens_with": "a check-report marker",
+        "facts": [
+          "tree=changed, not tree=held"
+        ]
+      }
+    },
+    {
+      "name": "another-commit",
+      "changed": "head",
+      "comment": {
+        "surface": "issue-comment",
+        "author": "holder",
+        "body": "<!-- tradecraft:check-report:v1 stage=use dispatch=4fda5cc77b7147b7b1281065569efecc head=cccccccccccccccccccccccccccccccccccccccc dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=held staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer outcome=success -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "refused",
+        "opens_with": "a check-report marker",
+        "facts": [
+          "head=cccccccccccccccccccccccccccccccccccccccc, not the evidence head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    },
+    {
+      "name": "degraded-without-reason",
+      "changed": "same_vendor_reason",
+      "comment": {
+        "surface": "issue-comment",
+        "author": "holder",
+        "body": "<!-- tradecraft:check-report:v1 stage=use dispatch=4fda5cc77b7147b7b1281065569efecc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=held staffing_status=degraded outcome=success -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "refused",
+        "opens_with": "a check-report marker",
+        "facts": [
+          "staffing_status=degraded without a same_vendor_reason"
+        ]
+      }
+    },
+    {
+      "name": "author-not-a-marker-producer",
+      "changed": "author",
+      "comment": {
+        "surface": "issue-comment",
+        "author": "someone-else",
+        "body": "<!-- tradecraft:check-report:v1 stage=use dispatch=4fda5cc77b7147b7b1281065569efecc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=held staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer outcome=success -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "refused",
+        "opens_with": "a check-report marker",
+        "facts": [
+          "author someone-else is not a configured marker producer"
+        ]
+      }
+    },
+    {
+      "name": "quoted-marker",
+      "changed": "body",
+      "comment": {
+        "surface": "issue-comment",
+        "author": "holder",
+        "body": "> <!-- tradecraft:check-report:v1 stage=use dispatch=4fda5cc77b7147b7b1281065569efecc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=held staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer outcome=success -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "refused",
+        "opens_with": "no marker",
+        "facts": [
+          "a quoted check-report marker supplies no evidence"
+        ]
+      }
+    },
+    {
+      "name": "marker-not-opening-its-comment",
+      "changed": "body",
+      "comment": {
+        "surface": "issue-comment",
+        "author": "holder",
+        "body": "The use report follows.\n\n<!-- tradecraft:check-report:v1 stage=use dispatch=4fda5cc77b7147b7b1281065569efecc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dispatch_sha256=14aebecb333ff3beee982ee64bdc232d73019378bb28fa5b562bf52499fb36b8 tree=held staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer outcome=success -->\n\nThe job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+      },
+      "expected": {
+        "result": "refused",
+        "opens_with": "no marker",
+        "facts": [
+          "a check-report marker that is not its comment's whole first nonblank line supplies no evidence"
+        ]
+      }
+    }
+  ]
+}
