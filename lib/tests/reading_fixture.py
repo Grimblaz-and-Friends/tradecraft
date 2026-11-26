@@ -47,7 +47,7 @@ Stock counts are kept per item, in memory, for one shop's day.
 """
 INVENTORY = '''"""Stock counts per item.
 
-Design: docs/design.md#inventory
+Design: design/shop.md#inventory
 """
 
 STOCK = {}
@@ -71,7 +71,7 @@ def reserve(item, count):
 '''
 PRICING = '''"""The price of a basket, in whole cents.
 
-Design: docs/design.md#pricing
+Design: design/shop.md#pricing
 """
 
 LOYALTY_DISCOUNT = 0.17
@@ -83,7 +83,7 @@ def basket_total(cents):
 '''
 PRICING_LATER = '''"""The price of a basket, in whole cents.
 
-Design: docs/design.md#pricing
+Design: design/shop.md#pricing
 """
 
 LOYALTY_DISCOUNT = 0.17
@@ -97,7 +97,7 @@ def basket_total(cents):
 '''
 DASH = chr(0x2014)
 REREAD_FIRST = f"""## Sections
-shop/pricing.py:1-11 {DASH} prices a basket in whole cents after the loyalty discount; the pointer names docs/design.md#pricing, which says why cents are whole.
+shop/pricing.py:1-11 {DASH} prices a basket in whole cents after the loyalty discount; the pointer names design/shop.md#pricing, which says why cents are whole.
 shop/inventory.py:18-23 {DASH} reserves stock for an order; its docstring says why.
 
 ## Flags
@@ -123,18 +123,18 @@ LEDGER_DESIGN_CHANGED = LEDGER_DESIGN + "A period closes once its total is poste
 LEDGER_DESIGN_LATER = (LEDGER_DESIGN_CHANGED + "\nDecisions in force: the ledger keeps one currency per book.\n"
                        "A book's currency is fixed when the book opens.\n")
 SHARED_FIRST = f"""## Sections
-ledger/accounts.py:1-4 {DASH} names the ledger's accounts; its pointer reaches docs/design.md#ledger.
-docs/design.md:7 {DASH} says why a late entry opens the next period.
+ledger/accounts.py:1-4 {DASH} names the ledger's accounts; its pointer reaches design/shop.md#ledger.
+design/shop.md:7 {DASH} says why a late entry opens the next period.
 
 ## Flags
-docs/design.md:7 {DASH} in-force-missing {DASH} the section lists no decision in force for the currency the four modules assume
+design/shop.md:7 {DASH} in-force-missing {DASH} the section lists no decision in force for the currency the four modules assume
 
 ## Why this change was made
 Can tell: yes
 The pointed section says why.
 
 ## Worth a look
-docs/design.md:7 {DASH} a reason given in one sentence.
+design/shop.md:7 {DASH} a reason given in one sentence.
 """
 
 
@@ -249,15 +249,15 @@ def build(situation: str) -> int:
     _git(place.root, "init", "-q", "-b", "main")
     _git(place.root, "config", "core.autocrlf", "false")
     if situation == "shared-document":
-        pointing = {name: f'"""{Path(name).stem.title()} of the ledger.\n\nDesign: docs/design.md#ledger\n"""\n'
+        pointing = {name: f'"""{Path(name).stem.title()} of the ledger.\n\nDesign: design/shop.md#ledger\n"""\n'
                     for name in LEDGER_FILES}
-        place.base = _commit(place.root, {"docs/design.md": LEDGER_DESIGN, "README.md": "# Ledger\n"}, "base")
+        place.base = _commit(place.root, {"design/shop.md": LEDGER_DESIGN, "README.md": "# Ledger\n"}, "base")
         _git(place.root, "checkout", "-q", "-b", "change")
-        _commit(place.root, {**pointing, "docs/design.md": LEDGER_DESIGN_CHANGED}, "the ledger's modules")
+        _commit(place.root, {**pointing, "design/shop.md": LEDGER_DESIGN_CHANGED}, "the ledger's modules")
         place.read("reading-1", SHARED_FIRST)
-        _commit(place.root, {"docs/design.md": LEDGER_DESIGN_LATER}, "the decision the modules assume")
+        _commit(place.root, {"design/shop.md": LEDGER_DESIGN_LATER}, "the decision the modules assume")
     else:
-        place.base = _commit(place.root, {"docs/design.md": DESIGN, "shop/inventory.py": INVENTORY}, "base")
+        place.base = _commit(place.root, {"design/shop.md": DESIGN, "shop/inventory.py": INVENTORY}, "base")
         _git(place.root, "checkout", "-q", "-b", "change")
         _commit(place.root, {"shop/pricing.py": PRICING, "shop/inventory.py": INVENTORY + RESERVE},
                 "pricing and reservations")
