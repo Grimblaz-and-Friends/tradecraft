@@ -151,7 +151,7 @@ class GitHub:
         path, _, query = endpoint.partition("?")
         params = {name: value for name, value in urllib.parse.parse_qsl(query) if name != "per_page"}
         if path == f"repos/{REPO}/branches/main/protection":
-            raise self.not_found("the base branch is unprotected, as GitHub answers it")  # a 404 GitHub gives
+            raise self.not_found("the base branch is unprotected, as GitHub answers it")
         value = self._serve(path, params)
         if value is None:
             self.unserved.append(endpoint)
@@ -344,8 +344,8 @@ class Case:
             return publish(transport, state, body, head)
 
         monkeypatch.setattr(work, "_publish_proof_comment", recorded)
-        # `run proof`'s own stage: it snapshots the committed policy, collects afresh and publishes. Of the state
-        # it is handed it reads only where the records are, the holder's checkout and the instalment.
+        # Of the state `run proof`'s stage is handed it reads only where the records are, the holder's checkout and
+        # the instalment; it collects everything else from the stand-in itself.
         policy = self.root / POLICY
         seed = work.WorkState(REPO, ISSUE, {}, record_root=self.fixture.store)
         seed.holder_root, seed.instalment = self.root, None
@@ -401,6 +401,8 @@ def relay_use_marker(tmp_path, gate) -> Case:
     return case
 
 
+# The last two take their floor from declared CI jobs and the first three from a `floor` marker, so between them
+# the cases cover both ways the entrance names a floor.
 def mechanical_lane(tmp_path, gate) -> Case:
     case = Case(tmp_path, gate, mechanical=True, declared=True)
     head = case.commit("job", JOB_FILE)
@@ -437,10 +439,13 @@ def test_the_copied_gate_passes_the_proof_the_entrance_composed(name, tmp_path, 
         case.fixture.stop()
     read = [item["body"] for item in case.github.pr_comments if "tradecraft:proof:v1" in item["body"]]
     assert read == [body], "the gate must read exactly the body the entrance handed its publish step"
+    # Asked first: a read the stand-in lacks is the stand-in's gap, never the entrance's or the gate's.
+    assert not case.github.unserved, (
+        f"{name}: reads the stand-in does not serve: {case.github.unserved}. Serve each as GitHub answers it; "
+        "the stand-in is not a case.")
     missing = [line for line in output.splitlines() if line.startswith("missing:")]
     assert code == 0 and output.startswith("change-proof: PASS"), (
         f"{name}: {RED}\n" + "\n".join(missing or output.splitlines()))
-    assert not case.github.unserved, f"{name}: reads the stand-in does not serve: {case.github.unserved}"
     lines = output.splitlines()
     document = payload(body)
     for kind in ("use", "floor"):
@@ -458,6 +463,12 @@ def test_the_copied_gate_passes_the_proof_the_entrance_composed(name, tmp_path, 
                    and line.endswith(f"at {case.earlier} remains applicable") for line in lines), output
     if name == "relay-use-marker":
         assert "verified: trusted policy requires use and the public use source is current-head" in lines, output
+    if name == "mechanical-lane":
+        assert any(line.startswith("verified: owner-affirmed mechanical lane in ") and line.endswith(
+            "exempts use; changed paths would otherwise require use") for line in lines), output
+    if name == "no-use":
+        assert ("verified: trusted policy classifies the changed paths as no-use and generated evidence is "
+                "current-head") in lines, output
     PASSED.add(name)
 
 
@@ -504,7 +515,8 @@ def test_the_marker_reference_names_every_report_attribute_the_gate_reads(gate):
     section = text.split("## `check-report`", 1)[1].split("## `", 1)[0]
     passage = section.partition("**What the required gate reads of a use report.**")[2]
     assert passage, "markers.md's check-report section says nothing of what the required gate reads of a report"
-    unnamed = sorted(name for name in gate.REPORT_ATTRIBUTES if f"`{name}" not in passage)
+    unnamed = sorted(name for name in gate.REPORT_ATTRIBUTES
+                     if f"`{name}`" not in passage and f"`{name}=" not in passage)
     assert not unnamed, ("markers.md's check-report section omits report attributes the copied gate reads: "
                          + ", ".join(unnamed))
 

@@ -8,7 +8,7 @@ The copy's own comments cite `README.md`, as in `README.md, "Evidence contract"`
 
 ## What the test does
 
-`test_gate_agreement.py` stands up one in-process GitHub over a real Git history for each stand-in change its `CASES` names: the builder route with a use report at the head, the builder route with a use report at an earlier commit, the relay route with a `use` marker, the mechanical lane, and a change whose paths buy no use. The entrance collects that GitHub and publishes its proof there through its own publish step, and the copied gate reads the same GitHub. Each case must print `change-proof: PASS`, and each case whose paths buy use must print its use line. The same file also checks the copy's bytes against `source.json`, runs the shared use-report cases in `skills/work/references/proof-fixtures/v1-builder-use-report.json` through the copy, checks that the marker reference's `check-report` section names every report attribute the copy reads, since a holder learns from that section why the gate refused a report, fails unless every case ran and passed, and fails, naming it, when `lib/work.py`'s `PROOF_SOURCE_MARKERS` lets the entrance name a use or floor source by a marker no case's proof named.
+`test_gate_agreement.py` stands up one in-process GitHub over a real Git history for each stand-in change its `CASES` names: the builder route with a use report at the head, the builder route with a use report at an earlier commit, the relay route with a `use` marker, the mechanical lane, and a change whose paths buy no use. The entrance collects that GitHub and publishes its proof there through its own publish step, and the copied gate reads the same GitHub. Each case must print `change-proof: PASS` and the line saying how it met use: its use line, the mechanical lane's exemption, or no use bought. The same file also checks the copy's bytes against `source.json`, runs the shared use-report cases in `skills/work/references/proof-fixtures/v1-builder-use-report.json` through the copy, checks that the marker reference's `check-report` section names every report attribute the copy reads, since a holder learns from that section why the gate refused a report, fails unless every case ran and passed, and fails, naming it, when `lib/work.py`'s `PROOF_SOURCE_MARKERS` lets the entrance name a use or floor source by a marker no case's proof named.
 
 ## What a red means
 
@@ -17,7 +17,7 @@ A red on a case means one thing: the entrance under test composes a proof the co
 - **Where the change did not mean to alter what a proof names,** it is a defect in the change. The builder repairs it in the entrance.
 - **Where the change meant to alter what a proof names,** the gate must change first, in change-proof. The builder does not repair it here; it returns it to its holder as a gate change owed, and the holder tells the Steward.
 
-A red on the copy's integrity means its bytes are not the ones `source.json` records. A red on coverage means a marker was added to `PROOF_SOURCE_MARKERS` with no case whose proof names it; add the case.
+A red naming a read the stand-in does not serve means the stand-in lacks a record GitHub would serve: add it as GitHub answers it, since the stand-in is not a case. A red on the copy's integrity means its bytes are not the ones `source.json` records. A red on coverage means a marker was added to `PROOF_SOURCE_MARKERS` with no case whose proof names it; add the case.
 
 ## What no session does
 
