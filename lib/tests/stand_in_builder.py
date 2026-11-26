@@ -6,8 +6,8 @@ is in Claude's stream form: an `assistant` record for each step, `tool_progress`
 runs, and a `user` record for each step's result. MODE says how it ends: `ready` completes the record
 with success, `stopped` completes it as failed, `limit` completes it as stopped at its ceiling when its
 limit is reached, and `crash` dies without completing it. With `--replay`
-it appends a recorded-form log line by line instead of its own steps. With `--hold-until PATH` it ends
-only once PATH exists, so a scenario reads it while it runs however slowly that scenario's machine is.
+it appends a recorded-form log line by line instead of its own steps. With `--hold-until PATH` it waits
+for PATH before it ends, so a scenario reads it while it runs however slowly that scenario's machine is.
 """
 from __future__ import annotations
 
@@ -34,11 +34,15 @@ EARLIER = (("Bash", {"command": "git log --oneline -3", "description": "Orient i
 LIVE = ((2, "Edit", {"file_path": "lib/job.py", "old_string": "a", "new_string": "b"}, False),
         (4, "Agent", {"description": "Read the job's callers", "prompt": "List the job's callers."}, False),
         (6, "Grep", {"pattern": "def run_job"}, True),
-        (8, "Bash", {"command": "python -B -m pytest -q lib/tests/test_job.py\nsecond line",
+        (8, "Bash", {"command": "python -B -m pytest -q lib/tests/test_job.py",
                      "description": "Run the job's tests a second time"}, False))
-# The last live step runs this long with heartbeats only, so the builder is quiet for a known span.
+# Seconds after the start at which the last live step's result comes; until then only heartbeats are written, so
+# the builder is quiet for a known span with a step running.
 QUIET_UNTIL = 20
+# Seconds after the start at which it ends: a moment after that result, so its end isn't read with the step's.
 END_AT = 22
+# How long it waits for --hold-until's file, so a stand-in whose scenario died doesn't run on.
+HELD_SECONDS = 120.0
 
 
 def _stamp(moment: datetime) -> str:
@@ -101,8 +105,8 @@ def _hold(run: Run, until: float, started: float, beat=None) -> None:
 
 
 def _held(run: Run, path: Path | None, beat=None) -> None:
-    """Keep running until PATH exists, or for at most two minutes, so the stand-in never outlives its scenario."""
-    end = time.monotonic() + 120
+    """Keep running until PATH exists, giving up after ``HELD_SECONDS``."""
+    end = time.monotonic() + HELD_SECONDS
     while path is not None and not path.exists() and time.monotonic() < end:
         run.checkpoint()
         if beat is not None:

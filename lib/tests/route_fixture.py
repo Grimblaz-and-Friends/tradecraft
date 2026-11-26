@@ -235,8 +235,9 @@ class Fixture:
     def watched_stretch(self, mode: str, replay: Path | None = None) -> tuple[subprocess.Popen, str, Path, Path]:
         """A launched stretch whose launcher is the stand-in builder, live and writing its run record and log.
 
-        Its request carries the stretch's default limit; it was launched two hours ago, or, for ``limit``, so
-        that its limit falls ``LIMIT_AT`` seconds after it starts. The pointer is written once its run record
+        Its request carries the stretch's default limit. It was launched some hours ago, so its lines show a
+        builder well into its run as a holder sees one; for ``limit``, so that its limit falls ``LIMIT_AT`` seconds
+        after it starts. The pointer is written once its run record
         exists, so the wait finds the launch whole.
         """
         now = datetime.now(timezone.utc)

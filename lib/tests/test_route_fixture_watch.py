@@ -124,7 +124,8 @@ def test_the_replayed_log_is_printed_step_by_step_in_order(runs):
     earlier = [line.split(": ", 1)[1] for line in printed if line.startswith("earlier step: ")]
     assert later and later == expected[len(expected) - len(later):]
     before = [line.split(": ", 1)[1] for line in expected[:len(expected) - len(later)]]
-    assert earlier == before[len(before) - len(earlier):] and len(earlier) == min(3, len(before))
+    assert earlier == before[len(before) - len(earlier):]
+    assert len(earlier) == min(builder_wait.EARLIER_STEPS, len(before))
 
 
 def test_a_builder_started_by_hand_is_not_measured_and_not_watched(runs):
