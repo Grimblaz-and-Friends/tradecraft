@@ -74,13 +74,14 @@ def test_1011_brief_and_artifact_byte_for_byte_and_allowance_verbatim():
 def test_1011_owed_checks_order_and_shape():
     checks = handoff.owed_checks(criteria=["AC1", "AC3"], use_owed=True,
                                  floor_command=FLOOR)
+    # The builder's order: the ready step before the readers that read its head, the cold reader after them.
     assert [check["stage"] for check in checks] == [
-        "cold-reader", "acceptance-criterion", "acceptance-criterion", "use", "floor", "reach",
-        "ready-reviewers", "proof"]
-    assert [check["criterion"] for check in checks[1:3]] == ["AC1", "AC3"]
-    assert checks[1]["command"] == ["run", "acceptance-criterion", "--criterion", "AC1"]
-    assert checks[3]["command"] == ["run", "use", "--job-from-artifact"]
-    assert checks[4] == {"stage": "floor", "criterion": None, "row": None, "command": [], "floor_command": FLOOR}
+        "floor", "reach", "ready-reviewers", "acceptance-criterion", "acceptance-criterion", "use", "cold-reader",
+        "proof"]
+    assert [check["criterion"] for check in checks[3:5]] == ["AC1", "AC3"]
+    assert checks[3]["command"] == ["run", "acceptance-criterion", "--criterion", "AC1"]
+    assert checks[5]["command"] == ["run", "use", "--job-from-artifact"]
+    assert checks[0] == {"stage": "floor", "criterion": None, "row": None, "command": [], "floor_command": FLOOR}
     assert all(set(check) == {"stage", "criterion", "row", "command"} and check["row"] is None
                for check in checks if check["stage"] != "floor")
 
@@ -109,7 +110,8 @@ def test_1011_every_command_names_repo_issue_and_holder_root_and_no_session_id()
             assert line.startswith("python -B /plugin/lib/work.py ")
             assert "--repo acme/app --issue 7 --root /holder/root" in line
     lines = command_lines(compose())
-    assert lines[0] == "python -B /plugin/lib/work.py run cold-reader --repo acme/app --issue 7 --root /holder/root"
+    assert lines[0] == "python -B /plugin/lib/work.py --repo acme/app --issue 7 --root /holder/root"
+    assert lines[1] == "python -B /plugin/lib/work.py run ready-reviewers --repo acme/app --issue 7 --root /holder/root"
     assert any(line.startswith("python -B /plugin/lib/work.py run catch-up ") for line in lines)
     assert "When the decision orders it" in compose()
 
@@ -172,11 +174,12 @@ def test_1011_the_closing_line_and_who_posts_the_cold_reading():
     assert "as a draft from your branch, with `Closes #7` alone on a line" in text
     cold = entry(checks_section(text), "cold-reader")
     assert cold.index("`open`") < cold.index("`status=clean`")
-    assert "holds `run use`, `run ready-reviewers` and `run proof` until a `clean` stands at your head" in cold
+    assert "holds `run proof` until a `clean` stands at your head" in cold
+    assert "run use" not in cold and "run ready-reviewers" not in cold
     assert "staffing_status=STATUS same_vendor_reason=REASON -->" in cold and "status=clean" in cold and "Accepted: path:lines" in cold
     assert "Push your branch and open the draft pull request" in text and "proof are not." in text
     assert "a paragraph beginning `**Path departures:**`" in text and "keep it true up to proof." in text
-    assert "Run the floor at the pull request's head." in text
+    assert "Run the floor at the pull request's head once the planned build is done." in text
     assert "`own-turn` with `added_by`" in text and "`.tradecraft/work.json` `connected_reviewers`" in text
     assert "Wait for each connected reviewer's review and answer it whole" in text
     assert "any departure from the plan a check required, with what you added" in text
@@ -371,11 +374,15 @@ def test_the_steps_render_in_their_fixed_order_with_their_holds():
         for step in handoff.BUILDER_STEPS:
             assert step.sentence in section and (step.hold is None or step.hold in section)
     keys = [step.key for step in handoff.BUILDER_STEPS]
-    # The entrance's own order: it reads the floor before the cold reading and the rest of its chain, and names
-    # thread resolution only once the floor stands again after a late commit.
-    assert keys == ["open-pull-request", "floor", "cold-reader", "criteria", "use", "reach", "ready-reviewers",
-                    "answer-reviewers", "floor-again", "resolve-threads", "proof", "readiness-record", "read-back"]
-    assert keys.index("use") < keys.index("ready-reviewers") < keys.index("floor-again") < keys.index("proof")
+    # The entrance's own order: the ready step once the floor and reach stand, the criterion readers and use at
+    # that head, one batch of answers, the floor again, and the cold reader on code that has stopped changing.
+    assert keys == ["open-pull-request", "floor", "reach", "ready-reviewers", "criteria", "use", "answer-findings",
+                    "floor-again", "resolve-threads", "cold-reader", "use-again", "proof", "readiness-record",
+                    "read-back"]
+    assert (keys.index("ready-reviewers") < keys.index("criteria") < keys.index("use") < keys.index("answer-findings")
+            < keys.index("floor-again") < keys.index("cold-reader") < keys.index("use-again") < keys.index("proof"))
+    # The use again names step 6's command by its number, so step 6 must be use.
+    assert keys.index("use") + 1 == 6 and "step 6's command" in handoff.STEPS["use-again"].sentence
     # A sentence naming the floor by its number names the floor's own place in the table.
     assert keys.index("floor") + 1 == 2 and "as step 2 gives it" in handoff.STEPS["floor-again"].sentence
 
@@ -394,7 +401,7 @@ def test_the_resolve_step_names_resolving_each_answered_thread_and_when_it_is_ow
     assert "```text\n" + handoff.RESOLVE_THREAD_COMMAND + "\n```" in answer
     assert "`reviewer-thread-answered-unresolved`" in answer
     assert "`merge-blocked-unresolved-review-threads`" in answer
-    assert "names it once the floor and the cold reading's `clean` both stand at your head" in answer
+    assert "names it once the floor stands at your head and every finding is answered" in answer
     # The form is the entrance's own, repeated here because this module imports nothing of the entrance.
     assert handoff.RESOLVE_THREAD_COMMAND == work.RESOLVE_THREAD_COMMAND
     # The threads' ids are listed by a read the allowance passes, since it carries no mutation.
@@ -406,7 +413,7 @@ def test_the_resolve_step_names_resolving_each_answered_thread_and_when_it_is_ow
 def test_the_floor_runs_again_after_a_later_commit_before_proof():
     again = entry(checks_section(compose(floor_command=FLOOR)), "the floor again")
     assert "After any commit made after the floor ran, run the floor again at the new head" in again
-    assert "posting its marker" in again and "before you resolve threads or run proof" in again
+    assert "posting its marker" in again and "before you resolve threads, run the cold reader or run proof" in again
     assert "The cold reading's `clean` and reach must stand at that new head too before proof" in again
     # The path-departures paragraph is made final at proof, against the record's decisions.
     assert "Restate the `**Path departures:**` paragraph and bring the body in line with your record's " \

@@ -271,6 +271,7 @@ class Change:
         self.clock = CLOCK_START
         self.comments = []
         self.readings = 0
+        self.reviewer_ran, self.review_comments, self.behind = True, [], False
         # The ledger comparison has its own suite; here it would read an unrelated store.
         monkeypatch.setattr(work, "_governing_terms_decision", lambda _state: None)
         monkeypatch.setattr(work, "_cold_reading_source", lambda _state: self.store)
@@ -338,6 +339,10 @@ class Change:
     def review(self, opened):
         return self.builder_turn("--- cold reading begin ---\n" + opened + "\n--- cold reading end ---")
 
+    def post_use(self, changed="false"):
+        return self.post(f"<!-- tradecraft:use:v1 head={self.head} status=pass changed={changed} "
+                         "staffing_status=qualified -->\nThe use session's note.")
+
     def post_clean(self):
         return self.post(f"<!-- tradecraft:cold-reading:v1 head={self.head} status=clean "
                          "staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer -->\n"
@@ -348,8 +353,15 @@ class Change:
         self.read(account, covered)
         self.review(self.post_open(account))
 
-    def state(self, draft=True):
+    def state(self, draft=False):
+        # The reading runs after the ready step and the reviewers, so the gate's own tests read a ready pull
+        # request its reviewer has read; the order's tests say otherwise where they need to.
         fixture = test_work.state(self.brief, pr=True, draft=draft, config=self.config)
+        if self.reviewer_ran:
+            fixture.pr_comments = [{"body": "review summary", "user": {"login": test_work.REVIEWER}}]
+        fixture.review_comments = [dict(comment) for comment in self.review_comments]
+        if self.behind:
+            fixture.synchronization.update(behind=True, strict=True)
         fixture.issue_comments[0]["created_at"] = CLOCK_START.isoformat()
         fixture.issue_comments.extend(self.comments)
         fixture.issue_comments.append({"body": f"<!-- tradecraft:floor:v1 head={self.head} status=pass -->",
@@ -359,7 +371,7 @@ class Change:
         fixture.holder_root = self.root
         return fixture
 
-    def decide(self, draft=True):
+    def decide(self, draft=False):
         fixture = self.state(draft)
         decision = work.decide(fixture, test_work.RULES)
         invalid = [claim for claim in fixture.invalid_marker_claims if claim["name"] == "cold-reading"]
@@ -434,7 +446,7 @@ def test_a_valid_clean_reading_reaches_readiness(change):
     assert change.decide().reason == "cold-reading-close"
     change.post_clean()
     decision = change.decide()
-    assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+    assert (decision.stage, decision.invalid) == ("proof", [])
 
 
 def accept(location, reason="the reason is one line away", kind="what-comment"):
@@ -495,7 +507,7 @@ def test_every_flag_accepted_closes_the_reading_with_no_builder_turn(change):
     assert change.decide().reason == "cold-reading-close"
     change.post_clean()
     decision = change.decide()
-    assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+    assert (decision.stage, decision.invalid) == ("proof", [])
 
 
 @pytest.mark.cold_reading
@@ -587,7 +599,7 @@ def test_a_whole_reread_saying_yes_after_a_decision_record_clears_cannot_tell(ch
     change.commit({"decisions/D2.md": "# D2\n\nWhy A and B exist.\n"})
     change.reviewed(clean())
     change.post_clean()
-    assert change.decide().stage == "ready-reviewers"
+    assert change.decide().stage == "proof"
 
 
 @pytest.mark.cold_reading
@@ -630,6 +642,9 @@ def test_an_adopter_with_no_configuration_for_it_is_gated(tmp_path, monkeypatch)
 def test_a_settled_artifact_lane_is_gated_and_resumes_its_builder(tmp_path, monkeypatch):
     change = Change(tmp_path, monkeypatch, brief=test_work.AFFIRMED)
     settled(change)
+    # The settled lane owes use, which reports on the first complete build before the reading is owed.
+    assert (change.decide().stage, change.decide().reason) == ("use", "pull-request-use-absent")
+    change.post_use()
     assert change.decide().stage == "cold-reader"
     change.read(flagged("a.py"))
     change.post_open(flagged("a.py"))
@@ -830,7 +845,7 @@ def test_a_reading_recorded_before_the_records_kept_it_still_counts(change):
     assert change.decide().reason == "cold-reading-close"
     change.post_clean()
     decision = change.decide()
-    assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+    assert (decision.stage, decision.invalid) == ("proof", [])
 
 
 def test_a_lost_reading_record_is_named_where_the_records_keep_it(tmp_path):
@@ -970,9 +985,10 @@ def test_an_override_naming_another_vendor_is_set_aside_and_the_reader_stays_on_
 
 
 @pytest.mark.cold_reading
-@pytest.mark.parametrize("stage", ["ready-reviewers", "use", "proof", "release-report"])
+@pytest.mark.parametrize("stage", ["proof", "release-report"])
 def test_a_named_stage_the_gate_holds_refuses_without_effect(change, stage):
-    assert stage in work.COLD_READING_HELD_STAGES
+    # The reading runs after the ready step and use, so it holds only what follows it.
+    assert work.COLD_READING_HELD_STAGES == {"proof", "release-report"}
     fixture = change.state()
     held = work._cold_reading_hold(fixture, work.Decision(stage, False, None, "holder-named-stage"))
     assert (held.status, held.reason, held.dispatch) == ("refused", "cold-reading-holds", False)
@@ -1326,7 +1342,7 @@ def test_a_whole_list_acceptance_closes_the_reading_and_the_report_shows_it(chan
     assert row["routed"] == []
     change.post_clean()
     decision = change.decide()
-    assert (decision.stage, decision.invalid) == ("ready-reviewers", [])
+    assert (decision.stage, decision.invalid) == ("proof", [])
 
 
 @pytest.mark.cold_reading
@@ -1403,7 +1419,7 @@ def test_an_overtaken_once_refused_reading_is_listed_unposted_and_owes_nothing(c
     change.reviewed(clean())
     assert change.decide().reason == "cold-reading-close"
     change.post_clean()
-    assert change.decide().stage == "ready-reviewers"
+    assert change.decide().stage == "proof"
     fixture = change.state()
     work.validate_marker_claims(fixture)
     rows = work._cold_reading_measures(fixture)["readings"]

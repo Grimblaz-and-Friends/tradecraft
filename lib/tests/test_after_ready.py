@@ -77,6 +77,9 @@ def ready_hand(tmp_path, monkeypatch, holder):
              if check["stage"] in ("cold-reader", "acceptance-criterion", "use", "floor")]
     post(state, readiness_record(request["dispatch_id"], checks=named), 30)
     work._complete_readied_hand_records(state)
+    # A criterion reader's counting report is a launched seat's bundle, which this fixture's named checks stand
+    # in for, so the readers the record names have reported.
+    monkeypatch.setattr(work, "_unreported_readers", lambda _state: [])
     return state, request
 
 
@@ -197,6 +200,23 @@ def test_1011_a_recovery_restart_composes_from_what_its_handoff_carried(
     argv, _pointer = stub_argv()
     sent = Path(argv[argv.index("--dispatch") + 1]).read_text(encoding="utf-8")
     assert "```text\nmake check\n```" in sent and "named `Start 5`" in sent
+
+
+def test_a_restart_names_the_copy_of_the_practice_its_handoff_named_not_the_running_one(
+        tmp_path, monkeypatch, holder, quiet_report, stub):
+    # A builder finishes on the copy its handoff named, in that copy's order, even where a newer copy composes
+    # the restart. Design: lib/DESIGN.md#the-builder-route
+    claude_machine()
+    stub()
+    monkeypatch.setattr(work.work_recovery, "restartable", lambda *_a: True)
+    state = with_pull_request(stored(tmp_path, *PLANNED))
+    named = tmp_path / "installed" / "0.220.0"
+    resumable(state, tmp_path, ready=False, session=None, plugin_root=str(named))
+    assert run(monkeypatch, holder, state, "handoff", "--resume-reason", "start again") == 0
+    argv, pointer = stub_argv()
+    sent = Path(argv[argv.index("--dispatch") + 1]).read_text(encoding="utf-8")
+    assert str(named) + "/lib/work.py" in sent and str(LIB.parent) not in sent
+    assert json.loads(Path(pointer["request"]).read_bytes())["handoff"]["plugin_root"] == str(named)
 
 
 @pytest.mark.parametrize("stage", ["send-back", "catch-up"])

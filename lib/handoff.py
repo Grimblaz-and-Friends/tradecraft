@@ -83,8 +83,8 @@ RESOLVE_THREADS = (
     "the review comment that opened it:\n\n```text\n" + LIST_THREADS_COMMAND + "\n```\n\n"
     "Resolving is owed when the read-only decision names `reviewer-thread-answered-unresolved`, or the "
     "merge reads `merge-blocked-unresolved-review-threads`; a body finding has no thread. The entrance "
-    "names it once the floor and the cold reading's `clean` both stand at your head, so take it after the "
-    "floor again.")
+    "names it once the floor stands at your head and every finding is answered, so take it after the floor "
+    "again.")
 
 
 class Step:
@@ -96,12 +96,28 @@ class Step:
         self.key, self.title, self.sentence, self.hold = key, title, sentence, hold
 
 
-CLEAN_HOLD = "The entrance holds it until the cold reading's `clean` stands at your head."
-# The entrance reads the floor before the cold reading and the rest of its chain, so nothing after the floor is
-# named until the floor stands at the head.
-FLOOR_HOLD = "The entrance names it only once the floor stands at your head."
+# The entrance reads the floor before the rest of its chain, so nothing after the floor is named until the floor
+# stands at the head; reach holds the ready step as it holds proof.
+READY_HOLD = "The entrance names it once the floor stands at your head, and holds it until reach is settled there."
+# The fix batch waits for every first report: each push makes the floor and the checks that read the earlier
+# head owed again. Design: lib/DESIGN.md#the-builder-route
+ANSWER_HOLD = ("The entrance names no finding to answer while the pull request is a draft, a criterion reader or "
+               "use has not reported, or a required reviewer has not run.")
+# The reading runs last, on code that has stopped changing, so a named reading before then is refused.
+COLD_HOLD = ("The entrance refuses it until the pull request is ready, every criterion reader and use has "
+             "reported, every required reviewer has run and every finding is answered, and names it only once "
+             "the floor stands at your head.")
+USE_AGAIN_HOLD = "The entrance names it only once the cold reading's `clean` stands at your head."
 CLEAN_AND_REACH_HOLD = ("The entrance holds it until the cold reading's `clean` stands at your head and reach "
                         "is settled there.")
+ANSWER_FINDINGS = (
+    "Wait until every required reviewer has reviewed, use has reported where it is owed and every criterion "
+    "reader has reported; then fix or decline every finding of all of them in one batch, not one report at a "
+    "time, because each push makes the floor and the checks that read the earlier head owed again. A catch-up "
+    "with the base is not a fix and does not wait. Answer each finding in your record, and the reviewers' as "
+    "follows. " + ANSWER_REVIEWERS + " You may buy a second reviewer look after a fix that is not mechanical, "
+    "by the connected-reviewer rule; it is permitted and not owed, and you record one you buy in your record's "
+    "`decisions`.")
 # The order the builder takes its steps in. The handoff renders it, and ANSWERS ties each reason the
 # entrance returns a builder to the step that answers it, so the text keeps in step with the entrance.
 BUILDER_STEPS = (
@@ -109,22 +125,28 @@ BUILDER_STEPS = (
          "Push your branch and open the draft pull request, as \"What you may write\" says. Its body carries a "
          "paragraph beginning `**Path departures:**` that names each stage the change skipped, bypassed or stalled "
          "at and why, or says the expected path ran without a departure; keep it true up to proof."),
-    Step("floor", "floor", "Run the floor at the pull request's head."),
-    Step("cold-reader", "cold-reader",
-         "Run the cold reader and answer its reading until a `clean` stands at your head.", FLOOR_HOLD),
-    Step("criteria", "acceptance-criterion",
-         "Launch every reader listed here through its command, and answer each report in your record."),
-    Step("use", "use", "Run use where it is owed.", CLEAN_HOLD),
+    Step("floor", "floor", "Run the floor at the pull request's head once the planned build is done."),
     Step("reach", "reach",
          "Run the read-only decision and post the `reach-reading` for every item its reach report flags."),
-    Step("ready-reviewers", "ready-reviewers", "Mark the pull request ready for its reviewers.",
-         CLEAN_AND_REACH_HOLD),
-    Step("answer-reviewers", "answer the reviewers", ANSWER_REVIEWERS),
+    Step("ready-reviewers", "ready-reviewers",
+         "Mark the pull request ready for its reviewers. Ready means the planned build is complete and its "
+         "reviewers may send it back, not that the other checks have passed.", READY_HOLD),
+    Step("criteria", "acceptance-criterion",
+         "Launch every reader listed here through its command at the head you marked ready, while the reviewers "
+         "read, and answer each report in your record."),
+    Step("use", "use", "Run use where it is owed, at the head you marked ready, while the reviewers read."),
+    Step("answer-findings", "answer the findings", ANSWER_FINDINGS, ANSWER_HOLD),
     Step("floor-again", "the floor again",
          "After any commit made after the floor ran, run the floor again at the new head as step 2 gives it, "
-         "posting its marker where step 2 gives a command, before you resolve threads or run proof. The cold "
-         "reading's `clean` and reach must stand at that new head too before proof, as proof's hold requires."),
+         "posting its marker where step 2 gives a command, before you resolve threads, run the cold reader or "
+         "run proof. The cold reading's `clean` and reach must stand at that new head too before proof, as "
+         "proof's hold requires."),
     Step("resolve-threads", "resolve the answered threads", RESOLVE_THREADS),
+    Step("cold-reader", "cold-reader",
+         "Run the cold reader and answer its reading until a `clean` stands at your head.", COLD_HOLD),
+    Step("use-again", "use again",
+         "Run use again, with step 6's command, only where the read-only decision names `use` after the cold "
+         "reading's `clean`: a commit since the use report changed a path the use rules name.", USE_AGAIN_HOLD),
     Step("proof", "proof",
          "Restate the `**Path departures:**` paragraph and bring the body in line with your record's "
          "`decisions`, then run proof at your head.", CLEAN_AND_REACH_HOLD),
@@ -181,13 +203,17 @@ ANSWERS = {
     "cold-reading-close": "cold-reader",
     "cold-reading-unverifiable": "cold-reader",
     "floor-complete-pr-draft": "ready-reviewers",
-    "required-connected-reviewer-has-not-run": "answer-reviewers",
-    "reviewer-thread-lacks-disposition": "answer-reviewers",
-    "reviewer-body-lacks-disposition": "answer-reviewers",
+    "required-connected-reviewer-has-not-run": "answer-findings",
+    "reviewer-thread-lacks-disposition": "answer-findings",
+    "reviewer-body-lacks-disposition": "answer-findings",
+    "criterion-report-absent": "criteria",
+    "row-report-absent": "criteria",
+    "pull-request-use-report-absent": "use",
+    "cold-reading-not-yet-owed": "cold-reader",
     "reviewer-thread-answered-unresolved": "resolve-threads",
     "merge-blocked-unresolved-review-threads": "resolve-threads",
     "bought-panel-incomplete": "read-back",
-    "current-head-use-report-absent": "use",
+    "current-head-use-report-absent": "use-again",
     "current-head-proof-absent-or-outdated": "proof",
     "version-obligation-blocked": "read-back",
     "version-obligation-unverifiable": "read-back",
@@ -222,12 +248,16 @@ def _check(stage: str, criterion: str | None = None, *extra: str, row: int | Non
 
 def owed_checks(*, criteria: list[str], use_owed: bool, floor_command: str | None,
                 mechanical: bool = False, rows: list | None = None) -> list[dict]:
-    """The checks the builder owes, reach before the two checks held on it.
+    """The checks the builder owes, in the order of the handoff's steps (``BUILDER_STEPS``).
 
     On the mechanical lane each of the brief's ``rows`` (as ``brief.rows`` gives them, or their numbers)
     is owed its own reader, in place of the plan's criteria.
     """
-    checks = [_check("cold-reader")]
+    # The holder supplies the floor command once, at the handoff; the builder never writes or picks one.
+    checks = [{"stage": "floor", "criterion": None, "row": None, "command": [], "floor_command": floor_command}]
+    # No stage runs reach: the read-only decision reports it, and the builder answers it with a reach reading.
+    checks.append({"stage": "reach", "criterion": None, "row": None, "command": []})
+    checks.append(_check("ready-reviewers"))
     if mechanical:
         # Every row gets a reader: a builder that chose which rows are read would be aiming its own check.
         numbers = [row[0] if isinstance(row, (tuple, list)) else row for row in rows or ()]
@@ -237,11 +267,7 @@ def owed_checks(*, criteria: list[str], use_owed: bool, floor_command: str | Non
         checks.extend(_check("acceptance-criterion", criterion, "--criterion", criterion) for criterion in criteria)
     if use_owed:
         checks.append(_check("use", None, "--job-from-artifact"))
-    # The holder supplies the floor command once, at the handoff; the builder never writes or picks one.
-    checks.append({"stage": "floor", "criterion": None, "row": None, "command": [], "floor_command": floor_command})
-    # No stage runs reach: the read-only decision reports it, and the builder answers it with a reach reading.
-    checks.append({"stage": "reach", "criterion": None, "row": None, "command": []})
-    checks.append(_check("ready-reviewers"))
+    checks.append(_check("cold-reader"))
     checks.append(_check("proof"))
     return checks
 
@@ -305,7 +331,7 @@ def _check_entry(check: dict, block: list[str]) -> tuple[list[str], str | None]:
             "under \"Holder's review against the brief\" with an `Accepted: path:lines " + DASH + " KIND "
             + DASH + " reason` line for each flag you decline. After repairs run the reader again. Once "
             "nothing stands, post the same marker with `status=clean` and your head. The entrance holds "
-            "`run use`, `run ready-reviewers` and `run proof` until a `clean` stands at your head.")
+            "`run proof` until a `clean` stands at your head.")
     return block, None
 
 
