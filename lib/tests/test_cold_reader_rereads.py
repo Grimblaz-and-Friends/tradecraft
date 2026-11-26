@@ -578,7 +578,7 @@ def test_judge_refuses_an_account_in_the_wrong_form_and_says_why(tmp_path):
     assert "missing heading ## Earlier flags" in result.stdout
 
 
-def test_a_builders_reread_report_counts_each_new_flag_and_each_earlier_flag_left_not_answered():
+def test_a_reread_report_read_without_its_record_counts_each_new_flag_and_each_not_answered_one():
     import readiness
     returned = recheck([("F1", "answered"), ("F2", "not-answered")], flags=flag("a.py:3", "history", "a past run"))
     assert readiness.report_findings("cold-reader", returned) == [
@@ -586,3 +586,60 @@ def test_a_builders_reread_report_counts_each_new_flag_and_each_earlier_flag_lef
         {"finding": "F2", "text": f"F2 {EM} not-answered"}]
     assert readiness.report_findings("cold-reader", recheck([("F1", "answered")], tell="no")) == [
         {"finding": "F1", "text": "Can tell: no"}]
+
+
+def _bundle(store, name, request, run=None, files=None):
+    output = store / name / "result.md"
+    output.parent.mkdir(parents=True)
+    work.records.write_json(work.records.sidecar(output, ".request.json"), {
+        "schema_version": 2, "work": "o/r#5", "launched_at": "2026-11-22T00:00:00+00:00", **request})
+    work.records.write_json(work.records.sidecar(output, ".run.json"),
+                            {"schema_version": 2, "dispatch_id": request["dispatch_id"], **(run or {})})
+    for suffix, content in (files or {}).items():
+        work.records.sidecar(output, suffix).write_bytes(content)
+
+
+@pytest.mark.cold_reading
+@pytest.mark.parametrize("reread", [False, True])
+def test_a_builders_record_owes_no_entry_for_a_flag_outside_the_change(change, monkeypatch, reread):
+    import hashlib
+    import readiness
+    base_file(change, "c.py", TEN)
+    change.commit({"c.py": TEN.replace("line 5\n", "line five\n")})
+    written, old = flag("c.py:5", text="the written line"), flag("c.py:2", text="an old line")
+    returned = first(written, old, tell="no")
+    if reread:
+        change.reviewed(first(flag("c.py:5", "missing-reason", "five has no reason")))
+        change.commit({"c.py": TEN.replace("line 5\n", "line five\n").replace("line 7\n", "line seven\n")})
+        written, old = flag("c.py:7", text="the written line"), flag("c.py:5", text="an already-read line")
+        returned = recheck([("F1", "not-answered")], flags="\n".join((written, old)))
+    change.read(returned)
+    root = Path(change.record()["tree_root"])
+    composed = b"the composed reading"
+    monkeypatch.setattr(work, "_recompose_reading", lambda state, tree, home: (composed, change.head, ""))
+    monkeypatch.setattr(work, "_records_home", lambda _state: change.home)
+    store = change.tmp / "builder-store"
+    _bundle(store, "stretch", {"dispatch_id": "a" * 32, "stage": "stretch"})
+    _bundle(store, "reading", {"dispatch_id": "c" * 32, "stage": "cold-reader", "root": str(root),
+                               "launched_by": {"dispatch_id": "a" * 32}},
+            {"outcome": "success", "staffing_status": "degraded"},
+            {".dispatch.bin": composed, ".source.bin": returned.encode("utf-8")})
+    body = (f"<!-- tradecraft:check-report:v1 stage=cold-reader dispatch={'c' * 32} head={change.head} "
+            f"dispatch_sha256={hashlib.sha256(composed).hexdigest()} tree=held staffing_status=degraded "
+            "outcome=success -->\n\n" + returned)
+    state = SimpleNamespace(repo="o/r", issue_number=5, record_root=store, holder_root=change.root,
+                            config=work.WorkConfig(marker_producers=frozenset({"producer"})),
+                            issue_comments=[{"id": 77, "body": body, "user": {"login": "producer"}}])
+    report = work.builder_checks(state)["check_reports"][0]
+    assert report["counts"] is True, report["invalid"]
+    standing = [written, "c.py:5 " + EM + " missing-reason " + EM + " five has no reason"] if reread else [
+        written, "Can tell: no"]
+    assert report["findings"] == [f"F{number}" for number in range(1, len(standing) + 1)]
+    assert [item["text"] for item in readiness.report_findings(
+        "cold-reader", returned, change.record(), change.root)] == standing
+    assert report["outside"] == [{"flag": old, "reason": "old-line"}]
+    record = {"findings": [{"report": 77, "finding": finding, "disposition": "declined", "reason": "judged"}
+                           for finding in report["findings"]]}
+    reconciled = readiness.reconcile(record, [{"report": 77, "named": True, "findings": report["findings"]}],
+                                     lambda commit: True)
+    assert reconciled["unreconciled"] == []

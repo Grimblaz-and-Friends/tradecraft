@@ -12502,13 +12502,28 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
         if not reasons:
             # A counting report's findings, read from the return tail its composed dispatch fixed.
             stage = bundle[1].get("stage")
+            # A reading's flags are placed from the sealed record its dispatch recomposed from, so a flag outside
+            # the change is listed apart and no record owes it an entry.
+            record = _report_reading_record(bundle[1]) if stage == "cold-reader" else None
             entry.update({"stage": stage, "head": attributes.get("head"), "criterion": attributes.get("criterion"),
                           "row": int(attributes["row"]) if str(attributes.get("row", "")).isdigit() else None,
                           "outcome": attributes.get("outcome"),
-                          "findings": [item["finding"] for item in readiness.report_findings(stage, posted_text)]
+                          "findings": [item["finding"] for item in readiness.report_findings(
+                              stage, posted_text, record, getattr(state, "holder_root", None))]
                           if stage in readiness.RETURN_TAILS else []})
+            if record is not None and not cold_reader.account_errors(record, posted_text):
+                entry["outside"] = cold_reader.counted_findings(
+                    record, posted_text, getattr(state, "holder_root", None))[1]
         reports.append(entry)
     return {"check_dispatches": dispatches, "check_reports": reports, "quotations": quotations}
+
+
+def _report_reading_record(request: dict) -> dict | None:
+    """The sealed reading record a cold-reader bundle's tree names, or None where it can't be read."""
+    try:
+        return cold_reader.load_metadata(cold_reader.reading_record(Path(request["root"]), _records_home(None)))
+    except (KeyError, TypeError, OSError, cold_reader.ColdReaderError):
+        return None
 
 
 def _posts_check_report(body: str) -> bool:

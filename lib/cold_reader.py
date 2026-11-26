@@ -1206,3 +1206,20 @@ def assess(readings: list[dict], present: dict, root: Path) -> dict:
     return {"stale": sorted(unread), "unread": unread, "flags": standing, "standing_no": standing_no,
             "owed": [] if order is None else order["covered"], "placements": placements,
             "gained_unknown": sorted(unknown), "order": order}
+
+
+def counted_findings(metadata: dict, text: str, root: Path) -> tuple[list[str], list[dict]]:
+    """A reading's findings as a builder's record answers them, and, apart, its flags outside the change.
+
+    The findings are each flag that stands, its own and each earlier one it left `not-answered`, then a
+    `Can tell: no`; a flag outside the change needs nothing, so no record owes it an entry.
+    """
+    account = parse_account(text, mode_of(metadata))
+    reading = {"record": metadata, "flags": reading_flags(metadata, account)}
+    placed = placement(reading, record_lines(root, reading, {}))
+    findings = [flag_line(flag) for flag, entry in zip(reading["flags"], placed) if entry["stands"]]
+    if account["can_tell"] is False:
+        findings.append("Can tell: no")
+    outside = [{"flag": flag_line(flag), "reason": entry["reason"]}
+               for flag, entry in zip(reading["flags"], placed) if not entry["stands"]]
+    return findings, outside
