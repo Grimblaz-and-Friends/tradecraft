@@ -2069,6 +2069,9 @@ def test_a_use_consumer_is_judged_on_the_bytes_it_launches(job, tmp_path, monkey
 def test_894_a_seat_without_a_shell_carries_no_github_write_bound(job, tmp_path, monkeypatch, stage, requires):
     args, _ = job
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    # A session launched under a write bound carries both itself, so the suite run inside one clears them here.
+    for name in ("ENABLE_CLAUDEAI_MCP_SERVERS", "TRADECRAFT_CHILD_SETTINGS"):
+        monkeypatch.delenv(name, raising=False)
     args.stage, args.requires = stage, requires
     if stage in ("use", "cold-reader"):
         args.classification = "cold"

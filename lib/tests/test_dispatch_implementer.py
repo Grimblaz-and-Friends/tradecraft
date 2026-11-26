@@ -1956,7 +1956,9 @@ def test_887_R1_1_R2_1_R4_1_every_claude_route_is_protected_and_recorded(job, mo
     assert "launch notice" in work._composition_error(request, None)
 
 
-def test_887_R4_1_codex_implementer_records_carry_neither_field(job):
+def test_887_R4_1_codex_implementer_records_carry_neither_field(job, monkeypatch):
+    # A launched session switches background work off itself, so the suite run inside one clears the switch here.
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", raising=False)
     args, scenario = job
     configure(job, {"stdout": success_events(), "message": "built"})
     assert implementer.run_implementer(args) == 0
