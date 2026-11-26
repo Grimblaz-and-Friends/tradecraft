@@ -54,8 +54,8 @@ HEADING = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 # Built at run time: string constants stay ASCII, since a platform encoding can garble captured output.
 EM_DASH, EN_DASH = chr(0x2014), chr(0x2013)
-# A reader names one finding at several places as a comma list; the gate holds a flag by its file, so a
-# list owes nothing more.
+# A reader names one finding at several places as a comma list; it stands where any of them touches a judged
+# line, and a reread judges it as one flag, so a list owes nothing more.
 LINE_ITEM = r"[0-9]+(?:[-" + EN_DASH + r"][0-9]+)?"
 LINES = LINE_ITEM + r"(?:,[ \t]*" + LINE_ITEM + r")*"
 # Lenient on dashes, bullets and backticks, so a reader's stray formatting doesn't refuse a whole account.
@@ -1127,8 +1127,8 @@ def assess(readings: list[dict], present: dict, root: Path) -> dict:
             # A later reread judged it: `answered` cleared it, and `not-answered` carried it into that reading.
             if judged_later.get((digest, position), -1) > index:
                 continue
-            # A later reading of whole files, version 1 or a first reading, that reaches it judged it again, as
-            # every reading did before rereads checked fixes; it is how two version 1 readings still clear.
+            # A later reading of whole files, version 1 or a first reading, that reaches its path has judged it
+            # again, so the flag needs no verdict of its own.
             if any(mode_of(later["record"]) == "first" and _reaches(later, flag["path"])
                    for later in readings[index + 1:]):
                 continue

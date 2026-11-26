@@ -5961,6 +5961,7 @@ def _reading_placement_report(metadata: dict, returned: str) -> dict[str, object
     """Each earlier flag's verdict and each flag outside the change, so whoever posts the reading sees what stands."""
     account = cold_reader.parse_account(returned, cold_reader.mode_of(metadata))
     reading = {"record": metadata, "flags": cold_reader.reading_flags(metadata, account)}
+    # A record this run just built is version 2, whose lines are sealed, so no source is read for them.
     placed = cold_reader.placement(reading, cold_reader.record_lines(Path("."), reading, {}))
     return {"verdicts": {flag_id: value["verdict"] for flag_id, value in account["verdicts"].items()},
             "standing": [cold_reader.flag_line(flag) for flag, entry in zip(reading["flags"], placed)
