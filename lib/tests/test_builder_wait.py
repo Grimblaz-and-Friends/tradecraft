@@ -319,7 +319,7 @@ def test_a_replayed_log_prints_each_step_once_in_order_within_a_minute_with_stat
     # The step's own account where it gave one, else its main argument; a helper's step is marked as one.
     assert "step: Bash: Orient in the tree" in expected and "step: Read: lib/job.py" in expected
     assert "helper step: Grep: def run_job" in expected and "step: Skill: tradecraft:persist-changes" in expected
-    assert "step: Bash: git push origin HEAD" in expected
+    assert "step: Bash: git push origin HEAD ..." in expected
     status = [(at, text) for at, text in out.lines if text.startswith("builder for ")]
     assert status[0][0] == T0 and len(status) >= 2
     run = json.loads(builder.run.read_bytes())
@@ -591,3 +591,19 @@ def test_a_log_unread_at_the_start_opens_with_its_last_steps_rather_than_replayi
     assert code == 0
     assert out.texts("earlier step:") == [f"earlier step: Bash: {text}" for text in ("Step 7", "Step 8", "Step 9")]
     assert out.texts("step:") == ["step: Bash: A new step"]
+
+
+def test_a_crashed_latest_launch_is_named_when_no_builder_runs(launcher):
+    clock = Clock(T0)
+    older = Builder(clock, launcher(), launched=T0 - timedelta(hours=3))
+    older.complete("success")
+    crashed = Builder(clock, launcher(), launched=T0 - timedelta(hours=1))
+    crashed.crash()
+    code, out = watch(clock)
+    assert code == 0 and out.texts() == [f"no launched builder of {WORK} is running; its latest builder launch, "
+                                         f"{crashed.dispatch_id}, ended without completing its record"]
+
+
+def test_a_command_with_no_description_is_named_by_its_first_line_and_marked_when_more_follow():
+    assert builder_wait._what({"command": "git push origin HEAD\ngit status"}) == "git push origin HEAD ..."
+    assert builder_wait._what({"command": "git status"}) == "git status"

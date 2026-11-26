@@ -511,7 +511,7 @@ def watch(name: str, fixture: Fixture) -> int:
     if replay is not None:
         say(f"--- the stand-in appends {replay} line by line ---\n")
     command, argv = _wait_argv(fixture)
-    say(f"--- {_clock()} the wait, started as the handed-off report prints it: {command} ---\n")
+    say(f"--- {_clock()} the wait, by the command a handed-off report prints, run by this interpreter: {command} ---\n")
     wait = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     ended: dict[str, str] = {}
 
@@ -560,7 +560,8 @@ def wait_once(fixture: Fixture) -> int:
     """The decision, then the wait run once against it, its lines printed as it prints them."""
     code = fixture.decision(fixture.state())
     command, argv = _wait_argv(fixture)
-    sys.stdout.write(f"--- {_clock()} the wait, started as the handed-off report would print it: {command} ---\n")
+    sys.stdout.write(f"--- {_clock()} the wait, by the command a handed-off report prints, run by this interpreter: "
+                     f"{command} ---\n")
     sys.stdout.flush()
     result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
     sys.stdout.write("".join("wait| " + line + "\n" for line in

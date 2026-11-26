@@ -94,7 +94,8 @@ def test_a_watched_builder_is_read_as_its_records_say_and_the_wait_ends_with_it(
     assert detail["started_at"] == records["run"]["launched_at"]
     assert detail["limit_seconds"] == records["request_limit_seconds"] == work.DEFAULT_STRETCH_TIMEOUT_SECONDS
     assert abs(detail["running_seconds"] - records["run"]["elapsed_checkpoint_seconds"]) < 60
-    assert detail["wait"] == out.split("the wait, started as the handed-off report prints it: ", 1)[1].split(" ---")[0]
+    started = out.split("the wait, by the command a handed-off report prints, run by this interpreter: ", 1)[1]
+    assert detail["wait"] == started.split(" ---")[0]
     assert detail["quiet_seconds"] < 60
     # The replay appends the recorded log, not the stand-in's own steps, so its steps are held by the next test.
     if name != "watch-replay":

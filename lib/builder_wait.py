@@ -45,8 +45,9 @@ HAND_NOT_MEASURED = ("a builder started by hand isn't measured: the owner starte
                      "there, and no launch records its time, limit or steps")
 WAIT_SENTENCE = ("Start this in your runtime's background, so that only its end wakes you; don't read its lines "
                  "or check on the builder while it runs. The builder's own closing message still comes when it "
-                 "ends on its own; when the wait ends with no message from it, read the decision once and tell "
-                 "the owner what it says.")
+                 "ends on its own, where its handoff named you with --notify; when the wait ends with no message "
+                 "from it, read the decision once and tell the owner what it says, and start the wait again where "
+                 "that decision still reads with-builder.")
 
 
 def wait_command(repo: str, issue: int, holder_root, plugin_root, instalment: str | None = None) -> str:
@@ -83,7 +84,9 @@ def _what(tool_input) -> str:
         text = next((tool_input[key] for key in MAIN_ARGUMENTS
                      if isinstance(tool_input.get(key), str) and tool_input[key].strip()), "")
         if text == tool_input.get("command"):
-            text = text.strip().splitlines()[0] if text.strip() else ""
+            # A command runs one line after another, so its first is what it starts with; a mark says more followed.
+            lines = text.strip().splitlines()
+            text = lines[0] + (" ..." if len(lines) > 1 else "") if lines else ""
     text = " ".join(text.split())
     return text if len(text) <= WHAT_LIMIT else text[:WHAT_LIMIT - 3] + "..."
 
@@ -251,8 +254,9 @@ class Launch:
 def reading(launch: Launch, now: datetime) -> dict[str, object]:
     """The facts the wait's status line and the "with builder" decision both show, from one read of the records.
 
-    Running time is counted to the run's completion where it completed; quiet is since the builder last
-    began or finished a step, never the log's last write, which heartbeats keep fresh.
+    Running time is counted to the run's completion where it completed; quiet is since the log's latest
+    assistant or user record, when the builder last began or finished a step or wrote a reply, never the log's
+    last write, which heartbeats keep fresh.
     """
     end = _moment(launch.run.get("completed_at")) or now
     started = launch.started
@@ -429,13 +433,16 @@ def _launched(store: Path, work: str, instalment: str | None) -> tuple[list[dict
 
 
 def _last_ended(store: Path, work: str) -> str | None:
+    """How this work's latest builder launch ended; one that died leaves its record open, and is named as such."""
     bundles = lifecycle.launch_bundles(store, work, {"stretch"})
-    for _order, _path, request, run in reversed(bundles):
-        if run.get("completed_at"):
-            cause = f", {run['interruption_cause']}" if run.get("interruption_cause") else ""
-            return (f"its latest builder launch, {request.get('dispatch_id')}, ended at {run['completed_at']}: "
-                    f"{run.get('lifecycle') or 'completed'}, {run.get('outcome') or 'no outcome recorded'}{cause}")
-    return None
+    if not bundles:
+        return None
+    _order, _path, request, run = bundles[-1]
+    if not run.get("completed_at"):
+        return f"its latest builder launch, {request.get('dispatch_id')}, ended without completing its record"
+    cause = f", {run['interruption_cause']}" if run.get("interruption_cause") else ""
+    return (f"its latest builder launch, {request.get('dispatch_id')}, ended at {run['completed_at']}: "
+            f"{run.get('lifecycle') or 'completed'}, {run.get('outcome') or 'no outcome recorded'}{cause}")
 
 
 def wait(store, repo: str, issue: int, *, instalment: str | None = None, out=None, clock=None, sleep=None) -> int:
