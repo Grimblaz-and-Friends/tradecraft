@@ -4,10 +4,11 @@ The route fixture's `watch-` scenarios start it as a child, so the holder's wait
 Its run record is rewritten by the launchers' own writer, `dispatch_lifecycle.atomic_record`, and its log
 is in Claude's stream form: an `assistant` record for each step, `tool_progress` heartbeats while a step
 runs, and a `user` record for each step's result. MODE says how it ends: `ready` completes the record
-with success, `stopped` completes it as failed, `limit` completes it as stopped at its ceiling when its
-limit is reached, and `crash` dies without completing it. With `--replay`
-it appends a recorded-form log line by line instead of its own steps. With `--hold-until PATH` it waits
-for PATH before it ends, so a scenario reads it while it runs however slowly that scenario's machine is.
+with success, `stopped` completes it as failed, `limit` completes it as stopped at its ceiling once its
+limit has passed, and `crash` dies without completing it. With `--replay` it appends a recorded-form log
+line by line instead of its own steps. With `--hold-until PATH` it waits for PATH before it ends, so a
+scenario reads it while it runs however slowly that scenario's machine is.
+Design: lib/DESIGN.md#the-builder-route
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import os
 from pathlib import Path
 import sys
 import time
+from typing import NamedTuple
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -30,17 +32,29 @@ SESSION = "00000000-0000-4000-8000-00000000f1f0"
 EARLIER = (("Bash", {"command": "git log --oneline -3", "description": "Orient in the tree"}),
            ("Read", {"file_path": "lib/job.py"}),
            ("Bash", {"command": "python -B -m pytest -q lib/tests", "description": "Run the job's tests"}))
-# The steps taken while the wait watches: (seconds after the start, tool, input, a helper's step).
-LIVE = ((2, "Edit", {"file_path": "lib/job.py", "old_string": "a", "new_string": "b"}, False),
-        (4, "Agent", {"description": "Read the job's callers", "prompt": "List the job's callers."}, False),
-        (6, "Grep", {"pattern": "def run_job"}, True),
-        (8, "Bash", {"command": "python -B -m pytest -q lib/tests/test_job.py",
-                     "description": "Run the job's tests a second time"}, False))
+
+
+class Live(NamedTuple):
+    seconds_after_start: float
+    tool: str
+    tool_input: dict
+    inside_helper: bool
+
+
+# The steps taken while the wait watches.
+LIVE = (Live(2, "Edit", {"file_path": "lib/job.py", "old_string": "a", "new_string": "b"}, False),
+        Live(4, "Agent", {"description": "Read the job's callers", "prompt": "List the job's callers."}, False),
+        Live(6, "Grep", {"pattern": "def run_job"}, True),
+        Live(8, "Bash", {"command": "python -B -m pytest -q lib/tests/test_job.py",
+                         "description": "Run the job's tests a second time"}, False))
 # Seconds after the start at which the last live step's result comes; until then only heartbeats are written, so
 # the builder is quiet for a known span with a step running.
 QUIET_UNTIL = 20
 # Seconds after the start at which it ends: a moment after that result, so its end isn't read with the step's.
 END_AT = 22
+# How often it rewrites its record and beats. Slower than the launchers' quarter second, which changes nothing
+# the wait reads: it reads only the record's latest state.
+PACE_SECONDS = 1.0
 # How long it waits for --hold-until's file, so a stand-in whose scenario died doesn't run on.
 HELD_SECONDS = 120.0
 
@@ -79,7 +93,7 @@ class Run:
         self.path, self.launched = path, launched
         self.record = {"schema_version": 2, "dispatch_id": dispatch, "launched_at": launched.isoformat(),
                        "launcher_process": lifecycle.process_identity(), "lifecycle": "running",
-                       "elapsed_checkpoint_seconds": 0, "elapsed_checkpoint_interval_seconds": 1.0,
+                       "elapsed_checkpoint_seconds": 0, "elapsed_checkpoint_interval_seconds": PACE_SECONDS,
                        "attempts": [{"vendor": "claude", "launched": True, "stdout": str(log),
                                      "source_format": "claude-stream-json"}]}
 
@@ -101,7 +115,7 @@ def _hold(run: Run, until: float, started: float, beat=None) -> None:
         run.checkpoint()
         if beat is not None:
             beat()
-        time.sleep(1.0)
+        time.sleep(PACE_SECONDS)
 
 
 def _held(run: Run, path: Path | None, beat=None) -> None:
@@ -111,7 +125,7 @@ def _held(run: Run, path: Path | None, beat=None) -> None:
         run.checkpoint()
         if beat is not None:
             beat()
-        time.sleep(0.5)
+        time.sleep(PACE_SECONDS)
 
 
 def main(argv: list[str] | None = None) -> int:
