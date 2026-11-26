@@ -491,7 +491,8 @@ def test_the_wait_tries_no_connection_no_program_and_no_lookup_of_gh_or_claude(l
     monkeypatch.setattr(builder_wait, "datetime", type("Clocked", (datetime,), {"now": staticmethod(
         lambda tz=None: clock())}))
     assert work.run(args) == 0
-    # Where the platform has no /proc, the liveness lookup reads a process's start time with `ps`; nothing else runs.
+    # Where the platform has no /proc, the builder check and the liveness lookup read a process with `ps`;
+    # nothing else runs.
     assert [attempt for attempt in tried if not (attempt[0] == "subprocess.Popen" and not Path("/proc").is_dir()
                                                  and "ps" in str(attempt[1]))] == []
 
