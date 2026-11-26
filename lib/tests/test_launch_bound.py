@@ -494,7 +494,10 @@ def test_984_ac4_in_time_the_comparison_records_what_it_recorded_before(tmp_path
     if end == "distant":
         import time
         kwargs.update(end=time.monotonic() + 3600, allowance="3600.0s, the comparison's own limit")
-    assert normalized(launch_bound.compare(**kwargs), tmp_path) == GOLDEN
+    result = launch_bound.compare(**kwargs)
+    # The golden covers no plugins folder, so nothing in it is released; the rest is held to the literal.
+    assert result.pop("released") == []
+    assert normalized(result, tmp_path) == GOLDEN
 
 
 def _paths(tmp_path, count, runs=3):
