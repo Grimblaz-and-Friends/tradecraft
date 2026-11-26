@@ -3,7 +3,7 @@
 The entrance and the gate are two implementations of one proof contract. Each case stands up one in-process
 GitHub over a real Git history, has the entrance collect it and publish its proof there through its own publish
 step, then has the copied gate read the same GitHub. A red means the entrance under test composes a proof the
-copied gate refuses; `tools/gate/README.md` says what a session may and may not do about it.
+copied gate refuses; `tools/gate/README.md#what-a-red-means` says what a session may and may not do about it.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ REPO, ISSUE, NUMBER, PRODUCER = route_fixture.REPO, route_fixture.ISSUE, 7, rout
 OBSERVED = route_fixture.START + timedelta(days=1)
 POLICY, CONFIG = ".github/change-proof.json", ".tradecraft/work.json"
 WORKFLOW, JOB = ".github/workflows/ci.yml", "lint-and-test"
-# Every case's name. A closing test fails unless each ran and passed in this session.
+# A closing test fails unless each ran and passed in this session.
 CASES = ("builder-report-at-head", "builder-report-at-earlier-commit", "relay-use-marker", "mechanical-lane",
          "no-use")
 PASSED: set[str] = set()
@@ -451,7 +451,7 @@ def test_the_copied_gate_passes_the_proof_the_entrance_composed(name, tmp_path, 
         source = document[kind]["source"]
         if source is not None:
             # Read by the gate's own parser: the marker a source opens with is what the gate judges it by.
-            records = case.github.issue_comments + case.github.pr_comments
+            records = case.github.issue_comments if source["kind"] == "issue-comment" else case.github.pr_comments
             found = gate.markers([next(item for item in records if item["id"] == source["id"])])
             NAMED_SOURCES[kind].add(found[0].name if found else None)
     if name == "builder-report-at-head":

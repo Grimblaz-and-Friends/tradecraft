@@ -30,6 +30,8 @@ A change that needs a newer gate refreshes the copy in its own diff: fetch `proo
 
 ## The substrate lint
 
-`tools/substrate_lint.py` passes over the copy only while its bytes match `source.json`, since its rules are for code this repository writes; an edited copy is judged like any file here.
+`tools/substrate_lint.py`'s Python-file guards pass over the copy only while its bytes match `source.json`, since their rules are for code this repository writes; an edited copy is judged like any file here. Its whole-file guards read the copy as they read every file.
 
-**Decisions in force:** D-1044, the suite running the required gate, copied at a named commit, over the proofs the entrance composes.
+## Decisions in force
+
+[D-1044](../../docs/architecture/decisions/D-1044-2026-11-26-the-suite-runs-the-copied-gate-over-composed-proofs.md), the suite running the required gate, copied at a named commit, over the proofs the entrance composes: the copy, its place under `tools/`, the stand-in both readers read, and the lint's pass over the copy.

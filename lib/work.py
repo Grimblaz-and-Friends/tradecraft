@@ -8257,8 +8257,7 @@ def _launch_declaration(stage: str, row: tuple | None) -> dict[str, object]:
 PROOF_SOURCE_MARKERS = {"use": frozenset({"use", "check-report", "affirmed-brief"}), "floor": frozenset({"floor"})}
 
 
-def _refuse_unlisted_source(state: WorkState, evidence: str, source: dict[str, object] | None) -> None:
-    """Refuse a proof naming a held comment, as its EVIDENCE source, that opens with a marker it may not name."""
+def _refuse_unlisted_source(state: WorkState, section: str, source: dict[str, object] | None) -> None:
     kind, identity = (source or {}).get("kind"), (source or {}).get("id")
     held = (state.issue_comments if kind == "issue-comment"
             else state.pr_comments if kind == "pull-request-comment" else [])
@@ -8267,11 +8266,11 @@ def _refuse_unlisted_source(state: WorkState, evidence: str, source: dict[str, o
         return  # a source the state holds no comment for is the gate's to refuse, by the record it finds
     found = markers(_marker_sources([record], str(kind)))
     opening = found[0].name if found else None
-    if opening not in PROOF_SOURCE_MARKERS[evidence]:
+    if opening not in PROOF_SOURCE_MARKERS[section]:
         raise WorkError(
-            f"proof would name {kind} #{identity} as its {evidence} source, which opens with "
-            + (f"a {opening} marker" if opening else "no marker") + f"; a {evidence} source opens with "
-            + " or ".join(sorted(PROOF_SOURCE_MARKERS[evidence])))
+            f"proof would name {kind} #{identity} as its {section} source, which opens with "
+            + (f"a {opening} marker" if opening else "no marker") + f"; a {section} source opens with "
+            + " or ".join(sorted(PROOF_SOURCE_MARKERS[section])))
 
 
 def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, object]:
