@@ -316,8 +316,7 @@ class Waiter:
         self.work, self.launch, self.out, self.clock, self.sleep = work, launch, out, clock, sleep
         self.failing: dict[str, list] = {}
         self.form_said = False
-        # Whether the log's last few steps were shown yet; until a read succeeds, the first one shows them.
-        self.opened = False
+        self.earlier_steps_shown = False
 
     def say(self, text: str) -> None:
         self.out.write(f"{self.clock().astimezone().strftime('%H:%M:%S')} {text}\n")
@@ -346,9 +345,9 @@ class Waiter:
         if log.readable is False and not self.form_said:
             self.form_said = True
             self.say("the builder's log isn't in Claude's stream form, so its steps can't be read; status lines only")
-        if not self.opened:
+        if not self.earlier_steps_shown:
             # A log the wait couldn't read at its start opens as a start would, rather than replaying every step.
-            self.opened = True
+            self.earlier_steps_shown = True
             for step in log.steps[-EARLIER_STEPS:]:
                 self.say(f"earlier step: {step.text()}")
             return
@@ -368,13 +367,13 @@ class Waiter:
         self._try("request record", launch.pointer.get("request"), launch.read_request)
         self._try("run record", launch.pointer.get("run"), launch.read_run)
         log = launch.log
-        self.opened = log is not None and self._try("builder log", log.path, log.read)
-        if self.opened and log.readable is False:
+        self.earlier_steps_shown = log is not None and self._try("builder log", log.path, log.read)
+        if self.earlier_steps_shown and log.readable is False:
             self.form_said = True
             self.say("the builder's log isn't in Claude's stream form, so its steps can't be read; "
                      "status lines only")
         self._status()
-        for step in (log.steps[-EARLIER_STEPS:] if self.opened else []):
+        for step in (log.steps[-EARLIER_STEPS:] if self.earlier_steps_shown else []):
             self.say(f"earlier step: {step.text()}")
         next_status = self.clock() + timedelta(seconds=STATUS_SECONDS)
         while True:
