@@ -1791,7 +1791,9 @@ def test_887_R1_1_R2_1_R4_1_claude_seat_launches_protected_and_says_so(job, monk
     assert record(args)["attempts"][0]["stream_check"]["status"] == "clean"
 
 
-def test_887_R4_1_codex_seat_records_carry_neither_field(job):
+def test_887_R4_1_codex_seat_records_carry_neither_field(job, monkeypatch):
+    # A launched session switches background work off itself, so the suite run inside one clears the switch here.
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", raising=False)
     args, _ = job
     args.vendor = args.own_vendor = "codex"
     assert seat.run_dispatch(args) == 0
