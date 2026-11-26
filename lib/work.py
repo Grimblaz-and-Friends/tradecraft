@@ -7242,6 +7242,54 @@ def validated_grants(state: WorkState, comment_ids, stage: str, continuity: str 
     return accepted
 
 
+def _check_account(mechanical: bool) -> str:
+    """What a build or repair turn runs and returns for each check it owes; one text for both lanes."""
+    # A small repair shouldn't rerun a long check that nothing since its last run can reach.
+    # Design: lib/DESIGN.md#a-relay-turns-own-checks
+    if mechanical:
+        noun, ident = "row", "row number"
+        mapping = (
+            " At the end of every build or implementation repair (including reviewer disposition, "
+            "use findings, or a floor turn changing implementation), map each affirmed brief row "
+            "to a committed test carried by CI, a check you can run, or an owed fresh reader. "
+            "Where a row names its checks after `Checks:` in the owner's cell, map those named checks "
+            "rather than your own reading of the row; map a row that names none as before. "
+            "Commit executable obligations as tests where feasible."
+        )
+        fresh = (
+            " Return each owed fresh-reader row's number and exact affirmed row text, required capability "
+            "and needed inputs for a separate holder-launched recorded seat; do not launch or judge that reader."
+        )
+    else:
+        noun, ident = "criterion", "ID"
+        mapping = (
+            " At the end of every build or implementation repair (including reviewer disposition, "
+            "use findings, or a floor turn changing implementation), map every artifact acceptance "
+            "criterion to a committed test carried by CI, a check you can run, or an owed fresh reader. "
+            "Commit executable criteria as tests when they can be tests."
+        )
+        fresh = (
+            " Return each owed fresh-reader criterion's ID and exact artifact text "
+            "for a separate holder-launched recorded seat; do not launch or judge that reader."
+        )
+    return mapping + (
+        f" For each remaining builder-executable {noun}, run its check at this turn's final head "
+        "when it has no earlier result in this change that you can cite by revision, or when anything "
+        "changed since the revision it last ran at can affect it: this turn's commits, an earlier "
+        "turn's, or a merge of the base. Where you cannot rule out that a change affects it, run it. "
+        f"Run every {noun} that a holder reading in this dispatch, or the holder's own text sent with "
+        "it, names to be run, whatever your own view, unless an earlier turn of yours already ran it after "
+        "receiving that reading. "
+        f"Return each {noun} you ran with its {ident}, command or procedure, tested revision, result "
+        f"and limitation. Return every other builder-executable {noun} too, with its {ident}, the "
+        "revision it last ran at, its result there, and why nothing changed since that revision can "
+        "affect it; the holder reads each such reason and has the check run where it does not hold."
+    ) + fresh + (
+        f" Owe this whole account, every {noun} run at the final head or returned from its last run "
+        "with its reason, after every repair, even on an already-ready pull request."
+    )
+
+
 def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None,
                   branch: str | None = None, *, floor_command: str | None = None,
                   merge_obligation: MergeObligation | None = None,
@@ -7294,27 +7342,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     if decision.stage in {"build", "floor", "review-disposition"}:
         instruction += " " + build_reach.PRESERVATION
         instruction += version_instruction
-        instruction += (
-            " At the end of every build or implementation repair (including reviewer disposition, "
-            "use findings, or a floor turn changing implementation), map each affirmed brief row "
-            "to a committed test carried by CI, a check you can run, or an owed fresh reader. "
-            "Where a row names its checks after `Checks:` in the owner's cell, map those named checks "
-            "rather than your own reading of the row; map a row that names none as before. "
-            "Commit executable obligations as tests where feasible. Run each remaining builder-executable "
-            "row and return its row number, command or procedure, tested revision, result and limitation. "
-            "Return each owed fresh-reader row's number and exact affirmed row text, required capability "
-            "and needed inputs for a separate holder-launched recorded seat; do not launch or judge that reader. "
-            "Repairs renew this duty even on an already-ready pull request."
-        ) if mechanical else (
-            " At the end of every build or implementation repair (including reviewer disposition, "
-            "use findings, or a floor turn changing implementation), map every artifact acceptance "
-            "criterion to a committed test carried by CI, a check you can run, or an owed fresh reader. "
-            "Commit executable criteria as tests when they can be tests. Run each remaining "
-            "builder-executable criterion and return its ID, command or procedure, tested revision, "
-            "result and limitation. Return each owed fresh-reader criterion's ID and exact artifact "
-            "text for a separate holder-launched recorded seat; do not launch or judge that reader. "
-            "Repairs renew this duty even on an already-ready pull request."
-        )
+        instruction += _check_account(mechanical)
     if decision.stage == "review-disposition":
         instruction += CLOUD_REPLY_INSTRUCTION if cloud else _thread_resolution_clause(state)
     if decision.stage in GITHUB_BOUND_STAGES:
