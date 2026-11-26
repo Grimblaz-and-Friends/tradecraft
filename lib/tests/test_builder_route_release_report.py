@@ -111,12 +111,14 @@ def test_a_hand_started_builders_stretch_reads_not_applicable_and_its_owed_check
     assert stretch["status"] == "not-applicable"
     assert stretch["reason"] == "a builder started by hand has no launch whose length the entrance measured"
     # The hand record's handoff block owes the cold reader and the criterion with a fresh reader; the record named
-    # only use, so 1.1 fails on what it left.
+    # only use, so 1.1 fails on what it left. Its pull request is still a draft, so the chain's own first stage,
+    # the ready step's reach, is listed before them.
     owed = report["owed_at_ready"]["last"]
     assert isinstance(owed, list)
     assert {(entry["stage"], entry["criterion"]) for entry in owed} >= {("cold-reader", None),
                                                                         ("acceptance-criterion", "C2")}
-    assert all(entry["reason"] == "owed-unnamed" for entry in owed)
+    assert owed[0]["stage"] == "reach-read" and owed[0]["detail"].startswith("Before ready-reviewers")
+    assert all(entry["reason"] == "owed-unnamed" for entry in owed[1:])
     assert report["owed_at_ready"]["first"] == owed
     assert readings(report)["1.1"]["reading"] == "fails"
     assert (readings(report)["5.5"]["reading"], readings(report)["6.2"]["reading"]) == ("holds", "holds")

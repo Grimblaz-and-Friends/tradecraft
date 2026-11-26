@@ -3,7 +3,8 @@
 Guards that the handoff's table and the entrance agree on the order: driven through ``handoff.BUILDER_STEPS`` with a
 base that requires resolved review threads and a fixed commit after the floor ran, the read-back at each step names
 the table's next step, except for the steps the test names with their reasons, and the walk ends at `final-pass` /
-`ready-reported`. Every decision it reads is one the drift guard's flag watches.
+`ready-reported`. The reviewers, the criterion reader and use read the head marked ready, and the cold reader the
+head after the fix. Every decision it reads is one the drift guard's flag watches.
 Design: lib/DESIGN.md#the-builder-route
 """
 from __future__ import annotations
@@ -36,6 +37,12 @@ class Walk:
         self.cold_clean = self.reach_clear = self.proof = False
         self.threads = []
         self.checks, self.findings = [], []
+
+    def unreported(self, _state):
+        # A criterion reader's counting report is a launched seat's bundle, which the walk stands in for: the plan's
+        # one fresh-reader criterion is unreported until the builder's record names a check of it.
+        named = any(check["stage"] == "acceptance-criterion" for check in self.checks)
+        return [] if named else [{"criterion": "C2", "row": None}]
 
     def cold_reading(self, _state, _sha):
         # The cold reader's report and its `clean` are bundles of a launched seat over Git objects the fixture
@@ -87,6 +94,7 @@ def walk(tmp_path, monkeypatch):
     fixture = route_fixture.Fixture(tmp_path)
     walking = Walk(fixture)
     monkeypatch.setattr(work, "_cold_reading_decision", walking.cold_reading)
+    monkeypatch.setattr(work, "_unreported_readers", walking.unreported)
     monkeypatch.setattr(work, "_evaluate_reach", walking.reach)
     current = work._current_marker
     # Proof is composed from policy sources the fixture doesn't serve; the walk stands in for its marker.
@@ -140,16 +148,6 @@ def test_a_builder_taking_the_handoffs_steps_in_order_is_led_to_ready_reported(w
     took("open-pull-request", head)
     walk.checks.append(floor(fixture, head))
     took("floor", head)
-    walk.cold_clean = True
-    check("cold-reader", head)
-    took("cold-reader", head)
-    check("acceptance-criterion", head, criterion="C2")
-    took("criteria", head)
-    report, dispatch = fixture.use_report(fixture.state(), source, builder)
-    walk.checks.append({"stage": "use", "criterion": None, "row": None, "dispatch": dispatch, "head": head,
-                        "report": report, "relaunch_of": None})
-    walk.findings.append({"report": report, "finding": "F1", "disposition": "fixed", "commit": head})
-    took("use", head)
     walk.reach_clear = True
     took("reach", head)
     fixture.pr["draft"] = False
@@ -159,33 +157,49 @@ def test_a_builder_taking_the_handoffs_steps_in_order_is_led_to_ready_reported(w
     walk.threads.append({"comment_id": 501, "thread_id": "PRRT_fixture", "resolved": False, "outdated": False,
                          "author": REVIEWER})
     took("ready-reviewers", head)
+    # The criterion reader and use read the head marked ready, while the reviewers read it.
+    check("acceptance-criterion", head, criterion="C2")
+    took("criteria", head)
+    report, dispatch = fixture.use_report(fixture.state(), source, builder)
+    walk.checks.append({"stage": "use", "criterion": None, "row": None, "dispatch": dispatch, "head": head,
+                        "report": report, "relaunch_of": None})
+    took("use", head)
+    # Every report is in, so the reviewer's thread and the use finding are answered in one fix.
     (source / "job" / "job.md").write_bytes(b"run the job as corrected\n")
     route_fixture.git(source, "commit", "-q", "-am", "fix the job's line")
     fixed = route_fixture.git(source, "rev-parse", "HEAD")
     fixture.pr["head"]["sha"] = fixed
+    walk.findings.append({"report": report, "finding": "F1", "disposition": "fixed", "commit": fixed})
     fixture.review_comments.append({"id": 502, "in_reply_to_id": 501, "user": {"login": route_fixture.PRODUCER},
                                     "body": f"fixed - corrected in {fixed}",
                                     "html_url": f"https://github.invalid/{route_fixture.REPO}/pull/7#discussion_r502"})
-    took("answer-reviewers", fixed)
+    took("answer-findings", fixed)
     walk.checks.append(floor(fixture, fixed))
     took("floor-again", fixed)
     walk.threads[0]["resolved"] = True  # the resolve command's effect, which only GitHub records
     took("resolve-threads", fixed)
+    walk.cold_clean = True
+    check("cold-reader", fixed)
+    took("cold-reader", fixed)
     walk.proof = True
     took("proof", fixed)
     took("readiness-record", fixed)
 
-    # Each read-back names the table's next step, but where the entrance never names one: use, which this
-    # fixture's paths don't owe, so criteria are followed by reach; and the readiness record, which the walk
-    # posts at every step, so proof is followed by the read-back.
-    skipped = {"use": "the change's paths owe no use", "readiness-record": "the record already stands"}
+    # Each read-back names the table's next step, but where the entrance never names one: use and use again,
+    # which this fixture's paths don't owe, so criteria are followed by the answers and the cold reader by proof;
+    # and the readiness record, which the walk posts at every step, so proof is followed by the read-back.
+    skipped = {"use": "the change's paths owe no use", "use-again": "the change's paths owe no use",
+               "readiness-record": "the record already stands"}
     order = [key for key in KEYS if key not in skipped]
     expected = [(key, order[order.index(key) + 1]) for key in order[:-1]] + [("readiness-record", "read-back")]
     assert [(key, step) for key, step, _why in named if key != "use"] == expected, named
-    assert dict((key, why) for key, _step, why in named)["floor-again"] == "reviewer-thread-answered-unresolved"
-    assert dict((key, why) for key, _step, why in named)["answer-reviewers"] == "current-head-floor-missing-or-red"
-    # Every step of the table was taken, in the table's order.
-    assert taken == KEYS[:-1]
+    whys = dict((key, why) for key, _step, why in named)
+    assert whys["floor"] == "reach-pending" and whys["ready-reviewers"] == "criterion-report-absent"
+    assert whys["floor-again"] == "reviewer-thread-answered-unresolved"
+    assert whys["answer-findings"] == "current-head-floor-missing-or-red"
+    assert whys["resolve-threads"] == "cold-reading-absent"
+    # Every step of the table was taken, in the table's order, but use again, which nothing named.
+    assert taken == [key for key in KEYS[:-1] if key != "use-again"]
 
     # The builder's record stands and its hand record completes; the holder's decision is the final pass itself.
     fixture.launch_tree.complete_hand_record(fixture.store, builder, completed_by="the builder's readiness record")
@@ -193,3 +207,60 @@ def test_a_builder_taking_the_handoffs_steps_in_order_is_led_to_ready_reported(w
     assert (fixture.reports[0]["stage"], fixture.reports[0]["reason"]) == ("final-pass", "ready-reported")
     assert "unlisted_builder_reason" not in fixture.reports[0]
     capsys.readouterr()
+
+
+def test_a_builder_that_finished_cold_reading_first_is_asked_for_nothing_again(walk, capsys):
+    """A builder still running when the practice was updated finishes in its own copy's order: its reading made
+    clean before the ready step stands, and the final pass asks for no reading, report or proof again."""
+    fixture = walk.fixture
+    source, head = fixture.source()
+    builder = fixture.hand_stretch(source, owed=True)["dispatch_id"]
+    fixture.connected_reviewers = frozenset({REVIEWER})
+    fixture.pull_request(head, route_fixture.CLEAR)
+    # Cold reading first: the floor, the cold reading, the criterion reader and reach, then the ready step and proof.
+    walk.checks.append(floor(fixture, head))
+    walk.cold_clean = walk.reach_clear = walk.proof = True
+    for stage, fields in (("cold-reader", {}), ("acceptance-criterion", {"criterion": "C2"})):
+        report = fixture.post(f"the {stage} report")
+        walk.checks.append({"stage": stage, "criterion": None, "row": None, "dispatch": None, "head": head,
+                            "report": report, "relaunch_of": None, **fields})
+    fixture.pr["draft"] = False
+    walk.ready(builder, head)
+    fixture.launch_tree.complete_hand_record(fixture.store, builder, completed_by="the builder's readiness record")
+    fixture.decision(walk.state())
+    assert (fixture.reports[0]["stage"], fixture.reports[0]["reason"]) == ("final-pass", "ready-reported")
+    capsys.readouterr()
+
+
+def test_a_named_reading_before_the_criterion_reports_is_refused_naming_the_reader(walk):
+    """On the builder route the entrance reads the criterion reports, so the reading waits on them by name."""
+    fixture = walk.fixture
+    source, head = fixture.source()
+    fixture.hand_stretch(source, owed=True)
+    fixture.pull_request(head, route_fixture.CLEAR)
+    fixture.pr["draft"] = False
+    state = walk.state()
+    work.validate_marker_claims(state)
+    before = work._owed_before_reading(state, mechanical=False, use_bought=False, lane="connected",
+                                       builder_route=True)
+    assert (before.stage, before.reason) == ("acceptance-criterion", "criterion-report-absent")
+    assert "C2" in before.detail
+
+
+def test_the_owed_readers_come_from_the_handoff_and_clear_on_a_counting_report(tmp_path, monkeypatch):
+    fixture = route_fixture.Fixture(tmp_path)
+    try:
+        source, head = fixture.source()
+        builder = fixture.hand_stretch(source, owed=True)["dispatch_id"]
+        fixture.pull_request(head, route_fixture.CLEAR)
+        state = fixture.state()
+        assert work._unreported_readers(state) == [{"criterion": "C2", "row": None}]
+        counted = {"check_reports": [{"counts": True, "builder": builder, "stage": "acceptance-criterion",
+                                      "outcome": "success", "criterion": "C2", "row": None}]}
+        monkeypatch.setattr(work, "builder_checks", lambda _state: counted)
+        assert work._unreported_readers(state) == []
+        # A report whose seat failed reads nothing.
+        counted["check_reports"][0].update(outcome="error")
+        assert work._unreported_readers(state) == [{"criterion": "C2", "row": None}]
+    finally:
+        fixture.stop()

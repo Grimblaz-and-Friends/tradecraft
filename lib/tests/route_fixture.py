@@ -1,4 +1,4 @@
-"""Stand-in states of one product change on the builder route, and what the built entrance prints for each.
+"""Stand-in states of one product change on either route, and what the built entrance prints for each.
 
 A holder's use session runs this from an exported copy of the tree, under `python -B`. `--list`
 names the scenarios; a scenario's name puts the practice in that state and prints the read-only
@@ -58,9 +58,15 @@ RELAY_ASK = "<!-- tradecraft:route:v1 route=relay -->\n\n> Take this one by toda
 CLEAR = {"behind": False, "strict": False, "conflict": False, "mergeability_known": True,
          "merge_state": "clean", "uncertainties": []}
 USE_RETURN = "The job ran and printed one warning.\n\nFindings:\nF1. The job printed a stray warning.\n"
+CRITERION_RETURN = "Result: pass\nThe job ran as an adopter would run it.\n"
 SAME_VENDOR = "owner-selected-claude-implementer"
 # The holder's session a handoff records, in a stretch's request or a hand record; no transcript of it exists.
 HOLDER_SESSION = "fixture-holder-session"
+REVIEWER = "reviewer-bot"
+# The paths the change's pull request touches; the use rules buy use for its job.
+CHANGED = ["job/job.md", "skill/SKILL.md"]
+# The moments of one change a use session walks through, each a scenario on either route.
+MOMENTS = ("built", "reporting", "reported", "answered")
 
 SCENARIOS = {
     "handoff-due": "an affirmed brief and a settled plan, nothing launched",
@@ -69,13 +75,25 @@ SCENARIOS = {
     "with-builder": "a live stretch launch of the change",
     "stretch-stopped": "a completed stretch and no readiness record",
     "cannot-launch": "a stopped readiness record whose builder could not launch a check",
-    "final-pass": "a ready readiness record at the head, with one counting use report reconciled",
+    "final-pass": "a ready readiness record at the head, with one counting use report reconciled, on a pull "
+                  "request still a draft, so the final pass names the ready step owed",
     "ready-reported": "a launched builder's ready record, reach read from Git, then the release report's payload",
     "catch-up": "the ready record at the head after the base moved",
     "relay-in-flight": "a first build launch, so today's relay chain",
     "owner-asked-relay": "the owner's route=relay marker, nothing launched",
     "hand-started": "a builder the owner started by hand, its record still open",
     "launch-account-held": "a completed stretch launched under a write bound whose comparison no launch-account names",
+    "builder-built": "a live builder's floor passing on a draft pull request, nothing looked at it yet",
+    "builder-reporting": "marked ready, the reviewer and use reported, the criterion reader not; then run cold-reader "
+                         "named early",
+    "builder-reported": "every report in, the reviewer's thread unanswered",
+    "builder-answered": "the fix pushed, the floor passing again, the thread answered and resolved",
+    "relay-built": "a first build's floor passing on a draft pull request, nothing looked at it yet",
+    "relay-reporting": "marked ready, the reviewer reported, use not yet",
+    "relay-reported": "every report in, the reviewer's thread unanswered",
+    "relay-answered": "the fix pushed, the floor passing again, the thread answered and resolved",
+    "reviewers-read": "ready reported after a fix that followed the reviewed head, then the release report's "
+                      "reviewers_read",
 }
 
 
@@ -132,13 +150,20 @@ class Fixture:
         # The pull request's inline review comments and the reviewers configured to post them.
         self.review_comments = []
         self.connected_reviewers = frozenset()
+        # Read from the pull request's files; none unless a scenario's change buys use.
+        self.changed_paths = []
+        # The head the pull request was first marked ready at, where a scenario's holder checkout keeps the history.
+        self.marked_ready = None
+        self.trees = {}
         for text in ((MECHANICAL_BRIEF,) if mechanical else (BRIEF, DRAFT, SETTLED, HOLDER_READING)):
             self.post(text)
 
-    def post(self, body: str) -> int:
+    def post(self, body: str, minutes: int | None = None) -> int:
+        """Post BODY on the issue, MINUTES after the start or a minute after the last comment."""
         identity = 100 + len(self.comments)
+        minutes = len(self.comments) if minutes is None else minutes
         self.comments.append({"id": identity, "body": body, "user": {"login": PRODUCER},
-                              "created_at": (START + timedelta(minutes=len(self.comments))).isoformat(),
+                              "created_at": (START + timedelta(minutes=minutes)).isoformat(),
                               "html_url": f"https://github.invalid/{REPO}/issues/{ISSUE}#issuecomment-{identity}"})
         return identity
 
@@ -158,6 +183,7 @@ class Fixture:
                                                       connected_reviewers=self.connected_reviewers),
                                record_root=self.store)
         state.synchronization = self.synchronization
+        state.changed_paths = list(self.changed_paths)
         state.version_obligation = work._assess_version(state, RULES, "fixture change-proof policy", None)
         return state
 
@@ -174,13 +200,13 @@ class Fixture:
         output.parent.mkdir(parents=True)
         return dispatch_id, output, request
 
-    def completed(self, stage: str, minutes: int) -> str:
-        """A bundle of STAGE launched MINUTES after the start and completed a minute later."""
+    def completed(self, stage: str, minutes: int, **run) -> str:
+        """A bundle of STAGE launched MINUTES after the start and completed a minute later, its run carrying RUN."""
         dispatch_id, output, request = self._request(stage, minutes)
         self.records.write_json(self.records.sidecar(output, ".request.json"), request)
         self.records.write_json(self.records.sidecar(output, ".run.json"), {
             "schema_version": self.records.SCHEMA_VERSION, "dispatch_id": dispatch_id, "lifecycle": "completed",
-            "outcome": "success", "completed_at": (START + timedelta(minutes=minutes + 1)).isoformat()})
+            "outcome": "success", "completed_at": (START + timedelta(minutes=minutes + 1)).isoformat(), **run})
         return dispatch_id
 
     def bounded_stretch(self, minutes: int) -> str:
@@ -251,30 +277,51 @@ class Fixture:
                               stdin=subprocess.DEVNULL).stdout.decode("ascii").strip()
         return root.resolve(), head
 
-    def use_report(self, state, source: Path, builder: str) -> tuple[int, str]:
-        """The builder's use check as the entrance composes, records and posts it; its comment and dispatch."""
+    def use_report(self, state, source: Path, builder: str, criterion: str | None = None,
+                   minutes: int | None = None) -> tuple[int, str]:
+        """The builder's use check, or its reader of CRITERION, as the entrance composes, records and posts it; its
+        comment and dispatch."""
         work, records = self.work, self.records
         artifact, comment = work._settled_artifact_text(state, "artifact-use-job-absent")
-        root, _metadata, claim = work._check_tree(state, source, artifact, comment, "use", builder)
+        # Both checks read the declared use tree, so one built tree of the source's commit serves each: building one
+        # is most of a scenario's run.
+        key = (source, git(source, "rev-parse", "HEAD"))
+        if key not in self.trees:
+            self.trees[key] = work._check_tree(state, source, artifact, comment, "use", builder)
+        root, _metadata, claim = self.trees[key]
         head = claim["source_revision"]
-        dispatch = work.compose_check_dispatch("use", {"job": work.artifact_use_job(artifact), "head": head,
-                                                       "tree": root})
-        dispatch_id, output, request = self._request("use", 10, root=root)
+        if criterion is None:
+            stage, returned = "use", USE_RETURN
+            dispatch = work.compose_check_dispatch("use", {"job": work.artifact_use_job(artifact), "head": head,
+                                                           "tree": root})
+        else:
+            # The plan's fresh-reader criterion names the declared use tree, so its reader reads the tree use read.
+            stage, returned = "acceptance-criterion", CRITERION_RETURN
+            text = work.artifact_criterion(artifact, criterion)
+            dispatch = work.compose_check_dispatch(stage, {"criterion": text, "head": head, "tree": root,
+                                                           "capability": work.criterion_reader(text)[0]})
+        dispatch_id, output, request = self._request(stage, 10, root=root)
         # What the seat launcher records of who launched it, read from the open hand-started record.
         request.update(self.launch_tree.attribution(self.store, dispatch=builder, origin="entrance"))
         records.write_json(records.sidecar(output, ".request.json"), request)
         records.write_bytes(records.sidecar(output, ".dispatch.bin"), dispatch)
-        records.write_bytes(records.sidecar(output, ".source.bin"), USE_RETURN.encode("utf-8"))
+        records.write_bytes(records.sidecar(output, ".source.bin"), returned.encode("utf-8"))
         records.write_json(records.sidecar(output, ".run.json"), {
             "schema_version": records.SCHEMA_VERSION, "dispatch_id": dispatch_id, "lifecycle": "completed",
             "outcome": "success", "staffing_status": "degraded",
             "staffing_qualification": {"same_vendor_reason": SAME_VENDOR},
             "completed_at": (START + timedelta(minutes=11)).isoformat()})
-        body = work.check_report_body(stage="use", head=head, tree="held", criterion=None, frame={
+        body = work.check_report_body(stage=stage, head=head, tree="held", criterion=criterion, frame={
             "dispatch_id": dispatch_id, "dispatch_sha256": hashlib.sha256(dispatch).hexdigest(),
             "staffing_status": "degraded", "same_vendor_reason": SAME_VENDOR, "outcome": "success",
-            "return": USE_RETURN.encode("utf-8")})
-        return self.post(body), dispatch_id
+            "return": returned.encode("utf-8")})
+        return self.post(body, minutes), dispatch_id
+
+    def floor(self, head: str) -> dict:
+        """The handoff's floor command run at HEAD with its output posted; the check a readiness record names."""
+        report = self.post(f"<!-- tradecraft:floor:v1 head={head} status=pass -->\n\n```\n{FLOOR}\n```\n\n1 passed\n")
+        return {"stage": "floor", "criterion": None, "row": None, "dispatch": None, "head": head, "report": report,
+                "relaunch_of": None}
 
     def readiness(self, builder: str, head: str, *, status: str = "ready", stop=None, checks=(), findings=(),
                   started_by: str = "launch") -> int:
@@ -350,7 +397,7 @@ def ready_at_head(fixture: Fixture, synchronization: dict, live=lambda head: Non
     fixture.cold_reading_clean = True
     report, dispatch = fixture.use_report(fixture.state(), source, builder)
     # The handoff's floor command, run at the head as the handoff says, with its output.
-    fixture.post(f"<!-- tradecraft:floor:v1 head={head} status=pass -->\n\n```\n{FLOOR}\n```\n\n1 passed\n")
+    fixture.floor(head)
     live(head)
     fixture.launch_tree.complete_hand_record(fixture.store, builder, completed_by="the builder's readiness record",
                                              now=START + timedelta(minutes=20))
@@ -361,25 +408,30 @@ def ready_at_head(fixture: Fixture, synchronization: dict, live=lambda head: Non
     return fixture.state()
 
 
-def git(root: Path, *words: str) -> str:
+def git(root: Path, *words: str, at: datetime | None = None) -> str:
+    # A commit made AT carries that date, so it falls where the scenario's stand-in timeline puts it.
+    dated = None if at is None else {**os.environ, "GIT_AUTHOR_DATE": at.isoformat(),
+                                     "GIT_COMMITTER_DATE": at.isoformat()}
     return subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c", "user.email=fixture@invalid",
-                           *words], check=True, capture_output=True, stdin=subprocess.DEVNULL).stdout.decode().strip()
+                           *words], check=True, capture_output=True, stdin=subprocess.DEVNULL,
+                          env=dated).stdout.decode().strip()
 
 
-def ready_launched(fixture: Fixture) -> object:
-    """A launched builder ready at the head of a holder checkout with Git history, so reach is read, not stubbed."""
+def ready_launched(fixture: Fixture, *, fixed: bool = False) -> object:
+    """A launched builder ready at the head of a holder checkout with Git history, so reach is read, not stubbed;
+    with ``fixed``, a fix of the reviewer's thread follows the head marked ready and the record stands at the fix."""
     work, records, root = fixture.work, fixture.records, fixture.holder
     git(root, "init", "-q", "-b", "main")
     git(root, "add", "--all")
-    git(root, "commit", "-q", "-m", "base")
+    git(root, "commit", "-q", "-m", "base", at=START)
     base = git(root, "rev-parse", "HEAD")
     git(root, "checkout", "-q", "-b", "tradecraft/5-fixture")
     for path, text in (("job/job.md", "run the job\n"), ("skill/SKILL.md", "how an adopter loads the job\n")):
         (root / path).parent.mkdir(exist_ok=True)
         (root / path).write_text(text, encoding="utf-8")
     git(root, "add", "--all")
-    git(root, "commit", "-q", "-m", "job")
-    head = git(root, "rev-parse", "HEAD")
+    git(root, "commit", "-q", "-m", "job", at=START + timedelta(minutes=15))
+    head = fixture.marked_ready = git(root, "rev-parse", "HEAD")
     fixture.pull_request(head, CLEAR)
     fixture.pr.update(draft=False, base={"ref": "main", "sha": base})
     state = fixture.state()
@@ -396,13 +448,21 @@ def ready_launched(fixture: Fixture) -> object:
     fixture.launch_tree.write_pointer(fixture.store, dispatch_id=builder, work=WORK, request=request_path,
                                       run=records.sidecar(output, ".run.json"), session_id=None,
                                       launcher=fixture.lifecycle.process_identity(), root=root)
-    # This process stands in the launch's tree, as the builder's own run would, while its use seat starts.
+    # This process stands in the launch's tree, as the builder's own run would, while its use seat starts. Its report
+    # is posted after the head is marked ready, as use reads the head marked ready.
     holds, fixture.launch_tree.holds = fixture.launch_tree.holds, lambda launch: launch["dispatch_id"] == builder
     try:
-        report, dispatch = fixture.use_report(state, root, builder)
+        report, dispatch = fixture.use_report(state, root, builder, minutes=25)
     finally:
         fixture.launch_tree.holds = holds
-    fixture.post(f"<!-- tradecraft:floor:v1 head={head} status=pass -->\n\n```\n{FLOOR}\n```\n\n1 passed\n")
+    if fixed:
+        fixture.connected_reviewers = frozenset({REVIEWER})
+        (root / "job" / "job.md").write_text("run the job as corrected\n", encoding="utf-8")
+        git(root, "commit", "-q", "-am", "fix the job's line", at=START + timedelta(minutes=40))
+        head = git(root, "rev-parse", "HEAD")
+        fixture.pr["head"]["sha"] = head
+        fixture.review_comments += [reviewer_thread(), answer(head)]
+    fixture.floor(head)
     records.write_json(records.sidecar(output, ".run.json"), {
         "schema_version": records.SCHEMA_VERSION, "dispatch_id": builder, "lifecycle": "completed",
         "outcome": "success", "revision_after": head, "completed_at": (START + timedelta(minutes=20)).isoformat()})
@@ -422,13 +482,158 @@ def ready_launched(fixture: Fixture) -> object:
     return fixture.state()
 
 
+def reviewer_thread() -> dict:
+    """The connected reviewer's one inline finding, which is also the receipt that it ran."""
+    return {"id": 501, "in_reply_to_id": None, "user": {"login": REVIEWER}, "body": "The job's line is wrong.",
+            "path": "job/job.md", "html_url": f"https://github.invalid/{REPO}/pull/7#discussion_r501"}
+
+
+def answer(fixed: str) -> dict:
+    return {"id": 502, "in_reply_to_id": 501, "user": {"login": PRODUCER}, "body": f"fixed - corrected in {fixed}",
+            "html_url": f"https://github.invalid/{REPO}/pull/7#discussion_r502"}
+
+
+def threads(resolved: bool) -> dict:
+    """The merge facts with the reviewer's thread, which only GitHub's GraphQL reads, and the rule to resolve it."""
+    return {**CLEAR, "thread_resolution": {"required": True}, "review_threads": {"status": "read", "threads": [
+        {"comment_id": 501, "thread_id": "PRRT_fixture", "resolved": resolved, "outdated": False,
+         "author": REVIEWER}]}}
+
+
+def reviewers_read(fixture: Fixture, state) -> dict:
+    """The release report's ``reviewers_read`` over STATE, whose pull request was first marked ready at the
+    fixture's ``marked_ready``."""
+    work, ready, after = fixture.work, fixture.marked_ready, state.pr["head"]["sha"]
+    at = lambda minutes: (START + timedelta(minutes=minutes)).isoformat()  # noqa: E731
+    # The pull request's timeline, as GitHub serves it: the commit marked ready, the ready event, the reviewer's
+    # first review of that commit, and any commit pushed after it, in the order the fixture's commit dates give.
+    events = [{"event": "committed", "sha": ready}, {"event": "ready_for_review", "created_at": at(21)},
+              {"event": "reviewed", "user": {"login": REVIEWER}, "commit_id": ready, "submitted_at": at(30)}]
+    if after != ready:
+        events.append({"event": "committed", "sha": after})
+
+    class Timeline:
+        """The one GitHub read the section makes, which the ordinary decision never makes."""
+
+        def get(self, endpoint, paginate=False):
+            if endpoint != f"repos/{REPO}/issues/{state.pr['number']}/timeline":
+                raise work.WorkError(f"route fixture: GitHub {endpoint} is not served beyond the timeline")
+            return [dict(event) for event in events]
+
+    state.holder_root = fixture.holder
+    return work._reviewers_read_report(state, Timeline())
+
+
+def stand_in_reach_and_reading(fixture: Fixture) -> None:
+    work = fixture.work
+    # Reach is read from the holder's Git history, which these changes keep apart from the holder's checkout; it
+    # stands clear, as the builder or the holder settles it at the floor, so the ready step is not held on it.
+    work._evaluate_reach = lambda checked: setattr(checked, "reach", {"state": "clear", "turns": [],
+                                                                      "diagnostics": []})
+    # The cold reading is a launched seat's bundle over Git objects the holder's checkout doesn't hold, and no
+    # reader has run, so the gate reads it absent wherever the entrance asks.
+    work._cold_reading_decision = lambda _state, _sha: work.Decision(
+        "cold-reader", True, "fresh", "cold-reading-absent", json.dumps({"covered": CHANGED}))
+
+
+def moment(fixture: Fixture, route: str, at: str) -> object:
+    """One change on ROUTE at moment AT: built, the floor passing on a draft; reporting, marked ready with the
+    reviewer reported and a report still owed; reported, every report in and the reviewer's thread unanswered;
+    answered, the fix pushed, the floor passing again and the thread answered and resolved.
+
+    On the builder route a hand-started builder stays live, and the stand-in posts a ready record at the head at each
+    moment, so the decision's ``if_ended`` names the next step; a real builder posts its record once, after proof,
+    and reads the record back. On the relay route a first build launch puts the change on the relay route.
+    """
+    fixture.changed_paths, fixture.connected_reviewers = list(CHANGED), frozenset({REVIEWER})
+    source, head = fixture.source()
+    builder = fixture.hand_stretch(source, owed=True)["dispatch_id"] if route == "builder" else None
+    if route == "relay":
+        fixture.completed("build", 5)
+        # Whether that build was handed the current terms is read from its registered implementation tree, which
+        # the stand-in launch has none of; it is the build the current brief was handed to.
+        fixture.work._governing_terms_decision = lambda _state: None
+    fixture.pull_request(head, CLEAR)
+    stand_in_reach_and_reading(fixture)
+
+    def floor(at_head: str, minutes: int) -> dict | None:
+        if route == "builder":
+            return fixture.floor(at_head)
+        # The relay's floor marker, as `run floor` posts it once its launch has run the floor at that head.
+        fixture.completed("floor", minutes, revision_after=at_head)
+        fixture.post(f"<!-- tradecraft:floor:v1 head={at_head} status=pass -->", minutes + 2)
+        return None
+
+    checks, findings = [floor(head, 7)], []
+    step = MOMENTS.index(at)
+    if step >= 1:
+        fixture.pr["draft"] = False
+        fixture.review_comments.append(reviewer_thread())
+        fixture.synchronization = threads(resolved=False)
+    if route == "builder" and step >= 1:
+        # The use seat reads the head marked ready while the reviewers read it; the criterion reader reports later.
+        report, dispatch = fixture.use_report(fixture.state(), source, builder)
+        checks.append({"stage": "use", "criterion": None, "row": None, "dispatch": dispatch, "head": head,
+                       "report": report, "relaunch_of": None})
+    if route == "builder" and step >= 2:
+        reading, dispatch = fixture.use_report(fixture.state(), source, builder, criterion="C2")
+        checks.append({"stage": "acceptance-criterion", "criterion": "C2", "row": None, "dispatch": dispatch,
+                       "head": head, "report": reading, "relaunch_of": None})
+    if route == "relay" and step >= 2:
+        # The relay's use marker, as `run use` posts it once its seat has used the head marked ready.
+        fixture.completed("use", 10, staffing_status="qualified")
+        fixture.post(f"<!-- tradecraft:use:v1 head={head} status=pass changed=false staffing_status=qualified -->\n"
+                     "The use session's note.", 12)
+    if step >= 3:
+        # Every report is in, so every finding is answered in one fix, dated after the reports it answers.
+        (source / "job" / "job.md").write_bytes(b"run the job as corrected\n")
+        git(source, "commit", "-q", "-am", "fix the job's line", at=START + timedelta(minutes=13))
+        head = git(source, "rev-parse", "HEAD")
+        fixture.pr["head"]["sha"] = head
+        fixture.review_comments.append(answer(head))
+        fixture.synchronization = threads(resolved=True)  # the resolve command's effect, which only GitHub records
+        checks.append(floor(head, 13))
+        if route == "builder":
+            findings.append({"report": report, "finding": "F1", "disposition": "fixed", "commit": head})
+    if route == "builder":
+        fixture.readiness(builder, head, checks=checks, findings=findings, started_by="hand")
+    return fixture.state()
+
+
+def cold_reader_named(fixture: Fixture, state) -> int:
+    """`run cold-reader` as a holder or builder names it at STATE: the entrance's report, no seat launched."""
+    work = fixture.work
+    work.validate_marker_claims(state)
+    work._invoke_recipient = lambda *_a, **_k: sys.exit("route_fixture: run cold-reader launched a seat")
+    # An exported copy runs beside a stand-in manifest whose version no mechanism accepts; the order is the subject.
+    work._version_refusal = lambda *_a: None
+    return work._execute_cold_reader(state, work.Decision("cold-reader", True, "fresh", "holder-named-stage"),
+                                     dispatch_path=None, tree_metadata=None, timeout_seconds=None,
+                                     claude_path=None, codex_path=None, rules=RULES)
+
+
 def scenario(name: str, fixture: Fixture) -> int:
     head = "a" * 40
-    if name == "ready-reported":
-        state = ready_launched(fixture)
+    if name in ("ready-reported", "reviewers-read"):
+        state = ready_launched(fixture, fixed=name == "reviewers-read")
         code = fixture.decision(state)
-        sys.stdout.write("--- the release report's builder_route ---\n")
-        sys.stdout.write(json.dumps(fixture.work._builder_route_report(state), indent=2, default=str) + "\n")
+        section = reviewers_read(fixture, state)
+        sys.stdout.write("--- the release report's reviewers_read ---\n")
+        sys.stdout.write(json.dumps(section, indent=2, default=str) + "\n")
+        if name == "ready-reported":
+            # As the release report gives it, with the order its changes ran under read from the section.
+            route = fixture.work._builder_route_report(state, order=fixture.work.reviewers_read.order_of(section))
+            sys.stdout.write("--- the release report's builder_route ---\n")
+            sys.stdout.write(json.dumps(route, indent=2, default=str) + "\n")
+        return code
+    route, _, at = name.partition("-")
+    if route in ("builder", "relay") and at in MOMENTS:
+        state = moment(fixture, route, at)
+        code = fixture.decision(state)
+        if name == "builder-reporting":
+            sys.stdout.write("--- run cold-reader, named now ---\n")
+            sys.stdout.flush()
+            code = cold_reader_named(fixture, fixture.state()) or code
         return code
     if name in ("handoff-due", "handoff"):
         state = fixture.state()

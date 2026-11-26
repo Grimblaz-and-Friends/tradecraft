@@ -2143,8 +2143,22 @@ def route_split(*, holder_replies: list[dict], start: datetime | None, builder_b
             "leaves_out": "seats the holder launched, which the cost report prices"}
 
 
-def route_comparison(work: str, *, home: Path | None = None,
-                     first_launch: datetime | str | None = None) -> dict[str, object] | None:
+# The names reviewers_read.order_of gives, repeated so this module keeps free of its Git reads; a test ties the two.
+ROUTE_ORDERS = ("reviewers-first", "cold-reading-first", "unknown")
+# Before the order was recorded, a cold reading always came before the reviewers, so an old entry took that order.
+ORDER_BEFORE_RECORDING = ("cold-reading-first", "entered before the order was recorded, when no other order existed")
+
+
+def _ledger_entry(row: dict[str, object]) -> dict[str, object]:
+    if "order" not in row:
+        order, reason = ORDER_BEFORE_RECORDING
+        return {"work": row["work"], "order": order, "reason": reason}
+    entry = {"work": row["work"], "order": row["order"]}
+    return {**entry, "reason": row["order_reason"]} if row.get("order_reason") else entry
+
+
+def route_comparison(work: str, *, home: Path | None = None, first_launch: datetime | str | None = None,
+                     order: dict | None = None) -> dict[str, object] | None:
     """Where this work falls in the owner's route comparison; None, writing nothing, when none is set up.
 
     ``<home>/.tradecraft/route-comparison.json`` (``{"issue": "owner/repo#n", "count": 5}``) switches it on;
@@ -2152,9 +2166,16 @@ def route_comparison(work: str, *, home: Path | None = None,
     ``due`` only on the call that enters the count-th work, so a re-run never reports it twice. An
     optional ``"since"`` time starts the count: a work not yet entered whose ``first_launch`` (its first
     builder launch or handoff) is earlier or unknown is answered ``not-counted`` and not entered.
+
+    ``order`` is the change's order as ``reviewers_read.order_of`` answers it (``{"order", "reason"?}``); the
+    entry records it, or ``unknown`` when none is given. ``entries`` lists every entered work in ledger order
+    with its order, and a reason where that order is unknown or defaulted: an entry written before orders were
+    recorded reads ``cold-reading-first``.
     """
     if not isinstance(work, str) or not work:
         raise CostError("route comparison needs a work identifier")
+    if order is not None and (not isinstance(order, dict) or order.get("order") not in ROUTE_ORDERS):
+        raise CostError(f"route comparison order must be one of {', '.join(ROUTE_ORDERS)}")
     base = (home if home is not None else Path.home()) / ".tradecraft"
     switch = base / "route-comparison.json"
     try:
@@ -2178,7 +2199,11 @@ def route_comparison(work: str, *, home: Path | None = None,
         rows = _read_jsonl(ledger)
     except CostError as exc:
         return unknown(f"the route comparison ledger is unreadable: {exc}")
-    works = list(dict.fromkeys(row.get("work") for row in rows if isinstance(row.get("work"), str)))
+    firsts = {}
+    for row in rows:
+        if isinstance(row.get("work"), str):
+            firsts.setdefault(row["work"], row)
+    works = list(firsts)
     entered = work not in works
     if entered and since is not None:
         launched = _timestamp(first_launch.isoformat() if isinstance(first_launch, datetime) else first_launch)
@@ -2188,10 +2213,16 @@ def route_comparison(work: str, *, home: Path | None = None,
         if launched < _timestamp(since):
             return {"status": "not-counted", "reason": f"its first launch {launched.isoformat()} is before {since}"}
     if entered:
-        _append_jsonl(ledger, {"work": work, "entered_at": datetime.now(timezone.utc).isoformat()})
+        given = order or {"order": "unknown", "reason": "no order was given when it was entered"}
+        row = {"work": work, "entered_at": datetime.now(timezone.utc).isoformat(), "order": given["order"]}
+        if given.get("reason"):
+            row["order_reason"] = given["reason"]
+        _append_jsonl(ledger, row)
+        firsts[work] = row
         works.append(work)
     ordinal = works.index(work) + 1
-    return {"ordinal": ordinal, "count": count, "issue": issue, "due": entered and ordinal == count}
+    return {"ordinal": ordinal, "count": count, "issue": issue, "due": entered and ordinal == count,
+            "entries": [_ledger_entry(firsts[name]) for name in works]}
 
 
 def gauge_from_codex_response(result: dict[str, object], captured_at: datetime) -> dict[str, object]:
