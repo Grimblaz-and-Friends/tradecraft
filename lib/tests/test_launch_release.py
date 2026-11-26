@@ -547,7 +547,6 @@ def test_a_named_version_holds_the_launchers_root_through_a_linked_plugins_folde
                {"item": "launcher-plugin", "path": real + f"/{GADGET_V3}/lib/mod.py", "change": "removed"},
                {"item": "launcher-plugin", "path": real + f"/{GADGET_V3}/.orphaned_at", "change": "added"}]
     tops = {"plugins": top, "launcher-plugin": real + f"/{GADGET_V3}"}
-    # One record names the folder through the link and the other through its resolved path.
     for path in (top + f"/{GADGET_V3}", real + f"/{GADGET_V3}"):
         records = readings({}), readings({f"{GADGET}@{MARKET}": [{"scope": "user", "installPath": path}]})
         released, reasons = launch_release.classify(changes, tops, records=records, windows=False, real_top=real)
