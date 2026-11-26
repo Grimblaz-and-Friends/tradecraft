@@ -455,20 +455,25 @@ def test_the_copied_gate_passes_the_proof_the_entrance_composed(name, tmp_path, 
             records = case.github.issue_comments if source["kind"] == "issue-comment" else case.github.pr_comments
             found = gate.markers([next(item for item in records if item["id"] == source["id"])])
             NAMED_SOURCES[kind].add(found[0].name if found else None)
+    # The gate passed, so a missing line here is not a refusal: it says the gate credited other evidence, or that a
+    # refreshed copy words its line differently.
+    unmet = (f"{name}: the copied gate passed but did not print the line saying how this case met use. Check "
+             "whether the copy's wording changed or it credited different evidence before changing the entrance; "
+             "tools/gate/README.md#what-a-red-means.\n" + output)
     if name == "builder-report-at-head":
         assert any(line.startswith("verified: trusted policy requires use and the builder's use report "
-                                   f"issue-comment #") and line.endswith("is current-head") for line in lines), output
+                                   f"issue-comment #") and line.endswith("is current-head") for line in lines), unmet
     if name == "builder-report-at-earlier-commit":
         assert any(line.startswith("verified: trusted policy requires use and the builder's use report ")
-                   and line.endswith(f"at {case.earlier} remains applicable") for line in lines), output
+                   and line.endswith(f"at {case.earlier} remains applicable") for line in lines), unmet
     if name == "relay-use-marker":
-        assert "verified: trusted policy requires use and the public use source is current-head" in lines, output
+        assert "verified: trusted policy requires use and the public use source is current-head" in lines, unmet
     if name == "mechanical-lane":
         assert any(line.startswith("verified: owner-affirmed mechanical lane in ") and line.endswith(
-            "exempts use; changed paths would otherwise require use") for line in lines), output
+            "exempts use; changed paths would otherwise require use") for line in lines), unmet
     if name == "no-use":
         assert ("verified: trusted policy classifies the changed paths as no-use and generated evidence is "
-                "current-head") in lines, output
+                "current-head") in lines, unmet
     PASSED.add(name)
 
 

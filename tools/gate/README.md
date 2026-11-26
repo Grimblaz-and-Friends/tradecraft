@@ -12,12 +12,12 @@ The copy's own comments cite `README.md`, as in `README.md, "Evidence contract"`
 
 ## What a red means
 
-A red on a case means one thing: the entrance under test composes a proof the copied gate refuses. The failure message quotes every `missing:` line the gate printed.
+A red on a case whose gate output says `change-proof: FAIL` means one thing: the entrance under test composes a proof the copied gate refuses. The failure message quotes every `missing:` line the gate printed.
 
 - **Where the change did not mean to alter what a proof names,** it is a defect in the change. The builder repairs it in the entrance.
 - **Where the change meant to alter what a proof names,** the gate must change first, in change-proof. The builder does not repair it here; it returns it to its holder as a gate change owed, and the holder tells the Steward.
 
-A red naming a read the stand-in does not serve means the stand-in lacks a record GitHub would serve: add it as GitHub answers it, since the stand-in is not a case. A red on the copy's integrity means its bytes are not the ones `source.json` records. A red on coverage means a marker was added to `PROOF_SOURCE_MARKERS` with no case whose proof names it; add the case.
+A red where the gate printed `change-proof: PASS` but not the line saying how the case met use is not a refusal: check whether a refreshed copy words that line differently or credited different evidence before changing the entrance. A red naming a read the stand-in does not serve means the stand-in lacks a record GitHub would serve: add it as GitHub answers it, since the stand-in is not a case. A red on the copy's integrity means its bytes are not the ones `source.json` records. A red on coverage means a marker was added to `PROOF_SOURCE_MARKERS` with no case whose proof names it; add the case.
 
 ## What no session does
 
