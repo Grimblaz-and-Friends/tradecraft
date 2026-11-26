@@ -50,7 +50,11 @@ WAIT_SENTENCE = ("Start this in your runtime's background, so that only its end 
 
 
 def wait_command(repo: str, issue: int, holder_root, plugin_root, instalment: str | None = None) -> str:
-    """The command a holder starts in its background for this work, written as the handoff writes its commands."""
+    """The command a holder starts in its background for this work, written as the handoff writes its commands.
+
+    Its quoting is POSIX's, which the Bash and PowerShell a holder's runtime runs on Windows both read the same,
+    and it names `python` as every entrance command does.
+    """
     argv = ["python", "-B", str(plugin_root).rstrip("/\\") + "/lib/work.py", "wait", "--repo", repo,
             "--issue", str(issue), "--root", str(holder_root), *(["--instalment", instalment] if instalment else [])]
     return " ".join(shlex.quote(part) for part in argv)
