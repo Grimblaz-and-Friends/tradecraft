@@ -567,9 +567,10 @@ def classify_recorded(findings: list[dict], coverage: list[dict], *, windows: bo
     For measuring the rules against finished records, as a replay across recorded launches
     does; neither the comparison nor the entrance calls it, and no record is reread to
     release its hold. The record keeps no install record's contents, so those and
-    marketplace clones hold, and a removed version folder or an orphan marker releases by its
-    name whether or not an entry names it; it keeps no entry type or compiled file, so names
-    alone decide.
+    marketplace clones hold, since their release needs both readings. A removed version folder
+    or an orphan marker releases by its name whether or not an entry names it, because a
+    measure of how much the rules could release counts what it can't rule out. The record
+    keeps no entry type or compiled file, so names alone decide.
     """
     tops = {entry["item"]: entry["path"] for entry in coverage
             if isinstance(entry, dict) and entry.get("item") in RELEASING_ITEMS and entry.get("path")}

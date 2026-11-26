@@ -507,7 +507,7 @@ def test_an_install_record_unreadable_after_the_launch_holds_a_removal_and_says_
     home.remove(GADGET_V2)
     home.write("installed_plugins.json", b"{not json")
     result = before.finish(60)
-    # Its in-use markers keep their own kind.
+    # Its in-use markers release wherever they sit; the folder's own entry carries the hold.
     assert held(result, home) == sorted([GADGET_V2, f"{GADGET_V2}/.claude-plugin",
                                          f"{GADGET_V2}/.claude-plugin/plugin.json", "installed_plugins.json"])
     reason = finding(result, home, GADGET_V2)["reason"]
