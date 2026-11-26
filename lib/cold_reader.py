@@ -467,13 +467,17 @@ def reading_diff(source: Path, base: str, head: str, selected: list[str]) -> byt
                 "-M", base, head, "--", *pathspec)
 
 
-def _blob_texts(root: Path, oids: list[str]) -> dict[str, str | None]:
-    """Each blob's text, read in one Git call; None for one that isn't UTF-8 text."""
+def _blob_texts(root: Path, oids: list[str]) -> dict[str, str]:
+    """Each blob's text, read in one Git call.
+
+    Bytes that aren't UTF-8 are replaced rather than refused, so a text file in another encoding still
+    numbers its lines; Git's own diff decides which files are binary and judged whole.
+    """
     wanted = sorted(set(oids))
     if not wanted:
         return {}
     raw = _git(root, "cat-file", "--batch", input_bytes=("\n".join(wanted) + "\n").encode("ascii"))
-    found: dict[str, str | None] = {}
+    found: dict[str, str] = {}
     index = 0
     while index < len(raw):
         header_end = raw.index(b"\n", index)
@@ -482,11 +486,7 @@ def _blob_texts(root: Path, oids: list[str]) -> dict[str, str | None]:
             raise ColdReaderError("git cat-file returned an unreadable header: "
                                   + raw[index:header_end].decode("ascii", errors="replace"))
         size = int(fields[2])
-        body = raw[header_end + 1:header_end + 1 + size]
-        try:
-            found[fields[0].decode("ascii")] = body.decode("utf-8")
-        except UnicodeDecodeError:
-            found[fields[0].decode("ascii")] = None
+        found[fields[0].decode("ascii")] = raw[header_end + 1:header_end + 1 + size].decode("utf-8", errors="replace")
         index = header_end + 1 + size + 1
     return found
 
