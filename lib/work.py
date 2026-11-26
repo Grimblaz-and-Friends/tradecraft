@@ -6470,6 +6470,17 @@ BUILDER_ROUTE_ARTIFACT_DETAIL = ("the holder writes or revises the plan and post
 RESUME_WAY = "run handoff --resume-reason TEXT, on the owner's word"
 
 
+def _watch_command(state: WorkState, pointer: dict) -> str:
+    """The wait a launch is watched by: the holder's --root, this entrance, and the launch's own instalment.
+
+    The handed-off report and the decision both compose it here, so the two never name different commands.
+    Design: lib/DESIGN.md#the-builder-route
+    """
+    return builder_wait.wait_command(state.repo, state.issue_number, state.holder_root,
+                                     Path(__file__).resolve().parent.parent,
+                                     builder_wait.launch_instalment(pointer) or state.instalment)
+
+
 def _builder_reading(state: WorkState, pointer: dict) -> dict[str, object]:
     """How one live builder is doing, read as the wait reads it, and the wait's command; a hand-started one isn't measured.
 
@@ -6478,10 +6489,7 @@ def _builder_reading(state: WorkState, pointer: dict) -> dict[str, object]:
     if pointer.get("hand") is True:
         return {"dispatch": pointer.get("dispatch_id"), "measured": False, "reason": builder_wait.HAND_NOT_MEASURED}
     values = builder_wait.read_once(pointer)
-    return {"dispatch": pointer.get("dispatch_id"), **values,
-            "wait": builder_wait.wait_command(state.repo, state.issue_number, state.holder_root,
-                                              Path(__file__).resolve().parent.parent,
-                                              builder_wait.launch_instalment(pointer) or state.instalment)}
+    return {"dispatch": pointer.get("dispatch_id"), **values, "wait": _watch_command(state, pointer)}
 
 
 def _builder_route_decision(state: WorkState, *, as_ended: bool = False) -> Decision:
@@ -13567,10 +13575,8 @@ def _launch_stretch(state, args, store, implementation_root, branch, block, text
     _note_cap_outcome("handed-off", bundle=str(request_path))
     added = after(dispatch_id) if after is not None else {}
     # A resume, a send-back and a catch-up resume are the same builder running again, after the handoff the
-    # holder's wait starts from, so each names the wait as the first launch does. Its roots are the holder's
-    # --root and this entrance, as the decision names them, so the two never give different commands.
-    wait = builder_wait.wait_command(state.repo, state.issue_number, state.holder_root or args.root,
-                                     Path(__file__).resolve().parent.parent, args.instalment)
+    # holder's wait starts from, so each names the wait as the first launch does.
+    wait = _watch_command(state, {"request": str(request_path)})
     _emit_report({"stage": args.stage, "status": "handed-off", "started_by": "launch", "dispatch": dispatch_id,
                   "resume": resume, "tree": str(implementation_root), "branch": branch,
                   "request": str(request_path), "records": str(bundle),

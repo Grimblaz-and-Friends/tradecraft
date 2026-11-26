@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import builder_wait  # noqa: E402
 import work  # noqa: E402
 import route_fixture  # noqa: E402
+import stand_in_builder  # noqa: E402
 
 WATCH = sorted(name for name in route_fixture.SCENARIOS if name.startswith("watch-"))
 ENDS = {"watch-ready": "the builder's run ended: completed, success",
@@ -84,14 +85,14 @@ def test_a_watched_builder_is_read_as_its_records_say_and_the_wait_ends_with_it(
     assert detail["started_at"] == records["run"]["launched_at"]
     assert detail["limit_seconds"] == records["request_limit_seconds"] == work.DEFAULT_STRETCH_TIMEOUT_SECONDS
     assert abs(detail["running_seconds"] - records["run"]["elapsed_checkpoint_seconds"]) < 60
-    # The decision names the very command the scenario started the wait with.
     assert detail["wait"] == out.split("the wait, started as the handed-off report prints it: ", 1)[1].split(" ---")[0]
     if name != "watch-replay":
-        assert detail["steps"] == 7 and detail["last_step"] == "Bash: Run the job's tests a second time"
+        assert detail["steps"] == len(stand_in_builder.EARLIER) + len(stand_in_builder.LIVE)
+        assert detail["last_step"] == "Bash: Run the job's tests a second time"
         assert detail["quiet_seconds"] < 60
-    # The wait ended no earlier than its builder, and within a minute after it.
     ended = out.rsplit("--- the stand-in builder ended at ", 1)[1].split(" ---", 1)[0]
     builder, wait = ended.split("; the wait ended at ")
+    # The scenario prints clock times alone, so a run across midnight is read across it.
     gap = clock(wait.split(",")[0]) - clock(builder)
     assert timedelta(0) <= gap % timedelta(days=1) <= timedelta(minutes=1)
 

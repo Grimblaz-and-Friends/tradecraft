@@ -856,13 +856,17 @@ def _starts_wait(name, tool_input):
                for program, arguments in (_program(_words(segment)) for segment in _SEGMENT.split(command)))
 
 
+# The entrance's options that take no value, so the word after one can still be its command.
+ENTRANCE_FLAGS = frozenset({"--cloud", "--job-from-artifact", "--preview", "--help", "-h"})
+
+
 def _command_word(arguments):
     """The entrance's command, its first word that is neither an option nor an option's value."""
     words = iter(arguments)
     for word in words:
         if not word.startswith("-"):
             return word
-        if "=" not in word:
+        if "=" not in word and word not in ENTRANCE_FLAGS:
             next(words, None)
     return None
 

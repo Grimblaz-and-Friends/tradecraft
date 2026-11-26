@@ -718,6 +718,13 @@ def test_the_reply_to_another_background_tasks_end_is_unprompted(tmp_path):
     ("python -B lib/work.py --repo acme/widget --issue 12 --root C:/holder wait", True),
     ("python -B lib/work.py run handoff --resume-reason wait --repo acme/widget", False),
     ("python -B lib/work.py --root wait --repo acme/widget --issue 12", False),
+    ("python -B lib/work.py --preview wait --repo acme/widget --issue 12 --root C:/holder", True),
 ])
 def test_only_the_entrances_wait_command_is_a_wait(command, wait):
     assert ht._starts_wait("Bash", {"command": command}) is wait
+
+
+def test_the_entrance_flags_the_wait_reading_skips_are_the_entrances_options_that_take_no_value():
+    import work
+    assert ht.ENTRANCE_FLAGS == {option for action in work.parser()._actions if action.nargs == 0
+                                 for option in action.option_strings}
