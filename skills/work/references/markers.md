@@ -247,6 +247,18 @@ The line names a flag in that reading's account by its path, the `:lines` it giv
 
 Every other comment carrying the marker counts for nothing, and the entrance's `builder_checks` report lists it with its reasons (`store-and-posted-differ` where the two copies differ). A failed seat posts `outcome=error`, and a second launch posts a second report beside the first. On the builder route the use gate counts these reports, and the final pass reads the reconciliation against them.
 
+**What the required gate reads of a use report.** On the builder route a proof names the counting use report as its use source, and the required gate reads that comment by its public facts alone, because it cannot read the local records the entrance counts it by. It counts the report only when all of these hold, and otherwise its refusal names what the comment opens with and each fact that failed:
+
+- the comment is on the change's issue, not on the pull request or in a review, and its author is a configured marker producer;
+- the `check-report` marker is the comment's first nonblank line, unquoted;
+- `stage=use`, `outcome=success` and `tree=held`;
+- `head` is the proof's use evidence commit;
+- `staffing_status` is `qualified` with no `same_vendor_reason`, or `degraded` with a hyphenated-slug `same_vendor_reason`;
+- `dispatch` is present and `dispatch_sha256` is a SHA-256 digest, read for form only;
+- `criterion` and `row` are absent, since each belongs to another reader's report, and `builder_vendor` is absent or `declared`.
+
+Any other attribute name is ignored and named in a diagnostic, so a report the entrance extends still counts. The gate never checks the dispatch digest against a recomposed dispatch, the bundle's launch, or the store's copy of the return; those stay the entrance's. A report at an earlier commit carries no `changed` flag and is asked for none: the gate's history rule alone decides whether it carries to the head.
+
 ## `route`
 
 - **Exact form:** `<!-- tradecraft:route:v1 route=ROUTE -->`, followed by a blockquote of the owner's words asking for that route.

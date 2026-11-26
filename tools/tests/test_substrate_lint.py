@@ -1,7 +1,9 @@
 """Proofs for this repository's substrate lint."""
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -1053,3 +1055,23 @@ def test_a_caller_receives_the_answer_for_the_paths_it_asked_about(tmp_path):
 
     wide.add(plain)
     assert lint._git_ignored(tmp_path, [vendored, plain]) == {vendored}, "memo not poisoned"
+
+
+def test_a_held_copy_is_passed_over_only_at_its_recorded_bytes(tmp_path):
+    target = tmp_path / "target"
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+    dash = chr(0x2014)
+    copy = target / "tools" / "gate" / "check.py"
+    _write(copy, "MESSAGE = '" + dash + "'\n")
+    record = {"sha256": hashlib.sha256(copy.read_bytes()).hexdigest()}
+    _write(target / "tools" / "gate" / "source.json", json.dumps(record))
+
+    held = _run(SCRIPT, target, cwd=tmp_path)
+    # The whole-file guards still read it; only the Python guards pass over the held bytes.
+    assert held.returncode == 0
+    assert _assert_ascii(held).startswith("lint: 0 finding(s); ")
+
+    _write(copy, "MESSAGE = '" + dash + dash + "'\n")
+    edited = _run(SCRIPT, target, cwd=tmp_path)
+    assert edited.returncode == 1
+    assert "emitted-ascii: tools/gate/check.py:1" in _assert_ascii(edited)

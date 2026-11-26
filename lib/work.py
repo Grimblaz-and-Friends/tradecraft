@@ -8408,6 +8408,28 @@ def _launch_declaration(stage: str, row: tuple | None) -> dict[str, object]:
             "same_vendor_reason": (run.get("staffing_qualification") or {}).get("same_vendor_reason")}
 
 
+# The required gate judges a use or floor source by the marker its comment opens with, so a proof naming any
+# other is refused here, before its pull request meets the gate; the list is also what a test can hold to a case.
+# Design: lib/DESIGN.md#what-a-proof-names-as-its-sources
+PROOF_SOURCE_MARKERS = {"use": frozenset({"use", "check-report", "affirmed-brief"}), "floor": frozenset({"floor"})}
+
+
+def _refuse_unlisted_source(state: WorkState, section: str, source: dict[str, object] | None) -> None:
+    kind, identity = (source or {}).get("kind"), (source or {}).get("id")
+    held = (state.issue_comments if kind == "issue-comment"
+            else state.pr_comments if kind == "pull-request-comment" else [])
+    record = next((item for item in held if item.get("id") == identity), None) if identity is not None else None
+    if record is None:
+        return  # a source the state holds no comment for is the gate's to refuse, by the record it finds
+    found = markers(_marker_sources([record], str(kind)))
+    opening = found[0].name if found else None
+    if opening not in PROOF_SOURCE_MARKERS[section]:
+        raise WorkError(
+            f"proof would name {kind} #{identity} as its {section} source, which opens with "
+            + (f"a {opening} marker" if opening else "no marker") + f"; a {section} source opens with "
+            + " or ".join(sorted(PROOF_SOURCE_MARKERS[section])))
+
+
 def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, object]:
     if state.pr is None or not isinstance(state.pr.get("number"), int):
         raise WorkError("proof requires one implementing pull request")
@@ -8472,6 +8494,8 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
             store, work, {"use"}) if row[2].get("dispatch_id") == report["dispatch"]), None)))
     elif bought:
         declarations.append(_marker_declaration(state, use_marker, "use"))
+    _refuse_unlisted_source(state, "use", use["source"])
+    _refuse_unlisted_source(state, "floor", _marker_source(state, floor) if floor else None)
     evidence = {
         "schema_version": 1,
         "identity": {
