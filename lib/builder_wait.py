@@ -63,6 +63,7 @@ def _moment(value) -> datetime | None:
         moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # A time with no zone can't be set against the clock without guessing its zone, so it reads as unread.
     return moment if moment.tzinfo is not None else None
 
 
@@ -164,7 +165,8 @@ class Log:
 
 
 class Launch:
-    """One launched builder's pointer, request and run record, each read whole on every read."""
+    """One launched builder's pointer, request and run record: the run record read whole on every read, the
+    request once, since the launcher writes it once."""
 
     def __init__(self, pointer: dict):
         self.pointer = pointer

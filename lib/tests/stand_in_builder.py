@@ -55,6 +55,8 @@ END_AT = 22
 # How often it rewrites its record and beats. It can be slower than the launchers' own pace without changing
 # anything the wait reads, since the wait reads only the record's latest state.
 PACE_SECONDS = 1.0
+# Fast enough that a replay ends within its scenario, slow enough that the wait's polls see the log grow.
+REPLAY_LINE_SECONDS = 0.25
 # How long it waits for --hold-until's file, so a stand-in whose scenario died doesn't run on.
 HELD_SECONDS = 120.0
 
@@ -153,11 +155,13 @@ def main(argv: list[str] | None = None) -> int:
                 record["timestamp"] = _stamp(datetime.now(timezone.utc))
             _append(args.log, record)
             run.checkpoint()
-            time.sleep(0.25)
+            time.sleep(REPLAY_LINE_SECONDS)
         _held(run, args.hold_until)
         run.complete("success")
         return 0
     _append(args.log, {"type": "system", "subtype": "init", "session_id": SESSION, "model": "fixture"})
+    # Taken minutes before the wait starts and each finished, as a builder's steps are when its holder restarts
+    # mid-build, so the wait opens on them as earlier steps with none running.
     for index, (tool, tool_input) in enumerate(STEPS_BEFORE_WAIT):
         at = now - timedelta(minutes=9 - 3 * index)
         _step(args.log, f"toolu_earlier_{index}", tool, tool_input, helper=None, at=at)

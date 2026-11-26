@@ -497,7 +497,7 @@ def test_the_wait_tries_no_connection_no_program_and_no_lookup_of_gh_or_claude(l
 
 
 def test_a_resume_is_read_against_its_own_limit_not_the_first_launchs(launcher):
-    """A send-back resume carries the first launch's eight-hour block and runs under its own hour."""
+    """A send-back resume carries the first launch's longer block and runs under its own shorter limit."""
     clock = Clock(T0)
     builder = Builder(clock, launcher(), launched=T0 - timedelta(minutes=50), limit=3600.0, handed_limit=LIMIT)
     code, out = watch(clock)
