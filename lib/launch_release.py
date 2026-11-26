@@ -500,6 +500,7 @@ def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, 
             reason = _within(change["path"], held, windows)
             if reason is None and whole and _inside(change["path"], whole, windows):
                 kind = "version-folder"
+        # A marker or a compiled file removed takes nothing from what loads, so neither is checked.
         elif change["change"] != "removed" and not _inside(change["path"], new_folders, windows):
             if kind == "orphan-marker" and records is not None:
                 reason = _marker(change, named, fault, top, real_top, windows)
