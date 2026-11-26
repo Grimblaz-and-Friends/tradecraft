@@ -32,7 +32,7 @@ REPO, ISSUE, NUMBER, PRODUCER = route_fixture.REPO, route_fixture.ISSUE, 7, rout
 OBSERVED = route_fixture.START + timedelta(days=1)
 POLICY, CONFIG = ".github/change-proof.json", ".tradecraft/work.json"
 WORKFLOW, JOB = ".github/workflows/ci.yml", "lint-and-test"
-# Every case's name. The last test fails unless each ran and passed in this session.
+# Every case's name. A closing test fails unless each ran and passed in this session.
 CASES = ("builder-report-at-head", "builder-report-at-earlier-commit", "relay-use-marker", "mechanical-lane",
          "no-use")
 PASSED: set[str] = set()
@@ -279,6 +279,7 @@ class Case:
     def __init__(self, tmp_path: Path, gate, *, mechanical: bool = False, declared: bool = False):
         self.fixture = route_fixture.Fixture(tmp_path, mechanical=mechanical)
         self.root = self.fixture.holder
+        # A read the stand-in doesn't serve is a 404 to each reader, caught by that reader's own not-found handling.
         not_found = type("NotServed", (work.WorkError, gate.GitHubNotFound), {"http_status": 404})
         self.github = GitHub(self.root, self.fixture.comments, not_found)
         rules = {**route_fixture.RULES, **({"floor": {"jobs": [{"workflow": WORKFLOW, "job": JOB}]}}
@@ -511,7 +512,8 @@ def test_the_marker_reference_names_every_report_attribute_the_gate_reads(gate):
                          + ", ".join(unnamed))
 
 
-# These two run after every case, in this file's order; under `--dist loadfile` one worker runs the whole file.
+# The closing tests: they run after every case, in this file's order; under `--dist loadfile`, which the declared
+# CI floor runs, one worker runs the whole file.
 def test_every_case_ran_and_passed():
     assert PASSED == set(CASES), (
         "cases that did not run and pass in this session: " + ", ".join(sorted(set(CASES) - PASSED))

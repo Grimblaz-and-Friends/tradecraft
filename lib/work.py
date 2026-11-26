@@ -8251,8 +8251,8 @@ def _launch_declaration(stage: str, row: tuple | None) -> dict[str, object]:
             "same_vendor_reason": (run.get("staffing_qualification") or {}).get("same_vendor_reason")}
 
 
-# The markers whose comment a proof may name as its use or floor source. A source opening with another is
-# refused at composition, and the gate-agreement test runs a proof naming each past the gate.
+# The required gate judges a use or floor source by the marker its comment opens with, so a proof naming any
+# other is refused here, before its pull request meets the gate; the list is also what a test can hold to a case.
 # Design: lib/DESIGN.md#what-a-proof-names-as-its-sources
 PROOF_SOURCE_MARKERS = {"use": frozenset({"use", "check-report", "affirmed-brief"}), "floor": frozenset({"floor"})}
 
