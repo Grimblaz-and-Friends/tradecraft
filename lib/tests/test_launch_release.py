@@ -541,6 +541,19 @@ def test_a_named_version_is_matched_alike_with_either_separator_where_both_separ
     assert sorted(released) == [0, 1, 2, 3] and reasons == {}
 
 
+def test_a_named_version_holds_the_launchers_root_through_a_linked_plugins_folder():
+    top, real = "/home/u/.claude/plugins", "/data/dotfiles/claude/plugins"
+    changes = [{"item": "plugins", "path": top + f"/{GADGET_V3}", "change": "removed"},
+               {"item": "launcher-plugin", "path": real + f"/{GADGET_V3}/lib/mod.py", "change": "removed"},
+               {"item": "launcher-plugin", "path": real + f"/{GADGET_V3}/.orphaned_at", "change": "added"}]
+    tops = {"plugins": top, "launcher-plugin": real + f"/{GADGET_V3}"}
+    # One record names the folder through the link and the other through its resolved path.
+    for path in (top + f"/{GADGET_V3}", real + f"/{GADGET_V3}"):
+        records = readings({}), readings({f"{GADGET}@{MARKET}": [{"scope": "user", "installPath": path}]})
+        released, reasons = launch_release.classify(changes, tops, records=records, windows=False, real_top=real)
+        assert released == {} and sorted(reasons) == [0, 1, 2]
+
+
 # --- A compiled file Python won't check against its source holds -------------------
 
 UTIL_PYC = f"{WIDGET_V1}/lib/__pycache__/util.cpython-312.pyc"

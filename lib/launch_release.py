@@ -198,6 +198,8 @@ def _header(header_of, change: dict) -> str | None:
     if len(header) < HEADER_BYTES:
         return (f"compiled file's header could not be read: {len(header)} bytes, fewer than the "
                 f"{HEADER_BYTES} a header takes")
+    # The magic number names the Python version that wrote the file, and any installed Python may load it, so
+    # only the flags, which mean the same to every version that reads them, are judged.
     flags = int.from_bytes(header[4:8], "little")
     if flags == HASH_BASED:
         return ("compiled file's header marks it unchecked (flags 1): Python loads it without checking "
