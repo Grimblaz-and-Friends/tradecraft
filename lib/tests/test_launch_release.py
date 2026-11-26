@@ -630,6 +630,32 @@ def test_an_unchecked_compiled_file_releases_only_inside_an_updates_new_folder(h
     assert held(before.finish(60), home) == [stray]
 
 
+def test_a_link_where_a_compiled_file_belongs_in_an_added_folder_holds():
+    top = "/fixture/home/.claude/plugins"
+    added = top + f"/cache/{MARKET}/{GADGET}/4.0.0"
+    changes = [{"item": "plugins", "path": added, "change": "added"},
+               {"item": "plugins", "path": added + "/lib/__pycache__/x.pyc", "change": "added"}]
+
+    def header_of(change):
+        raise ValueError("not a regular file")
+
+    released, reasons = launch_release.classify(
+        changes, {"plugins": top}, records=(readings({}), readings({})), windows=False, header_of=header_of,
+        entry_of=lambda change: "link" if change["path"].endswith(".pyc") else "dir")
+    assert released == {0: {"kind": "version-folder"}}
+    assert reasons == {1: "compiled file's header could not be read: ValueError: not a regular file"}
+
+
+def test_a_named_version_folder_holds_whatever_its_own_name():
+    top = "/fixture/home/.claude/plugins"
+    folder = top + f"/cache/{MARKET}/{GADGET}/__pycache__"
+    changes = [{"item": "plugins", "path": folder, "change": "removed"},
+               {"item": "plugins", "path": folder + "/.in_use/7", "change": "removed"}]
+    records = readings({}), readings({f"{GADGET}@{MARKET}": [{"scope": "user", "installPath": folder}]})
+    released, reasons = launch_release.classify(changes, {"plugins": top}, records=records, windows=False)
+    assert sorted(reasons) == [0] and released == {1: {"kind": "in-use-marker"}}
+
+
 def test_a_header_gone_by_its_read_releases_and_one_that_fails_holds():
     top = "/fixture/home/.claude/plugins"
     changes = [{"item": "plugins", "path": top + f"/{WIDGET_V1}/lib/__pycache__/{name}.pyc", "change": "added"}

@@ -149,7 +149,8 @@ def _within(path: str, folders: dict[str, str], windows: bool) -> str | None:
 
 
 def _inside(path: str, folders: set[str], windows: bool) -> bool:
-    return _within(path, dict.fromkeys(folders, ""), windows) is not None
+    parts = _normal(path, windows).split("/")
+    return any("/".join(parts[:count]) in folders for count in range(len(parts), 0, -1))
 
 
 def _parent(path: str, windows: bool) -> str:
@@ -494,20 +495,26 @@ def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, 
         parts = _relative(change["path"], tops[item], windows)
         if not parts:
             continue
-        kind = _kind(item, parts, entry_of(change) if entry_of is not None else None, windows)
-        reason = None
-        if kind is None:
+        # A held version folder's own entry holds whatever its name, even one an upkeep kind would match.
+        reason = held.get(_normal(change["path"], windows))
+        kind = None if reason is not None else _kind(item, parts, entry_of(change) if entry_of is not None else None,
+                                                     windows)
+        if reason is None and kind is None:
             reason = _within(change["path"], held, windows)
-            if reason is None and whole and _inside(change["path"], whole, windows):
-                kind = "version-folder"
+        # Matched by name, not type, so a link where a compiled file belongs is read and refused, never released
+        # with its folder.
+        names = [_fold(name, windows) for name in parts[-2:]]
+        compiled = len(names) == 2 and names[0] == "__pycache__" and names[1].endswith(".pyc")
         # A marker or a compiled file removed takes nothing from what loads, so neither is checked.
-        elif change["change"] != "removed" and not _inside(change["path"], new_folders, windows):
+        if reason is None and change["change"] != "removed" and not _inside(change["path"], new_folders, windows):
             if kind == "orphan-marker" and records is not None:
                 reason = _marker(change, named, fault, top, real_top, windows)
-            elif kind == "bytecode" and header_of is not None and _fold(parts[-1], windows).endswith(".pyc"):
+            elif compiled and header_of is not None:
                 reason = _header(header_of, change)
                 if check is not None:
                     check()  # The only read here, and a slow disk can spend the allowance on it.
+        if reason is None and kind is None and whole and _inside(change["path"], whole, windows):
+            kind = "version-folder"
         if reason is not None:
             reasons[index] = reason
             continue
