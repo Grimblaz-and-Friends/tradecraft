@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+import py_compile
 import shutil
 import sys
 import tempfile
@@ -37,7 +38,8 @@ MARKET, WIDGET, GADGET = "acme-market", "widget", "gadget"
 
 
 class Home:
-    """A home whose plugins folder has one marketplace, two installed plugins and one retired version.
+    """A home whose plugins folder has one marketplace, two installed plugins and one retired version,
+    which two sessions' in-use markers still name.
 
     It names no real path, repository or marketplace, so what holds in it holds on any adopter's machine.
     """
@@ -58,10 +60,11 @@ class Home:
                 f"{widget}/.claude-plugin/plugin.json": b'{"name": "widget"}',
                 f"{widget}/lib/mod.py": b"VALUE = 1\n",
                 f"{widget}/lib/util.py": b"HELPER = 1\n",
-                f"{widget}/lib/__pycache__/mod.cpython-312.pyc": b"\x00pyc",
                 f"{widget}/.in_use/4101": b'{"pid": 4101}',
                 f"cache/{MARKET}/{GADGET}/3.0.0/.claude-plugin/plugin.json": b'{"name": "gadget"}',
                 f"cache/{MARKET}/{GADGET}/2.0.0/.claude-plugin/plugin.json": b'{"name": "gadget"}',
+                f"cache/{MARKET}/{GADGET}/2.0.0/.in_use/6101": b'{"pid": 6101}',
+                f"cache/{MARKET}/{GADGET}/2.0.0/.in_use/6102": b'{"pid": 6102}',
                 f"marketplaces/{MARKET}/.claude-plugin/marketplace.json": b'{"plugins": []}',
                 f"marketplaces/{MARKET}/README.md": b"# acme\n",
                 "synced/account-1/.marketplaces.json": b"[]",
@@ -70,6 +73,7 @@ class Home:
                 ".last_inuse_sweep": b"2026-11-01T00:00:00.000Z",
                 f"data/{WIDGET}/state.json": b"{}"}.items():
             self.write(rel, data)
+        self.compile(f"{widget}/lib/mod.py", f"{widget}/lib/__pycache__/mod.cpython-312.pyc")
         self.marketplaces = {MARKET: {"source": {"source": "github", "repo": "acme/market"},
                                       "installLocation": str(self.plugins / "marketplaces" / MARKET),
                                       "lastUpdated": "2026-11-01T00:00:00.000Z"}}
@@ -91,6 +95,20 @@ class Home:
         path = (top or self.plugins) / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+        self.clock += 10
+        os.utime(path, ns=(self.clock * 10**9, self.clock * 10**9))
+        return path
+
+    def compile(self, source: str, compiled: str, mode: str = "TIMESTAMP", *, top: Path | None = None) -> Path:
+        """Compile a source into a compiled file with Python's own compiler, in the mode named.
+
+        ``TIMESTAMP`` is how an import compiles; ``CHECKED_HASH`` and ``UNCHECKED_HASH`` are what a
+        compile step asking for them writes. The mode is always named, so the environment can't choose it.
+        """
+        path = (top or self.plugins) / compiled
+        path.parent.mkdir(parents=True, exist_ok=True)
+        py_compile.compile(str((top or self.plugins) / source), cfile=str(path), doraise=True,
+                           invalidation_mode=py_compile.PycInvalidationMode[mode])
         self.clock += 10
         os.utime(path, ns=(self.clock * 10**9, self.clock * 10**9))
         return path
@@ -160,7 +178,7 @@ def _upkeep(home: Home) -> None:
     home.write("synced/account-1/.marketplaces.json", b'[{"name": "acme-market"}]')
     home.write(f"{widget}/.in_use/5202", b'{"pid": 5202}')
     home.write(f"cache/{MARKET}/{GADGET}/2.0.0/.orphaned_at", b"1700000000")
-    home.write(f"{widget}/lib/__pycache__/util.cpython-312.pyc", b"\x00pyc")
+    home.compile(f"{widget}/lib/util.py", f"{widget}/lib/__pycache__/util.cpython-312.pyc")
     home.write("store/usage-queue.json", b'{"usage-rows-queued": [1]}')
     home.write("plugin-directory-cache-v2.json", b'{"listings": [1]}')
     home.write(".last_inuse_sweep", b"2026-11-03T05:30:00.000Z")
@@ -206,6 +224,19 @@ def _installed_removed(home: Home) -> None:
     home.remove(f"cache/{MARKET}/{GADGET}/3.0.0")
 
 
+def _retired_removed(home: Home) -> None:
+    home.remove(f"cache/{MARKET}/{GADGET}/2.0.0")
+
+
+def _marked_installed(home: Home) -> None:
+    home.write(f"cache/{MARKET}/{GADGET}/3.0.0/.orphaned_at", b"1700000000")
+
+
+def _unchecked_bytecode(home: Home) -> None:
+    widget = f"cache/{MARKET}/{WIDGET}/1.0.0"
+    home.compile(f"{widget}/lib/util.py", f"{widget}/lib/__pycache__/util.cpython-312.pyc", "UNCHECKED_HASH")
+
+
 def _data_write(home: Home) -> None:
     home.write(f"data/{WIDGET}/state.json", b'{"runs": 1}')
 
@@ -234,6 +265,12 @@ SCENARIOS = {
     "installed-removed": ("an installed version folder removed while installed_plugins.json still "
                           "points at it", _installed_removed),
     "data-write": ("a file in a plugin's own data folder rewritten", _data_write),
+    "retired-removed": ("an old version folder no entry in installed_plugins.json points at removed, "
+                        "with two in-use markers in it", _retired_removed),
+    "marked-installed": ("an orphan marker written at the top of a version folder installed_plugins.json "
+                         "still points at", _marked_installed),
+    "unchecked-bytecode": ("a module of an installed plugin compiled into its __pycache__ folder in the "
+                           "mode Python loads without checking it against its source", _unchecked_bytecode),
 }
 
 
