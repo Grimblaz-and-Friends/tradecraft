@@ -633,7 +633,7 @@ def test_a_header_gone_by_its_read_releases_and_one_that_fails_holds():
     assert reasons == {1: "compiled file's header could not be read: PermissionError: denied"}
 
 
-# --- What row 3 leaves released still releases -------------------------------------
+# --- Changes a launch can make that still release ----------------------------------
 
 def test_an_update_the_launch_makes_releases_with_the_update_named(home):
     before = home.comparison()

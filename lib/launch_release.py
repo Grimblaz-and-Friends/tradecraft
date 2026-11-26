@@ -27,7 +27,8 @@ MARKETPLACE_FIELDS = ("source", "installLocation")
 ENTRY_FIELDS = ("scope", "projectPath", "installPath", "version")
 # A compiled file's header is a magic number, then a flags word: bit 0 marks a source hash and
 # bit 1 asks for it to be checked. Python checks only these against the source; flags 2 has no
-# hash bit, so it is checked by time and size, as flags 0 is.
+# hash bit, so it is checked by time and size, as flags 0 is. They are read as Python's default
+# setting reads them, because a loading process's --check-hash-based-pycs is its own and unseen here.
 HEADER_BYTES = 16
 CHECKED_FLAGS = frozenset({0, 2, 3})
 
@@ -215,7 +216,9 @@ def _regular_bytes(path: Path, limit: int = -1) -> bytes:
     """A regular file's bytes, or its first ``limit``; a link, a pipe or any other entry is refused,
     never followed or waited on.
 
-    A link would let the record's contents change behind an entry the walk sees as unchanged.
+    A link would let an install record's contents change behind an entry the walk sees as
+    unchanged, or point a compiled file's read at another file than the one walked; a pipe would
+    stall either read past the allowance.
     """
     if not stat.S_ISREG(os.lstat(path).st_mode):
         raise ValueError("not a regular file")
