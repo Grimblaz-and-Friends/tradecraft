@@ -28,10 +28,10 @@ from dispatch_lifecycle import atomic_record  # noqa: E402
 import run_lifecycle as lifecycle  # noqa: E402
 
 SESSION = "00000000-0000-4000-8000-00000000f1f0"
-# Steps already in the log when the wait starts, each written as if minutes ago.
-EARLIER = (("Bash", {"command": "git log --oneline -3", "description": "Orient in the tree"}),
-           ("Read", {"file_path": "lib/job.py"}),
-           ("Bash", {"command": "python -B -m pytest -q lib/tests", "description": "Run the job's tests"}))
+STEPS_BEFORE_WAIT = (
+    ("Bash", {"command": "git log --oneline -3", "description": "Orient in the tree"}),
+    ("Read", {"file_path": "lib/job.py"}),
+    ("Bash", {"command": "python -B -m pytest -q lib/tests", "description": "Run the job's tests"}))
 
 
 class Live(NamedTuple):
@@ -41,19 +41,19 @@ class Live(NamedTuple):
     inside_helper: bool
 
 
-# The steps taken while the wait watches.
-LIVE = (Live(2, "Edit", {"file_path": "lib/job.py", "old_string": "a", "new_string": "b"}, False),
-        Live(4, "Agent", {"description": "Read the job's callers", "prompt": "List the job's callers."}, False),
-        Live(6, "Grep", {"pattern": "def run_job"}, True),
-        Live(8, "Bash", {"command": "python -B -m pytest -q lib/tests/test_job.py",
-                         "description": "Run the job's tests a second time"}, False))
+STEPS_WHILE_WATCHED = (
+    Live(2, "Edit", {"file_path": "lib/job.py", "old_string": "a", "new_string": "b"}, False),
+    Live(4, "Agent", {"description": "Read the job's callers", "prompt": "List the job's callers."}, False),
+    Live(6, "Grep", {"pattern": "def run_job"}, True),
+    Live(8, "Bash", {"command": "python -B -m pytest -q lib/tests/test_job.py",
+                     "description": "Run the job's tests a second time"}, False))
 # Seconds after the start at which the last live step's result comes; until then only heartbeats are written, so
 # the builder is quiet for a known span with a step running.
 QUIET_UNTIL = 20
 # Seconds after the start at which it ends: a moment after that result, so its end isn't read with the step's.
 END_AT = 22
-# How often it rewrites its record and beats. Slower than the launchers' quarter second, which changes nothing
-# the wait reads: it reads only the record's latest state.
+# How often it rewrites its record and beats. It can be slower than the launchers' own pace without changing
+# anything the wait reads, since the wait reads only the record's latest state.
 PACE_SECONDS = 1.0
 # How long it waits for --hold-until's file, so a stand-in whose scenario died doesn't run on.
 HELD_SECONDS = 120.0
@@ -158,21 +158,21 @@ def main(argv: list[str] | None = None) -> int:
         run.complete("success")
         return 0
     _append(args.log, {"type": "system", "subtype": "init", "session_id": SESSION, "model": "fixture"})
-    for index, (tool, tool_input) in enumerate(EARLIER):
+    for index, (tool, tool_input) in enumerate(STEPS_BEFORE_WAIT):
         at = now - timedelta(minutes=9 - 3 * index)
         _step(args.log, f"toolu_earlier_{index}", tool, tool_input, helper=None, at=at)
         _result(args.log, f"toolu_earlier_{index}", helper=None, at=at + timedelta(minutes=2))
     run.checkpoint()
     parent = None
-    for index, (when, tool, tool_input, helper) in enumerate(LIVE):
+    for index, (when, tool, tool_input, helper) in enumerate(STEPS_WHILE_WATCHED):
         _hold(run, when, started)
         identity = f"toolu_live_{index}"
         if tool == "Agent":
             parent = identity
         _step(args.log, identity, tool, tool_input, helper=parent if helper else None, at=datetime.now(timezone.utc))
-        if index < len(LIVE) - 1:
+        if index < len(STEPS_WHILE_WATCHED) - 1:
             _result(args.log, identity, helper=parent if helper else None, at=datetime.now(timezone.utc))
-    last, tool = f"toolu_live_{len(LIVE) - 1}", LIVE[-1][1]
+    last, tool = f"toolu_live_{len(STEPS_WHILE_WATCHED) - 1}", STEPS_WHILE_WATCHED[-1][1]
     beats = iter(range(1, 1000))
     if args.mode == "limit":
         _hold(run, args.limit_at or QUIET_UNTIL, started, lambda: _heartbeat(args.log, last, tool, next(beats)))

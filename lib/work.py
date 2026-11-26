@@ -6473,12 +6473,13 @@ RESUME_WAY = "run handoff --resume-reason TEXT, on the owner's word"
 def _watch_command(state: WorkState, pointer: dict) -> str:
     """The wait a launch is watched by: the holder's --root, this entrance, and the launch's own instalment.
 
-    The handed-off report and the decision both compose it here, so the two never name different commands.
+    The handed-off report and the decision both compose it here, so the two never name different commands; the
+    instalment is the launch's alone, since the wait picks out a launch by the instalment its request names.
     Design: lib/DESIGN.md#the-builder-route
     """
     return builder_wait.wait_command(state.repo, state.issue_number, state.holder_root,
                                      Path(__file__).resolve().parent.parent,
-                                     builder_wait.launch_instalment(pointer) or state.instalment)
+                                     builder_wait.launch_instalment(pointer))
 
 
 def _builder_reading(state: WorkState, pointer: dict) -> dict[str, object]:
@@ -13929,7 +13930,8 @@ def run(
 def _wait_command(args: argparse.Namespace) -> int:
     """Watch this work's launched builder from its local records alone, until it ends or its limit passes.
 
-    It reads no GitHub and runs no Git, so it is dispatched before every other read. Design:
+    It reads no GitHub and runs no Git, so it is dispatched before every other read. Its --root names the
+    holder's checkout as every entrance call does, though the wait reads nothing there. Design:
     lib/DESIGN.md#the-builder-route
     """
     if args.stage is not None:

@@ -98,7 +98,7 @@ def test_a_watched_builder_is_read_as_its_records_say_and_the_wait_ends_with_it(
     assert detail["quiet_seconds"] < 60
     # The replay appends the recorded log, not the stand-in's own steps, so its steps are held by the next test.
     if name != "watch-replay":
-        assert detail["steps"] == len(stand_in_builder.EARLIER) + len(stand_in_builder.LIVE)
+        assert detail["steps"] == len(stand_in_builder.STEPS_BEFORE_WAIT) + len(stand_in_builder.STEPS_WHILE_WATCHED)
         assert detail["last_step"] == "Bash: Run the job's tests a second time"
     ended = out.rsplit("--- the stand-in builder ended at ", 1)[1].split(" ---", 1)[0]
     builder, wait = ended.split("; the wait ended at ")
