@@ -52,8 +52,8 @@ WAIT_SENTENCE = ("Start this in your runtime's background, so that only its end 
 def wait_command(repo: str, issue: int, holder_root, plugin_root, instalment: str | None = None) -> str:
     """The command a holder starts in its background for this work, written as the handoff writes its commands.
 
-    Its quoting is POSIX's, which the Bash and PowerShell a holder's runtime runs on Windows both read the same,
-    and it names `python` as every entrance command does.
+    Its quoting is POSIX's, which the Bash and PowerShell a holder's runtime runs on Windows both read the same
+    for a path with no apostrophe in it, and it names `python` as every entrance command does.
     """
     argv = ["python", "-B", str(plugin_root).rstrip("/\\") + "/lib/work.py", "wait", "--repo", repo,
             "--issue", str(issue), "--root", str(holder_root), *(["--instalment", instalment] if instalment else [])]
@@ -316,6 +316,8 @@ class Waiter:
         self.work, self.launch, self.out, self.clock, self.sleep = work, launch, out, clock, sleep
         self.failing: dict[str, list] = {}
         self.form_said = False
+        # Whether the log's last few steps were shown yet; until a read succeeds, the first one shows them.
+        self.opened = False
 
     def say(self, text: str) -> None:
         self.out.write(f"{self.clock().astimezone().strftime('%H:%M:%S')} {text}\n")
@@ -344,6 +346,12 @@ class Waiter:
         if log.readable is False and not self.form_said:
             self.form_said = True
             self.say("the builder's log isn't in Claude's stream form, so its steps can't be read; status lines only")
+        if not self.opened:
+            # A log the wait couldn't read at its start opens as a start would, rather than replaying every step.
+            self.opened = True
+            for step in log.steps[-EARLIER_STEPS:]:
+                self.say(f"earlier step: {step.text()}")
+            return
         for step in log.steps[before:]:
             self.say(f"{'helper step' if step.helper else 'step'}: {step.text()}")
 
@@ -360,13 +368,13 @@ class Waiter:
         self._try("request record", launch.pointer.get("request"), launch.read_request)
         self._try("run record", launch.pointer.get("run"), launch.read_run)
         log = launch.log
-        if log is not None and self._try("builder log", log.path, log.read):
-            if log.readable is False:
-                self.form_said = True
-                self.say("the builder's log isn't in Claude's stream form, so its steps can't be read; "
-                         "status lines only")
+        self.opened = log is not None and self._try("builder log", log.path, log.read)
+        if self.opened and log.readable is False:
+            self.form_said = True
+            self.say("the builder's log isn't in Claude's stream form, so its steps can't be read; "
+                     "status lines only")
         self._status()
-        for step in (log.steps[-EARLIER_STEPS:] if log else []):
+        for step in (log.steps[-EARLIER_STEPS:] if self.opened else []):
             self.say(f"earlier step: {step.text()}")
         next_status = self.clock() + timedelta(seconds=STATUS_SECONDS)
         while True:

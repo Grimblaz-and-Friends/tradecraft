@@ -218,7 +218,7 @@ def test_a_builder_past_its_limit_ends_the_wait_at_the_limit_and_the_reserve_nev
         clock.at(second, builder.heartbeat)
     code, out = watch(clock)
     assert code == 0 and clock.now == bound and clock.latest == bound
-    assert out.texts()[-1].startswith("the builder's limit has passed: 8h00m and the 60-second reserve")
+    assert out.texts()[-1].startswith(f"the builder's limit has passed: 8h00m and the {RESERVE:g}-second reserve")
     assert builder.child.poll() is None  # Ending stops nothing.
 
 
@@ -570,3 +570,23 @@ def test_a_listing_that_meets_the_launchers_replace_reads_again_before_saying_no
     monkeypatch.setattr(Path, "read_bytes", replaced)
     code, out = watch(clock)
     assert code == 0 and out.texts()[0].startswith(f"builder for {WORK}: running 1h00m")
+
+
+def test_a_log_unread_at_the_start_opens_with_its_last_steps_rather_than_replaying_them(launcher, monkeypatch):
+    clock = Clock(T0)
+    builder = Builder(clock, launcher(), launched=T0 - timedelta(hours=1))
+    for number in range(10):
+        builder.step("Bash", {"command": "ls", "description": f"Step {number}"})
+    clock.at(10, lambda: builder.step("Bash", {"command": "ls", "description": "A new step"}))
+    clock.at(17, lambda: builder.complete("success"))
+    read, blocked = Path.open, {"once": True}
+
+    def replaced(path, *args, **kwargs):
+        if path == builder.log and blocked.pop("once", False):
+            raise PermissionError(13, "Permission denied", str(path))
+        return read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", replaced)
+    code, out = watch(clock)
+    assert code == 0
+    assert out.texts("earlier step:") == [f"earlier step: Bash: {text}" for text in ("Step 7", "Step 8", "Step 9")]
+    assert out.texts("step:") == ["step: Bash: A new step"]
