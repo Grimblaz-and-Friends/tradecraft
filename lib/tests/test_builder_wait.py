@@ -555,3 +555,18 @@ def test_a_step_with_no_id_is_not_read_as_running_and_no_log_yet_is_no_step(laun
     builder.checkpoint()
     values = builder_wait.read_once(json.loads(builder.pointer.read_bytes()), T0)
     assert values["steps"] == 0 and "0 steps" in builder_wait.status_line(WORK, values)
+
+
+def test_a_listing_that_meets_the_launchers_replace_reads_again_before_saying_none_runs(launcher, monkeypatch):
+    clock = Clock(T0)
+    builder = Builder(clock, launcher(), launched=T0 - timedelta(hours=1))
+    clock.at(5, lambda: builder.complete("success"))
+    read, blocked = Path.read_bytes, {"once": True}
+
+    def replaced(path):
+        if path == builder.run and blocked.pop("once", False):
+            raise PermissionError(13, "Permission denied", str(path))
+        return read(path)
+    monkeypatch.setattr(Path, "read_bytes", replaced)
+    code, out = watch(clock)
+    assert code == 0 and out.texts()[0].startswith(f"builder for {WORK}: running 1h00m")

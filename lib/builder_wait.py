@@ -26,6 +26,10 @@ POLL_SECONDS = 5.0
 STATUS_SECONDS = 300.0
 # A read that fails while the launcher replaces its record is retried silently; one failing this long is said.
 UNREADABLE_SECONDS = 60.0
+# Long enough together to outlast a launcher's replace of its record, short enough that a wait with no builder
+# still ends at once.
+LISTING_TRIES = 3
+LISTING_PAUSE_SECONDS = 0.5
 # A wait started mid-build, after a restart, opens with the builder's last few steps, enough to show where it
 # is without replaying hours of them.
 EARLIER_STEPS = 3
@@ -447,7 +451,13 @@ def wait(store, repo: str, issue: int, *, instalment: str | None = None, out=Non
     except OSError as exc:
         say(f"can't open the record store {store}: {exc}")
         return 1
-    launched, hand = _launched(store, work, instalment)
+    # A launcher rewrites its run record by replace, and a listing that meets one skips the launch as unreadable,
+    # so the launches are read again before the wait says none runs.
+    for attempt in range(LISTING_TRIES):
+        launched, hand = _launched(store, work, instalment)
+        if launched or hand or attempt == LISTING_TRIES - 1:
+            break
+        sleep(LISTING_PAUSE_SECONDS)
     if len(launched) > 1:
         say(f"{len(launched)} launched builders of {work} are running ("
             + ", ".join(pointer["dispatch_id"] for pointer in launched) + "); name one with --instalment")
