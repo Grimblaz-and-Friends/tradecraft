@@ -503,6 +503,7 @@ def test_the_shared_use_report_cases_read_at_the_copied_gate_as_expected(tmp_pat
 
 
 def test_the_marker_reference_names_every_report_attribute_the_gate_reads(gate):
+    """A holder learns why the gate refused a use report from markers.md, so it names every attribute the gate reads."""
     text = (ROOT / "skills" / "work" / "references" / "markers.md").read_text(encoding="utf-8")
     section = text.split("## `check-report`", 1)[1].split("## `", 1)[0]
     passage = section.partition("**What the required gate reads of a use report.**")[2]

@@ -8,7 +8,7 @@ The copy's own comments cite `README.md`, as in `README.md, "Evidence contract"`
 
 ## What the test does
 
-`test_gate_agreement.py` stands up one in-process GitHub over a real Git history for each stand-in change its `CASES` names: the builder route with a use report at the head, the builder route with a use report at an earlier commit, the relay route with a `use` marker, the mechanical lane, and a change whose paths buy no use. The entrance collects that GitHub and publishes its proof there through its own publish step, and the copied gate reads the same GitHub. Each case must print `change-proof: PASS` with its use line. The same file also checks the copy's bytes against `source.json`, runs the shared use-report cases in `skills/work/references/proof-fixtures/v1-builder-use-report.json` through the copy, fails unless every case ran and passed, and fails, naming it, when `lib/work.py`'s `PROOF_SOURCE_MARKERS` lets the entrance name a use or floor source by a marker no case's proof named.
+`test_gate_agreement.py` stands up one in-process GitHub over a real Git history for each stand-in change its `CASES` names: the builder route with a use report at the head, the builder route with a use report at an earlier commit, the relay route with a `use` marker, the mechanical lane, and a change whose paths buy no use. The entrance collects that GitHub and publishes its proof there through its own publish step, and the copied gate reads the same GitHub. Each case must print `change-proof: PASS` with its use line. The same file also checks the copy's bytes against `source.json`, runs the shared use-report cases in `skills/work/references/proof-fixtures/v1-builder-use-report.json` through the copy, checks that the marker reference's `check-report` section names every report attribute the copy reads, since a holder learns from that section why the gate refused a report, fails unless every case ran and passed, and fails, naming it, when `lib/work.py`'s `PROOF_SOURCE_MARKERS` lets the entrance name a use or floor source by a marker no case's proof named.
 
 ## What a red means
 
@@ -31,6 +31,8 @@ A change that needs a newer gate refreshes the copy in its own diff: fetch `proo
 ## The substrate lint
 
 `tools/substrate_lint.py`'s Python-file guards pass over the copy only while its bytes match `source.json`, since their rules are for code this repository writes; an edited copy is judged like any file here. Its whole-file guards read the copy as they read every file.
+
+**Decision in force:** [D-1044](../../docs/architecture/decisions/D-1044-2026-11-26-the-suite-runs-the-copied-gate-over-composed-proofs.md), whose calls include this one.
 
 ## Decisions in force
 
