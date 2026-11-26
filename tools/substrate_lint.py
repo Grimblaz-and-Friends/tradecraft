@@ -135,8 +135,7 @@ def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
     return set(result)
 
 
-# Another repository's script, held here byte for byte to be run and never edited, beside the record that names
-# its source and digest. Only those exact bytes are passed over, so an edited copy is judged like any file here.
+# The guards' rules are for code this repository writes, and a held copy is another repository's, never edited.
 # Design: tools/gate/README.md#the-substrate-lint
 HELD_COPIES = (("tools/gate/check.py", "tools/gate/source.json"),)
 

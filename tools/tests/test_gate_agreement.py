@@ -3,7 +3,8 @@
 The entrance and the gate are two implementations of one proof contract. Each case stands up one in-process
 GitHub over a real Git history, has the entrance collect it and publish its proof there through its own publish
 step, then has the copied gate read the same GitHub. A red means the entrance under test composes a proof the
-copied gate refuses; `tools/gate/README.md#what-a-red-means` says what a session may and may not do about it.
+copied gate refuses; `tools/gate/README.md#what-a-red-means` says what a session may and may not do about it, and
+`tools/gate/README.md#decisions-in-force` names the decision behind this file.
 """
 from __future__ import annotations
 
@@ -343,17 +344,12 @@ class Case:
             return publish(transport, state, body, head)
 
         monkeypatch.setattr(work, "_publish_proof_comment", recorded)
+        # `run proof`'s own stage: it snapshots the committed policy, collects afresh and publishes. Of the state
+        # it is handed it reads only where the records are, the holder's checkout and the instalment.
         policy = self.root / POLICY
-        rules = work.load_use_rules(policy)
-        config = work.load_work_config(self.root)
-        state = work._read_policy_state(self.github, REPO, ISSUE, config, rules, str(policy),
-                                        policy_bytes=policy.read_bytes())
-        state.record_root = self.fixture.store
-        state.holder_root = self.root
-        snapshot = work._capture_policy_snapshot(self.root, REPO, policy, enforce_clean=True)
-        state.policy_sources = snapshot.sources
-        work._evaluate_raw_output(state, rules, str(policy))
-        code = work._publish_current_proof(self.github, state, self.root, rules, policy, snapshot)
+        seed = work.WorkState(REPO, ISSUE, {}, record_root=self.fixture.store)
+        seed.holder_root, seed.instalment = self.root, None
+        code = work._execute_proof(self.github, seed, self.root, work.load_use_rules(policy), policy, None, None)
         assert code == 0 and len(published) == 1, ("the entrance published no proof", reports)
         return published[0], reports
 
