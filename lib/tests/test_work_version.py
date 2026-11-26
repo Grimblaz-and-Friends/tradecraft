@@ -137,7 +137,8 @@ def test_C3_C5_ready_use_recommends_required_version_repair_first(version, expec
         assert report["reason"].startswith("version-obligation-")
         assert "builder" in report["detail"]
     else:
-        assert report["reason"].startswith("current-head-use-absent")
+        # No use has reported on the pull request, so the first use is the one asked for.
+        assert report["reason"].startswith("pull-request-use-absent")
     assert not transport.effects
     # Named authority still reaches use's existing job/tree preflight at a bad head.
     assert named("use", state, transport, root) == 0
