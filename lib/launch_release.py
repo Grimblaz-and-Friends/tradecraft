@@ -466,7 +466,8 @@ def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, 
         basis, reason, moved = _install_record(record, before, after, added_paths, windows)
         decided[index] = (basis, reason)
         updated |= {_normal(path, windows) for path in moved}
-    # The launch could have put any code in an update's new folder, so everything in it releases as the update does.
+    # Later sessions load an update's new folder whole, whatever the launch put in it, so holding part of it
+    # would stop nothing; everything in it releases as the update does.
     new_folders = {form for _path, forms in added if forms & updated for form in forms}
     named, fault = _named((after or {}).get(INSTALLED), top, real_top, windows) if records is not None \
         else ({}, None)
@@ -505,7 +506,7 @@ def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, 
             elif kind == "bytecode" and header_of is not None and _fold(parts[-1], windows).endswith(".pyc"):
                 reason = _header(header_of, change)
                 if check is not None:
-                    check()
+                    check()  # The only read here, and a slow disk can spend the allowance on it.
         if reason is not None:
             reasons[index] = reason
             continue
