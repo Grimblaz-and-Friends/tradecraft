@@ -61,22 +61,23 @@ def test_a_deletion_only_change_carries_no_files_and_still_builds(tmp_path):
     assert "-A = 1" in (tmp_path / "readings" / "reading" / cold_reader.DIFF_FILE).read_text("utf-8")
 
 
-def test_a_flag_on_a_covered_deleted_file_passes_the_form_and_stands_until_reread(tmp_path):
+def test_a_flag_on_a_covered_deleted_file_passes_the_form_and_stands_until_judged(tmp_path):
     root, base, head = source(tmp_path, {"a.py": "A = 1\n", "b.py": "B = 1\n"},
                               {"b.py": "B = 2\n"}, removed=["a.py"])
     metadata = cold_reader.load_metadata(build(tmp_path, root, base, head))
     allowed = cold_reader.flaggable(metadata)
     assert allowed == {"a.py", "b.py"}
+    # A deleted file is the change's whole, so a flag on any of its removed lines stands.
+    assert metadata["lines"]["a.py"] == {"change": cold_reader.WHOLE, "judged": cold_reader.WHOLE, "count": 0}
     text = account("a.py:1 {dash} missing-reason {dash} the removal gives no reason")
     assert cold_reader.form_errors(text, allowed) == []
-    flags = cold_reader.parse_account(text)["flags"]
+    parsed = cold_reader.parse_account(text)
     present = cold_reader.current(root, base, head)
-    first = {"id": 1, "coverage": metadata["coverage"], "account": {"flags": flags, "can_tell": True}}
-    judged = cold_reader.assess([first], present)
-    assert [flag["path"] for flag in judged["flags"]] == ["a.py"] and judged["owed"] == ["a.py"]
-    reread = {"id": 2, "coverage": {"a.py": metadata["coverage"]["a.py"]},
-              "account": {"flags": [], "can_tell": True}}
-    assert cold_reader.assess([first, reread], present)["flags"] == []
+    first = {"id": 1, "coverage": metadata["coverage"], "record": metadata, "head": head, "account": parsed,
+             "flags": cold_reader.reading_flags(metadata, parsed)}
+    judged = cold_reader.assess([first], present, root)
+    assert [flag["path"] for flag in judged["flags"]] == ["a.py"] and judged["order"]["mode"] == "fix-check"
+    assert judged["order"]["covered"] == [] and judged["order"]["earlier_flags"][0]["path"] == "a.py"
 
 
 def test_a_numbered_anchor_reaches_the_repeated_heading():

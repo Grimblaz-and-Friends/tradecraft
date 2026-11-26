@@ -5478,7 +5478,8 @@ COLD_READING_REVIEW = (
     "the design document "
     "or decision record, preferring the code. Where the account says `Can tell: no`, write the "
     "decision record the change then owes, or, where it already writes one, make that record say why. "
-    "Never edit or restate the account. Return your review of it."
+    "Never edit or restate the account. A flag the entrance lists as outside the change needs nothing. "
+    "Return your review of it."
 )
 
 
@@ -5524,7 +5525,7 @@ def _cold_readings(state: WorkState, refused: list[dict[str, object]] | None = N
         except (OSError, UnicodeError, cold_reader.ColdReaderError) as exc:
             raise WorkError(f"cold-reader bundle cannot be read: {path}: {exc}") from exc
         # The current form check refuses this return, so it isn't a reading, whatever the stage said when it ran.
-        errors = cold_reader.form_errors(returned, cold_reader.flaggable(metadata))
+        errors = cold_reader.account_errors(metadata, returned)
         if errors:
             if refused is not None:
                 refused.append({"id": path, "completed_at": completed, "request": request, "return": returned,
@@ -5534,10 +5535,11 @@ def _cold_readings(state: WorkState, refused: list[dict[str, object]] | None = N
         # change's history holds the head it read.
         if "lineage_branch" not in request and not _cold_reading_in_history(state, metadata.get("head"), path):
             continue
+        account = cold_reader.parse_account(returned, cold_reader.mode_of(metadata))
         readings.append({"id": path, "completed_at": completed, "request": request, "run": run,
-                         "return": returned, "coverage": metadata["coverage"],
+                         "return": returned, "coverage": metadata["coverage"], "record": metadata,
                          "whole": bool(metadata.get("whole")), "head": metadata.get("head"),
-                         "account": cold_reader.parse_account(returned)})
+                         "account": account, "flags": cold_reader.reading_flags(metadata, account)})
     return readings
 
 
@@ -5632,7 +5634,7 @@ def _cold_reading_marker_error(state: WorkState, marker: Marker) -> str | None:
     if marker.attributes["status"] == "open":
         if marker.attributes["head"] != selected["head"]:
             return "cold-reading open head differs from the head its reading read"
-        _accepted, errors = cold_reader.acceptances(marker.body, selected["account"]["flags"])
+        _accepted, errors = cold_reader.acceptances(marker.body, selected["flags"])
         if errors:
             return "cold-reading " + errors[0]
     state.selected_bundles[(marker.source_order, marker.occurrence_order)] = (
@@ -5695,9 +5697,9 @@ def _cold_reading_plan(state: WorkState, sha: str) -> dict[str, object]:
     for reading in readings:
         marker = opened.get(reading["id"])
         reading["accepted"] = ({} if marker is None
-                               else cold_reader.acceptances(marker.body, reading["account"]["flags"])[0])
+                               else cold_reader.acceptances(marker.body, reading["flags"])[0])
     return {"present": present, "readings": readings, "opened": opened,
-            "assessment": cold_reader.assess(readings, present)}
+            "assessment": cold_reader.assess(readings, present, state.holder_root)}
 
 
 def _opened_readings(state: WorkState, readings: list[dict[str, object]]) -> dict[str, Marker]:
@@ -5710,6 +5712,24 @@ def _opened_readings(state: WorkState, readings: list[dict[str, object]]) -> dic
                 and selected is not None and selected[1] in ids):
             opened[selected[1]] = marker
     return opened
+
+
+def _reading_summary(reading: dict[str, object], assessment: dict[str, object]) -> str:
+    """What a reading leaves standing that its poster can't see in the account: verdicts and flags outside the change."""
+    flags = reading["flags"]
+    placed = assessment["placements"][reading["id"]]
+    outside = [f"{cold_reader.flag_line(flags[position])} ({entry['reason']})"
+               for position, entry in enumerate(placed) if not entry["stands"]]
+    verdicts = [f"{flag_id} {value['verdict']}" for flag_id, value in sorted(
+        reading["account"].get("verdicts", {}).items(), key=lambda item: int(item[0][1:]))]
+    parts = []
+    if verdicts:
+        parts.append(" Earlier flags judged: " + "; ".join(verdicts)
+                     + ". A `not-answered` one stands as this reading's flag and is accepted by the usual line.")
+    if outside:
+        parts.append(" Outside the change, so standing nowhere and needing no acceptance: " + "; ".join(outside)
+                     + ".")
+    return "".join(parts)
 
 
 def _cold_reading_unverifiable(sha: str, problem: object) -> Decision:
@@ -5745,7 +5765,7 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     readings, assessment = plan["readings"], plan["assessment"]
     if not readings:
         return Decision("cold-reader", True, "fresh", "cold-reading-absent",
-                        json.dumps({"covered": sorted(plan["present"]["change_set"])}))
+                        json.dumps({"covered": sorted(plan["present"]["change_set"]), "mode": "first"}))
     opened = plan["opened"]
     latest = readings[-1]
     if latest["id"] not in opened:
@@ -5760,7 +5780,7 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
             "staffing_status=... -->, and beneath it, under \"Holder's review against the brief\", each "
             "misreading, the route for each flag worth another round and any `Can tell: no`, and one "
             f"`Accepted: path:lines {cold_reader.EM_DASH} KIND {cold_reader.EM_DASH} reason` line for "
-            "each flag you accept.",
+            "each flag you accept." + _reading_summary(latest, assessment),
             status="holder-owned")
     review = opened[latest["id"]]
     # A clean posted before the latest open closes an older reading, so only later ones are judged.
@@ -5778,8 +5798,10 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
         _set_aside(state, closing, "cold-reading clean while the builder's review can't be read")
         return _cold_reading_unverifiable(sha, exc)
     latest_accepted = latest.get("accepted", {})
+    placed = assessment["placements"][latest["id"]]
+    # A flag outside the change needs nothing, so only a standing one the holder didn't accept is routed.
     routed = latest["account"]["can_tell"] is False or any(
-        position not in latest_accepted for position in range(len(latest["account"]["flags"])))
+        placed[position]["stands"] and position not in latest_accepted for position in range(len(latest["flags"])))
     # The builder is resumed only for what the latest `open` routed to it; anything else goes to its reread.
     if turn is None and routed and not builder_route:
         _set_aside(state, closing, "cold-reading clean before a builder turn received its open reading")
@@ -5788,14 +5810,14 @@ def _cold_reading_decision(state: WorkState, sha: str) -> Decision | None:
     if assessment["standing_no"]:
         _set_aside(state, closing, "cold-reading clean while a Can tell: no stands")
         return Decision("cold-reader", True, "fresh", "cold-reading-why-owed",
-                        json.dumps({"covered": sorted(plan["present"]["change_set"])}))
-    if assessment["owed"]:
+                        json.dumps({"covered": assessment["owed"], "mode": "why-check"}))
+    if assessment["stale"] or assessment["flags"]:
         stale = bool(assessment["stale"])
-        _set_aside(state, closing, "cold-reading clean over a stale or uncovered path" if stale
+        _set_aside(state, closing, "cold-reading clean over a path with lines no reading has read" if stale
                    else "cold-reading clean while a flag stands")
         return Decision("cold-reader", True, "fresh",
                         "cold-reading-stale" if stale else "cold-reading-flag-reread",
-                        json.dumps({"covered": assessment["owed"]}))
+                        json.dumps({"covered": assessment["owed"], "mode": "fix-check"}))
     reviewed = _time(turn[0] if turn is not None else review.timestamp)
     valid = [marker for marker in closing if marker.attributes["head"] == sha
              and reviewed is not None and _time(marker.timestamp) is not None
@@ -5899,25 +5921,52 @@ def _cold_reading_measures(state: WorkState) -> dict[str, object]:
     except WorkError as exc:
         return {"status": "unverifiable", "detail": str(exc), "readings": []}
     opened = _opened_readings(state, readings)
-    rows = []
+    rows, cache = [], {}
     for reading in readings:
-        flags = reading["account"]["flags"]
+        flags = reading["flags"]
         marker = opened.get(reading["id"])
         accepted = {} if marker is None else cold_reader.acceptances(marker.body, flags)[0]
         attempt = next((item for item in reversed(reading["run"].get("attempts") or [])
                         if isinstance(item, dict) and item.get("outcome") in SUCCESSFUL_BUNDLE_OUTCOMES), {})
+        record = reading["record"]
+        # A flag outside the change needs nothing, so the report lists it apart and never among the accepted.
+        placed = cold_reader.placement(reading, None if state.holder_root is None and record.get(
+            "schema_version") != cold_reader.SCHEMA_VERSION else cold_reader.record_lines(
+                state.holder_root, reading, cache))
+        stands = [position for position, entry in enumerate(placed) if entry["stands"]]
+        earlier = {flag["id"]: flag for flag in record.get("earlier_flags") or []}
         rows.append({
             "bundle": reading["id"], "head": reading["head"], "whole": reading["whole"],
+            "mode": (cold_reader.mode_of(record) if record.get("schema_version") == cold_reader.SCHEMA_VERSION
+                     else "version-1"),
             "posted": marker is not None, "can_tell": reading["account"]["can_tell"],
-            "flags": [cold_reader.flag_line(flag) for flag in flags],
+            "checked": [{"flag": cold_reader.earlier_line(earlier[flag_id]), "verdict": value["verdict"],
+                         "why": value["why"]}
+                        for flag_id, value in sorted(reading["account"].get("verdicts", {}).items(),
+                                                     key=lambda item: int(item[0][1:])) if flag_id in earlier],
+            "flags": [cold_reader.flag_line(flags[position]) for position in stands],
+            "outside": [{"flag": cold_reader.flag_line(flags[position]), "reason": entry["reason"]}
+                        for position, entry in enumerate(placed) if not entry["stands"]],
             "accepted": [{"flag": cold_reader.flag_line(flags[position]), "reason": reason}
-                         for position, reason in sorted(accepted.items())], "accepted_by": accepted_by,
-            "routed": [cold_reader.flag_line(flag) for position, flag in enumerate(flags)
-                       if position not in accepted],
+                         for position, reason in sorted(accepted.items()) if position in stands],
+            "accepted_by": accepted_by,
+            "routed": [cold_reader.flag_line(flags[position]) for position in stands if position not in accepted],
             "vendor": attempt.get("vendor"), "model": attempt.get("model"), "effort": attempt.get("effort"),
             "duration_seconds": attempt.get("elapsed_seconds"),
         })
     return {"status": "read", "readings": rows}
+
+
+def _reading_placement_report(metadata: dict, returned: str) -> dict[str, object]:
+    """Each earlier flag's verdict and each flag outside the change, so whoever posts the reading sees what stands."""
+    account = cold_reader.parse_account(returned, cold_reader.mode_of(metadata))
+    reading = {"record": metadata, "flags": cold_reader.reading_flags(metadata, account)}
+    placed = cold_reader.placement(reading, cold_reader.record_lines(Path("."), reading, {}))
+    return {"verdicts": {flag_id: value["verdict"] for flag_id, value in account["verdicts"].items()},
+            "standing": [cold_reader.flag_line(flag) for flag, entry in zip(reading["flags"], placed)
+                         if entry["stands"]],
+            "outside": [{"flag": cold_reader.flag_line(flag), "reason": entry["reason"]}
+                        for flag, entry in zip(reading["flags"], placed) if not entry["stands"]]}
 
 
 def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path: Path | None,
@@ -5956,7 +6005,14 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
                           + (f"{gate.stage} ({gate.reason})" if gate is not None else "no cold-reading step") + ".")
         _emit_report(_reported_decision(state, refusal).as_dict(), state)
         return 0
-    covered = json.loads(gate.detail)["covered"]
+    # The gate's own assessment orders the reading: its mode, its paths and, for a reread, what it judges.
+    try:
+        order = _cold_reading_plan(state, sha)["assessment"]["order"]
+    except (cold_reader.ColdReaderError, WorkError, OSError) as exc:
+        _emit_report(_reported_decision(state, replace(decision, dispatch=False, continuity=None, status="refused",
+                     reason="cold-reading-unverifiable", detail=str(exc))).as_dict(), state)
+        return 0
+    covered = order["covered"]
     work = f"{state.repo}#{state.issue_number}"
     # Staffing is judged against the builder, so a reading whose builder nothing proves never starts.
     try:
@@ -5976,7 +6032,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         metadata_path = cold_reader.build_tree(
             source=state.holder_root, output=reading, work=work,
             producer_version=records.producer_version(), base_tip=state.pr["base"]["sha"],
-            head=sha, covered=covered, branch=branch, numbers=numbers, records_home=home)
+            head=sha, covered=covered, branch=branch, numbers=numbers, records_home=home, order=order)
         metadata = cold_reader.load_metadata(metadata_path)
     except cold_reader.ColdReaderError as exc:
         recipient_tree.remove_tree(reading.parent)
@@ -5993,8 +6049,12 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
                 / "code-reasons.md").read_text("utf-8")
     place.mkdir(parents=True, exist_ok=True)
     prompt = place / "prompt.md"
+    # A reread's excerpts are composed from its sealed record and the source, as its recomposition composes them.
+    excerpts = (cold_reader.reading_excerpts(state.holder_root, metadata)
+                if metadata.get("excerpts") == "inline" else None)
     prompt.write_bytes(cold_reader.compose_prompt(
-        metadata, standard, diff.read_text("utf-8", errors="replace") if metadata["diff"] == "inline" else None))
+        metadata, standard, diff.read_text("utf-8", errors="replace") if metadata["diff"] == "inline" else None,
+        excerpts))
     output = records.resolved_output(None, work, "cold-reader")
     deadline = lifecycle.current_deadline() or lifecycle.stage_deadline("cold-reader", effective_timeout)
     launch_plan = _launch_plan(state, decision, resolve_comparison=False)
@@ -6041,7 +6101,7 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
         except OSError:
             returned = None
     errors = (["the seat returned no account"] if returned is None
-              else cold_reader.form_errors(returned, cold_reader.flaggable(metadata)))
+              else cold_reader.account_errors(metadata, returned))
     if builder is not None:
         # Posted only once its form holds, so a reading refused for its form is never posted as a reading.
         posted = {"status": "not-posted", "reason": "the reading failed its form check"}
@@ -6056,7 +6116,8 @@ def _execute_cold_reader(state: WorkState, decision: Decision, *, dispatch_path:
     _emit_report({
         "schema_version": 1, "work": work, "stage": "cold-reader", "bundle": str(output),
         "head": sha, "covered": covered, "whole": metadata["whole"], "residue": metadata["residue"],
-        "form": "fail" if errors else "pass", "form_errors": errors,
+        "mode": metadata["mode"], "form": "fail" if errors else "pass", "form_errors": errors,
+        **({} if errors else _reading_placement_report(metadata, returned)),
         **({"check_report": posted} if builder is not None else {}),
     }, state)
     return code or (1 if errors else 0)
@@ -12335,11 +12396,14 @@ def _recompose_reading(state: WorkState, root: Path, home: Path) -> tuple[bytes 
     if outside or present["base"] != base:
         return None, head, "the reading's coverage is not in the change set at its base and head"
     # Read as the launch reads its kept diff, text-mode, so the same bytes compose the same prompt.
-    diff = cold_reader.reading_diff(Path(source), base, head, covered).decode(
-        "utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    diff = None if metadata.get("diff") != "inline" else cold_reader.reading_diff(
+        Path(source), base, head, covered).decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    # A reread's excerpts come from its sealed lines and the source at its head, never from a kept file.
+    excerpts = (cold_reader.reading_excerpts(Path(source), metadata)
+                if metadata.get("excerpts") == "inline" else None)
     standard = (Path(__file__).resolve().parent.parent / "skills" / "authoring" / "references"
                 / "code-reasons.md").read_text("utf-8")
-    return cold_reader.compose_prompt(metadata, standard, diff if metadata["diff"] == "inline" else None), head, ""
+    return cold_reader.compose_prompt(metadata, standard, diff, excerpts), head, ""
 
 
 def builder_checks(state: WorkState) -> dict[str, object] | None:

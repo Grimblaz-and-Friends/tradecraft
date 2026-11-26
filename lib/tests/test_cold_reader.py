@@ -104,10 +104,17 @@ def test_prompt_carries_the_standard_and_the_account_form(repository):
     assert "Can tell: yes" in prompt and "STANDARD TEXT" in prompt and "At most 5" in prompt
 
 
-def test_reread_prompt_names_its_covered_paths_for_reference_only(repository):
-    metadata = cold_reader.load_metadata(build(repository, covered=["a.py"]))
+def test_a_first_reading_is_told_to_flag_only_what_the_change_wrote(repository):
+    metadata = cold_reader.load_metadata(build(repository))
     prompt = cold_reader.compose_prompt(metadata, "S", "d").decode("utf-8")
-    assert metadata["whole"] is False and "- `a.py`" in prompt and "reference only" in prompt
+    assert metadata["mode"] == "first" and metadata["schema_version"] == 2
+    for sentence in ("Flag only what this change wrote: a line the diff adds or changes",
+                     "the line just before or just after the removal",
+                     "Older lines of a file the change only edits are not flagged",
+                     "An `in-force-missing` or `dead-end-pointer` flag may also name a document a covered file "
+                     "points to"):
+        assert sentence in prompt
+    assert "A flag may name a carried file the change didn't alter" not in prompt
 
 
 ACCOUNT = """## Sections
@@ -133,53 +140,6 @@ def test_account_form_is_checked_and_parsed():
     assert "missing heading ## Flags" in cold_reader.form_errors(missing)
     no_line = ACCOUNT.format(dash=cold_reader.EM_DASH, tell="maybe")
     assert any("Can tell" in error for error in cold_reader.form_errors(no_line))
-
-
-def entry(blob, dependencies=()):
-    return {"blob": blob, "dependencies": list(dependencies)}
-
-
-def reading(identity, coverage, *, flags=(), tell=True):
-    return {"id": identity, "coverage": coverage,
-            "account": {"flags": [{"path": path, "kind": "cannot-tell", "text": "t"} for path in flags],
-                        "can_tell": tell}}
-
-
-X = {"pointer": "design/x.md#s", "path": "design/x.md", "blob": "x1", "records": []}
-
-
-def present(**coverage):
-    return {"change_set": {path: value["blob"] for path, value in coverage.items()},
-            "coverage": coverage}
-
-
-def test_assess_rereads_only_the_changed_file():
-    first = reading("r1", {"a": entry("a1"), "b": entry("b1")})
-    result = cold_reader.assess([first], present(a=entry("a2"), b=entry("b1")))
-    assert result["stale"] == ["a"]
-
-
-def test_assess_rereads_a_file_whose_pointed_document_changed():
-    first = reading("r1", {"a": entry("a1", [X])})
-    moved = {**X, "blob": "x2"}
-    assert cold_reader.assess([first], present(a=entry("a1", [moved])))["stale"] == ["a"]
-    absent = reading("r1", {"a": entry("a1", [{**X, "blob": "absent"}])})
-    assert cold_reader.assess([absent], present(a=entry("a1", [X])))["stale"] == ["a"]
-
-
-def test_assess_holds_a_flag_on_an_unchanged_dependency():
-    first = reading("r1", {"a": entry("a1", [X])}, flags=["design/x.md"])
-    result = cold_reader.assess([first], present(a=entry("a1", [X])))
-    assert not result["stale"] and result["flags"]
-
-
-def test_assess_only_a_whole_reading_clears_cannot_tell():
-    whole = {"a": entry("a2"), "b": entry("b1")}
-    said_no = reading("r1", {"a": entry("a1"), "b": entry("b1")}, tell=False)
-    narrow_yes = reading("r2", {"a": entry("a2")}, tell=True)
-    assert cold_reader.assess([said_no, narrow_yes], present(**whole))["standing_no"] is True
-    whole_yes = reading("r3", whole, tell=True)
-    assert cold_reader.assess([said_no, narrow_yes, whole_yes], present(**whole))["standing_no"] is False
 
 
 def test_cold_reader_role_defaults_to_the_cold_classification():
@@ -316,14 +276,28 @@ class Change:
             "completed_at": self.tick(), "result": {"source_output": f"{name}.source.bin"}}), encoding="utf-8")
         return name
 
-    def read(self, account, covered=None):
+    def order(self):
+        """What the gate orders at the head, or a first reading where it orders none."""
+        fixture = self.state()
+        work.validate_marker_claims(fixture)
+        return work._cold_reading_plan(fixture, self.head)["assessment"]["order"] or {
+            "mode": "first", "covered": sorted(cold_reader.current(self.root, self.base, self.head)["change_set"])}
+
+    def read(self, account, covered=None, order=None):
+        """A reading of what the gate orders, or of `order`, or a first reading of `covered`."""
         self.readings += 1
         name = f"reading-{self.readings}"
+        if order is None and covered is None:
+            order = self.order()
         cold_reader.build_tree(source=self.root, output=self.trees / name, work=WORK,
                                producer_version="0.206.0", base_tip=self.base, head=self.head,
-                               covered=covered, branch=BRANCH, numbers=[12], records_home=self.home)
+                               covered=covered, branch=BRANCH, numbers=[12], records_home=self.home, order=order)
         bundle(self.store, name, account, self.trees / name, completed=self.tick())
         return account
+
+    def record(self, number=None):
+        name = f"reading-{number or self.readings}"
+        return cold_reader.load_metadata(cold_reader.reading_record(self.trees / name, self.home))
 
     def post(self, body):
         self.comments.append({"id": len(self.comments) + 100, "body": body,
@@ -343,9 +317,9 @@ class Change:
                          "staffing_status=degraded same_vendor_reason=owner-selected-claude-implementer -->\n"
                          "The builder found no misreading.")
 
-    def reviewed(self, account, covered=None):
+    def reviewed(self, account, covered=None, order=None):
         """A reading, its posted account and the builder's review of it."""
-        self.read(account, covered)
+        self.read(account, covered, order)
         self.review(self.post_open(account))
 
     def state(self, draft=True):
@@ -369,6 +343,20 @@ class Change:
 
 def covered(decision):
     return json.loads(decision.detail)["covered"]
+
+
+def mode(decision):
+    return json.loads(decision.detail)["mode"]
+
+
+def recheck(verdicts=(), flags="none", tell=None):
+    """A reread's account: a verdict on each earlier flag, then new flags, then the why answer it owes."""
+    dash = cold_reader.EM_DASH
+    earlier = "\n".join(f"{flag} {dash} {verdict} {dash} as the code now stands" for flag, verdict in verdicts)
+    text = f"## Earlier flags\n{earlier or 'none'}\n\n## Flags\n{flags}\n"
+    if tell is not None:
+        text += f"\n## Why this change was made\nCan tell: {tell}\nThe decision record says why.\n"
+    return text
 
 
 def settled(change):
@@ -479,15 +467,6 @@ def test_an_acceptance_matching_no_flag_sets_the_open_reading_aside_naming_its_l
         "cold-reading acceptance matches no flag in the account: " + accept("b.py:1")]
 
 
-def test_an_accepted_flag_neither_stands_nor_owes_a_reread():
-    present = {"change_set": {"a.py": "1"}, "coverage": {"a.py": {"blob": "1", "dependencies": []}}}
-    reading = {"id": "r1", "coverage": present["coverage"],
-               "account": cold_reader.parse_account(flagged("a.py"))}
-    assert cold_reader.assess([reading], present)["owed"] == ["a.py"]
-    reading["accepted"] = {0: "fine"}
-    assert cold_reader.assess([reading], present) == {"stale": [], "flags": [], "owed": [], "standing_no": False}
-
-
 @pytest.mark.cold_reading
 def test_every_flag_accepted_closes_the_reading_with_no_builder_turn(change):
     change.read(flagged("a.py"))
@@ -517,7 +496,8 @@ def test_a_mixed_reading_routes_only_its_unaccepted_flags(change):
     assert change.decide().reason == "cold-reading-review-owed"
     change.review(opened)
     decision = change.decide()
-    assert (decision.reason, covered(decision)) == ("cold-reading-flag-reread", ["a.py"])
+    # The routed flag is judged by its number, so a fix-check with no commit since covers no path.
+    assert (decision.reason, covered(decision), mode(decision)) == ("cold-reading-flag-reread", [], "fix-check")
 
 
 @pytest.mark.cold_reading
@@ -556,20 +536,23 @@ def test_a_reviewer_fix_after_readiness_is_read_again_before_proof(change):
 
 
 @pytest.mark.cold_reading
-def test_a_fix_made_only_in_the_pointed_document_rereads_its_file(change):
+def test_a_fix_made_only_in_the_pointed_document_checks_the_document_and_judges_the_flag(change):
     change.reviewed(flagged("a.py"))
     assert change.decide().reason == "cold-reading-flag-reread"
     change.commit({"design/x.md": "# Design\n\n## S\n\nWhy A. In force: [D1](../decisions/D1.md).\n"})
     decision = change.decide()
-    assert decision.stage == "cold-reader" and "a.py" in covered(decision)
+    assert (decision.stage, covered(decision), mode(decision)) == ("cold-reader", ["design/x.md"], "fix-check")
+    change.read(recheck([("F1", "answered")]))
+    assert [flag["path"] for flag in change.record()["earlier_flags"]] == ["a.py"]
+    assert change.record()["lines"]["design/x.md"]["judged"] == [[5, 5]]
 
 
 @pytest.mark.cold_reading
-def test_creating_an_absent_pointer_target_rereads_its_file(change):
+def test_creating_an_absent_pointer_target_checks_the_new_document(change):
     change.reviewed(clean())
     change.commit({"design/missing.md": "# Missing\n\n## S\n\nNow here.\n"})
     decision = change.decide()
-    assert decision.stage == "cold-reader" and "b.py" in covered(decision)
+    assert (decision.stage, covered(decision)) == ("cold-reader", ["design/missing.md"])
 
 
 @pytest.mark.cold_reading
@@ -582,25 +565,27 @@ def test_cannot_tell_holds_a_clean_and_owes_a_whole_reread(change):
 
 
 @pytest.mark.cold_reading
-def test_a_whole_reread_saying_yes_after_a_decision_record_clears_cannot_tell(change):
+def test_a_why_check_saying_yes_after_a_decision_record_clears_cannot_tell(change):
     change.reviewed(clean(tell="no"))
     change.commit({"decisions/D2.md": "# D2\n\nWhy A and B exist.\n"})
-    change.reviewed(clean())
+    assert mode(change.decide()) == "why-check"
+    change.reviewed(recheck(tell="yes"))
     change.post_clean()
     assert change.decide().stage == "ready-reviewers"
 
 
 @pytest.mark.cold_reading
-def test_a_flag_on_an_unchanged_dependency_holds_clean(change):
-    change.reviewed(flagged("design/x.md"))
+def test_a_document_gap_on_an_unchanged_dependency_holds_clean_until_judged(change):
+    gap = flagged("design/x.md").replace("what-comment", "in-force-missing")
+    change.reviewed(gap)
     change.post_clean()
     decision = change.decide()
-    assert (decision.reason, covered(decision)) == ("cold-reading-flag-reread", ["a.py"])
+    assert (decision.reason, covered(decision)) == ("cold-reading-flag-reread", [])
     assert len(decision.invalid) == 1
     change.commit({"design/x.md": "# Design\n\n## S\n\nWhy A. In force: [D1](../decisions/D1.md).\n"})
     decision = change.decide()
-    assert decision.stage == "cold-reader" and "a.py" in covered(decision)
-    change.reviewed(clean(), covered=covered(decision))
+    assert decision.stage == "cold-reader" and covered(decision) == ["design/x.md"]
+    change.reviewed(recheck([("F1", "answered")]))
     assert change.decide().reason == "cold-reading-close"
 
 
@@ -608,7 +593,8 @@ def test_a_flag_on_an_unchanged_dependency_holds_clean(change):
 def test_a_narrow_reread_saying_yes_cannot_clear_cannot_tell(change):
     change.reviewed(clean(tell="no"))
     change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
-    change.reviewed(clean(), covered=["a.py"])
+    change.reviewed(recheck(tell="yes"),
+                    order={"mode": "why-check", "covered": ["a.py"], "judged": {"a.py": [[2, 2]]}})
     change.post_clean()
     decision = change.decide()
     assert (decision.reason, covered(decision)) == ("cold-reading-why-owed", ["a.py", "b.py"])
@@ -720,8 +706,9 @@ def test_the_stage_launches_one_fresh_read_only_seat_for_a_first_reading_and_a_r
     assert not any("resume" in part or part == "--session" for part in command)
     change.reviewed(clean())
     change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
-    code, command, decision, report = run_stage(change, monkeypatch, capsys, clean())
+    code, command, decision, report = run_stage(change, monkeypatch, capsys, recheck())
     assert decision.continuity == "fresh" and report["covered"] == ["a.py"] and report["whole"] is False
+    assert (report["mode"], report["form"]) == ("fix-check", "pass")
     assert option(command, "--stage") == "cold-reader"
 
 
@@ -900,33 +887,6 @@ def test_the_stage_reports_a_damaged_reading_instead_of_raising(change, monkeypa
     report = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")][-1]
     assert code == 0 and report["status"] == "refused" and report["reason"].startswith("cold-reading-unverifiable")
     assert "reading-1.run.json" in report["detail"]
-
-
-def test_a_flag_stands_until_a_later_reading_reads_its_path_whole_or_not():
-    unwritten = {"pointer": "design/unwritten.md#s", "path": "design/unwritten.md", "blob": "absent",
-                 "records": []}
-    now = present(a=entry("a1", [unwritten]), b=entry("b1"))
-    flagged_reading = reading("r1", {"a": entry("a1", [unwritten]), "b": entry("b1")},
-                              flags=["design/unwritten.md"])
-    result = cold_reader.assess([flagged_reading], now)
-    assert result["flags"] and result["owed"] == ["a"]
-    narrow = reading("r2", {"b": entry("b1")})
-    whole = {**reading("r3", {"b": entry("b1")}), "whole": True}
-    assert cold_reader.assess([flagged_reading, narrow, whole], now)["flags"]
-    reached = reading("r4", {"a": entry("a1", [unwritten])})
-    assert not cold_reader.assess([flagged_reading, narrow, whole, reached], now)["flags"]
-
-
-def test_a_flag_nothing_in_the_change_reaches_any_more_is_answered_by_the_reread():
-    first = reading("r1", {"a": entry("a1", [X])}, flags=["design/x.md"])
-    assert cold_reader.assess([first], present(a=entry("a1", [X])))["flags"]
-    result = cold_reader.assess([first], present(a=entry("a2")))
-    assert not result["flags"] and result["owed"] == ["a"]
-
-
-def test_a_flag_on_a_shared_dependency_stands_once():
-    shared = reading("r1", {"a": entry("a1", [X]), "b": entry("b1", [X])}, flags=["design/x.md"])
-    assert len(cold_reader.assess([shared], present(a=entry("a1", [X]), b=entry("b1", [X])))["flags"]) == 1
 
 
 @pytest.mark.cold_reading
@@ -1196,12 +1156,12 @@ def test_a_reading_flagging_a_path_it_never_held_is_refused_and_run_again(change
 
 
 @pytest.mark.cold_reading
-def test_a_flag_answered_without_touching_its_file_is_reread_until_clear(change):
+def test_a_flag_answered_without_touching_its_file_is_judged_by_its_number_until_clear(change):
     change.reviewed(flagged("a.py"))
     change.commit({"b.py": "# Design: design/missing.md#s\nB = 2\n"})
     decision = change.decide()
-    assert (decision.reason, covered(decision)) == ("cold-reading-stale", ["a.py", "b.py"])
-    change.reviewed(clean(), covered=covered(decision))
+    assert (decision.reason, covered(decision)) == ("cold-reading-stale", ["b.py"])
+    change.reviewed(recheck([("F1", "answered")]))
     assert change.decide().reason == "cold-reading-close"
 
 
@@ -1291,7 +1251,7 @@ def test_a_reading_with_a_list_flag_and_an_indented_sub_point_is_not_a_reading(c
 def test_the_release_report_shows_a_list_flag_as_the_reader_wrote_it(change):
     change.reviewed(listed(SPACED))
     change.commit({"a.py": "# Design: design/x.md#s\nA = 2\n"})
-    change.reviewed(clean(), covered=covered(change.decide()))
+    change.reviewed(recheck([("F1", "answered")]))
     fixture = change.state()
     work.validate_marker_claims(fixture)
     rows = work._cold_reading_measures(fixture)["readings"]
@@ -1400,7 +1360,7 @@ def test_a_newest_return_once_refused_only_for_a_list_is_owed_its_post(change):
 @pytest.mark.cold_reading
 def test_an_overtaken_once_refused_reading_is_listed_unposted_and_owes_nothing(change):
     change.read(listed())
-    change.reviewed(clean())
+    change.reviewed(clean(), order={"mode": "first", "covered": ["a.py", "b.py"]})
     assert change.decide().reason == "cold-reading-close"
     change.post_clean()
     assert change.decide().stage == "ready-reviewers"

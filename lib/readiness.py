@@ -237,6 +237,9 @@ def _cold_reader_findings(text):
         return UNREADABLE
     account = cold_reader.parse_account(text)
     texts = [cold_reader.flag_line(flag) for flag in account["flags"]]
+    # A reread's `not-answered` earlier flag still stands, so it is a finding the builder answers.
+    texts.extend(f"{flag_id} {cold_reader.EM_DASH} not-answered" for flag_id, value in sorted(
+        account["verdicts"].items(), key=lambda item: int(item[0][1:])) if value["verdict"] == "not-answered")
     if account["can_tell"] is False:
         texts.append("Can tell: no")
     return [{"finding": f"F{number}", "text": item} for number, item in enumerate(texts, 1)]
