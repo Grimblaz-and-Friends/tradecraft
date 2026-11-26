@@ -472,3 +472,13 @@ Wherever a model has no price, whether the run ends known, as a floor or unknown
 - One function writes both wordings so they cannot drift, and one text serves a first build and a repair: a first build has no earlier result, so it runs everything.
 
 **Decisions in force:** D-850, the declared CI floor and the account every build or repair returns, with its builder-executable checks scoped as D-1029 says; D-944, brief rows that name their checks in the owner's cell, which the mechanical wording maps; D-885, the mechanical lane's accounting by affirmed row, renewed after every repair as this section's account; D-1029, a relay repair runs only the checks a change since their last run can affect.
+
+## What a proof names as its sources
+
+`compose_proof` names a comment as the proof's use source, its floor source, or neither. `PROOF_SOURCE_MARKERS` declares which marker each such comment may open with: for use, a `use` marker, a builder's `check-report` use report, or, on the owner-affirmed mechanical lane, the `affirmed-brief` comment that exempts it; for the floor, a `floor` marker.
+
+- **Composition refuses any other.** Before a proof is composed, a use or floor source whose comment the state holds and that opens with a marker outside its list, or with none, is refused naming the comment and what it opens with. The required gate reads the source by what it opens with, so a proof naming anything else would be refused there, after its pull request was opened.
+- **A source the state holds no comment for is left to the gate,** such as a brief in the issue body. The gate refuses a missing record by the record it finds, and the refusal adds no reason a proof composed today would be refused.
+- **The declaration is what a test can hold.** The practice's own suite runs the required gate's reading over a proof naming each declared marker, and fails when one is named by no case. A new kind of source is added here first, so that check sees it; a gate that does not yet read it then refuses that case, which says the gate must change before the entrance names it.
+
+**Decisions in force:** D-1044, the suite running the required gate over composed proofs, which this declaration feeds.
