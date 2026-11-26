@@ -3,8 +3,9 @@
 Every session's runtime keeps some files in the plugins folder up at moments no
 launch controls, and updates installed plugins whole. A change of one of those
 kinds is released: recorded under its kind, never a finding. Only the two
-plugin install records are read for their contents. Nothing here does I/O but
-``read_install_records`` and ``release``'s resolving of the plugins folder's real path.
+plugin install records are read for their contents, and a changed compiled file for its
+header. Nothing here does I/O but ``read_install_records`` and ``release``'s resolving of
+the plugins folder's real path and reading of those headers.
 Design: lib/DESIGN.md#what-a-launch-comparison-releases
 """
 from __future__ import annotations
@@ -24,6 +25,10 @@ INSTALL_RECORDS = (MARKETPLACES, INSTALLED)
 # fields, which the app rewrites at every refresh, and every other field are ignored.
 MARKETPLACE_FIELDS = ("source", "installLocation")
 ENTRY_FIELDS = ("scope", "projectPath", "installPath", "version")
+HEADER_BYTES = 16
+HASH_BASED, CHECK_SOURCE = 0b01, 0b10
+# Flags with no hash bit are checked by time and size, so CHECK_SOURCE alone is checked as no flags are.
+CHECKED_FLAGS = frozenset({0, CHECK_SOURCE, HASH_BASED | CHECK_SOURCE})
 
 
 def _fold(text: str, windows: bool) -> str:
@@ -97,13 +102,15 @@ def _kind(item: str, parts: list[str], entry: str | None, windows: bool) -> str 
 
 
 def _version_folders(changes: list[dict], tops: dict[str, str], windows: bool,
-                     entry_of=None, real_top: str | None = None) -> tuple[set[str], set[str]]:
+                     entry_of=None, real_top: str | None = None
+                     ) -> tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]:
     """The version folders ``cache/<marketplace>/<plugin>/<version>`` added and removed whole.
 
-    Each is also kept under ``real_top``, the plugins folder's resolved path, because the
-    launcher's own root is resolved and may reach the same folder through a link.
+    Each is its path as the walk recorded it, with its forms: that path and the same folder
+    under ``real_top``, the plugins folder's resolved path, because the launcher's own root is
+    resolved and may reach the same folder through a link.
     """
-    added, removed = set(), set()
+    added, removed = [], []
     top = tops.get("plugins")
     if top is None:
         return added, removed
@@ -116,24 +123,102 @@ def _version_folders(changes: list[dict], tops: dict[str, str], windows: bool,
         if entry_of is not None and entry_of(change) not in {None, "dir"}:
             continue
         side = added if change["change"] == "added" else removed
-        side.add(_normal(change["path"], windows))
-        if real_top is not None:
-            side.add(_normal(real_top + "/" + "/".join(parts), windows))
+        side.append((change["path"], frozenset(_forms(change["path"], top, real_top, windows))))
     return added, removed
 
 
+def _forms(path: str, top: str | None, real_top: str | None, windows: bool) -> set[str]:
+    """``path`` as the plugins folder's top reaches it and as its resolved path does."""
+    forms = {_normal(path, windows)}
+    for base, other in ((top, real_top), (real_top, top)):
+        if base is not None and other is not None:
+            parts = _relative(path, base, windows)
+            if parts:
+                forms.add(_normal(other + "/" + "/".join(parts), windows))
+    return forms
+
+
+def _within(path: str, folders: dict[str, str], windows: bool) -> str | None:
+    parts = _normal(path, windows).split("/")
+    for count in range(len(parts), 0, -1):
+        found = folders.get("/".join(parts[:count]))
+        if found is not None:
+            return found
+    return None
+
+
 def _inside(path: str, folders: set[str], windows: bool) -> bool:
-    folded = _normal(path, windows)
-    parts = folded.split("/")
+    parts = _normal(path, windows).split("/")
     return any("/".join(parts[:count]) in folders for count in range(len(parts), 0, -1))
+
+
+def _parent(path: str, windows: bool) -> str:
+    """The folder ``path`` is in, as the walk recorded it."""
+    path = path.rstrip("/\\" if windows else "/")
+    cut = max(path.rfind("/"), path.rfind("\\") if windows else -1)
+    return path[:cut] if cut > 0 else path
+
+
+# --- What the app's own upkeep never makes ------------------------------------
+
+def _named(reading: dict | None, top: str | None, real_top: str | None, windows: bool
+           ) -> tuple[dict[str, str] | None, str | None]:
+    """Each path an entry of ``installed_plugins.json`` after the launch installs from, with that
+    entry, or why that reading can't say.
+
+    The app retires a version only once no entry names it, so a named version removed or marked
+    for retirement is never its work.
+    """
+    plugins, fault = _plugins(reading, "after")
+    if fault:
+        return None, fault
+    named: dict[str, str] = {}
+    for key in sorted(plugins):
+        for entry in plugins[key]:
+            path = entry.get("installPath")
+            if isinstance(path, str) and path:
+                for form in _forms(path, top, real_top, windows):
+                    named.setdefault(form, f"plugin {key} entry scope {_text(entry.get('scope'))} "
+                                           f"projectPath {_text(entry.get('projectPath'))}")
+    return named, None
+
+
+def _header(header_of, change: dict) -> str | None:
+    """Why a compiled file added or changed in a ``__pycache__`` folder holds, or None when it releases.
+
+    An import writes only a file Python checks against its source; one built to skip that check
+    loads whatever its source says, so it holds.
+    """
+    try:
+        header = header_of(change)
+    except FileNotFoundError:
+        return None  # Gone since the walk, so nothing is left to load, as with a compiled file removed.
+    except (OSError, ValueError) as exc:
+        return f"compiled file's header could not be read: {type(exc).__name__}: {exc}"
+    if len(header) < HEADER_BYTES:
+        return (f"compiled file's header could not be read: {len(header)} bytes, fewer than the "
+                f"{HEADER_BYTES} a header takes")
+    # The magic number names the Python version that wrote the file, and any installed Python may load it, so
+    # only the flags, which mean the same to every version that reads them, are judged.
+    flags = int.from_bytes(header[4:8], "little")
+    if flags == HASH_BASED:
+        return ("compiled file's header marks it unchecked (flags 1): Python loads it without checking "
+                "it against its source")
+    if flags not in CHECKED_FLAGS:
+        # Python compiles the source again rather than load it, but it is none of the kinds Python checks.
+        return f"compiled file's header carries flags {flags}, which Python refuses"
+    return None
 
 
 # --- The install records, by what they say -----------------------------------
 
-def _regular_bytes(path: Path) -> bytes:
-    """A regular file's bytes; a link, a pipe or any other entry is refused, never followed or waited on.
+def _regular_bytes(path: Path, limit: int = -1) -> bytes:
+    """A regular file's bytes, or its first ``limit``; a link, a pipe or any other entry is refused,
+    never followed or waited on.
 
-    A link would let the record's contents change behind an entry the walk sees as unchanged.
+    A link would let an install record's contents change behind an entry the walk sees as
+    unchanged, or point a compiled file's read at another file than the one walked; a pipe would
+    stall either read past the allowance.
     """
     if not stat.S_ISREG(os.lstat(path).st_mode):
         raise ValueError("not a regular file")
@@ -142,7 +227,7 @@ def _regular_bytes(path: Path) -> bytes:
     with os.fdopen(descriptor, "rb") as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             raise ValueError("not a regular file")
-        return handle.read()
+        return handle.read(limit)
 
 
 def read_install_records(top: Path) -> dict[str, dict]:
@@ -279,24 +364,25 @@ def _plugin_differences(before: dict, after: dict, added_folders: set[str], wind
 
 
 def _install_record(name: str, before: dict | None, after: dict | None, added_folders: set[str],
-                    windows: bool) -> tuple[str | None, str]:
-    """``(basis, "")`` when a modified install record is released, else ``(None, reason)``."""
+                    windows: bool) -> tuple[str | None, str, list[str]]:
+    """``(basis, "", updated install paths)`` when a modified install record is released, else
+    ``(None, reason, [])``."""
     read = _marketplaces if name == MARKETPLACES else _plugins
     first, fault = read((before or {}).get(name), "before")
     second, later = read((after or {}).get(name), "after")
     if fault or later:
-        return None, "; ".join(value for value in (fault, later) if value)
+        return None, "; ".join(value for value in (fault, later) if value), []
     if name == MARKETPLACES:
         differences = _marketplace_differences(first, second)
         if not differences:
-            return "no listed field changed", ""
-        return None, f"{name}: " + "; ".join(differences)
+            return "no listed field changed", "", []
+        return None, f"{name}: " + "; ".join(differences), []
     differences, updates = _plugin_differences(first, second, added_folders, windows)
     if not differences:
-        return "no listed field changed", ""
+        return "no listed field changed", "", []
     if updates:
-        return "update to " + ", ".join(sorted(set(updates))), ""
-    return None, f"{name}: " + "; ".join(differences)
+        return "update to " + ", ".join(sorted(set(updates))), "", updates
+    return None, f"{name}: " + "; ".join(differences), []
 
 
 def _refreshed(name: str, before: dict | None, after: dict | None, windows: bool) -> bool:
@@ -312,21 +398,91 @@ def _refreshed(name: str, before: dict | None, after: dict | None, windows: bool
 
 # --- The two callers ------------------------------------------------------------
 
+def _record(change: dict, top: str | None, windows: bool) -> str | None:
+    if change["item"] != "plugins" or change["change"] != "modified" or top is None:
+        return None
+    parts = _relative(change["path"], top, windows)
+    if not parts or len(parts) != 1:
+        return None
+    return next((record for record in INSTALL_RECORDS if _fold(record, windows) == _fold(parts[0], windows)), None)
+
+
+def _version_shaped(path: str, top: str | None, real_top: str | None, windows: bool) -> bool:
+    for base in (top, real_top):
+        parts = _relative(path, base, windows) if base is not None else None
+        if parts and len(parts) == 4 and _fold(parts[0], windows) == "cache":
+            return True
+    return False
+
+
+def _marker(change: dict, named: dict[str, str] | None, fault: str | None, top: str | None,
+            real_top: str | None, windows: bool) -> str | None:
+    """Why an orphan marker added or changed at the top of a version an entry names holds, or None.
+
+    The app marks a version for retirement only once no entry names it.
+    """
+    parent = _parent(change["path"], windows)
+    if fault:
+        if not _version_shaped(parent, top, real_top, windows):
+            return None
+        return (f"orphan marker {change['change']} at the top of version folder {parent} and {fault}, "
+                "so nothing shows that no entry names it")
+    entry = next((named[form] for form in sorted(_forms(parent, top, real_top, windows)) if form in named), None)
+    if entry is None:
+        return None
+    return f"orphan marker {change['change']} at the top of {parent}, which {INSTALLED} still names: {entry}"
+
+
 def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, dict] | None = None,
-             entry_of=None, windows: bool = os.name == "nt", check=None, real_top: str | None = None
-             ) -> tuple[dict[int, dict], dict[int, str]]:
-    """Each released change's kind and basis by index, and a reason for each held install-record change.
+             entry_of=None, windows: bool = os.name == "nt", check=None, real_top: str | None = None,
+             header_of=None) -> tuple[dict[int, dict], dict[int, str]]:
+    """Each released change's kind and basis by index, and a reason for each held change the rules read.
 
     ``changes`` are ``{"item", "path", "change"}`` with absolute paths, and ``tops`` each
     item's top. ``records`` are the install records' readings before and after; without
-    them an install record or a marketplace clone holds. ``entry_of(change)`` names a
-    change's entry type where it is known.
+    them an install record or a marketplace clone holds, and a removed version folder or an
+    orphan marker is judged by its name alone. ``entry_of(change)`` names a change's entry
+    type where it is known. ``header_of(change)`` reads a compiled file's first bytes; without
+    it a compiled file in a ``__pycache__`` folder is judged by its name alone.
     """
     released: dict[int, dict] = {}
     reasons: dict[int, str] = {}
     added, removed = _version_folders(changes, tops, windows, entry_of, real_top)
-    whole = added | removed
+    added_paths = {form for _path, forms in added for form in forms}
     before, after = records if records is not None else (None, None)
+    top = tops.get("plugins")
+    # The install records first, because an update's new folder is exempt from the rules below.
+    decided: dict[int, tuple[str | None, str]] = {}
+    updated: set[str] = set()
+    for index, change in enumerate(changes):
+        record = _record(change, top, windows)
+        if record is None or records is None:
+            continue
+        if entry_of is not None and entry_of(change) != "file":
+            # A record turned into a link or anything else holds, whatever it reads as.
+            decided[index] = (None, f"{record} is not a regular file before and after")
+            continue
+        basis, reason, moved = _install_record(record, before, after, added_paths, windows)
+        decided[index] = (basis, reason)
+        updated |= {_normal(path, windows) for path in moved}
+    # Later sessions load an update's new folder whole, whatever the launch put in it, so holding part of it
+    # would stop nothing; everything in it releases as the update does.
+    new_folders = {form for _path, forms in added if forms & updated for form in forms}
+    named, fault = _named((after or {}).get(INSTALLED), top, real_top, windows) if records is not None \
+        else ({}, None)
+    # The app retires a version only once no entry names it, so a named version removed holds; where the
+    # after-reading failed, nothing shows that no entry names it.
+    whole, held = set(added_paths), {}
+    for path, forms in removed:
+        entry = next((named[form] for form in sorted(forms) if form in named), None) if named else None
+        if fault:
+            held.update(dict.fromkeys(forms, f"version folder {path} removed and {fault}, "
+                                             "so nothing shows that no entry names it"))
+        elif entry is not None:
+            held.update(dict.fromkeys(forms, f"version folder {path} removed while {INSTALLED} still names it: "
+                                             f"{entry}"))
+        else:
+            whole |= forms
     for index, change in enumerate(changes):
         if check is not None:
             check()
@@ -337,25 +493,41 @@ def classify(changes: list[dict], tops: dict[str, str], *, records: tuple[dict, 
         parts = _relative(change["path"], tops[item], windows)
         if not parts:
             continue
-        kind = _kind(item, parts, entry_of(change) if entry_of is not None else None, windows)
-        if kind is None and whole and _inside(change["path"], whole, windows):
+        # A held version folder's own entry holds whatever its name, even one an upkeep kind would match.
+        reason = held.get(_normal(change["path"], windows))
+        kind = None if reason is not None else _kind(item, parts, entry_of(change) if entry_of is not None else None,
+                                                     windows)
+        # Upkeep under a held removal keeps its kind: it releases wherever it sits, and the folder's own entry
+        # and its other files carry the hold.
+        if reason is None and kind is None:
+            reason = _within(change["path"], held, windows)
+        # Matched by name, not type, so a link where a compiled file belongs is read and refused, never released
+        # with its folder.
+        names = [_fold(name, windows) for name in parts[-2:]]
+        compiled = len(names) == 2 and names[0] == "__pycache__" and names[1].endswith(".pyc")
+        # A marker or a compiled file removed takes nothing from what loads, so neither is checked.
+        if reason is None and change["change"] != "removed" and not _inside(change["path"], new_folders, windows):
+            if kind == "orphan-marker" and records is not None:
+                reason = _marker(change, named, fault, top, real_top, windows)
+            elif compiled and header_of is not None:
+                reason = _header(header_of, change)
+                if check is not None:
+                    check()  # The only read here, and a slow disk can spend the allowance on it.
+        if reason is None and kind is None and whole and _inside(change["path"], whole, windows):
             kind = "version-folder"
+        if reason is not None:
+            reasons[index] = reason
+            continue
         if kind is not None:
             released[index] = {"kind": kind}
             continue
         if item != "plugins":
             continue
         name = _fold(parts[0], windows)
-        if len(parts) == 1 and name in {_fold(record, windows) for record in INSTALL_RECORDS} \
-                and change["change"] == "modified":
-            record = MARKETPLACES if name == _fold(MARKETPLACES, windows) else INSTALLED
-            if records is None:
+        if _record(change, top, windows) is not None:
+            if index not in decided:
                 continue
-            if entry_of is not None and entry_of(change) != "file":
-                # A record turned into a link or anything else holds, whatever it reads as.
-                reasons[index] = f"{record} is not a regular file before and after"
-                continue
-            basis, reason = _install_record(record, before, after, added, windows)
+            basis, reason = decided[index]
             if basis is not None:
                 released[index] = {"kind": "install-record", "basis": basis}
             else:
@@ -387,9 +559,12 @@ def release(plan: list[dict], changes: list[dict], before: dict, after: dict, *,
                 kinds.add(value[0])
         return kinds.pop() if len(kinds) == 1 else (None if not kinds else "mixed")
 
+    def header_of(change):
+        return _regular_bytes(Path(change["path"]), HEADER_BYTES)
+
     real_top = os.path.realpath(tops["plugins"]) if "plugins" in tops else None
     return classify(changes, tops, records=records, entry_of=entry_of, windows=windows, check=check,
-                    real_top=real_top)
+                    real_top=real_top, header_of=header_of)
 
 
 def classify_recorded(findings: list[dict], coverage: list[dict], *, windows: bool = os.name == "nt"
@@ -399,7 +574,10 @@ def classify_recorded(findings: list[dict], coverage: list[dict], *, windows: bo
     For measuring the rules against finished records, as a replay across recorded launches
     does; neither the comparison nor the entrance calls it, and no record is reread to
     release its hold. The record keeps no install record's contents, so those and
-    marketplace clones hold, and no entry type, so names alone decide.
+    marketplace clones hold, since their release needs both readings. A removed version folder
+    or an orphan marker releases by its name whether or not an entry names it, because a
+    measure of how much the rules could release counts what it can't rule out. The record
+    keeps no entry type or compiled file, so names alone decide.
     """
     tops = {entry["item"]: entry["path"] for entry in coverage
             if isinstance(entry, dict) and entry.get("item") in RELEASING_ITEMS and entry.get("path")}
