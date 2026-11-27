@@ -233,9 +233,9 @@ def _use_findings(text):
 
 
 def _cold_reader_findings(text, record=None, root=None):
-    # With its sealed reading record a reading counts only the flags that stand. Without one, as for a report
-    # whose record can't be loaded (which never counts, since its dispatch can't be recomposed either),
-    # every flag the account lists is a finding, because nothing can place it.
+    # With its sealed reading record a reading counts only the flags that stand. Without one, because the
+    # record can't be loaded or its lines don't recompute from the source, nothing trustworthy places a flag,
+    # so every flag the account lists is a finding: the count fails toward the builder answering more.
     if record is not None:
         if cold_reader.account_errors(record, text):
             return UNREADABLE
