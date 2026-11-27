@@ -40,11 +40,11 @@ RETURN_TAILS = {
         "you found on its own line as `F1. ...`, `F2. ...`, numbered from 1, with nothing after the list. "
         "With no problems, close your return with the single line `Findings: none`."),
     # Not appended: the cold reader's dispatch already fixes its account's form, so this only states what
-    # is counted from that form, its flags and a `Can tell: no`.
+    # is counted from that form, its flags that stand and a `Can tell: no`.
     "cold-reader": (
         "Keep your account's form exactly as given above: the `## Flags` lines, or the single word "
         "`none`, and the `Can tell: yes` or `Can tell: no` line opening `## Why this change was made` "
-        "are what your holder answers, each flag and a `Can tell: no` as one finding."),
+        "are what your holder answers, each flag that stands and a `Can tell: no` as one finding."),
 }
 UNREADABLE = [{"finding": "F0", "text": "findings-unreadable"}]
 RESULT = re.compile(r"Result: (pass|fail|unable)\Z")
@@ -232,11 +232,22 @@ def _use_findings(text):
     return [{"finding": match.group("id"), "text": match.group("text")} for match in found]
 
 
-def _cold_reader_findings(text):
+def _cold_reader_findings(text, record=None, root=None):
+    # With its sealed reading record a reading counts only the flags that stand. Without one, because the
+    # record can't be loaded or its lines don't recompute from the source, nothing trustworthy places a flag,
+    # so every flag the account lists is a finding: the count fails toward the builder answering more.
+    if record is not None:
+        if cold_reader.account_errors(record, text):
+            return UNREADABLE
+        texts = cold_reader.counted_findings(record, text, root)[0]
+        return [{"finding": f"F{number}", "text": item} for number, item in enumerate(texts, 1)]
     if cold_reader.form_errors(text):
         return UNREADABLE
     account = cold_reader.parse_account(text)
     texts = [cold_reader.flag_line(flag) for flag in account["flags"]]
+    # A reread's `not-answered` earlier flag still stands, so it is a finding the builder answers.
+    texts.extend(f"{flag_id} {cold_reader.EM_DASH} not-answered" for flag_id, value in sorted(
+        account["verdicts"].items(), key=lambda item: int(item[0][1:])) if value["verdict"] == "not-answered")
     if account["can_tell"] is False:
         texts.append("Can tell: no")
     return [{"finding": f"F{number}", "text": item} for number, item in enumerate(texts, 1)]
@@ -246,10 +257,16 @@ READERS = {"acceptance-criterion": _criterion_findings, "use": _use_findings,
            "cold-reader": _cold_reader_findings}
 
 
-def report_findings(stage: str, text: str) -> list[dict]:
-    """The findings a check's return counts, or the single F0 when its tail cannot be read."""
+def report_findings(stage: str, text: str, record: dict | None = None, root=None) -> list[dict]:
+    """The findings a check's return counts, or the single F0 when its tail cannot be read.
+
+    A cold reading's `record` is its sealed reading record, which places its flags so only those that
+    stand are findings; `root` is the source a version 1 record's lines are recomputed from.
+    """
     if stage not in READERS:
         raise ReadinessError("no return tail is counted for stage: " + str(stage))
+    if stage == "cold-reader":
+        return _cold_reader_findings(text, record, root)
     return READERS[stage](text)
 
 

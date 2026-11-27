@@ -1791,7 +1791,9 @@ def test_887_R1_1_R2_1_R4_1_claude_seat_launches_protected_and_says_so(job, monk
     assert record(args)["attempts"][0]["stream_check"]["status"] == "clean"
 
 
-def test_887_R4_1_codex_seat_records_carry_neither_field(job):
+def test_887_R4_1_codex_seat_records_carry_neither_field(job, monkeypatch):
+    # A launched session switches background work off itself, so the suite run inside one clears the switch here.
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", raising=False)
     args, _ = job
     args.vendor = args.own_vendor = "codex"
     assert seat.run_dispatch(args) == 0
@@ -2069,6 +2071,9 @@ def test_a_use_consumer_is_judged_on_the_bytes_it_launches(job, tmp_path, monkey
 def test_894_a_seat_without_a_shell_carries_no_github_write_bound(job, tmp_path, monkeypatch, stage, requires):
     args, _ = job
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    # A session launched under a write bound carries both itself, so the suite run inside one clears them here.
+    for name in ("ENABLE_CLAUDEAI_MCP_SERVERS", "TRADECRAFT_CHILD_SETTINGS"):
+        monkeypatch.delenv(name, raising=False)
     args.stage, args.requires = stage, requires
     if stage in ("use", "cold-reader"):
         args.classification = "cold"
