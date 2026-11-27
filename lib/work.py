@@ -6068,6 +6068,7 @@ def _cold_reading_measures(state: WorkState) -> dict[str, object]:
         earlier = {flag["id"]: flag for flag in record.get("earlier_flags") or []}
         rows.append({
             "bundle": reading["id"], "head": reading["head"], "whole": reading["whole"],
+            # A version 1 reading may have reread only some files, so the owner is told it is one rather than a first.
             "mode": (cold_reader.mode_of(record) if record.get("schema_version") == cold_reader.SCHEMA_VERSION
                      else "version-1"),
             "posted": marker is not None, "can_tell": reading["account"]["can_tell"],

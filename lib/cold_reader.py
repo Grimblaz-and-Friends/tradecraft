@@ -39,7 +39,8 @@ INLINE_DIFF_CHARACTERS = 60_000
 DIFF_FILE = "CHANGE.diff"
 EXCERPTS_FILE = "CHANGE.excerpts"
 GENERATED = (DIFF_FILE, EXCERPTS_FILE)
-# Unmarked lines shown either side of each run of a reread's marked lines.
+# Enough unmarked lines either side of a marked run to read it in place, and few enough that an excerpt
+# shows the fix rather than inviting a reread of its file.
 EXCERPT_CONTEXT = 3
 # A deleted or binary file has no lines to number, so the whole of it is the change's.
 WHOLE = "whole"
@@ -141,8 +142,6 @@ def renames(root: Path, base: str, head: str) -> dict[str, str]:
     return {path: old for status, path, old in _name_status(root, base, head)
             if status.startswith("R") and old is not None}
 
-
-# Design: lib/DESIGN.md#the-cold-reader (the change's lines through `gained`)
 
 def _unquote(raw: bytes) -> str:
     """A path as Git prints it, C-quoted when it holds a character Git won't print bare."""
@@ -609,7 +608,8 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
         change = now.get(path, [])
         judged = change if mode == "first" else (order.get("judged") or {}).get(path, change)
         lines[path] = {"change": change, "judged": _clip(judged, count), "count": count}
-    # A first reading and a why-check show the whole change's diff; a fix-check shows only its marked lines.
+    # A fix-check may flag only its marked lines, so it is shown no diff whose other changed lines would invite
+    # a flag the entrance would set outside the change.
     diff = reading_diff(source, state["base"], head, selected) if mode != "fix-check" else None
     composed = None if mode == "first" else excerpts(
         {path: texts.get(changed[path]) for path in selected if changed[path] != "deleted"}, lines, changed)
@@ -875,7 +875,8 @@ def flaggable(metadata: dict) -> set[str]:
 
 
 def _inferred_mode(text: str) -> str:
-    # A return read without its record, as a builder's posted report is, says its mode by its headings.
+    # A return read without its record, as the readiness reader reads a report whose record it can't load,
+    # says its mode by its headings.
     found = _sections(text, MODE_HEADINGS["why-check"] + HEADINGS)
     if EARLIER_HEADING not in found:
         return "first"
