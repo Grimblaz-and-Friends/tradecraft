@@ -601,11 +601,15 @@ def build_tree(*, source: Path, output: Path, work: str, producer_version: str,
     # The lines are sealed so the reading's flags are placed from its record alone, whatever is pruned later.
     now = change_lines(source, state["base"], head)
     texts = _blob_texts(source, [changed[path] for path in selected if changed[path] != "deleted"])
+    # A reread judges only what the gate ordered, so an order that doesn't say what that is reads nothing.
+    unordered = [path for path in selected if mode != "first" and path not in (order.get("judged") or {})]
+    if unordered:
+        raise ColdReaderError("the reread's order gives no judged lines for: " + ", ".join(unordered))
     lines = {}
     for path in selected:
         count = 0 if changed[path] == "deleted" else _count(texts.get(changed[path]) or "")
         change = now.get(path, [])
-        judged = change if mode == "first" else (order.get("judged") or {}).get(path, change)
+        judged = change if mode == "first" else order["judged"][path]
         lines[path] = {"change": change, "judged": _clip(judged, count), "count": count}
     # A fix-check may flag only its marked lines, so it is shown no diff whose other changed lines would invite
     # a flag the entrance would set outside the change.
@@ -1109,7 +1113,6 @@ def assess(readings: list[dict], present: dict, root: Path) -> dict:
     changed = present["change_set"]
     cache: dict = {}
     placements = {reading["id"]: placement(reading, record_lines(root, reading, cache)) for reading in readings}
-    # Each earlier flag a reread judged, by the reading that raised it and its place there.
     judged_later = {}
     for index, reading in enumerate(readings):
         for earlier in reading["record"].get("earlier_flags") or []:
@@ -1206,6 +1209,32 @@ def assess(readings: list[dict], present: dict, root: Path) -> dict:
     return {"stale": sorted(unread), "unread": unread, "flags": standing, "standing_no": standing_no,
             "owed": [] if order is None else order["covered"], "placements": placements,
             "gained_unknown": sorted(unknown), "order": order}
+
+
+def lines_hold(metadata: dict, root: Path) -> bool:
+    """Whether a record's sealed lines are those its base and head give in `root`.
+
+    A first reading's lines never enter its composed dispatch, so a record rewritten in the store could move
+    a flag outside the change unseen by the recomposition; where a record's lines are trusted for a count,
+    they are recomputed first. A reread's judged lines are its order's, bound by the excerpts its dispatch
+    carries, so for one only the change's lines and the lengths are recomputed.
+    """
+    if metadata.get("schema_version") != SCHEMA_VERSION:
+        return True
+    try:
+        now = change_lines(root, metadata["base"], metadata["head"])
+        change_set = metadata["change_set"]
+        texts = _blob_texts(root, [change_set[path] for path in metadata["lines"] if change_set.get(path) != "deleted"])
+    except (ColdReaderError, KeyError, TypeError):
+        return False
+    for path, sealed in metadata["lines"].items():
+        count = 0 if change_set.get(path) == "deleted" else _count(texts.get(change_set.get(path)) or "")
+        change = now.get(path, [])
+        if sealed.get("change") != change or sealed.get("count") != count:
+            return False
+        if mode_of(metadata) == "first" and sealed.get("judged") != _clip(change, count):
+            return False
+    return True
 
 
 def counted_findings(metadata: dict, text: str, root: Path) -> tuple[list[str], list[dict]]:

@@ -12661,7 +12661,8 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
             stage = bundle[1].get("stage")
             # A reading's flags are placed from the sealed record its dispatch recomposed from, so a flag outside
             # the change is listed apart and no record owes it an entry.
-            record = _report_reading_record(bundle[1]) if stage == "cold-reader" else None
+            record = (_report_reading_record(bundle[1], getattr(state, "holder_root", None))
+                      if stage == "cold-reader" else None)
             entry.update({"stage": stage, "head": attributes.get("head"), "criterion": attributes.get("criterion"),
                           "row": int(attributes["row"]) if str(attributes.get("row", "")).isdigit() else None,
                           "outcome": attributes.get("outcome"),
@@ -12675,12 +12676,17 @@ def builder_checks(state: WorkState) -> dict[str, object] | None:
     return {"check_dispatches": dispatches, "check_reports": reports, "quotations": quotations}
 
 
-def _report_reading_record(request: dict) -> dict | None:
-    """The sealed reading record a cold-reader bundle's tree names, or None where it can't be read."""
+def _report_reading_record(request: dict, source: Path | None) -> dict | None:
+    """The sealed reading record a cold-reader bundle's tree names, or None where it can't be trusted.
+
+    The record sits in the store, which a builder's shell can write, so its lines count only once they
+    are recomputed from the source; otherwise every flag the report lists stays a finding.
+    """
     try:
-        return cold_reader.load_metadata(cold_reader.reading_record(Path(request["root"]), _records_home(None)))
+        record = cold_reader.load_metadata(cold_reader.reading_record(Path(request["root"]), _records_home(None)))
     except (KeyError, TypeError, OSError, cold_reader.ColdReaderError):
         return None
+    return record if source is not None and cold_reader.lines_hold(record, Path(source)) else None
 
 
 def _posts_check_report(body: str) -> bool:

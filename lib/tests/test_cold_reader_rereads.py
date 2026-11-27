@@ -615,6 +615,8 @@ def test_a_builders_record_owes_no_entry_for_a_flag_outside_the_change(change, m
         returned = recheck([("F1", "not-answered")], flags="\n".join((written, old)))
     change.read(returned)
     root = Path(change.record()["tree_root"])
+    recompose = work._recompose_reading
+    recomposed = recompose(SimpleNamespace(holder_root=change.root), root, change.home)[0]
     composed = b"the composed reading"
     monkeypatch.setattr(work, "_recompose_reading", lambda state, tree, home: (composed, change.head, ""))
     monkeypatch.setattr(work, "_records_home", lambda _state: change.home)
@@ -643,3 +645,18 @@ def test_a_builders_record_owes_no_entry_for_a_flag_outside_the_change(change, m
     reconciled = readiness.reconcile(record, [{"report": 77, "named": True, "findings": report["findings"]}],
                                      lambda commit: True)
     assert reconciled["unreconciled"] == []
+    # A record rewritten in the store to judge no line can't move a flag outside the change: its lines are
+    # recomputed from the source first, and where they differ every listed flag stays a finding.
+    path = cold_reader.reading_record(root, change.home)
+    value = json.loads(path.read_bytes())
+    value.pop("metadata_sha256")
+    for entry in value["lines"].values():
+        entry["judged"] = []
+    value["metadata_sha256"] = cold_reader._digest(value)
+    path.write_bytes(json.dumps(value, indent=2, sort_keys=True).encode("ascii") + b"\n")
+    if reread:
+        # A reread's judged lines are the excerpts its dispatch carries, so the rewrite stops it recomposing.
+        assert recompose(SimpleNamespace(holder_root=change.root), root, change.home)[0] != recomposed
+    else:
+        rewritten = work.builder_checks(state)["check_reports"][0]
+        assert "outside" not in rewritten and len(rewritten["findings"]) > len(report["findings"])
