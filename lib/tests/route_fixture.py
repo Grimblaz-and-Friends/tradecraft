@@ -590,7 +590,7 @@ def watch(name: str, fixture: Fixture) -> int:
     time.sleep(max(0.0, (5 if replay is not None else 13) - (time.monotonic() - started)))
     if replay is None:
         # Elapsed time doesn't prove the stand-in got that far on a loaded machine, so its log is read until every
-        # step it takes before its quiet span is there, for a minute at most.
+        # step it takes before its quiet span is there, within a bound so a stand-in that died doesn't hold it.
         import stand_in_builder
         expected = len(stand_in_builder.STEPS_BEFORE_WAIT) + len(stand_in_builder.STEPS_WHILE_WATCHED)
         end = time.monotonic() + 60
