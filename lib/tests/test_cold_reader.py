@@ -1376,6 +1376,8 @@ def test_a_newest_return_once_refused_only_for_a_list_is_owed_its_post(change):
 @pytest.mark.cold_reading
 def test_an_overtaken_once_refused_reading_is_listed_unposted_and_owes_nothing(change):
     change.read(listed())
+    # The second first reading stands in for the one that ran while the earlier return was still refused,
+    # which the gate ordered because it saw no reading.
     change.reviewed(clean(), order={"mode": "first", "covered": ["a.py", "b.py"]})
     assert change.decide().reason == "cold-reading-close"
     change.post_clean()

@@ -13,8 +13,8 @@ import tempfile
 
 import recipient_tree
 
-# Version 2 records a reading's mode and the lines it judged, so an entrance older than that refuses one
-# rather than misreading it as a whole-file reading. A version 1 record still loads and is read as written.
+# A record that seals a reading's mode and judged lines carries a version an older entrance refuses, rather
+# than misreading it as a whole-file reading; a record written before readings had modes still loads.
 SCHEMA_VERSION = 2
 SCHEMA_VERSIONS = (1, 2)
 FLAG_KINDS = (
@@ -81,8 +81,7 @@ VERDICT_LINE = re.compile(
     r"(?:[ \t]+[" + EM_DASH + r"-][ \t]+(?P<why>\S.*))?$"
 )
 HUNK = re.compile(rb"^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@")
-# A file diff's two sides, `--- a/old` and `+++ b/new`, printed before its first hunk.
-SIDE_LINE = re.compile(rb"^(-|\+)(?:--|\+\+) (.*)$")
+FILE_SIDE_HEADER = re.compile(rb"^(-|\+)(?:--|\+\+) (.*)$")
 
 
 class ColdReaderError(RuntimeError):
@@ -208,7 +207,7 @@ def file_diffs(root: Path, old: str, new: str) -> dict[str, dict]:
                                      int(new_start), 1 if new_count is None else int(new_count)))
         elif in_hunks:
             continue
-        elif (side := SIDE_LINE.match(line)) is not None:
+        elif (side := FILE_SIDE_HEADER.match(line)) is not None:
             sign, name = side.groups()
             if sign == b"-":
                 current["old"], current["named"] = _side(name, b"a/"), True

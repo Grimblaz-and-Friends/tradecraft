@@ -95,7 +95,7 @@ def lines_of(tmp_path, before, after):
 def test_a_removal_counts_the_line_just_before_and_just_after_it_wherever_it_falls(tmp_path):
     # Line 1, line 5 and line 10 removed: the file now holds old lines 2-4 and 6-9.
     kept = "".join(f"line {number}\n" for number in (2, 3, 4, 6, 7, 8, 9))
-    assert cold_reader.change_lines.__doc__ and lines_of(tmp_path, TEN, kept) == [[1, 1], [3, 4], [7, 7]]
+    assert lines_of(tmp_path, TEN, kept) == [[1, 1], [3, 4], [7, 7]]
 
 
 def test_an_added_line_counts_and_a_line_shown_only_as_context_does_not(tmp_path):
@@ -410,10 +410,10 @@ def test_a_rereads_rule_on_what_may_be_flagged_is_the_rule_the_entrance_holds(ch
     assert set(marked(text)) == cold_reader.numbers_of(change.record()["lines"]["c.py"]["judged"]) == {7}
 
 
-# Readings recorded before this version, and changes in flight.
+# Version 1 records, written before readings had modes.
 
 def as_version_one(change, number=None):
-    """Rewrite a reading's record as an entrance before this version wrote it: no mode, no sealed lines."""
+    """Rewrite a reading's record as a version 1 record: no mode, no sealed lines."""
     path = cold_reader.reading_record(change.trees / f"reading-{number or change.readings}", change.home)
     value = json.loads(path.read_bytes())
     for key in ("mode", "lines", "excerpts", "since", "earlier_flags", "gained_unknown", "metadata_sha256"):
