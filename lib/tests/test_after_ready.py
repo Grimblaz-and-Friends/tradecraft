@@ -402,3 +402,57 @@ def test_a_hand_record_with_no_handoff_digest_reads_unknown(tmp_path):
                "handoff": {"tree": str(tmp_path), "branch": "b", "store": str(tmp_path), "dispatch": "d" * 32}}
     assert work._handoff_plan_reading(state, (tmp_path / "run.json", request)) == {
         "reading": "unknown", "reason": "the hand-started record names no handoff digest"}
+
+
+def handed_off_reports(out: str) -> list[dict]:
+    """The launch reports among a run's output, which also carries text the owner pastes."""
+    found = []
+    for line in out.splitlines():
+        try:
+            report = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(report, dict) and report.get("status") in ("handed-off", "resumed"):
+            found.append(report)
+    return found
+
+
+@pytest.mark.parametrize("way", ["handoff", "resume-reason", "send-back", "catch-up"])
+def test_every_launch_of_the_builder_names_the_wait_and_its_command_watches_that_launch(
+        tmp_path, monkeypatch, holder, quiet_report, stub, capsys, way):
+    claude_machine()
+    stub()
+    behind = {**CLEAR, "behind": True, "strict": True, "merge_state": "behind"}
+    state = with_pull_request(stored(tmp_path, *PLANNED), behind if way == "catch-up" else CLEAR)
+    state.pr["draft"] = False
+    if way != "handoff":
+        resumable(state, tmp_path, ready=way != "resume-reason")
+    capsys.readouterr()
+    extra = {"handoff": ("handoff",), "resume-reason": ("handoff", "--resume-reason", "go on"),
+             "send-back": ("send-back", "--dispatch", words(tmp_path)), "catch-up": ("catch-up",)}[way]
+    assert run(monkeypatch, holder, state, *extra) == 0
+    [report] = handed_off_reports(capsys.readouterr().out)
+    _argv, pointer = stub_argv()
+    assert report["status"] == "handed-off" and report["dispatch"] == pointer["dispatch_id"]
+    assert report["wait"] == work.builder_wait.wait_command("o/r", 5, holder, LIB.parent)
+    assert report["wait_how"] == work.builder_wait.WAIT_SENTENCE
+    watched = []
+    monkeypatch.setattr(work.builder_wait.Waiter, "run", lambda waiter: watched.append(waiter.launch.pointer) or 0)
+    words_ = work.builder_wait.shlex.split(report["wait"])
+    assert words_[:3] == ["python", "-B", str(LIB.parent).rstrip("/\\") + "/lib/work.py"]
+    assert work.run(work.parser().parse_args(words_[3:])) == 0
+    assert [entry["dispatch_id"] for entry in watched] == [pointer["dispatch_id"]]
+
+
+def test_a_hand_started_handoff_names_no_wait_and_a_builder_is_refused_the_wait(
+        tmp_path, monkeypatch, holder, quiet_report, no_spawn, capsys):
+    state = stored(tmp_path, *PLANNED)
+    capsys.readouterr()
+    assert run(monkeypatch, holder, state, "handoff", "--by-hand", "gemini:any-model") == 0
+    [report] = handed_off_reports(capsys.readouterr().out)
+    assert report["started_by"] == "hand" and "wait" not in report
+    [request] = hand_requests()
+    monkeypatch.setenv("TRADECRAFT_STRETCH_DISPATCH", request["dispatch_id"])
+    args = work.parser().parse_args(["wait", "--repo", "o/r", "--issue", "5", "--root", str(holder)])
+    with pytest.raises(work.BuilderRefused, match="^stage-not-the-builders: wait is the holder's"):
+        work.run(args)

@@ -1,0 +1,197 @@
+"""A stand-in for a launched builder and its launcher: one process that writes a run record and a log as they do.
+
+The route fixture's `watch-` scenarios start it as a child, so the holder's wait has a live launch to read.
+Its run record is rewritten by the launchers' own writer, `dispatch_lifecycle.atomic_record`, and its log
+is in Claude's stream form: an `assistant` record for each step, `tool_progress` heartbeats while a step
+runs, and a `user` record for each step's result. MODE says how it ends: `ready` completes the record
+with success, `stopped` completes it as failed, `limit` completes it as stopped at its ceiling once its
+limit has passed, and `crash` dies without completing it. With `--replay` it appends a recorded-form log
+line by line instead of its own steps. With `--hold-until PATH` it waits for PATH before it ends, so a
+scenario reads it while it runs however slowly that scenario's machine is.
+Design: lib/DESIGN.md#the-builder-route
+"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+import sys
+import time
+from typing import NamedTuple
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from dispatch_lifecycle import atomic_record  # noqa: E402
+import run_lifecycle as lifecycle  # noqa: E402
+
+SESSION = "00000000-0000-4000-8000-00000000f1f0"
+STEPS_BEFORE_WAIT = (
+    ("Bash", {"command": "git log --oneline -3", "description": "Orient in the tree"}),
+    ("Read", {"file_path": "lib/job.py"}),
+    ("Bash", {"command": "python -B -m pytest -q lib/tests", "description": "Run the job's tests"}))
+
+
+class Live(NamedTuple):
+    seconds_after_start: float
+    tool: str
+    tool_input: dict
+    inside_helper: bool
+
+
+STEPS_WHILE_WATCHED = (
+    Live(2, "Edit", {"file_path": "lib/job.py", "old_string": "a", "new_string": "b"}, False),
+    Live(4, "Agent", {"description": "Read the job's callers", "prompt": "List the job's callers."}, False),
+    Live(6, "Grep", {"pattern": "def run_job"}, True),
+    Live(8, "Bash", {"command": "python -B -m pytest -q lib/tests/test_job.py",
+                     "description": "Run the job's tests a second time"}, False))
+# Seconds after the start at which the last live step's result comes; until then only heartbeats are written, so
+# the builder is quiet for a known span with a step running.
+QUIET_UNTIL = 20
+# Seconds after the start at which it ends: a moment after that result, so its end isn't read with the step's.
+END_AT = 22
+# How often it rewrites its record and beats. It can be slower than the launchers' own pace without changing
+# anything the wait reads, since the wait reads only the record's latest state.
+PACE_SECONDS = 1.0
+# Fast enough that a replay ends within its scenario, slow enough that the wait's polls see the log grow.
+REPLAY_LINE_SECONDS = 0.25
+# How long it waits for --hold-until's file, so a stand-in whose scenario died doesn't run on.
+HELD_SECONDS = 120.0
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def _append(log: Path, record: dict) -> None:
+    with log.open("ab") as stream:
+        stream.write((json.dumps(record, ensure_ascii=True) + "\n").encode("utf-8"))
+
+
+def _step(log: Path, identity: str, tool: str, tool_input: dict, *, helper: str | None, at: datetime) -> None:
+    _append(log, {"type": "assistant", "message": {"id": f"msg-{identity}", "role": "assistant", "content": [
+        {"type": "tool_use", "id": identity, "name": tool, "input": tool_input}]},
+        "parent_tool_use_id": helper, "session_id": SESSION, "uuid": uuid.uuid4().hex, "timestamp": _stamp(at)})
+
+
+def _result(log: Path, identity: str, *, helper: str | None, at: datetime) -> None:
+    _append(log, {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": identity, "content": "ok"}]},
+        "parent_tool_use_id": helper, "session_id": SESSION, "uuid": uuid.uuid4().hex, "timestamp": _stamp(at)})
+
+
+def _heartbeat(log: Path, identity: str, tool: str, elapsed: int) -> None:
+    _append(log, {"type": "tool_progress", "tool_use_id": f"{identity}-heartbeat-{elapsed}", "tool_name": tool,
+                  "parent_tool_use_id": identity, "elapsed_time_seconds": elapsed, "heartbeat": True,
+                  "session_id": SESSION, "uuid": uuid.uuid4().hex})
+
+
+class Run:
+    """The run record as the launcher keeps it: running with an elapsed checkpoint, then completed once."""
+
+    def __init__(self, path: Path, log: Path, launched: datetime, dispatch: str):
+        self.path, self.launched = path, launched
+        self.record = {"schema_version": 2, "dispatch_id": dispatch, "launched_at": launched.isoformat(),
+                       "launcher_process": lifecycle.process_identity(), "lifecycle": "running",
+                       "elapsed_checkpoint_seconds": 0, "elapsed_checkpoint_interval_seconds": PACE_SECONDS,
+                       "attempts": [{"vendor": "claude", "launched": True, "stdout": str(log),
+                                     "source_format": "claude-stream-json"}]}
+
+    def checkpoint(self) -> None:
+        self.record["elapsed_checkpoint_seconds"] = (datetime.now(timezone.utc) - self.launched).total_seconds()
+        atomic_record(self.path, self.record)
+
+    def complete(self, outcome: str, cause: str | None = None) -> None:
+        self.record.update(lifecycle="completed", outcome=outcome,
+                           completed_at=datetime.now(timezone.utc).isoformat())
+        if cause:
+            self.record["interruption_cause"] = cause
+        self.checkpoint()
+
+
+def _hold(run: Run, until: float, started: float, beat=None) -> None:
+    """Keep the record's checkpoint fresh, and beat for a running step, until ``until`` seconds after the start."""
+    while time.monotonic() - started < until:
+        run.checkpoint()
+        if beat is not None:
+            beat()
+        time.sleep(PACE_SECONDS)
+
+
+def _held(run: Run, path: Path | None, beat=None) -> None:
+    """Keep running until PATH exists, giving up after ``HELD_SECONDS``."""
+    end = time.monotonic() + HELD_SECONDS
+    while path is not None and not path.exists() and time.monotonic() < end:
+        run.checkpoint()
+        if beat is not None:
+            beat()
+        time.sleep(PACE_SECONDS)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("--run", type=Path, required=True)
+    parser.add_argument("--dispatch", required=True)
+    parser.add_argument("--log", type=Path, required=True)
+    parser.add_argument("--mode", choices=("ready", "stopped", "limit", "crash"), required=True)
+    parser.add_argument("--launched", required=True, help="the launch time, ISO 8601")
+    parser.add_argument("--limit-at", type=float, help="with --mode limit: seconds after the start it reaches its limit")
+    parser.add_argument("--replay", type=Path, help="a recorded-form log to append line by line")
+    parser.add_argument("--hold-until", type=Path, help="end only once this file exists")
+    args = parser.parse_args(argv)
+    launched = datetime.fromisoformat(args.launched)
+    started = time.monotonic()
+    run = Run(args.run, args.log, launched, args.dispatch)
+    now = datetime.now(timezone.utc)
+    if args.replay is not None:
+        args.log.write_bytes(b"")
+        run.checkpoint()
+        for line in args.replay.read_bytes().splitlines():
+            record = json.loads(line)
+            if "timestamp" in record:
+                # Each record is stamped when it is appended, as the builder stamped it when it wrote it.
+                record["timestamp"] = _stamp(datetime.now(timezone.utc))
+            _append(args.log, record)
+            run.checkpoint()
+            time.sleep(REPLAY_LINE_SECONDS)
+        _held(run, args.hold_until)
+        run.complete("success")
+        return 0
+    _append(args.log, {"type": "system", "subtype": "init", "session_id": SESSION, "model": "fixture"})
+    # Taken minutes before the wait starts and each finished, as a builder's steps are when its holder restarts
+    # mid-build, so the wait opens on them as earlier steps with none running.
+    for index, (tool, tool_input) in enumerate(STEPS_BEFORE_WAIT):
+        at = now - timedelta(minutes=9 - 3 * index)
+        _step(args.log, f"toolu_earlier_{index}", tool, tool_input, helper=None, at=at)
+        _result(args.log, f"toolu_earlier_{index}", helper=None, at=at + timedelta(minutes=2))
+    run.checkpoint()
+    parent = None
+    for index, (when, tool, tool_input, helper) in enumerate(STEPS_WHILE_WATCHED):
+        _hold(run, when, started)
+        identity = f"toolu_live_{index}"
+        if tool == "Agent":
+            parent = identity
+        _step(args.log, identity, tool, tool_input, helper=parent if helper else None, at=datetime.now(timezone.utc))
+        if index < len(STEPS_WHILE_WATCHED) - 1:
+            _result(args.log, identity, helper=parent if helper else None, at=datetime.now(timezone.utc))
+    last, tool = f"toolu_live_{len(STEPS_WHILE_WATCHED) - 1}", STEPS_WHILE_WATCHED[-1][1]
+    beats = iter(range(1, 1000))
+    if args.mode == "limit":
+        _hold(run, args.limit_at or QUIET_UNTIL, started, lambda: _heartbeat(args.log, last, tool, next(beats)))
+        _held(run, args.hold_until, lambda: _heartbeat(args.log, last, tool, next(beats)))
+        run.complete("interrupted", "ceiling")
+        return 0
+    _hold(run, QUIET_UNTIL, started, lambda: _heartbeat(args.log, last, tool, next(beats)))
+    _result(args.log, last, helper=None, at=datetime.now(timezone.utc))
+    _hold(run, END_AT, started)
+    _held(run, args.hold_until)
+    if args.mode == "crash":
+        os._exit(70)  # It dies where it stands; its record is never completed.
+    run.complete("success" if args.mode == "ready" else "failed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

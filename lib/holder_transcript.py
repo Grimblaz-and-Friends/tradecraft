@@ -727,6 +727,8 @@ _NOT_A_SESSION = frozenset({"--version", "-v", "-V", "--help", "-h", "help", "mc
 # Runtime-generated user records; none is the owner speaking or another session's message.
 _SYNTHETIC_TAGS = ("<task-notification", "<system-reminder", "<ci-monitor-event", "<local-command-caveat")
 _SYNTHETIC_TURNS = frozenset({"task_notification", "auto_continuation", "host_synthetic", "system"})
+# A background task's end notice names the call that started it.
+_NOTICE_CALL = re.compile(r"<tool-use-id>\s*([^<\s]+)\s*</tool-use-id>")
 
 
 def _words(segment):
@@ -845,8 +847,38 @@ def _call_kinds(name, tool_input, builder, change):
     return kinds, description if len(description) <= 200 else description[:197] + "..."
 
 
-def _prompt_kind(record):
-    """``owner`` or ``peer`` for a user record that prompts a reply; None for a tool result or runtime text."""
+def _starts_wait(name, tool_input):
+    """Whether a tool call runs the entrance's `wait`, the read a holder starts in its background after a launch."""
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if name not in SHELL_TOOLS or not isinstance(command, str):
+        return False
+    return any(program == "work.py" and _command_word(arguments) == "wait"
+               for program, arguments in (_program(_words(segment)) for segment in _SEGMENT.split(command)))
+
+
+# The entrance's options that take no value, so the word after one can still be its command. Written out, because
+# the entrance imports this module and so its parser can't be read here; a test ties the two.
+ENTRANCE_FLAGS = frozenset({"--cloud", "--job-from-artifact", "--preview", "--help", "-h"})
+
+
+def _command_word(arguments):
+    """The entrance's command, its first word that is neither an option nor an option's value."""
+    words = iter(arguments)
+    for word in words:
+        if not word.startswith("-"):
+            return word
+        if "=" not in word and word not in ENTRANCE_FLAGS:
+            next(words, None)
+    return None
+
+
+def _prompt_kind(record, waits=frozenset()):
+    """``owner``, ``peer`` or ``wait-end`` for a user record that prompts a reply; None for a tool result or runtime text.
+
+    ``wait-end`` is the end notice of a background task that a call in ``waits`` started: a wait's end is what
+    the builder route tells its holder to answer, so the reply after it was asked for. Any other task's end
+    notice prompts nothing. Design: lib/DESIGN.md#the-builder-route
+    """
     message = record.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
@@ -854,12 +886,17 @@ def _prompt_kind(record):
         return None
     if record.get("isCompactSummary") or record.get("isSidechain"):
         return None
-    origin = record.get("origin")
-    if isinstance(origin, dict):
-        # The native origin names the sender; a plugin's resume or a task notification is neither.
-        return {"human": "owner", "peer": "peer"}.get(origin.get("kind"))
     text = content if isinstance(content, str) else " ".join(
         block["text"] for block in blocks if block.get("type") == "text" and isinstance(block.get("text"), str))
+    origin = record.get("origin")
+    notice = (isinstance(origin, dict) and origin.get("kind") == "task-notification"
+              or record.get("turnOrigin") == "task_notification" or text.lstrip().startswith("<task-notification"))
+    if notice:
+        started_by = _NOTICE_CALL.search(text)
+        return "wait-end" if started_by and started_by.group(1) in waits else None
+    if isinstance(origin, dict):
+        # The native origin names the sender; a plugin's resume is neither.
+        return {"human": "owner", "peer": "peer"}.get(origin.get("kind"))
     # Earlier runtimes record no origin; another session's message still carries its tag.
     if "<cross-session-message" in text or record.get("turnOrigin") == "peer":
         return "peer"
@@ -904,7 +941,7 @@ def _activity(session, start, end, home, builder=None, change=None):
     main = paths[0]
     builder = {builder} if isinstance(builder, str) else set(builder or ())
     builder = {value.strip().lower() for value in builder if isinstance(value, str) and value.strip()}
-    calls, unprompted, gaps, seen, referenced = [], [], [], set(), set()
+    calls, unprompted, gaps, seen, referenced, waits = [], [], [], set(), set(), set()
     previous, turn_open, prompted = None, False, False
     for path in paths:
         try:
@@ -925,7 +962,7 @@ def _activity(session, start, end, home, builder=None, change=None):
                 referenced.add(result["agentId"])
             if record.get("type") == "user" and path == main:
                 # Prompts before the window still answer the window's first reply.
-                prompted = prompted or _prompt_kind(record) is not None
+                prompted = prompted or _prompt_kind(record, waits) is not None
                 continue
             message = record.get("message")
             if record.get("type") != "assistant" or not isinstance(message, dict):
@@ -944,6 +981,9 @@ def _activity(session, start, end, home, builder=None, change=None):
                 if key in seen:
                     continue
                 seen.add(key)
+                if path == main and isinstance(block.get("id"), str) and _starts_wait(block.get("name"),
+                                                                                     block.get("input")):
+                    waits.add(block["id"])
                 kinds, description = _call_kinds(block.get("name"), block.get("input"), builder, change)
                 if inside and kinds:
                     calls.append({"timestamp": when.isoformat(), "tool": block.get("name"), "kinds": kinds,
