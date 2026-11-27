@@ -205,16 +205,21 @@ class Launch:
         path = attempt.get("stdout")
         if path and (self.log is None or self.log.path != Path(path)):
             # A new attempt writes a new log; its steps are read from its start, and the builder was last active
-            # when the attempt before it was, not when the launch began. A first read of a retried launch reads
-            # that earlier log once for it, so a fresh read and a long wait agree.
+            # when an attempt before it was, not when the launch began. A first read of a retried launch reads the
+            # earlier logs back to the latest that shows activity, so a fresh read and a long wait agree.
             previous = self.log
             self.log = Log(path, attempt.get("source_format"))
-            if previous is None and len(attempts) > 1 and isinstance(attempts[-2], dict) and attempts[-2].get("stdout"):
-                previous = Log(attempts[-2]["stdout"], attempts[-2].get("source_format"))
-                try:
-                    previous.read()
-                except OSError:
-                    pass
+            if previous is None:
+                for earlier in reversed(attempts[:-1]):
+                    if not isinstance(earlier, dict) or not earlier.get("stdout"):
+                        continue
+                    previous = Log(earlier["stdout"], earlier.get("source_format"))
+                    try:
+                        previous.read()
+                    except OSError:
+                        pass
+                    if previous.activity is not None:
+                        break
             if previous is not None:
                 self.log.activity = previous.activity
 
@@ -451,9 +456,14 @@ def _launched(store: Path, work: str, instalment: str | None) -> tuple[list[dict
             [pointer for pointer in found if pointer.get("hand") is True])
 
 
-def _last_ended(store: Path, work: str) -> str | None:
-    """How this work's latest builder launch ended; one that died leaves its record open, and is named as such."""
+def _last_ended(store: Path, work: str, instalment: str | None = None) -> str | None:
+    """How this work's latest builder launch ended, of the instalment named where one is; one that died leaves its
+    record open, and is named as such."""
     bundles = lifecycle.launch_bundles(store, work, {"stretch"})
+    if instalment is not None:
+        bundles = [bundle for bundle in bundles if (bundle[2].get("instalment") or (
+            bundle[2].get("handoff") if isinstance(bundle[2].get("handoff"), dict) else {}).get("instalment"))
+            == instalment]
     if not bundles:
         return None
     _order, _path, request, run = bundles[-1]
@@ -507,7 +517,7 @@ def wait(store, repo: str, issue: int, *, instalment: str | None = None, out=Non
         say(f"the builder of {work} was started by hand and isn't watched: the owner started that session and "
             "sees it there")
         return 0
-    ended = _last_ended(store, work)
+    ended = _last_ended(store, work, instalment)
     say(f"no launched builder of {work} is running" + (f"; {ended}" if ended else ""))
     return 0
 

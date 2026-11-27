@@ -631,3 +631,27 @@ def test_a_builder_started_after_its_launchers_preflight_is_waited_on_to_its_own
     code, out = watch(clock)
     assert code == 0 and out.texts()[-1].startswith("the builder's run ended: completed, interrupted, ceiling")
     assert T0 + timedelta(seconds=170) <= clock.now <= T0 + timedelta(seconds=230)
+
+
+def test_a_fresh_read_after_two_empty_retries_takes_the_activity_of_the_attempt_that_had_some(launcher):
+    clock = Clock(T0)
+    builder = Builder(clock, launcher(), launched=T0 - timedelta(hours=3))
+    builder.step("Bash", {"command": "make", "description": "Build"})
+    for name in ("second.stdout.log", "third.stdout.log"):
+        retry = builder.log.with_name(name)
+        retry.write_bytes(b"")
+        builder.record["attempts"].append({"vendor": "claude", "stdout": str(retry),
+                                           "source_format": builder_wait.CLAUDE_FORM})
+    builder.checkpoint()
+    values = builder_wait.read_once(json.loads(builder.pointer.read_bytes()), T0 + timedelta(minutes=7))
+    assert values["quiet_seconds"] // 60 == 7 and values["steps"] == 0
+
+
+def test_with_no_builder_of_an_instalment_running_the_wait_names_that_instalments_latest_launch(launcher):
+    clock = Clock(T0)
+    ended = Builder(clock, launcher(), launched=T0 - timedelta(hours=3), instalment="a")
+    ended.complete("success")
+    Builder(clock, launcher(), launched=T0 - timedelta(hours=1), instalment="b")
+    code, out = watch(clock, instalment="a")
+    assert code == 0 and out.texts() == [f"no launched builder of {WORK} is running; its latest builder launch, "
+                                         f"{ended.dispatch_id}, ended at {T0.isoformat()}: completed, success"]

@@ -588,6 +588,14 @@ def watch(name: str, fixture: Fixture) -> int:
         thread.start()
     # Mid-way through the replay; for the others in the stand-in's quiet span, with its last step running.
     time.sleep(max(0.0, (5 if replay is not None else 13) - (time.monotonic() - started)))
+    if replay is None:
+        # Elapsed time doesn't prove the stand-in got that far on a loaded machine, so its log is read until every
+        # step it takes before its quiet span is there, for a minute at most.
+        import stand_in_builder
+        expected = len(stand_in_builder.STEPS_BEFORE_WAIT) + len(stand_in_builder.STEPS_WHILE_WATCHED)
+        end = time.monotonic() + 60
+        while log.read_bytes().count(b'"type": "tool_use"') < expected and time.monotonic() < end:
+            time.sleep(0.5)
     with lock:
         sys.stdout.write(f"--- {_clock()} the read-only decision, taken while the builder runs ---\n")
         sys.stdout.flush()
